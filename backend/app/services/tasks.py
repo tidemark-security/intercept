@@ -1,0 +1,303 @@
+"""
+Background task handlers for LangFlow operations.
+
+Defines task handlers for:
+- Long-running LangFlow chat operations
+- Batch processing
+- Scheduled tasks
+- Alert triage via LangFlow
+"""
+import logging
+from typing import Dict, Any
+from uuid import UUID, uuid4
+
+from app.services.task_queue_service import get_task_queue_service
+from app.services.langflow_service import LangFlowService, LangFlowConfigurationError
+from app.services.settings_service import SettingsService
+from app.core.database import async_session_factory
+
+logger = logging.getLogger(__name__)
+
+
+# Task names
+TASK_LANGFLOW_CHAT = "langflow_chat"
+TASK_LANGFLOW_BATCH = "langflow_batch"
+TASK_TRIAGE_ALERT = "triage_alert"
+
+
+async def handle_langflow_chat(payload: Dict[str, Any]):
+    """
+    Handle a background LangFlow chat task.
+    
+    Payload:
+        session_id: UUID of the session
+        message: User message content
+        flow_id: LangFlow flow identifier
+        context: Optional conversation context
+    """
+    session_id = UUID(payload["session_id"])
+    message = payload["message"]
+    flow_id = payload["flow_id"]
+    context = payload.get("context", {})
+    
+    logger.info(
+        f"Processing LangFlow chat task",
+        extra={
+            "session_id": str(session_id),
+            "flow_id": flow_id,
+        }
+    )
+    
+    # Get database session
+    async with async_session_factory() as db:
+        # Get LangFlow service
+        settings_service = SettingsService(db)
+        langflow_service = await LangFlowService.from_settings(settings_service)
+        
+        try:
+            # Send message to LangFlow
+            response = await langflow_service.send_message(
+                flow_id=flow_id,
+                message=message,
+                session_id=session_id,
+                context=context,
+            )
+            
+            logger.info(
+                f"LangFlow chat task completed",
+                extra={
+                    "session_id": str(session_id),
+                    "response_length": len(str(response)),
+                }
+            )
+            
+            # TODO: Store response in database (session messages)
+            # This would be implemented based on your requirements
+            
+        finally:
+            await langflow_service.close()
+
+
+async def handle_langflow_batch(payload: Dict[str, Any]):
+    """
+    Handle batch LangFlow processing.
+    
+    Payload:
+        messages: List of messages to process
+        flow_id: LangFlow flow identifier
+    """
+    messages = payload["messages"]
+    flow_id = payload["flow_id"]
+    
+    logger.info(
+        f"Processing LangFlow batch task",
+        extra={
+            "flow_id": flow_id,
+            "message_count": len(messages),
+        }
+    )
+    
+    # Get database session
+    async with async_session_factory() as db:
+        # Get LangFlow service
+        settings_service = SettingsService(db)
+        langflow_service = await LangFlowService.from_settings(settings_service)
+        
+        try:
+            results = []
+            
+            for msg in messages:
+                try:
+                    response = await langflow_service.send_message(
+                        flow_id=flow_id,
+                        message=msg["content"],
+                        context=msg.get("context", {}),
+                    )
+                    results.append({
+                        "message_id": msg.get("id"),
+                        "success": True,
+                        "response": response,
+                    })
+                except Exception as e:
+                    logger.error(f"Batch message failed: {e}")
+                    results.append({
+                        "message_id": msg.get("id"),
+                        "success": False,
+                        "error": str(e),
+                    })
+            
+            logger.info(
+                f"LangFlow batch task completed",
+                extra={
+                    "flow_id": flow_id,
+                    "total": len(messages),
+                    "successful": sum(1 for r in results if r["success"]),
+                    "failed": sum(1 for r in results if not r["success"]),
+                }
+            )
+            
+        finally:
+            await langflow_service.close()
+
+
+async def handle_triage_alert(payload: Dict[str, Any]):
+    """
+    Handle an alert triage task via LangFlow.
+    
+    Sends the alert ID to the configured LangFlow alert triage flow.
+    LangFlow is expected to fetch alert details via MCP tools and create
+    a triage recommendation via the MCP create_triage_recommendation tool.
+    
+    This handler updates the QUEUED placeholder recommendation:
+    - On success: The LangFlow agent will call create_triage_recommendation
+      which supersedes the QUEUED record with a PENDING one
+    - On failure: Updates the QUEUED record to FAILED with error message
+    
+    Payload:
+        alert_id: ID of the alert to triage (int or str)
+    """
+    from sqlmodel import select
+    from app.models.models import TriageRecommendation
+    from app.models.enums import RecommendationStatus
+    
+    alert_id = payload["alert_id"]
+    session_id = uuid4()  # Generate a new session ID for each triage
+    
+    logger.info(
+        f"Processing alert triage task",
+        extra={
+            "alert_id": alert_id,
+            "session_id": str(session_id),
+        }
+    )
+    
+    async with async_session_factory() as db:
+        settings_service = SettingsService(db)
+        
+        # Get the alert triage flow ID from settings
+        flow_id = await settings_service.get_typed_value("langflow.alert_triage_flow_id")
+        
+        if not flow_id:
+            # Mark as failed if flow not configured
+            await _mark_triage_failed(
+                alert_id,
+                "Alert triage flow not configured. Please set 'langflow.alert_triage_flow_id' in settings."
+            )
+            raise LangFlowConfigurationError(
+                "Alert triage flow not configured. Please set 'langflow.alert_triage_flow_id' in settings."
+            )
+        
+        langflow_service = await LangFlowService.from_settings(settings_service)
+        
+        try:
+            # Pass entity_id via tweaks context (same pattern as case/task agents)
+            response = await langflow_service.send_message(
+                flow_id=flow_id,
+                message="Run alert triage",
+                session_id=session_id,
+                context={
+                    "entity_id": {"input_value": str(alert_id)},
+                },
+            )
+            
+            logger.info(
+                f"Alert triage task completed",
+                extra={
+                    "alert_id": alert_id,
+                    "flow_id": flow_id,
+                    "session_id": str(session_id),
+                    "response_length": len(str(response)),
+                }
+            )
+            
+            # Note: The LangFlow agent should call create_triage_recommendation MCP tool
+            # which supersedes the QUEUED placeholder. If it didn't, the record stays QUEUED
+            # and will be picked up on retry or marked failed after max retries.
+            
+            return response
+            
+        except Exception as e:
+            # Mark the QUEUED recommendation as FAILED
+            await _mark_triage_failed(alert_id, str(e))
+            raise
+            
+        finally:
+            await langflow_service.close()
+
+
+async def _mark_triage_failed(alert_id: int, error_message: str):
+    """
+    Mark a QUEUED triage recommendation as FAILED.
+    
+    Uses a fresh database session to ensure the status update succeeds
+    even if the calling context's session is in a bad state (e.g., after rollback).
+    """
+    from sqlmodel import select
+    from app.models.models import TriageRecommendation
+    from app.models.enums import RecommendationStatus
+    
+    try:
+        # Use a fresh session to avoid issues with rolled-back transactions
+        async with async_session_factory() as db:
+            query = select(TriageRecommendation).where(
+                TriageRecommendation.alert_id == alert_id,
+                TriageRecommendation.status == RecommendationStatus.QUEUED
+            )
+            result = await db.execute(query)
+            recommendation = result.scalar_one_or_none()
+            
+            if recommendation:
+                recommendation.status = RecommendationStatus.FAILED
+                recommendation.error_message = error_message[:1000] if error_message else None
+                db.add(recommendation)
+                await db.commit()
+                logger.warning(
+                    f"Marked triage recommendation as FAILED",
+                    extra={"alert_id": alert_id, "error": error_message}
+                )
+            else:
+                logger.warning(
+                    f"Could not find QUEUED triage recommendation to mark as FAILED",
+                    extra={"alert_id": alert_id}
+                )
+    except Exception as e:
+        logger.error(
+            f"Failed to mark triage recommendation as FAILED",
+            extra={"alert_id": alert_id, "error": str(e)}
+        )
+
+
+def register_task_handlers():
+    """
+    Register all task handlers with the task queue service.
+    
+    This should be called during application startup.
+    """
+    try:
+        task_queue = get_task_queue_service()
+        
+        # Register LangFlow chat handler
+        task_queue.register_handler(
+            task_name=TASK_LANGFLOW_CHAT,
+            handler=handle_langflow_chat,
+            max_retries=3,
+        )
+        
+        # Register LangFlow batch handler
+        task_queue.register_handler(
+            task_name=TASK_LANGFLOW_BATCH,
+            handler=handle_langflow_batch,
+            max_retries=2,
+        )
+        
+        # Register alert triage handler
+        task_queue.register_handler(
+            task_name=TASK_TRIAGE_ALERT,
+            handler=handle_triage_alert,
+            max_retries=3,
+        )
+        
+        logger.info("Registered all task handlers")
+        
+    except RuntimeError:
+        logger.warning("Task queue not initialized - skipping handler registration")

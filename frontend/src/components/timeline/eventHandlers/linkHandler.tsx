@@ -1,0 +1,39 @@
+import type { TimelineItem } from '@/types/timeline';
+import type { LinkItem } from '@/types/generated/models/LinkItem';
+import { getTimelineIcon } from '@/utils/timelineIcons';
+
+import type { CardConfig, CardFactoryOptions } from '../TimelineCardFactory';
+
+import { FileText, Link } from 'lucide-react';
+
+export function isLinkItem(item: TimelineItem): item is LinkItem {
+  return item.type === 'link';
+}
+
+export function handleLinkItem(
+  item: TimelineItem,
+  options: CardFactoryOptions
+): CardConfig {
+  if (!isLinkItem(item)) {
+    throw new Error('Item is not a LinkItem');
+  }
+
+  const Icon = getTimelineIcon('link');
+
+  const urlDisplay = item.url && item.url.length > 50
+    ? item.url.substring(0, 50) + '...'
+    : item.url;
+
+  return {
+    title: item.url ? `${item.url}` : 'Link',
+    line1: urlDisplay || 'No URL provided',
+    line1Icon: <Link />,
+    line2: item.description || undefined,
+    line2Icon: item.description ? <FileText /> : undefined,
+    baseIcon: Icon ? <Icon /> : undefined,
+    system: 'default',
+    size: options.size || 'large',
+    actionButtons: options.actionButtons,
+    _item: item,
+  };
+}

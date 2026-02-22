@@ -1,0 +1,36 @@
+# Core application dependencies
+aiosqlite==0.22.0
+alembic==1.17.2
+argon2-cffi==25.1.0
+asyncpg==0.31.0
+authlib==1.6.6
+email-validator==2.3.0
+fastapi-pagination==0.15.3
+fastapi==0.125.0
+httpx==0.28.1
+mitreattack-python==5.3.0
+passlib[bcrypt]==1.7.4
+psycopg2-binary==2.9.11
+pydantic-settings==2.12.0
+python-dotenv==1.2.1
+python-jose[cryptography]==3.5.0
+python-multipart==0.0.21
+sqlakeyset==2.0.1762907931
+sqlmodel==0.0.27
+webauthn==2.7.0
+uvicorn[standard]==0.38.0
+
+# MCP
+fastmcp==2.14.1
+
+# File upload dependencies
+minio==7.2.20
+python-magic==0.4.27
+
+# LangFlow AI Chat dependencies
+sse-starlette==3.0.4
+cryptography==46.0.3
+pgqueuer==0.25.3
+
+# Worker dependencies
+aiohttp==3.11.11
