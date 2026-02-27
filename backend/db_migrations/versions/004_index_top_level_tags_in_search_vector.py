@@ -1,6 +1,6 @@
 """Include top-level entity tags in search vectors
 
-Revision ID: 004_index_top_level_tags_in_search_vector
+Revision ID: 004_tags_in_search_vector
 Revises: 003_passkey_support
 Create Date: 2026-02-22
 """
@@ -10,7 +10,7 @@ from alembic import op
 
 
 # revision identifiers, used by Alembic.
-revision: str = "004_index_top_level_tags_in_search_vector"
+revision: str = "004_tags_in_search_vector"
 down_revision: Union[str, None] = "003_passkey_support"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
