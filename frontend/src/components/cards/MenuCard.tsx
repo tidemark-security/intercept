@@ -68,10 +68,13 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
     return (
       <div
         className={cn(
-          "group/6c3f1f95 flex w-full cursor-pointer flex-col flex-wrap items-center justify-between rounded-sm border border-solid border-neutral-border bg-neutral-0 px-4 py-3 hover:border hover:border-solid hover:border-brand-primary",
+          "group/6c3f1f95 flex w-full cursor-pointer flex-col flex-wrap items-center justify-between rounded-sm border border-solid border-neutral-border bg-neutral-0 px-4 py-3",
           {
+            "hover:border hover:border-solid hover:border-brand-primary": isDarkTheme,
+            "hover:bg-brand-primary hover:border-brand-700": !isDarkTheme,
             "border border-solid border-accent-1-primary":
-              variant === "selected",
+              variant === "selected" && isDarkTheme,
+            "bg-neutral-300 border-neutral-900": variant === "selected" && !isDarkTheme,
           },
           className
         )}
@@ -92,9 +95,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
                     "grow shrink-0 basis-0 whitespace-nowrap text-caption-bold font-caption-bold text-subtext-color",
                     {
                       "group-hover/6c3f1f95:text-brand-700": isDarkTheme,
-                      "group-hover/6c3f1f95:text-brand-800": !isDarkTheme,
                       "text-accent-1-700": variant === "selected" && isDarkTheme,
-                      "text-accent-1-900": variant === "selected" && !isDarkTheme,
                     }
                   )}
                 >
@@ -107,9 +108,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
                     "grow shrink-0 basis-0 whitespace-nowrap text-caption font-caption text-subtext-color text-right",
                     {
                       "group-hover/6c3f1f95:text-brand-700": isDarkTheme,
-                      "group-hover/6c3f1f95:text-brand-800": !isDarkTheme,
                       "text-accent-1-700": variant === "selected" && isDarkTheme,
-                      "text-accent-1-900": variant === "selected" && !isDarkTheme,
                     }
                   )}
                 >
@@ -124,9 +123,8 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
                     "line-clamp-1 min-w-[240px] grow shrink-0 basis-0 text-body-bold font-body-bold",
                     {
                       "text-[#fafafaff] group-hover/6c3f1f95:text-brand-400": isDarkTheme,
-                      "text-default-font group-hover/6c3f1f95:text-brand-800": !isDarkTheme,
+                      "text-default-font": !isDarkTheme,
                       "text-accent-1-400": variant === "selected" && isDarkTheme,
-                      "text-accent-1-900": variant === "selected" && !isDarkTheme,
                     }
                   )}
                 >
@@ -214,7 +212,6 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
                 "line-clamp-2 hidden h-8 whitespace-pre-wrap text-caption font-caption text-subtext-color group-hover/6c3f1f95:inline",
                 {
                   "group-hover/6c3f1f95:text-brand-primary": isDarkTheme,
-                  "group-hover/6c3f1f95:text-brand-800": !isDarkTheme,
                 },
                 { inline: showDescription }
               )}
