@@ -55,11 +55,10 @@ function Admin() {
 
   return (
     <DefaultPageLayout withContainer>
-      <div className="container max-w-none flex h-full w-full flex-col items-start gap-6 py-12">
+      <div className="container max-w-none flex h-full w-full flex-col items-start gap-6 py-8">
         {/* Header */}
         <div className="flex w-full flex-col items-start gap-2">
           <div className="flex items-center gap-3">
-            <Settings className="text-[32px] text-brand-primary" />
             <span className="text-heading-1 font-heading-1 text-default-font">
               Administration
             </span>

@@ -139,7 +139,7 @@ function HomeDashboard() {
 
   return (
     <DefaultPageLayout withContainer>
-      <div className="container max-w-none flex w-full flex-col items-start gap-8 py-12">
+      <div className="container max-w-none flex w-full flex-col items-start gap-8 py-8">
         <div className="flex w-full items-center gap-4">
           <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
             <span className="text-heading-1 font-heading-1 text-default-font">
