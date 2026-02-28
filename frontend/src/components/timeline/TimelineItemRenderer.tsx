@@ -268,7 +268,7 @@ export function TimelineItemRenderer({
   const username = item.created_by || 'System';
 
   // Determine variant based on item type
-  const variant = item.type === 'alert' || !item.created_by ? 'primary' : undefined;
+  const variant = undefined;
 
   // Check if this is a linked item type (alerts, cases, tasks are always injected from linked entities)
   const isLinkedItemType = isLinkedTimelineType(item.type);
