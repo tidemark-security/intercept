@@ -1,7 +1,5 @@
 export { Breadcrumbs } from './Breadcrumbs';
 export { Link } from './Link';
-export { ModernNavbar } from './ModernNavbar';
-export { ModernNavbarMobile } from './ModernNavbarMobile';
 export { PaginationFooter } from '@/components/navigation/PaginationFooter';
 export { Paginator } from './Paginator';
 export { SidebarRailWithLabels } from './SidebarRailWithLabels';

@@ -385,7 +385,7 @@ const MarkdownInputRoot = React.forwardRef<
           ref={mdxEditorRef}
           markdown={value || ''}
           onChange={onChange}
-          placeholder="Write a note · Press Ctrl+Enter to save"
+          placeholder="Write a note..."
           autoFocus={autoFocus}
           plugins={[
             headingsPlugin(),

@@ -1,12 +1,7 @@
 import React from "react";
 import { useTimelineFormContext } from "@/contexts/TimelineFormContext";
 import { TimelineFormLayout } from "@/components/timeline/TimelineFormLayout";
-
-import { MarkdownInput } from "@/components/forms/MarkdownInput";
-import { TextField } from "@/components/forms/TextField";
-import { TagsManager } from "@/components/forms/TagsManager";
-import { AssigneeSelector } from "@/components/forms/AssigneeSelector";
-import { PrioritySelector } from "@/components/forms/PrioritySelector";
+import { CaseFormFields } from "@/components/entities/CaseFormFields";
 import { useUpdateCase } from "@/hooks/useUpdateCase";
 import { useUpdateTask } from "@/hooks/useUpdateTask";
 import { useUsers } from "@/hooks/useUsers";
@@ -53,6 +48,7 @@ export function CaseTaskEditForm({ initialData, type }: CaseTaskEditFormProps) {
       priority: formData.priority as Priority,
       assignee: formData.assignee,
       tags: formData.tags,
+      ...(type === "case" && initialData.status === "NEW" ? { status: "IN_PROGRESS" as const } : {}),
     });
   };
 
@@ -68,56 +64,22 @@ export function CaseTaskEditForm({ initialData, type }: CaseTaskEditFormProps) {
       showFlagHighlight={false}
       submitIcon={<Check />}
     >
-      <TextField
-        label="Title"
-        variant="outline"
-        className="w-full"
-      >
-        <TextField.Input
-          value={formData.title}
-          onChange={(e) => setFormData(prev => ({ ...prev, title: e.target.value }))}
-          placeholder={`Enter ${type} title`}
-        />
-      </TextField>
-
-      <PrioritySelector
-        className="w-full"
-        value={formData.priority}
-        onChange={(value) => setFormData(prev => ({ ...prev, priority: value }))}
-      />
-
-      <div className="flex w-full flex-col gap-2">
-        <span className="text-caption-bold font-caption-bold text-default-font">Assignee</span>
-        <AssigneeSelector
-          mode="assign"
-          size="medium"
-          currentAssignee={formData.assignee}
-          currentUser={user?.username || null}
-          users={users}
-          isLoadingUsers={isLoadingUsers}
-          onUnassign={() => setFormData(prev => ({ ...prev, assignee: null }))}
-          onAssignToMe={() => setFormData(prev => ({ ...prev, assignee: user?.username || null }))}
-          onAssignToUser={(username) => setFormData(prev => ({ ...prev, assignee: username }))}
-          className="w-full"
-          dropdownClassName="shadow-none bg-black w-[var(--radix-dropdown-menu-trigger-width)]"
-        />
-      </div>
-
-      <div className="flex flex-col gap-2 grow w-full">
-        <span className="text-caption-bold font-caption-bold text-default-font">Description</span>
-        <MarkdownInput
-          value={formData.description}
-          onChange={(value) => setFormData(prev => ({ ...prev, description: value || "" }))}
-          variant="default"
-          className="grow w-full"
-        />
-      </div>
-
-      <TagsManager
+      <CaseFormFields
+        title={formData.title}
+        onTitleChange={(value) => setFormData(prev => ({ ...prev, title: value }))}
+        titleLabel="Title"
+        titlePlaceholder={`Enter ${type} title`}
+        description={formData.description}
+        onDescriptionChange={(value) => setFormData(prev => ({ ...prev, description: value }))}
+        priority={formData.priority as Priority}
+        onPriorityChange={(value) => setFormData(prev => ({ ...prev, priority: value }))}
+        assignee={formData.assignee}
+        onAssigneeChange={(value) => setFormData(prev => ({ ...prev, assignee: value }))}
         tags={formData.tags}
-        onTagsChange={(tags) => setFormData(prev => ({ ...prev, tags }))}
-        label="Tags"
-        placeholder="Enter tags and press Enter"
+        onTagsChange={(value) => setFormData(prev => ({ ...prev, tags: value }))}
+        users={users}
+        isLoadingUsers={isLoadingUsers}
+        currentUser={user?.username || null}
       />
     </TimelineFormLayout>
   );

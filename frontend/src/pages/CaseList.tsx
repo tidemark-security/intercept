@@ -5,12 +5,16 @@ import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
 import { EntityList } from "@/components/data-display/EntityList";
+import { Button } from "@/components/buttons/Button";
+import { CreateCaseModal } from "@/components/entities/CreateCaseModal";
 import { UnifiedTimeline } from "@/components/timeline/UnifiedTimeline";
+import { useCreateCase } from "@/hooks/useCreateCase";
 import { useCases } from "@/hooks/useCases";
 import { useCaseDetail } from "@/hooks/useCaseDetail";
 import { useUsers } from "@/hooks/useUsers";
 import { useUpdateCase } from "@/hooks/useUpdateCase";
 import { useSession } from "@/contexts/sessionContext";
+import { useToast } from "@/contexts/ToastContext";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
 import { useURLFilters } from "@/hooks/useURLFilters";
 import { getColumnConfig, getInitialVisibleColumns } from "@/utils/columnConfig";
@@ -19,6 +23,7 @@ import type { CaseRead } from "@/types/generated/models/CaseRead";
 import type { CaseFilterState } from "@/types/filters";
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { caseStatusToUIState, priorityToUIPriority } from "@/utils/statusHelpers";
+import { Plus } from "lucide-react";
 
 /**
  * Cases List Page - Browse and filter cases with optional preview
@@ -34,6 +39,7 @@ import { caseStatusToUIState, priorityToUIPriority } from "@/utils/statusHelpers
 function CasesListPage() {
   const navigate = useViewTransitionNavigate();
   const { user } = useSession();
+  const { showToast } = useToast();
   const currentUser = user?.username || null;
 
   // UI state for filtering - synced with URL query params
@@ -46,6 +52,8 @@ function CasesListPage() {
     },
   });
   const [selectedCaseId, setSelectedCaseId] = useState<number | null>(null);
+  const [isCreateCaseModalOpen, setIsCreateCaseModalOpen] = useState(false);
+  const [createCaseError, setCreateCaseError] = useState<string | null>(null);
 
   // Column visibility state
   const [visibleColumns, setVisibleColumns] = useState<VisibleColumns>(() => getInitialVisibleColumns());
@@ -99,6 +107,18 @@ function CasesListPage() {
   const updateCaseMutation = useUpdateCase(selectedCaseId, {
     onError: (error) => {
       console.error("Failed to update case:", error);
+    },
+  });
+
+  const createCaseMutation = useCreateCase({
+    onSuccess: (createdCase) => {
+      setCreateCaseError(null);
+      setIsCreateCaseModalOpen(false);
+      showToast('Case created', `${createdCase.human_id} is ready`, 'success');
+      navigate(`/cases/${createdCase.human_id}`);
+    },
+    onError: (error) => {
+      setCreateCaseError(error.message || 'Failed to create case');
     },
   });
 
@@ -159,6 +179,27 @@ function CasesListPage() {
     setVisibleColumns('left');
   };
 
+  const handleCreateCase = async (payload: {
+    title: string;
+    description: string;
+    priority: CaseRead["priority"];
+    assignee: string | null;
+    tags: string[];
+  }) => {
+    setCreateCaseError(null);
+    try {
+      await createCaseMutation.mutateAsync({
+        title: payload.title,
+        description: payload.description,
+        priority: payload.priority,
+        assignee: payload.assignee,
+        tags: payload.tags,
+      });
+    } catch {
+      // Error state is handled by mutation onError callback
+    }
+  };
+
   return (
     <DefaultPageLayout priority={caseDetail?.priority || undefined}>
       <ThreeColumnLayout
@@ -180,6 +221,17 @@ function CasesListPage() {
             totalPages={totalPages}
             totalItems={casesData?.total}
             onPageChange={handlePageChange}
+            alwaysShowPaginator
+            paginatorCenterContent={
+              <Button
+                variant="brand-primary"
+                size="medium"
+                icon={<Plus />}
+                onClick={() => setIsCreateCaseModalOpen(true)}
+              >
+                Create New Case
+              </Button>
+            }
             isLoading={isLoading}
             error={error}
             users={users}
@@ -222,6 +274,19 @@ function CasesListPage() {
         onVisibleColumnsChange={setVisibleColumns}
         columnConfig={getColumnConfig(selectedCaseId)}
         dimLeftColumn={!!selectedCaseId}
+      />
+
+      <CreateCaseModal
+        open={isCreateCaseModalOpen}
+        onOpenChange={(open) => {
+          setIsCreateCaseModalOpen(open);
+          if (!open) {
+            setCreateCaseError(null);
+          }
+        }}
+        isSubmitting={createCaseMutation.isPending}
+        submitError={createCaseError}
+        onSubmit={handleCreateCase}
       />
     </DefaultPageLayout>
   );

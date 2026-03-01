@@ -194,6 +194,7 @@ function TasksListPage() {
             totalPages={totalPages}
             totalItems={tasksData?.total}
             onPageChange={handlePageChange}
+            alwaysShowPaginator
             isLoading={isLoading}
             error={error}
             users={users}

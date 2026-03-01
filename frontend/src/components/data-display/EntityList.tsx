@@ -23,6 +23,8 @@ export function EntityList<T, F = FilterState>({
   totalPages,
   totalItems,
   onPageChange,
+  alwaysShowPaginator = false,
+  paginatorCenterContent,
   isLoading,
   error,
   users,
@@ -131,6 +133,8 @@ export function EntityList<T, F = FilterState>({
         totalPages={totalPages}
         totalResults={totalItems}
         onPageChange={onPageChange}
+        alwaysShow={alwaysShowPaginator}
+        centerContent={paginatorCenterContent}
       />
     </>
   );

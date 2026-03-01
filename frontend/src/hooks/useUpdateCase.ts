@@ -44,13 +44,15 @@ export function useUpdateCase(
 
       // Snapshot all matching query variants for rollback (handles keys with different options)
       const queriesData = queryClient.getQueriesData<CaseRead>({ queryKey: queryKeys.case.detailBase(caseId), exact: false });
-      const previousCases = queriesData.map(([queryKey, data]) => [queryKey as readonly unknown[], data]);
+      const previousCases: Array<[readonly unknown[], CaseRead | undefined]> = queriesData.map(
+        ([queryKey, data]) => [queryKey as readonly unknown[], data]
+      );
 
-      const optimisticPatch = {
+      const optimisticPatch: Partial<CaseRead> = {
         ...(newCase.title !== null && newCase.title !== undefined ? { title: newCase.title } : {}),
         ...(newCase.description !== undefined ? { description: newCase.description } : {}),
         ...(newCase.status !== null && newCase.status !== undefined ? { status: newCase.status } : {}),
-        ...(newCase.priority !== undefined ? { priority: newCase.priority } : {}),
+        ...(newCase.priority !== null && newCase.priority !== undefined ? { priority: newCase.priority } : {}),
         ...(newCase.assignee !== undefined ? { assignee: newCase.assignee } : {}),
         ...(newCase.tags !== undefined ? { tags: newCase.tags } : {}),
       };

@@ -12,6 +12,10 @@ export interface PaginationFooterProps {
   totalResults?: number;
   /** Callback when page changes (1-indexed) */
   onPageChange: (page: number) => void;
+  /** Optional centered content between result count and page controls */
+  centerContent?: React.ReactNode;
+  /** Show footer even when there is only one page */
+  alwaysShow?: boolean;
   /** Optional className for the container */
   className?: string;
 }
@@ -68,51 +72,64 @@ export function PaginationFooter({
   totalPages,
   totalResults,
   onPageChange,
+  centerContent,
+  alwaysShow = false,
   className = '',
 }: PaginationFooterProps) {
-  if (totalPages <= 1) return null;
+  if (!alwaysShow && totalPages <= 1) return null;
 
   const pageNumbers = generatePageNumbers(currentPage, totalPages);
   const isFirstPage = currentPage === 1;
   const isLastPage = currentPage >= totalPages;
 
   return (
-    <div className={`flex w-full items-center justify-between border-t border-neutral-border px-4 py-4 ${className}`}>
-      <span className="text-sm text-subtext-color">
-        {totalResults !== undefined
-          ? `${totalResults.toLocaleString()} result${totalResults !== 1 ? 's' : ''}`
-          : ''}
-      </span>
-      <div className="flex items-center gap-1">
-        <Button
-          variant="neutral-tertiary"
-          size="small"
-          icon={<ChevronLeft />}
-          onClick={() => onPageChange(currentPage - 1)}
-          disabled={isFirstPage}
-        />
-        {pageNumbers.map((p, i) =>
-          p === 'ellipsis-start' || p === 'ellipsis-end' ? (
-            <span key={p} className="px-2 text-subtext-color">…</span>
-          ) : (
-            <Button
-              key={p}
-              variant={p === currentPage ? 'brand-primary' : 'neutral-tertiary'}
-              size="small"
-              onClick={() => onPageChange(p)}
-              className="min-w-[32px]"
-            >
-              {p}
-            </Button>
-          )
+    <div
+      className={`w-full border-t border-neutral-border px-4 py-4 ${className}`}
+    >
+      <div className="flex flex-col items-center gap-3 md:grid md:grid-cols-[1fr_auto_1fr] md:items-center md:gap-4">
+        <span className="text-sm text-subtext-color md:justify-self-start">
+          {totalResults !== undefined
+            ? `${totalResults.toLocaleString()} result${totalResults !== 1 ? 's' : ''}`
+            : ''}
+        </span>
+
+        {centerContent ? (
+          <div className="md:justify-self-center">{centerContent}</div>
+        ) : (
+          <div className="hidden md:block" />
         )}
-        <Button
-          variant="neutral-tertiary"
-          size="small"
-          icon={<ChevronRight />}
-          onClick={() => onPageChange(currentPage + 1)}
-          disabled={isLastPage}
-        />
+
+        <div className="flex items-center gap-1 md:justify-self-end">
+          <Button
+            variant="neutral-tertiary"
+            size="small"
+            icon={<ChevronLeft />}
+            onClick={() => onPageChange(currentPage - 1)}
+            disabled={isFirstPage}
+          />
+          {pageNumbers.map((p, i) =>
+            p === 'ellipsis-start' || p === 'ellipsis-end' ? (
+              <span key={`${p}-${i}`} className="px-2 text-subtext-color">…</span>
+            ) : (
+              <Button
+                key={p}
+                variant={p === currentPage ? 'brand-primary' : 'neutral-tertiary'}
+                size="small"
+                onClick={() => onPageChange(p)}
+                className="min-w-[32px]"
+              >
+                {p}
+              </Button>
+            )
+          )}
+          <Button
+            variant="neutral-tertiary"
+            size="small"
+            icon={<ChevronRight />}
+            onClick={() => onPageChange(currentPage + 1)}
+            disabled={isLastPage}
+          />
+        </div>
       </div>
     </div>
   );

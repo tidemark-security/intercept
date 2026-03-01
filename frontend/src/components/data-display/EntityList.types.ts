@@ -49,6 +49,12 @@ export interface EntityListProps<T, F = FilterState> {
   
   /** Callback when page changes */
   onPageChange: (page: number) => void;
+
+  /** Show paginator even when there is only one page */
+  alwaysShowPaginator?: boolean;
+
+  /** Optional content to render centered within paginator footer */
+  paginatorCenterContent?: React.ReactNode;
   
   /** Loading state for items data */
   isLoading: boolean;

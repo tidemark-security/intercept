@@ -597,6 +597,7 @@ function Alerts() {
             totalPages={totalPages}
             totalItems={alertsData?.total}
             onPageChange={handlePageChange}
+            alwaysShowPaginator
             isLoading={isLoading}
             error={error}
             users={users}

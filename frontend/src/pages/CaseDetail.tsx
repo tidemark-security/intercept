@@ -26,6 +26,7 @@ import { findTimelineItem, mapItemTypeToDockType } from "@/utils/timelineUtils";
 import { getTimelineItems } from "@/utils/timelineHelpers";
 import type { TimelineItemType } from '@/types/drafts';
 import type { AlertStatus } from '@/types/generated/models/AlertStatus';
+import type { CaseStatus } from '@/types/generated/models/CaseStatus';
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { NotFoundError } from "@/pages/NotFoundError";
 import { AiChat } from "@/components/ai";
@@ -194,9 +195,19 @@ function CaseDetailPage() {
     entityId: selectedCaseId,
   });
 
+  const getEditStatusPatch = useCallback((): { status?: CaseStatus } => {
+    if (caseDetail?.status === 'NEW') {
+      return { status: 'IN_PROGRESS' };
+    }
+    return {};
+  }, [caseDetail?.status]);
+
   const handleUpdateTags = (tags: string[]) => {
     if (!selectedCaseId) return;
-    updateCaseMutation.mutate({ tags });
+    updateCaseMutation.mutate({
+      tags,
+      ...getEditStatusPatch(),
+    });
   };
 
   const handleEditCase = () => {
@@ -230,6 +241,10 @@ function CaseDetailPage() {
       itemId,
       updates: { flagged: !currentFlagged },
     });
+
+    if (caseDetail.status === 'NEW') {
+      updateCaseMutation.mutate({ status: 'IN_PROGRESS' });
+    }
   };
 
   const handleHighlightItem = (itemId: string) => {
@@ -243,6 +258,10 @@ function CaseDetailPage() {
       itemId,
       updates: { highlighted: !currentHighlighted },
     });
+
+    if (caseDetail.status === 'NEW') {
+      updateCaseMutation.mutate({ status: 'IN_PROGRESS' });
+    }
   };
 
   const handleEditItem = (itemId: string) => {
@@ -259,12 +278,20 @@ function CaseDetailPage() {
   };
 
   const handleDeleteItem = (itemId: string) => {
+    if (caseDetail?.status === 'NEW') {
+      updateCaseMutation.mutate({ status: 'IN_PROGRESS' });
+    }
+
     deleteTimelineItemMutation.mutate({
       itemId,
     });
   };
 
   const handleDeleteBatch = (itemIds: string[]) => {
+    if (caseDetail?.status === 'NEW' && itemIds.length > 0) {
+      updateCaseMutation.mutate({ status: 'IN_PROGRESS' });
+    }
+
     itemIds.forEach((itemId) => {
       deleteTimelineItemMutation.mutate({
         itemId,
@@ -274,6 +301,10 @@ function CaseDetailPage() {
 
   // Quick Terminal handlers
   const handleQuickTerminalSubmit = async (noteText: string, parentItemId?: string): Promise<void> => {
+    if (caseDetail?.status === 'NEW') {
+      updateCaseMutation.mutate({ status: 'IN_PROGRESS' });
+    }
+
     const result = await quickTerminalMutation.mutateAsync({ noteText, parentItemId });
     if (result?.itemId) {
       handleItemCreated(result.itemId);
@@ -301,12 +332,49 @@ function CaseDetailPage() {
   };
 
   const handleItemCreated = (itemId?: string) => {
+    if (caseDetail?.status === 'NEW') {
+      updateCaseMutation.mutate({ status: 'IN_PROGRESS' });
+    }
+
     if (itemId) {
       setScrollToItemId(itemId);
     }
     closeDock();
     switchToColumnOnMobile('center');
   };
+
+  const handleAssignToMeWithStatusUpdate = useCallback(() => {
+    if (!selectedCaseId || !currentUser) return;
+
+    if (caseDetail?.status === 'NEW') {
+      updateCaseMutation.mutate({ assignee: currentUser, status: 'IN_PROGRESS' });
+      return;
+    }
+
+    handleAssignToMe();
+  }, [selectedCaseId, currentUser, caseDetail?.status, updateCaseMutation, handleAssignToMe]);
+
+  const handleAssignToUserWithStatusUpdate = useCallback((username: string) => {
+    if (!selectedCaseId) return;
+
+    if (caseDetail?.status === 'NEW') {
+      updateCaseMutation.mutate({ assignee: username, status: 'IN_PROGRESS' });
+      return;
+    }
+
+    handleAssignToUser(username);
+  }, [selectedCaseId, caseDetail?.status, updateCaseMutation, handleAssignToUser]);
+
+  const handleUnassignWithStatusUpdate = useCallback(() => {
+    if (!selectedCaseId) return;
+
+    if (caseDetail?.status === 'NEW') {
+      updateCaseMutation.mutate({ assignee: null, status: 'IN_PROGRESS' });
+      return;
+    }
+
+    handleUnassign();
+  }, [selectedCaseId, caseDetail?.status, updateCaseMutation, handleUnassign]);
 
   const handleBackToList = () => {
     navigate('/cases');
@@ -380,9 +448,9 @@ function CaseDetailPage() {
               onEditItem={handleEditItem}
               onDeleteItem={handleDeleteItem}
               onDeleteBatch={handleDeleteBatch}
-              onAssignToMe={handleAssignToMe}
-              onAssignToUser={handleAssignToUser}
-              onUnassign={handleUnassign}
+              onAssignToMe={handleAssignToMeWithStatusUpdate}
+              onAssignToUser={handleAssignToUserWithStatusUpdate}
+              onUnassign={handleUnassignWithStatusUpdate}
               onCloseEntity={handleCloseCase}
               onCloseCaseWithDetails={handleCloseCaseWithDetails}
               onReopenEntity={handleReopenCase}
