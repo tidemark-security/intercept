@@ -8,9 +8,12 @@ from typing import Optional, List, Tuple
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
+from sqlalchemy import text, select, func
+from sqlmodel import col
 
 from app.models.models import (
+    Case,
+    Task,
     SOCMetricsResponse,
     SOCMetricsSummary,
     SOCMetricsWindow,
@@ -36,7 +39,15 @@ from app.models.models import (
     ChatFeedbackMessageDetail,
     ChatFeedbackDrillDownResponse,
 )
-from app.models.enums import Priority, RejectionCategory, TriageDisposition, RecommendationStatus, MessageFeedback
+from app.models.enums import (
+    Priority,
+    CaseStatus,
+    TaskStatus,
+    RejectionCategory,
+    TriageDisposition,
+    RecommendationStatus,
+    MessageFeedback,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +206,12 @@ class MetricsService:
         # Calculate summary aggregates
         summary = self._calculate_soc_summary(time_series)
 
+        # Use live entity status counts for "currently open" values.
+        # These should represent current state, independent of the selected time window.
+        open_cases, open_tasks = await self._get_current_open_work_counts(db, priority)
+        summary.open_cases = open_cases
+        summary.open_tasks = open_tasks
+
         return SOCMetricsResponse(
             start_time=start_time,
             end_time=end_time,
@@ -202,6 +219,30 @@ class MetricsService:
             summary=summary,
             time_series=time_series,
         )
+
+    async def _get_current_open_work_counts(
+        self,
+        db: AsyncSession,
+        priority: Optional[Priority] = None,
+    ) -> Tuple[int, int]:
+        """Get current open case/task counts from live tables."""
+        case_query = select(func.count(Case.id)).where(
+            col(Case.status).in_([CaseStatus.NEW, CaseStatus.IN_PROGRESS])
+        )
+        task_query = select(func.count(Task.id)).where(
+            col(Task.status).in_([TaskStatus.TODO, TaskStatus.IN_PROGRESS])
+        )
+
+        if priority:
+            case_query = case_query.where(col(Case.priority) == priority)
+            task_query = task_query.where(col(Task.priority) == priority)
+
+        case_result = await db.execute(case_query)
+        task_result = await db.execute(task_query)
+
+        open_cases = case_result.scalar() or 0
+        open_tasks = task_result.scalar() or 0
+        return open_cases, open_tasks
 
     def _calculate_soc_summary(self, time_series: List[SOCMetricsWindow]) -> SOCMetricsSummary:
         """Calculate aggregated summary from time series data."""
