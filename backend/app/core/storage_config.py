@@ -1,12 +1,14 @@
 """Object storage configuration for file uploads."""
 
 from typing import List
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
 
 
 class StorageConfig(BaseSettings):
     """Object storage configuration loaded from environment variables."""
+
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
     
     # Connection settings
     storage_endpoint: str = Field(
@@ -68,10 +70,5 @@ class StorageConfig(BaseSettings):
             return [t.strip() for t in v.split(',')]
         return v
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-
-
 # Global storage config instance
 storage_config = StorageConfig()
