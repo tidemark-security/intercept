@@ -919,13 +919,13 @@ function Reports() {
             }}
           />
           <StatCard
-            icon={<CheckCircle />}
+            icon={<ThumbsUp />}
             label="Positive Feedback"
             value={summary.positive_feedback ?? 0}
             subtext="Thumbs up"
           />
           <StatCard
-            icon={<AlertTriangle />}
+            icon={<ThumbsDown />}
             label="Negative Feedback"
             value={summary.negative_feedback ?? 0}
             subtext="Thumbs down"
