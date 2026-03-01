@@ -1373,7 +1373,6 @@ class ApiKey(ApiKeyBase, table=True):
 
     user: Optional[UserAccount] = Relationship(back_populates="api_keys")
 
-
 class ApiKeyCreate(SQLModel):
     """Schema for creating an API key."""
     name: str = Field(

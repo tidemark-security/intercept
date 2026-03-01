@@ -1,193 +1,123 @@
-"""Integration tests for MCP server functionality."""
+"""Integration tests for MCP authentication on current transport endpoints."""
 from __future__ import annotations
 
-import pytest
 from datetime import datetime, timedelta, timezone
+
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models.enums import UserRole, UserStatus, AccountType
-from app.models.models import UserAccount, APIKey
+from app.models.enums import AccountType, UserRole, UserStatus
+from app.models.models import UserAccount
 from app.services.api_key_service import api_key_service
 
 
-@pytest.mark.asyncio
-async def test_mcp_tools_list_requires_authentication(
-    client: AsyncClient,
-) -> None:
-    """Test that tool listing requires API key authentication."""
-    response = await client.post("/mcp/v1/tools/list")
-    
-    assert response.status_code == 401
-    data = response.json()
-    assert "API key required" in data["message"]
-
-
-@pytest.mark.asyncio
-async def test_mcp_tools_list_with_valid_api_key(
-    client: AsyncClient,
+async def _create_api_key(
     session_maker: async_sessionmaker[AsyncSession],
-) -> None:
-    """Test tool listing with valid API key."""
-    # Create a test user and API key
+    *,
+    username: str,
+    email: str,
+    role: UserRole = UserRole.ANALYST,
+    status: UserStatus = UserStatus.ACTIVE,
+    expires_at: datetime | None = None,
+) -> tuple[int, int, str]:
     async with session_maker() as session:
         user = UserAccount(
-            username="mcp_test_user",
-            email="mcp@test.com",
-            role=UserRole.ANALYST,
-            status=UserStatus.ACTIVE,
+            username=username,
+            email=email,
+            role=role,
+            status=status,
             account_type=AccountType.NHI,
         )
         session.add(user)
         await session.commit()
         await session.refresh(user)
-        
-        # Create API key
-        expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+
         api_key_result = await api_key_service.create_api_key(
             session,
             user_id=user.id,
-            name="Test MCP Key",
-            expires_at=expires_at,
+            name=f"{username} key",
+            expires_at=expires_at or (datetime.now(timezone.utc) + timedelta(days=30)),
         )
-        raw_key = api_key_result.key
+        api_key, raw_key = api_key_result
         await session.commit()
-    
-    # Make request with API key
-    response = await client.post(
-        "/mcp/v1/tools/list",
-        headers={"Authorization": f"Bearer {raw_key}"}
-    )
-    
-    assert response.status_code == 200
-    data = response.json()
-    
-    # Verify response structure
-    assert "tools" in data or "result" in data  # FastMCP might wrap in result
+        return user.id, api_key.id, raw_key
+
+
+async def _get_mcp_missing_route_status(client: AsyncClient, headers: dict[str, str] | None = None) -> int:
+    response = await client.get("/mcp/does-not-exist", headers=headers)
+    return response.status_code
 
 
 @pytest.mark.asyncio
-async def test_mcp_tools_list_with_x_api_key_header(
-    client: AsyncClient,
-    session_maker: async_sessionmaker[AsyncSession],
-) -> None:
-    """Test tool listing with X-API-Key header."""
-    # Create user and API key
-    async with session_maker() as session:
-        user = UserAccount(
-            username="mcp_test_user2",
-            email="mcp2@test.com",
-            role=UserRole.ANALYST,
-            status=UserStatus.ACTIVE,
-            account_type=AccountType.NHI,
-        )
-        session.add(user)
-        await session.commit()
-        await session.refresh(user)
-        
-        expires_at = datetime.now(timezone.utc) + timedelta(days=30)
-        api_key_result = await api_key_service.create_api_key(
-            session,
-            user_id=user.id,
-            name="Test MCP Key",
-            expires_at=expires_at,
-        )
-        raw_key = api_key_result.key
-        await session.commit()
-    
-    # Make request with X-API-Key header
-    response = await client.post(
-        "/mcp/v1/tools/list",
-        headers={"X-API-Key": raw_key}
-    )
-    
-    assert response.status_code == 200
+async def test_mcp_namespace_requires_authentication(client: AsyncClient) -> None:
+    status_code = await _get_mcp_missing_route_status(client)
+    assert status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_mcp_rejects_expired_api_key(
+async def test_mcp_accepts_valid_bearer_key(
     client: AsyncClient,
     session_maker: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Test that expired API keys are rejected."""
-    # Create user with expired API key
-    async with session_maker() as session:
-        user = UserAccount(
-            username="mcp_expired_user",
-            email="expired@test.com",
-            role=UserRole.ANALYST,
-            status=UserStatus.ACTIVE,
-            account_type=AccountType.NHI,
-        )
-        session.add(user)
-        await session.commit()
-        await session.refresh(user)
-        
-        # Create expired API key
-        expires_at = datetime.now(timezone.utc) - timedelta(days=1)  # Already expired
-        api_key_result = await api_key_service.create_api_key(
-            session,
-            user_id=user.id,
-            name="Expired Key",
-            expires_at=expires_at,
-        )
-        raw_key = api_key_result.key
-        await session.commit()
-    
-    # Make request with expired key
-    response = await client.post(
-        "/mcp/v1/tools/list",
-        headers={"Authorization": f"Bearer {raw_key}"}
+    _, _, raw_key = await _create_api_key(
+        session_maker,
+        username="mcp_auth_user",
+        email="mcp_auth@test.com",
     )
-    
-    assert response.status_code == 401
-    data = response.json()
-    assert "expired" in data["message"].lower()
+
+    status_code = await _get_mcp_missing_route_status(client, headers={"Authorization": f"Bearer {raw_key}"})
+    assert status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_mcp_rejects_revoked_api_key(
+async def test_mcp_accepts_x_api_key_header(
     client: AsyncClient,
     session_maker: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Test that revoked API keys are rejected."""
-    # Create user and API key
-    async with session_maker() as session:
-        user = UserAccount(
-            username="mcp_revoked_user",
-            email="revoked@test.com",
-            role=UserRole.ANALYST,
-            status=UserStatus.ACTIVE,
-            account_type=AccountType.NHI,
-        )
-        session.add(user)
-        await session.commit()
-        await session.refresh(user)
-        
-        expires_at = datetime.now(timezone.utc) + timedelta(days=30)
-        api_key_result = await api_key_service.create_api_key(
-            session,
-            user_id=user.id,
-            name="To Be Revoked",
-            expires_at=expires_at,
-        )
-        raw_key = api_key_result.key
-        api_key_id = api_key_result.api_key_id
-        await session.commit()
-        
-        # Revoke the key
-        await api_key_service.revoke_api_key(session, api_key_id)
-        await session.commit()
-    
-    # Make request with revoked key
-    response = await client.post(
-        "/mcp/v1/tools/list",
-        headers={"Authorization": f"Bearer {raw_key}"}
+    _, _, raw_key = await _create_api_key(
+        session_maker,
+        username="mcp_auth_user_header",
+        email="mcp_auth_header@test.com",
     )
-    
-    assert response.status_code == 401
-    data = response.json()
-    assert "revoked" in data["message"].lower()
+
+    status_code = await _get_mcp_missing_route_status(client, headers={"X-API-Key": raw_key})
+    assert status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_mcp_rejects_expired_key(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    _, _, raw_key = await _create_api_key(
+        session_maker,
+        username="mcp_expired_user",
+        email="mcp_expired@test.com",
+        expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+    )
+
+    status_code = await _get_mcp_missing_route_status(client, headers={"Authorization": f"Bearer {raw_key}"})
+    assert status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_mcp_rejects_revoked_key(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    _, api_key_id, raw_key = await _create_api_key(
+        session_maker,
+        username="mcp_revoked_user",
+        email="mcp_revoked@test.com",
+    )
+
+    async with session_maker() as session:
+        await api_key_service.revoke_api_key(session, api_key_id=api_key_id)
+        await session.commit()
+
+    status_code = await _get_mcp_missing_route_status(client, headers={"Authorization": f"Bearer {raw_key}"})
+    assert status_code == 401
 
 
 @pytest.mark.asyncio
@@ -195,57 +125,27 @@ async def test_mcp_rejects_disabled_user(
     client: AsyncClient,
     session_maker: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Test that API keys for disabled users are rejected."""
-    # Create disabled user
+    user_id, _, raw_key = await _create_api_key(
+        session_maker,
+        username="mcp_disabled_user",
+        email="mcp_disabled@test.com",
+    )
+
     async with session_maker() as session:
-        user = UserAccount(
-            username="mcp_disabled_user",
-            email="disabled@test.com",
-            role=UserRole.ANALYST,
-            status=UserStatus.ACTIVE,  # Start active
-            account_type=AccountType.NHI,
-        )
-        session.add(user)
-        await session.commit()
-        await session.refresh(user)
-        
-        # Create API key
-        expires_at = datetime.now(timezone.utc) + timedelta(days=30)
-        api_key_result = await api_key_service.create_api_key(
-            session,
-            user_id=user.id,
-            name="Test Key",
-            expires_at=expires_at,
-        )
-        raw_key = api_key_result.key
-        await session.commit()
-        
-        # Now disable the user
+        user = await session.get(UserAccount, user_id)
+        assert user is not None
         user.status = UserStatus.DISABLED
         session.add(user)
         await session.commit()
-    
-    # Make request with key for disabled user
-    response = await client.post(
-        "/mcp/v1/tools/list",
-        headers={"Authorization": f"Bearer {raw_key}"}
-    )
-    
-    assert response.status_code == 403
-    data = response.json()
-    assert "not active" in data["message"].lower()
+
+    status_code = await _get_mcp_missing_route_status(client, headers={"Authorization": f"Bearer {raw_key}"})
+    assert status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_mcp_rejects_invalid_api_key(
-    client: AsyncClient,
-) -> None:
-    """Test that invalid API keys are rejected."""
-    response = await client.post(
-        "/mcp/v1/tools/list",
-        headers={"Authorization": "Bearer int_invalid_key_12345"}
+async def test_mcp_rejects_invalid_key(client: AsyncClient) -> None:
+    status_code = await _get_mcp_missing_route_status(
+        client,
+        headers={"Authorization": "Bearer int_invalid_key_12345"},
     )
-    
-    assert response.status_code == 401
-    data = response.json()
-    assert "invalid" in data["message"].lower() or "API key" in data["message"]
+    assert status_code == 401

@@ -13,7 +13,7 @@ class TestMCPToolSchemaGeneration:
     def test_mcp_instance_exists(self):
         """Test that MCP instance is created."""
         assert mcp is not None
-        assert hasattr(mcp, 'list_tools')
+        assert hasattr(mcp, "tool")
     
     def test_all_api_endpoints_exposed_as_tools(self):
         """Test that all API endpoints are exposed as MCP tools."""

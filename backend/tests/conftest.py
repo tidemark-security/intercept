@@ -18,6 +18,7 @@ from sqlmodel import SQLModel
 
 from app.core.database import get_db
 from app.main import app
+import app.main as app_main_module
 
 pytest_plugins = ["tests.fixtures.auth"]
 
@@ -210,6 +211,8 @@ async def client(
         yield
 
     app.router.lifespan_context = _test_lifespan  # type: ignore[assignment]
+    original_mcp_session_factory = app_main_module.async_session_factory
+    app_main_module.async_session_factory = session_maker  # type: ignore[assignment]
 
     async def override_get_db() -> AsyncGenerator[AsyncSession, None]:
         async with session_maker() as session:
@@ -226,4 +229,5 @@ async def client(
         yield async_client
 
     app.dependency_overrides.pop(get_db, None)
+    app_main_module.async_session_factory = original_mcp_session_factory  # type: ignore[assignment]
     app.router.lifespan_context = original_lifespan

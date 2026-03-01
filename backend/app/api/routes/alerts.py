@@ -70,7 +70,7 @@ async def get_alerts(
     end_date: Optional[str] = Query(None, description="Filter alerts created before this UTC datetime (ISO8601 format with 'Z' suffix)"),
     search: Optional[str] = Query(None, description="Search alerts by ID, title, or description (case-insensitive partial match)"),
     sort_by: str = Query("created_at", description="Field to sort by"),
-    sort_order: str = Query("desc", regex="^(asc|desc)$", description="Sort order"),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
     db: AsyncSession = Depends(get_db)
 ):
     """Get alerts with comprehensive filtering and cursor pagination.
