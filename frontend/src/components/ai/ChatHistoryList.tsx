@@ -14,15 +14,22 @@ import React, { useState, useEffect, useCallback, useRef, useReducer } from 'rea
 import { IconButton } from '@/components/buttons/IconButton';
 import { Button } from '@/components/buttons/Button';
 import { Dialog } from '@/components/overlays/Dialog';
+import { DropdownMenu } from '@/components/overlays/DropdownMenu';
 import { useTheme } from '@/contexts/ThemeContext';
 import { RelativeTime } from '@/components/data-display/RelativeTime';
+import { cn } from '@/utils/cn';
+import {
+    getMenuCardMetaClassName,
+    getMenuCardTitleClassName,
+    MenuCardBase,
+} from '@/components/cards/MenuCardBase';
 
 import * as langflowApi from '@/services/langflowApi';
 import type { LangFlowSession } from '@/services/langflowApi';
 import { getTimeGroup, TIME_GROUP_LABELS, type TimeGroup } from '@/utils/dateFormatters';
 import { IconWithBackground } from '@/components/misc/IconWithBackground';
 
-import { AlertCircle, Check, Edit2, History, Loader, MessageSquare, Plus, Trash2, X } from 'lucide-react';
+import { AlertCircle, Edit2, History, Loader, MessageSquare, Plus, Trash2, X } from 'lucide-react';
 // ============================================================================
 // Types
 // ============================================================================
@@ -193,11 +200,11 @@ interface SessionItemProps {
     onEditTitleChange: (title: string) => void;
     onStartEdit: (e: React.MouseEvent) => void;
     onSaveEdit: (e: React.MouseEvent) => void;
-    onCancelEdit: (e: React.MouseEvent) => void;
+    onCancelEdit: () => void;
     onEditKeyDown: (e: React.KeyboardEvent) => void;
     onStartDelete: (e: React.MouseEvent) => void;
     onConfirmDelete: (e: React.MouseEvent) => void;
-    onCancelDelete: (e: React.MouseEvent) => void;
+    onCancelDelete: () => void;
     onClick: () => void;
 }
 
@@ -219,91 +226,143 @@ function SessionItem({
     onCancelDelete,
     onClick,
 }: SessionItemProps) {
+    const variant = isSelected ? 'selected' : 'default';
+
     return (
-        <div
-            className={`
-                group flex w-full items-start gap-3 rounded-sm border border-solid px-4 py-3 cursor-pointer transition-colors
-                ${isSelected 
-                    ? 'border-accent-1-primary bg-neutral-0' 
-                    : 'border-neutral-border bg-neutral-0 hover:`border-brand-primary`'}
-            `}
+        <MenuCardBase
+            isDarkTheme={isDarkTheme}
+            variant={variant}
+            className="flex-row flex-nowrap items-center justify-between gap-3"
             onClick={onClick}
         >
             {/* Content */}
-            <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1 min-w-0">
-                {isEditing ? (
-                    <div className="flex w-full items-center gap-1">
-                        <input
-                            ref={editInputRef}
-                            type="text"
-                            value={editTitle}
-                            onChange={(e) => onEditTitleChange(e.target.value)}
-                            onKeyDown={onEditKeyDown}
-                            onClick={(e) => e.stopPropagation()}
-                            className="flex-1 min-w-0 px-2 py-1 text-body font-body text-default-font bg-white border border-neutral-border rounded focus:outline-none focus:border-brand-primary"
-                        />
-                        <IconButton
-                            size="small"
-                            icon={<Check />}
-                            onClick={onSaveEdit}
-                        />
-                        <IconButton
-                            size="small"
-                            icon={<X />}
-                            onClick={onCancelEdit}
-                        />
-                    </div>
-                ) : isDeleting ? (
-                    <div className="flex items-center gap-2">
-                        <span className="text-body-small font-body text-error-600">Delete this chat?</span>
-                        <IconButton
-                            size="small"
-                            icon={<Check />}
-                            onClick={onConfirmDelete}
-                        />
-                        <IconButton
-                            size="small"
-                            icon={<X />}
-                            onClick={onCancelDelete}
-                        />
-                    </div>
-                ) : (
-                    <>
-                        <span className={`w-full text-body-bold font-body-bold truncate ${isSelected ? (isDarkTheme ? 'text-accent-1-400' : 'text-accent-1-900') : (isDarkTheme ? 'text-[#fafafaff] group-hover:text-brand-400' : 'text-default-font group-hover:text-default-font')}`}>
-                            {getSessionTitle(session)}
-                        </span>
-                        <span className="text-caption font-caption text-subtext-color">
-                            {session.message_count !== undefined && session.message_count > 0 
-                                ? (
-                                    <>
-                                        {session.message_count} message{session.message_count !== 1 ? 's' : ''} • <RelativeTime value={session.updated_at} />
-                                    </>
-                                )
-                                : <RelativeTime value={session.updated_at} />
-                            }
-                        </span>
-                    </>
-                )}
+            <div className="flex grow shrink basis-0 flex-col justify-center items-start gap-1 min-w-0">
+                <span className={getMenuCardTitleClassName(isDarkTheme, variant, 'w-full min-w-0 basis-auto shrink truncate')}>
+                    {getSessionTitle(session)}
+                </span>
+                <span className={getMenuCardMetaClassName(isDarkTheme, variant)}>
+                    {session.message_count !== undefined && session.message_count > 0 
+                        ? (
+                            <>
+                                {session.message_count} message{session.message_count !== 1 ? 's' : ''} • <RelativeTime value={session.updated_at} />
+                            </>
+                        )
+                        : <RelativeTime value={session.updated_at} />
+                    }
+                </span>
             </div>
 
             {/* Actions - visible on hover */}
-            {!isEditing && !isDeleting && (
-                <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <IconButton
-                        variant="neutral-tertiary"
-                        size="small"
-                        icon={<Edit2 />}
-                        onClick={onStartEdit}
-                    />
-                    <IconButton
-                        variant="neutral-tertiary"
-                        size="small"
-                        icon={<Trash2 />}
-                        onClick={onStartDelete}
-                    />
-                </div>
-            )}
-        </div>
+            <div
+                className={cn(
+                    'flex shrink-0 self-center flex-row items-center gap-1 transition-opacity',
+                    isSelected || isEditing || isDeleting
+                        ? 'opacity-100'
+                        : 'opacity-0 group-hover/6c3f1f95:opacity-100'
+                )}
+            >
+                <DropdownMenu.Root
+                    open={isEditing}
+                    onOpenChange={(open) => {
+                        if (!open) {
+                            onCancelEdit();
+                        }
+                    }}
+                >
+                    <DropdownMenu.Trigger asChild>
+                        <div onClick={(e) => e.stopPropagation()}>
+                            <IconButton
+                                variant="neutral-tertiary"
+                                size="small"
+                                icon={<Edit2 />}
+                                onClick={onStartEdit}
+                            />
+                        </div>
+                    </DropdownMenu.Trigger>
+                    <DropdownMenu.Content side="bottom" align="end" sideOffset={6} onClick={(e) => e.stopPropagation()}>
+                        <div className="flex min-w-[240px] flex-col gap-2 px-2 py-2">
+                            <span className="text-caption-bold font-caption-bold text-default-font">
+                                Rename chat
+                            </span>
+                            <input
+                                ref={editInputRef}
+                                type="text"
+                                value={editTitle}
+                                onChange={(e) => onEditTitleChange(e.target.value)}
+                                onKeyDown={onEditKeyDown}
+                                onClick={(e) => e.stopPropagation()}
+                                className="w-full min-w-0 rounded border border-solid border-neutral-border bg-default-background px-2 py-1 text-body font-body text-default-font focus:outline-none focus:border-brand-primary"
+                            />
+                            <div className="flex items-center justify-end gap-2">
+                                <Button
+                                    variant="neutral-secondary"
+                                    size="small"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onCancelEdit();
+                                    }}
+                                >
+                                    Cancel
+                                </Button>
+                                <Button
+                                    variant="brand-primary"
+                                    size="small"
+                                    onClick={onSaveEdit}
+                                >
+                                    Save
+                                </Button>
+                            </div>
+                        </div>
+                    </DropdownMenu.Content>
+                </DropdownMenu.Root>
+
+                <DropdownMenu.Root
+                    open={isDeleting}
+                    onOpenChange={(open) => {
+                        if (!open) {
+                            onCancelDelete();
+                        }
+                    }}
+                >
+                    <DropdownMenu.Trigger asChild>
+                        <div onClick={(e) => e.stopPropagation()}>
+                            <IconButton
+                                variant="neutral-tertiary"
+                                size="small"
+                                icon={<Trash2 />}
+                                onClick={onStartDelete}
+                            />
+                        </div>
+                    </DropdownMenu.Trigger>
+                    <DropdownMenu.Content side="bottom" align="end" sideOffset={6} onClick={(e) => e.stopPropagation()}>
+                        <div className="flex min-w-[220px] flex-col gap-2 px-2 py-2">
+                            <span className="text-caption-bold font-caption-bold text-default-font">
+                                Delete this chat?
+                            </span>
+                            <div className="flex items-center justify-end gap-2">
+                                <Button
+                                    variant="neutral-secondary"
+                                    size="small"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        onCancelDelete();
+                                    }}
+                                >
+                                    Cancel
+                                </Button>
+                                <Button
+                                    variant="destructive-secondary"
+                                    size="small"
+                                    onClick={onConfirmDelete}
+                                >
+                                    Delete
+                                </Button>
+                            </div>
+                        </div>
+                    </DropdownMenu.Content>
+                </DropdownMenu.Root>
+            </div>
+        </MenuCardBase>
     );
 }
 
@@ -492,8 +551,7 @@ export function ChatHistoryList({
                                     dispatch({ type: 'start-edit', sessionId: session.id, title: getSessionTitle(session) });
                                 }}
                                 onSaveEdit={(e) => handleSaveEdit(session.id, e)}
-                                onCancelEdit={(e) => {
-                                    e.stopPropagation();
+                                onCancelEdit={() => {
                                     dispatch({ type: 'reset' });
                                 }}
                                 onEditKeyDown={(e) => {
@@ -509,8 +567,7 @@ export function ChatHistoryList({
                                     dispatch({ type: 'start-delete', sessionId: session.id });
                                 }}
                                 onConfirmDelete={(e) => handleConfirmDelete(session.id, e)}
-                                onCancelDelete={(e) => {
-                                    e.stopPropagation();
+                                onCancelDelete={() => {
                                     dispatch({ type: 'reset' });
                                 }}
                                 onClick={() => handleSessionClick(session.id)}

@@ -8,6 +8,11 @@ import { useTheme } from "@/contexts/ThemeContext";
 import { Badge } from "@/components/data-display/Badge";
 import { Priority } from "@/components/misc/Priority";
 import { State } from "@/components/misc/State";
+import {
+  getMenuCardMetaClassName,
+  getMenuCardTitleClassName,
+  MenuCardBase,
+} from "@/components/cards/MenuCardBase";
 
 import { Tag, User2 } from 'lucide-react';
 interface MenuCardRootProps
@@ -66,18 +71,10 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
     const isDarkTheme = resolvedTheme === "dark";
 
     return (
-      <div
-        className={cn(
-          "group/6c3f1f95 flex w-full cursor-pointer flex-col flex-wrap items-center justify-between rounded-sm border border-solid border-neutral-border bg-neutral-0 px-4 py-3",
-          {
-            "hover:border hover:border-solid hover:border-brand-primary": isDarkTheme,
-            "hover:bg-brand-primary hover:border-brand-700": !isDarkTheme,
-            "border border-solid border-accent-1-primary":
-              variant === "selected" && isDarkTheme,
-            "bg-neutral-300 border-neutral-900": variant === "selected" && !isDarkTheme,
-          },
-          className
-        )}
+      <MenuCardBase
+        isDarkTheme={isDarkTheme}
+        variant={variant}
+        className={className}
         ref={ref}
         {...otherProps}
       >
@@ -91,12 +88,10 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
             <div className="flex flex-wrap items-start gap-4">
               {id ? (
                 <span
-                  className={cn(
-                    "grow shrink-0 basis-0 whitespace-nowrap text-caption-bold font-caption-bold text-subtext-color",
-                    {
-                      "group-hover/6c3f1f95:text-brand-700": isDarkTheme,
-                      "text-accent-1-700": variant === "selected" && isDarkTheme,
-                    }
+                  className={getMenuCardMetaClassName(
+                    isDarkTheme,
+                    variant,
+                    "grow shrink-0 basis-0 whitespace-nowrap text-caption-bold font-caption-bold"
                   )}
                 >
                   {id}
@@ -104,12 +99,10 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
               ) : null}
               {timestamp ? (
                 <span
-                  className={cn(
-                    "grow shrink-0 basis-0 whitespace-nowrap text-caption font-caption text-subtext-color text-right",
-                    {
-                      "group-hover/6c3f1f95:text-brand-700": isDarkTheme,
-                      "text-accent-1-700": variant === "selected" && isDarkTheme,
-                    }
+                  className={getMenuCardMetaClassName(
+                    isDarkTheme,
+                    variant,
+                    "grow shrink-0 basis-0 whitespace-nowrap text-caption text-right"
                   )}
                 >
                   {timestamp}
@@ -118,16 +111,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
             </div>
             <div className="flex w-full flex-wrap items-center justify-center gap-2 pr-2">
               {title ? (
-                <span
-                  className={cn(
-                    "line-clamp-1 min-w-[240px] grow shrink-0 basis-0 text-body-bold font-body-bold",
-                    {
-                      "text-[#fafafaff] group-hover/6c3f1f95:text-brand-400": isDarkTheme,
-                      "text-default-font": !isDarkTheme,
-                      "text-accent-1-400": variant === "selected" && isDarkTheme,
-                    }
-                  )}
-                >
+                <span className={getMenuCardTitleClassName(isDarkTheme, variant)}>
                   {title}
                 </span>
               ) : null}
@@ -220,7 +204,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
             </span>
           ) : null}
         </div>
-      </div>
+      </MenuCardBase>
     );
   }
 );
