@@ -320,8 +320,25 @@ const EntityHeaderRoot = React.forwardRef<
                     >
                       {reopenButtonLabel}
                     </Button>
+                  ) : isCase ? (
+                    <Button
+                      className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
+                      variant="neutral-secondary"
+                      size={buttonSize}
+                      icon={<X />}
+                      disabled={isUpdating}
+                      onClick={() => {
+                        if (onCloseCaseWithDetails) {
+                          setIsCaseClosureModalOpen(true);
+                          return;
+                        }
+                        onCloseAlert?.("closed");
+                      }}
+                    >
+                      {buttonSize === "medium" ? closeButtonLabel : "Close"}
+                    </Button>
                   ) : (
-                    <DropdownMenuRoot>
+                    <DropdownMenuRoot modal={false}>
                       <DropdownMenuTrigger asChild={true}>
                         <Button
                           className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
@@ -366,23 +383,11 @@ const EntityHeaderRoot = React.forwardRef<
                                   onClick={() => onCloseAlert?.("closed_duplicate")}
                                 />
                               </>
-                            ) : isTask ? (
+                            ) : (
                               <DropdownMenu.DropdownItem
                                 icon={<Check />}
                                 label="Mark as Done"
                                 onClick={() => onCloseAlert?.("tsk_done" as UIState)}
-                              />
-                            ) : (
-                              <DropdownMenu.DropdownItem
-                                icon={<X />}
-                                label="Close Case"
-                                onClick={() => {
-                                  if (onCloseCaseWithDetails) {
-                                    setIsCaseClosureModalOpen(true);
-                                    return;
-                                  }
-                                  onCloseAlert?.("closed");
-                                }}
                               />
                             )}
                         </DropdownMenuContent>
