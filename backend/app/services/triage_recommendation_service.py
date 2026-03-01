@@ -11,11 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException
 
 from app.models.models import (
-    TriageRecommendation, Alert, Case, Task, TaskCreate
+    TriageRecommendation, Alert, Task, TaskCreate
 )
 from app.models.enums import (
-    RecommendationStatus, TriageDisposition, AlertStatus, Priority, CaseStatus, TaskStatus,
+    RecommendationStatus, TriageDisposition, AlertStatus, Priority, TaskStatus,
     RejectionCategory
+)
+from app.services.alert_triage_apply_service import (
+    apply_triage_state,
+    create_case_from_alert,
+    mark_alert_escalated,
 )
 from app.services.timeline_service import timeline_service
 
@@ -215,7 +220,7 @@ async def enqueue_triage(
     from app.services.task_queue_service import get_task_queue_service
     from app.services.tasks import TASK_TRIAGE_ALERT
     
-    settings = SettingsService(db)
+    settings = SettingsService(db)  # type: ignore[arg-type]
     
     # Check if triage is enabled
     flow_id = await settings.get_typed_value("langflow.alert_triage_flow_id")
@@ -393,7 +398,6 @@ async def accept_recommendation(
     # Apply suggested changes based on options (default: apply all)
     apply_status = options.get("apply_status", True)
     apply_priority = options.get("apply_priority", True)
-    apply_assignee = options.get("apply_assignee", True)
     apply_tags = options.get("apply_tags", True)
     
     if apply_status and effective_suggested_status:
@@ -408,13 +412,6 @@ async def accept_recommendation(
         applied_changes.append({
             "field": "priority",
             "value": recommendation.suggested_priority.value
-        })
-    
-    if apply_assignee and recommendation.suggested_assignee:
-        alert.assignee = recommendation.suggested_assignee
-        applied_changes.append({
-            "field": "assignee",
-            "value": recommendation.suggested_assignee
         })
     
     if apply_tags:
@@ -440,6 +437,17 @@ async def accept_recommendation(
             })
         
         alert.tags = list(current_tags)
+
+    apply_triage_state(
+        alert,
+        triaged_by=reviewed_by,
+        set_assignee=True,
+    )
+    if alert.assignee != before_assignee:
+        applied_changes.append({
+            "field": "assignee",
+            "value": reviewed_by,
+        })
     
     accepted_with_closed_status = bool(
         apply_status
@@ -461,9 +469,11 @@ async def accept_recommendation(
         if alert.case_id:
             # Already linked to a case, skip escalation but continue
             result_case_id = alert.case_id
-            alert.status = AlertStatus.ESCALATED
-            if not alert.linked_at:
-                alert.linked_at = datetime.now(timezone.utc)
+            mark_alert_escalated(
+                alert,
+                case_id=alert.case_id,
+                preserve_existing_linked_at=True,
+            )
             applied_changes.append({
                 "field": "escalation",
                 "action": "skipped",
@@ -473,26 +483,16 @@ async def accept_recommendation(
         else:
             # Create new case from alert directly (not using case_service to avoid nested commits)
             case_priority = recommendation.suggested_priority or alert.priority or Priority.MEDIUM
-            
-            new_case = Case(
-                title=f"Case from Alert: {alert.title}",
-                description=alert.description,
-                priority=case_priority,
-                tags=alert.tags or [],
-                assignee=reviewed_by,
-                status=CaseStatus.IN_PROGRESS,
-                timeline_items=[],
+            new_case = await create_case_from_alert(
+                db,
+                alert=alert,
                 created_by=reviewed_by,
-                created_at=datetime.now(timezone.utc),
-                updated_at=datetime.now(timezone.utc),
+                priority=case_priority,
+                assignee=reviewed_by,
             )
-            db.add(new_case)
-            await db.flush()  # Get the ID without committing
             
             # Link alert to case
-            alert.case_id = new_case.id
-            alert.status = AlertStatus.ESCALATED
-            alert.linked_at = datetime.now(timezone.utc)
+            mark_alert_escalated(alert, case_id=new_case.id)  # type: ignore[arg-type]
             
             result_case_id = new_case.id
             applied_changes.append({
@@ -542,8 +542,6 @@ async def accept_recommendation(
                     "action": "created",
                     "count": tasks_created
                 })
-            
-            db.add(new_case)
     
     # Update recommendation status
     recommendation.status = RecommendationStatus.ACCEPTED

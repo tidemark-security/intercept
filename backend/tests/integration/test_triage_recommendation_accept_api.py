@@ -93,6 +93,8 @@ async def test_accept_manual_recommendation_creates_case(
         assert refreshed_alert is not None
         assert refreshed_alert.case_id == data["case_id"]
         assert refreshed_alert.status == AlertStatus.ESCALATED
+        assert refreshed_alert.triaged_at is not None
+        assert refreshed_alert.assignee is not None
         timeline_items = refreshed_alert.timeline_items or []
         note_items = [item for item in timeline_items if item.get("type") == "note"]
         assert any(
@@ -160,6 +162,8 @@ async def test_accept_closed_recommendation_closes_without_case(
         assert refreshed_alert is not None
         assert refreshed_alert.case_id is None
         assert refreshed_alert.status == AlertStatus.CLOSED_FP
+        assert refreshed_alert.triaged_at is not None
+        assert refreshed_alert.assignee is not None
         timeline_items = refreshed_alert.timeline_items or []
         note_items = [item for item in timeline_items if item.get("type") == "note"]
         assert any(

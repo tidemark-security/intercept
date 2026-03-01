@@ -13,10 +13,16 @@ from fastapi import HTTPException
 from app.models.models import (
     Alert, Case, UserAccount, Task, Actor,
     AlertCreate, AlertUpdate, AlertTriageRequest,
-    AlertRead, CaseCreate, AlertTimelineItem, TriageRecommendation
+    AlertRead, AlertTimelineItem, TriageRecommendation
 )
-from app.models.enums import AlertStatus, Priority, CaseStatus, RecommendationStatus, TriageDisposition
+from app.models.enums import AlertStatus, Priority, RecommendationStatus, TriageDisposition
 from app.services.case_service import case_service
+from app.services.alert_triage_apply_service import (
+    apply_triage_state,
+    create_case_from_alert,
+    is_triage_completion_status,
+    mark_alert_escalated,
+)
 from app.services.timeline_service import timeline_service
 from app.services.audit_service import TimelineAuditService
 from app.services import triage_recommendation_service
@@ -346,16 +352,12 @@ class AlertService:
                 
                 timeline_service.add_timeline_item(db_alert, status_change_item, created_by=updated_by)
                 
-                # Auto-reject pending triage recommendation if status changed to closed/escalated
-                closed_statuses = {
-                    AlertStatus.ESCALATED,
-                    AlertStatus.CLOSED_TP,
-                    AlertStatus.CLOSED_BP,
-                    AlertStatus.CLOSED_FP,
-                    AlertStatus.CLOSED_UNRESOLVED,
-                    AlertStatus.CLOSED_DUPLICATE,
-                }
-                if new_status in closed_statuses:
+                if is_triage_completion_status(new_status):
+                    apply_triage_state(
+                        db_alert,
+                        triaged_by=updated_by,
+                        set_assignee=True,
+                    )
                     await triage_recommendation_service.auto_reject_if_pending(
                         db, alert_id, updated_by
                     )
@@ -384,32 +386,34 @@ class AlertService:
             if not db_alert:
                 return None
             
-            # Update alert status and triage info
-            db_alert.status = triage_request.status
-            db_alert.triage_notes = triage_request.triage_notes
-            db_alert.assignee = triaged_by
-            db_alert.triaged_at = datetime.now(timezone.utc)
+            apply_triage_state(
+                db_alert,
+                triaged_by=triaged_by,
+                status=triage_request.status,
+                triage_notes=triage_request.triage_notes,
+                set_assignee=True,
+            )
+
+            await triage_recommendation_service.auto_reject_if_pending(
+                db, alert_id, triaged_by
+            )
             
             # If escalating to case, create a new case
             if triage_request.escalate_to_case:
                 if db_alert.case_id:
                     raise HTTPException(status_code=400, detail="Alert is already escalated to a case")
 
-                case_data = CaseCreate(
-                    title=triage_request.case_title or f"Case from Alert: {db_alert.title}",
-                    description=triage_request.case_description or db_alert.description,
-                    priority=db_alert.priority if db_alert.priority else Priority.MEDIUM,
-                    tags=db_alert.tags if db_alert.tags else [],
-                    assignee=triaged_by
+                new_case = await create_case_from_alert(
+                    db,
+                    alert=db_alert,
+                    created_by=triaged_by,
+                    title=triage_request.case_title,
+                    description=triage_request.case_description,
+                    assignee=triaged_by,
                 )
-                
-                # Create the case
-                new_case = await case_service.create_case(db, case_data, triaged_by)
-                new_case.status = CaseStatus.IN_PROGRESS
+
                 # Link alert to case
-                db_alert.case_id = new_case.id
-                db_alert.status = AlertStatus.ESCALATED
-                db_alert.linked_at = datetime.now(timezone.utc)
+                mark_alert_escalated(db_alert, case_id=new_case.id)  # type: ignore[arg-type]
                 
                 logger.info(f"Alert escalated to case {new_case.id}")
             
@@ -443,9 +447,15 @@ class AlertService:
                 raise ValueError(f"Case {case_id} not found")
             
             # Link alert to case
-            db_alert.case_id = case_id
-            db_alert.status = AlertStatus.ESCALATED
-            db_alert.linked_at = datetime.now(timezone.utc)
+            apply_triage_state(
+                db_alert,
+                triaged_by=linked_by,
+                set_assignee=True,
+            )
+            mark_alert_escalated(db_alert, case_id=case_id)
+            await triage_recommendation_service.auto_reject_if_pending(
+                db, alert_id, linked_by
+            )
             
             await db.commit()
             await db.refresh(db_alert)
