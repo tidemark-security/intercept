@@ -29,7 +29,7 @@ const BadgeRoot = React.forwardRef<HTMLDivElement, BadgeRootProps>(
     return (
       <div
         className={cn(
-          "group/97bdb082 flex h-6 items-center justify-center gap-1 rounded-md border border-solid border-neutral-border bg-brand-100 px-2",
+          "group/97bdb082 flex h-6 items-center justify-center gap-1 rounded-md border border-solid border-neutral-border bg-brand-50 px-2",
           {
             "border border-solid border-success-100 bg-success-100":
               variant === "success",
@@ -48,9 +48,9 @@ const BadgeRoot = React.forwardRef<HTMLDivElement, BadgeRootProps>(
         {icon ? (
           <IconWrapper
             className={cn(
-              "text-caption font-caption text-brand-700",
+              "text-caption font-caption text-brand-800",
               {
-                "text-success-800": variant === "success",
+                "text-success-900": variant === "success",
                 "text-warning-800": variant === "warning",
                 "text-error-700": variant === "error",
                 "text-neutral-700": variant === "neutral",
@@ -66,7 +66,7 @@ const BadgeRoot = React.forwardRef<HTMLDivElement, BadgeRootProps>(
               "line-clamp-1 grow shrink-0 basis-0 text-caption font-caption text-brand-800 text-center text-ellipsis overflow-hidden",
               {
                 hidden: compact,
-                "text-success-800": variant === "success",
+                "text-success-900": variant === "success",
                 "text-warning-800": variant === "warning",
                 "text-error-800": variant === "error",
                 "text-neutral-700": variant === "neutral",
