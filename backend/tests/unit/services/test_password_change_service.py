@@ -33,8 +33,18 @@ def mock_db() -> AsyncMock:
 @pytest.fixture
 def password_hasher() -> PasswordHasher:
     """Create a real password hasher for testing."""
-    from app.core.config import settings
-    return PasswordHasher(settings.build_argon2_parameters())
+    from app.core.settings_registry import get_local
+    from app.services.security.password_hasher import Argon2Parameters
+    return PasswordHasher(
+        Argon2Parameters(
+            time_cost=get_local("auth.argon2.time_cost"),
+            memory_cost=get_local("auth.argon2.memory_cost_kib"),
+            parallelism=get_local("auth.argon2.parallelism"),
+            hash_len=get_local("auth.argon2.hash_len"),
+            salt_len=get_local("auth.argon2.salt_len"),
+            encoding=get_local("auth.argon2.encoding"),
+        )
+    )
 
 
 @pytest.fixture

@@ -113,9 +113,18 @@ async def test_password_change_rejects_incorrect_current_password(
         refreshed = await session.get(UserAccount, user.id)
         assert refreshed is not None
         # Should still have original password
-        from app.core.config import settings
-        from app.services.security.password_hasher import PasswordHasher
-        hasher = PasswordHasher(settings.build_argon2_parameters())
+        from app.core.settings_registry import get_local
+        from app.services.security.password_hasher import Argon2Parameters, PasswordHasher
+        hasher = PasswordHasher(
+            Argon2Parameters(
+                time_cost=get_local("auth.argon2.time_cost"),
+                memory_cost=get_local("auth.argon2.memory_cost_kib"),
+                parallelism=get_local("auth.argon2.parallelism"),
+                hash_len=get_local("auth.argon2.hash_len"),
+                salt_len=get_local("auth.argon2.salt_len"),
+                encoding=get_local("auth.argon2.encoding"),
+            )
+        )
         assert hasher.verify(refreshed.password_hash, DEFAULT_TEST_PASSWORD)
 
 
