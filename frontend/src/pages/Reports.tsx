@@ -8,10 +8,12 @@ import { Badge } from '@/components/data-display/Badge';
 import { Table } from '@/components/data-display/Table';
 import { SemiDonutChart } from '@/components/data-display/SemiDonutChart';
 import { Button } from '@/components/buttons/Button';
+import { ToggleGroup } from '@/components/buttons/ToggleGroup';
 
 import { StatCard } from '@/components/cards/StatCard';
 import { Select } from '@/components/forms/Select';
 import { DateRangePicker, DateRangeValue } from '@/components/forms/DateRangePicker';
+import { CopyableTimestamp } from '@/components/data-display/CopyableTimestamp';
 import { useSOCMetrics, useAnalystMetrics, useAlertMetrics, useAITriageMetrics, useAIChatMetrics } from '@/hooks/useMetrics';
 import { useChatFeedbackDrillDown } from '@/hooks/useAIDrillDown';
 import { useSession } from '@/contexts/sessionContext';
@@ -61,7 +63,7 @@ const CHART_COLORS_DARK = {
 };
 
 const CHART_COLORS_LIGHT = {
-  tp: '#B6E600', 
+  tp: 'rgb(182, 230, 0)', 
   fp: '#D70047',
   bp: '#5332D0', 
   escalated: '#009181',
@@ -70,8 +72,8 @@ const CHART_COLORS_LIGHT = {
   tasks: '#262626',
 };
 
-const PIE_COLORS_DARK = ['#D0FF00', '#00E2C2', '#FF0055', '#5F40EB', '#A3A3A3'];
-const PIE_COLORS_LIGHT = ['#B6E600', '#009181', '#D70047', '#5332D0', '#262626'];
+const PIE_COLORS_DARK = ['#D0FF00', '#00E2C2', '#5F40EB', '#A3A3A3', '#FF0055'];
+const PIE_COLORS_LIGHT = ['rgb(182, 230, 0)', '#5332D0', '#262626', '#009181', '#D70047'];
 const CHART_ANIMATION_DURATION_MS = 300;
 const CHAT_FEEDBACK_PAGE_SIZE = 25;
 
@@ -92,6 +94,54 @@ function formatDuration(seconds: number | null | undefined): string {
 function formatPercent(value: number | null | undefined): string {
   if (value === null || value === undefined) return '-';
   return `${(value * 100).toFixed(1)}%`;
+}
+
+/**
+ * Normalize chart label text to Title Case (e.g. UPPER_SNAKE_CASE -> Upper Snake Case)
+ */
+function formatChartLabel(value: string | null | undefined): string {
+  if (!value) return 'Unknown';
+
+  const normalized = value
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .trim()
+    .toLowerCase();
+
+  if (!normalized) return 'Unknown';
+
+  return normalized.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function formatChartLegendLabel(value: string | number | undefined | null): string {
+  return formatChartLabel(value === undefined || value === null ? undefined : String(value));
+}
+
+function formatChartTooltipLabel(value: React.ReactNode, name?: string | number): [React.ReactNode, string] {
+  return [value, formatChartLegendLabel(name)];
+}
+
+function normalizePercentValue(value: number | null | undefined): number {
+  if (value === null || value === undefined || Number.isNaN(value)) return 0;
+  const normalized = value <= 1 ? value * 100 : value;
+  return Math.max(0, Math.min(100, normalized));
+}
+
+function parseConfidenceBucketToPercent(bucket: string | null | undefined): number {
+  if (!bucket) return 0;
+  const trimmed = bucket.trim();
+
+  const rangeMatch = trimmed.match(/^(\d*\.?\d+)\s*-\s*(\d*\.?\d+)$/);
+  if (rangeMatch) {
+    const minValue = Number(rangeMatch[1]);
+    const maxValue = Number(rangeMatch[2]);
+    if (!Number.isNaN(minValue) && !Number.isNaN(maxValue)) {
+      return normalizePercentValue((minValue + maxValue) / 2);
+    }
+  }
+
+  const numericValue = Number(trimmed);
+  return normalizePercentValue(Number.isNaN(numericValue) ? 0 : numericValue);
 }
 
 function Reports() {
@@ -295,8 +345,8 @@ function Reports() {
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis dataKey="time" tick={{ fontSize: 12 }} />
                 <YAxis tick={{ fontSize: 12 }} />
-                <Tooltip />
-                <Legend />
+                <Tooltip formatter={formatChartTooltipLabel} />
+                <Legend formatter={formatChartLegendLabel} />
                 <Line type="monotone" dataKey="alerts" stroke={CHART_COLORS.alerts} name="Alerts" strokeWidth={2} animationDuration={CHART_ANIMATION_DURATION_MS} />
                 <Line type="monotone" dataKey="cases" stroke={CHART_COLORS.cases} name="Cases" strokeWidth={2} animationDuration={CHART_ANIMATION_DURATION_MS} />
                 <Line type="monotone" dataKey="alertsClosed" stroke={CHART_COLORS.tp} name="Closed" strokeWidth={2} animationDuration={CHART_ANIMATION_DURATION_MS} />
@@ -389,8 +439,8 @@ function Reports() {
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis type="number" />
               <YAxis type="category" dataKey="analyst" width={100} tick={{ fontSize: 12 }} />
-              <Tooltip />
-              <Legend />
+              <Tooltip formatter={formatChartTooltipLabel} />
+              <Legend formatter={formatChartLegendLabel} />
               <Bar dataKey="total_alerts_triaged" fill={CHART_COLORS.alerts} name="Alerts Triaged" animationDuration={CHART_ANIMATION_DURATION_MS} />
               <Bar dataKey="total_cases_closed" fill={CHART_COLORS.cases} name="Cases Closed" animationDuration={CHART_ANIMATION_DURATION_MS} />
             </BarChart>
@@ -477,7 +527,7 @@ function Reports() {
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="hour" tick={{ fontSize: 11 }} />
               <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip />
+              <Tooltip formatter={formatChartTooltipLabel} />
               <Bar dataKey="count" fill={CHART_COLORS.alerts} name="Total Alerts" animationDuration={CHART_ANIMATION_DURATION_MS} />
             </BarChart>
           </ResponsiveContainer>
@@ -489,19 +539,23 @@ function Reports() {
             <h3 className="text-heading-3 font-heading-3">Alert Performance by {dimensionLabel}</h3>
             <div className="flex items-center gap-2">
               <span className="text-sm text-subtext-color">Group by:</span>
-              {(['source', 'title', 'tag'] as AlertGroupBy[]).map((groupOption) => (
-                <button
-                  key={groupOption}
-                  onClick={() => setAlertGroupBy(groupOption)}
-                  className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                    alertGroupBy === groupOption
-                      ? 'bg-brand-primary text-white'
-                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
-                  }`}
-                >
-                  {groupOption === 'source' ? 'Source' : groupOption === 'title' ? 'Title' : 'Tag'}
-                </button>
-              ))}
+              <ToggleGroup
+                value={alertGroupBy}
+                className="border rounded-md border-neutral-border"
+                onValueChange={(value: string) => {
+                  if (value) setAlertGroupBy(value as AlertGroupBy);
+                }}
+              >
+                <ToggleGroup.Item icon={null} value="source" className="w-auto">
+                  Source
+                </ToggleGroup.Item>
+                <ToggleGroup.Item icon={null} value="title" className="w-auto">
+                  Title
+                </ToggleGroup.Item>
+                <ToggleGroup.Item icon={null} value="tag" className="w-auto">
+                  Tag
+                </ToggleGroup.Item>
+              </ToggleGroup>
             </div>
           </div>
           {(alertData.by_dimension ?? []).length > 0 ? (
@@ -527,10 +581,10 @@ function Reports() {
                   <Table.Cell>{item.total_alerts}</Table.Cell>
                   <Table.Cell>{item.total_closed}</Table.Cell>
                   <Table.Cell>
-                    <span className="text-success-600">{item.total_tp}</span>
+                    {item.total_tp}
                   </Table.Cell>
                   <Table.Cell>
-                    <span className="text-error-600">{item.total_fp}</span>
+                    {item.total_fp}
                   </Table.Cell>
                   <Table.Cell>
                     <Badge variant={item.fp_rate && item.fp_rate > 0.3 ? 'error' : item.fp_rate && item.fp_rate > 0.15 ? 'warning' : 'success'}>
@@ -569,7 +623,7 @@ function Reports() {
 
     // Prepare category pie chart data
     const categoryData = (by_category ?? []).map((item, idx) => ({
-      name: item.category ? (REJECTION_CATEGORY_LABELS[item.category] || item.category) : 'Uncategorized',
+      name: item.category ? (REJECTION_CATEGORY_LABELS[item.category] || formatChartLabel(item.category)) : 'Uncategorized',
       rawCategory: item.category,
       value: item.count ?? 0,
       color: PIE_COLORS[idx % PIE_COLORS.length],
@@ -577,7 +631,7 @@ function Reports() {
 
     // Prepare disposition bar chart data
     const dispositionChartData = (by_disposition ?? []).map(item => ({
-      disposition: item.disposition ?? 'Unknown',
+      disposition: formatChartLabel(item.disposition),
       rawDisposition: item.disposition,
       accepted: item.accepted ?? 0,
       rejected: item.rejected ?? 0,
@@ -635,8 +689,8 @@ function Reports() {
 
     // Prepare confidence scatter data
     const confidenceData = (by_confidence ?? []).map(item => ({
-      confidence: Number(item.confidence_bucket ?? 0) * 100,
-      acceptanceRate: (item.acceptance_rate ?? 0) * 100,
+      confidence: parseConfidenceBucketToPercent(item.confidence_bucket),
+      acceptanceRate: normalizePercentValue(item.acceptance_rate ?? 0),
       total: item.total ?? 0,
     }));
 
@@ -688,8 +742,8 @@ function Reports() {
                   <XAxis dataKey="week" tick={{ fontSize: 12 }} />
                   <YAxis yAxisId="left" tick={{ fontSize: 12 }} />
                   <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tick={{ fontSize: 12 }} unit="%" />
-                  <Tooltip />
-                  <Legend />
+                  <Tooltip formatter={formatChartTooltipLabel} />
+                  <Legend formatter={formatChartLegendLabel} />
                   <Line yAxisId="left" type="monotone" dataKey="accepted" stroke={CHART_COLORS.tp} name="Accepted" strokeWidth={2} animationDuration={CHART_ANIMATION_DURATION_MS} />
                   <Line yAxisId="left" type="monotone" dataKey="rejected" stroke={CHART_COLORS.fp} name="Rejected" strokeWidth={2} animationDuration={CHART_ANIMATION_DURATION_MS} />
                   <Line yAxisId="right" type="monotone" dataKey="rate" stroke={CHART_COLORS.alerts} name="Rate %" strokeWidth={2} strokeDasharray="5 5" animationDuration={CHART_ANIMATION_DURATION_MS} />
@@ -719,7 +773,7 @@ function Reports() {
                     }
                     navigate(`/reports/ai-triage/details?${params.toString()}`);
                   }}
-                  className="flex items-center gap-1 text-sm text-brand-primary hover:underline"
+                  className={`flex items-center gap-1 text-sm hover:underline ${isDarkTheme ? 'text-brand-primary' : 'text-default-font'}`}
                 >
                   View All <ExternalLink className="w-3 h-3" />
                 </button>
@@ -751,7 +805,7 @@ function Reports() {
               {isAdmin && dispositionChartData.length > 0 && (
                 <button
                   onClick={handleViewAllRecommendations}
-                  className="flex items-center gap-1 text-sm text-brand-primary hover:underline"
+                  className={`flex items-center gap-1 text-sm hover:underline ${isDarkTheme ? 'text-brand-primary' : 'text-default-font'}`}
                 >
                   View All <ExternalLink className="w-3 h-3" />
                 </button>
@@ -773,8 +827,8 @@ function Reports() {
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis type="number" />
                   <YAxis type="category" dataKey="disposition" width={100} tick={{ fontSize: 12 }} />
-                  <Tooltip />
-                  <Legend />
+                  <Tooltip formatter={formatChartTooltipLabel} />
+                  <Legend formatter={formatChartLegendLabel} />
                   <Bar dataKey="accepted" stackId="a" fill={CHART_COLORS.tp} name="Accepted" animationDuration={CHART_ANIMATION_DURATION_MS} />
                   <Bar dataKey="rejected" stackId="a" fill={CHART_COLORS.fp} name="Rejected" animationDuration={CHART_ANIMATION_DURATION_MS} />
                 </BarChart>
@@ -791,11 +845,31 @@ function Reports() {
             <h3 className="text-heading-3 font-heading-3 text-default-font mb-4">Confidence vs Acceptance Rate</h3>
             {confidenceData.length > 0 ? (
               <ResponsiveContainer width="100%" height={250}>
-                <ScatterChart>
+                <ScatterChart margin={{ top: 5, right: 10, left: 28, bottom: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis type="number" dataKey="confidence" name="Confidence" domain={[0, 100]} unit="%" tick={{ fontSize: 12 }} />
-                  <YAxis type="number" dataKey="acceptanceRate" name="Acceptance" domain={[0, 100]} unit="%" tick={{ fontSize: 12 }} />
-                  <Tooltip cursor={{ strokeDasharray: '3 3' }} formatter={(value) => `${Number(value ?? 0).toFixed(1)}%`} />
+                  <XAxis
+                    type="number"
+                    dataKey="confidence"
+                    name="Confidence"
+                    domain={[0, 100]}
+                    unit="%"
+                    tick={{ fontSize: 12 }}
+                    label={{ value: 'Confidence (%)', position: 'insideBottom', offset: -8 }}
+                  />
+                  <YAxis
+                    type="number"
+                    dataKey="acceptanceRate"
+                    name="Acceptance"
+                    domain={[0, 100]}
+                    unit="%"
+                    tick={{ fontSize: 12 }}
+                    width={56}
+                    label={{ value: 'Acceptance Rate (%)', angle: -90, position: 'insideBottomLeft', dy: -10 }}
+                  />
+                  <Tooltip
+                    cursor={{ strokeDasharray: '3 3' }}
+                    formatter={(value, name) => [`${Number(value ?? 0).toFixed(1)}%`, formatChartLegendLabel(name)]}
+                  />
                   <Scatter name="Buckets" data={confidenceData} fill={CHART_COLORS.alerts} animationDuration={CHART_ANIMATION_DURATION_MS}>
                     {confidenceData.map((entry, index) => (
                       <Cell key={`cell-${index}`} fill={CHART_COLORS.alerts} />
@@ -874,8 +948,8 @@ function Reports() {
                 <XAxis dataKey="week" tick={{ fontSize: 12 }} />
                 <YAxis yAxisId="left" tick={{ fontSize: 12 }} />
                 <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tick={{ fontSize: 12 }} unit="%" />
-                <Tooltip />
-                <Legend />
+                <Tooltip formatter={formatChartTooltipLabel} />
+                <Legend formatter={formatChartLegendLabel} />
                 <Line yAxisId="left" type="monotone" dataKey="positive" stroke={CHART_COLORS.tp} name="Positive" strokeWidth={2} animationDuration={CHART_ANIMATION_DURATION_MS} />
                 <Line yAxisId="left" type="monotone" dataKey="negative" stroke={CHART_COLORS.fp} name="Negative" strokeWidth={2} animationDuration={CHART_ANIMATION_DURATION_MS} />
                 <Line yAxisId="right" type="monotone" dataKey="satisfactionRate" stroke={CHART_COLORS.alerts} name="Satisfaction %" strokeWidth={2} strokeDasharray="5 5" animationDuration={CHART_ANIMATION_DURATION_MS} />
@@ -903,11 +977,11 @@ function Reports() {
               <div className="text-caption text-subtext-color">Messages w/ Feedback</div>
             </div>
             <div>
-              <div className="text-heading-2 font-heading-2 text-success-600">{summary.positive_feedback ?? 0}</div>
+              <div className="text-heading-2 font-heading-2">{summary.positive_feedback ?? 0}</div>
               <div className="text-caption text-subtext-color">Positive</div>
             </div>
             <div>
-              <div className="text-heading-2 font-heading-2 text-error-600">{summary.negative_feedback ?? 0}</div>
+              <div className="text-heading-2 font-heading-2">{summary.negative_feedback ?? 0}</div>
               <div className="text-caption text-subtext-color">Negative</div>
             </div>
           </div>
@@ -944,78 +1018,82 @@ function Reports() {
                   Showing {chatFeedbackOffset + 1}–{Math.min(chatFeedbackOffset + CHAT_FEEDBACK_PAGE_SIZE, chatFeedbackData.total ?? 0)} of {chatFeedbackData.total ?? 0} messages
                 </div>
 
-                <Table
-                  header={
-                    <Table.HeaderRow>
-                      <Table.HeaderCell>Feedback</Table.HeaderCell>
-                      <Table.HeaderCell>User</Table.HeaderCell>
-                      <Table.HeaderCell>Session</Table.HeaderCell>
-                      <Table.HeaderCell>Message Preview</Table.HeaderCell>
-                      <Table.HeaderCell>Time</Table.HeaderCell>
-                      <Table.HeaderCell></Table.HeaderCell>
-                    </Table.HeaderRow>
-                  }
-                >
-                  {(chatFeedbackData.items ?? []).map((item: ChatFeedbackMessageDetail) => (
-                    <Table.Row key={item.id}>
-                      <Table.Cell>
-                        {item.feedback === 'POSITIVE' ? (
-                          <Badge variant="success" icon={<ThumbsUp className="w-3 h-3" />}>
-                            Positive
-                          </Badge>
-                        ) : (
-                          <Badge variant="error" icon={<ThumbsDown className="w-3 h-3" />}>
-                            Negative
-                          </Badge>
-                        )}
-                      </Table.Cell>
-                      <Table.Cell>
-                        <div className="flex flex-col">
-                          <span className="text-body-bold font-body-bold text-default-font">
-                            {item.display_name || item.username}
-                          </span>
-                          {item.display_name && (
-                            <span className="text-caption text-subtext-color">
-                              @{item.username}
-                            </span>
+                <div className="rounded-lg border border-neutral-border bg-default-background">
+                  <Table
+                    header={
+                      <Table.HeaderRow>
+                        <Table.HeaderCell>Feedback</Table.HeaderCell>
+                        <Table.HeaderCell>User</Table.HeaderCell>
+                        <Table.HeaderCell>Session</Table.HeaderCell>
+                        <Table.HeaderCell>Message Preview</Table.HeaderCell>
+                        <Table.HeaderCell>Time</Table.HeaderCell>
+                        <Table.HeaderCell></Table.HeaderCell>
+                      </Table.HeaderRow>
+                    }
+                  >
+                    {(chatFeedbackData.items ?? []).map((item: ChatFeedbackMessageDetail) => (
+                      <Table.Row key={item.id}>
+                        <Table.Cell>
+                          {item.feedback === 'POSITIVE' ? (
+                            <Badge variant="success" className="w-full" icon={<ThumbsUp className="w-3 h-3" />}>
+                              Positive
+                            </Badge>
+                          ) : (
+                            <Badge variant="error" className="w-full" icon={<ThumbsDown className="w-3 h-3" />}>
+                              Negative
+                            </Badge>
                           )}
-                        </div>
-                      </Table.Cell>
-                      <Table.Cell>
-                        <div className="flex flex-col">
-                          <span className="text-body text-default-font truncate max-w-xs">
-                            {item.session_title || 'Untitled Session'}
-                          </span>
-                          <span className="text-caption text-subtext-color">
-                            {item.flow_id}
-                          </span>
-                        </div>
-                      </Table.Cell>
-                      <Table.Cell>
-                        <div className="max-w-md">
-                          <p className="text-body text-default-font line-clamp-2">
-                            {item.content}
-                          </p>
-                        </div>
-                      </Table.Cell>
-                      <Table.Cell>
-                        <span className="text-caption text-subtext-color">
-                          {formatAbsoluteTime(item.created_at, 'MMM d, yyyy h:mm a')}
-                        </span>
-                      </Table.Cell>
-                      <Table.Cell>
-                        <Button
-                          variant="neutral-tertiary"
-                          size="small"
-                          icon={<ExternalLink className="w-4 h-4" />}
-                          onClick={() => navigate(`/ai-chat?session=${item.session_id}`)}
-                        >
-                          Open Chat
-                        </Button>
-                      </Table.Cell>
-                    </Table.Row>
-                  ))}
-                </Table>
+                        </Table.Cell>
+                        <Table.Cell>
+                          <div className="flex max-w-[14rem] flex-col">
+                            <span className="text-body-bold font-body-bold text-default-font truncate max-w-[14rem]">
+                              {item.display_name || item.username}
+                            </span>
+                            {item.display_name && (
+                              <span className="text-caption text-subtext-color truncate max-w-[14rem]">
+                                @{item.username}
+                              </span>
+                            )}
+                          </div>
+                        </Table.Cell>
+                        <Table.Cell>
+                          <div className="flex max-w-[16rem] flex-col">
+                            <span className="text-body text-default-font truncate max-w-[16rem]">
+                              {item.session_title || 'Untitled Session'}
+                            </span>
+                            <span className="text-caption text-subtext-color truncate max-w-[16rem]">
+                              {item.flow_id}
+                            </span>
+                          </div>
+                        </Table.Cell>
+                        <Table.Cell>
+                          <div className="max-w-md">
+                            <p className="text-body text-default-font line-clamp-2">
+                              {item.content}
+                            </p>
+                          </div>
+                        </Table.Cell>
+                        <Table.Cell>
+                          <CopyableTimestamp
+                            value={item.created_at}
+                            showFull={false}
+                            variant="default-right"
+                          />
+                        </Table.Cell>
+                        <Table.Cell>
+                          <Button
+                            variant="neutral-tertiary"
+                            size="small"
+                            icon={<ExternalLink className="w-4 h-4" />}
+                            onClick={() => navigate(`/ai-chat?session=${item.session_id}`)}
+                          >
+                            Open Chat
+                          </Button>
+                        </Table.Cell>
+                      </Table.Row>
+                    ))}
+                  </Table>
+                </div>
 
                 {totalFeedbackPages > 1 && (
                   <div className="flex items-center justify-center gap-4 mt-4">

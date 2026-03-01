@@ -1,19 +1,22 @@
 "use client";
 
 import React, { useMemo } from 'react';
-import { useSearchParams, useNavigate, Link } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import { DefaultPageLayout } from '@/components/layout/DefaultPageLayout';
+import { AdminPageLayout } from '@/components/layout/AdminPageLayout';
 import { Loader } from '@/components/feedback/Loader';
 import { Badge } from '@/components/data-display/Badge';
 import { Table } from '@/components/data-display/Table';
 import { Button } from '@/components/buttons/Button';
 import { Select } from '@/components/forms/Select';
 import { DateRangePicker, DateRangeValue } from '@/components/forms/DateRangePicker';
+import { CopyableTimestamp } from '@/components/data-display/CopyableTimestamp';
 import { useTriageDrillDown } from '@/hooks/useAIDrillDown';
 import { useSession } from '@/contexts/sessionContext';
+import { useTheme } from '@/contexts/ThemeContext';
 import { parseRelativeTime, formatForBackend } from '@/utils/dateFilters';
-import { formatAbsoluteTime } from '@/utils/dateFormatters';
-import { ArrowLeft, ExternalLink, ChevronLeft, ChevronRight, Bot } from 'lucide-react';
+import { cn } from '@/utils/cn';
+import { AlertCircle, Check, CheckCircle, ChevronLeft, ChevronRight, Clock3, Copy, HelpCircle, XCircle } from 'lucide-react';
 import type { RejectionCategory, TriageDisposition, RecommendationStatus, TriageRecommendationDetail } from '@/types/generated';
 
 // Friendly labels
@@ -32,9 +35,11 @@ const DISPOSITION_LABELS: Record<string, string> = {
   TRUE_POSITIVE: 'True Positive',
   FALSE_POSITIVE: 'False Positive',
   BENIGN_POSITIVE: 'Benign Positive',
+  BENIGN: 'Benign',
   NEEDS_INVESTIGATION: 'Needs Investigation',
   DUPLICATE: 'Duplicate',
-  INCONCLUSIVE: 'Inconclusive',
+  UNKNOWN: 'Unknown',
+  INCONCLUSIVE: 'Unknown',
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -46,22 +51,61 @@ const STATUS_LABELS: Record<string, string> = {
   SUPERSEDED: 'Superseded',
 };
 
-function getDispositionBadgeVariant(disposition: string): 'success' | 'error' | 'warning' | 'neutral' {
-  switch (disposition) {
-    case 'TRUE_POSITIVE': return 'success';
-    case 'FALSE_POSITIVE': return 'error';
-    case 'BENIGN_POSITIVE': return 'warning';
-    default: return 'neutral';
-  }
+function formatEnumLabel(value: string): string {
+  return value
+    .toLowerCase()
+    .split('_')
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
 }
 
+function getDispositionLabel(disposition: string): string {
+  return DISPOSITION_LABELS[disposition] || formatEnumLabel(disposition);
+}
+
+function getRejectionCategoryLabel(category: string): string {
+  return REJECTION_CATEGORY_LABELS[category] || formatEnumLabel(category);
+}
+
+const DISPOSITION_BADGE_VARIANTS: Record<string, 'success' | 'error' | 'warning' | 'neutral'> = {
+  TRUE_POSITIVE: 'success',
+  FALSE_POSITIVE: 'error',
+  BENIGN_POSITIVE: 'warning',
+  BENIGN: 'warning',
+  UNKNOWN: 'neutral',
+};
+
+function getDispositionBadgeVariant(disposition: string): 'success' | 'error' | 'warning' | 'neutral' {
+  return DISPOSITION_BADGE_VARIANTS[disposition] ?? 'neutral';
+}
+
+const STATUS_BADGE_VARIANTS: Record<string, 'success' | 'error' | 'warning' | 'neutral'> = {
+  ACCEPTED: 'success',
+  REJECTED: 'error',
+  PENDING: 'warning',
+  QUEUED: 'neutral',
+  FAILED: 'neutral',
+  SUPERSEDED: 'neutral',
+};
+
 function getStatusBadgeVariant(status: string): 'success' | 'error' | 'warning' | 'neutral' {
-  switch (status) {
-    case 'ACCEPTED': return 'success';
-    case 'REJECTED': return 'error';
-    case 'PENDING': return 'warning';
-    default: return 'neutral';
+  return STATUS_BADGE_VARIANTS[status] ?? 'neutral';
+}
+
+function normalizeDispositionFilter(value: string | null): TriageDisposition | null {
+  if (!value) {
+    return null;
   }
+
+  if (value === 'INCONCLUSIVE') {
+    return 'UNKNOWN';
+  }
+
+  if (value === 'BENIGN_POSITIVE') {
+    return 'BENIGN';
+  }
+
+  return value as TriageDisposition;
 }
 
 const DEFAULT_TIMEFRAME = '-7d';
@@ -69,14 +113,15 @@ const PAGE_SIZE = 25;
 
 export default function AITriageDetails() {
   const { user } = useSession();
-  const navigate = useNavigate();
+  const { resolvedTheme } = useTheme();
+  const isDarkTheme = resolvedTheme === 'dark';
   const [searchParams, setSearchParams] = useSearchParams();
   
   // Check admin access
   const isAdmin = user?.role === 'ADMIN';
   
   // Parse URL params
-  const dispositionFilter = searchParams.get('disposition') as TriageDisposition | null;
+  const dispositionFilter = normalizeDispositionFilter(searchParams.get('disposition'));
   const rejectionCategoryFilter = searchParams.get('rejection_category') as RejectionCategory | null;
   const statusFilter = searchParams.get('status') as RecommendationStatus | null;
   const timeframePreset = searchParams.get('timeframe') || DEFAULT_TIMEFRAME;
@@ -152,9 +197,9 @@ export default function AITriageDetails() {
   // Build page title
   let pageTitle = 'AI Triage Recommendations';
   if (rejectionCategoryFilter) {
-    pageTitle = `Rejected: ${REJECTION_CATEGORY_LABELS[rejectionCategoryFilter] || rejectionCategoryFilter}`;
+    pageTitle = `Rejected: ${getRejectionCategoryLabel(rejectionCategoryFilter)}`;
   } else if (dispositionFilter) {
-    pageTitle = `Disposition: ${DISPOSITION_LABELS[dispositionFilter] || dispositionFilter}`;
+    pageTitle = `Disposition: ${getDispositionLabel(dispositionFilter)}`;
   } else if (statusFilter) {
     pageTitle = `Status: ${STATUS_LABELS[statusFilter] || statusFilter}`;
   }
@@ -175,55 +220,74 @@ export default function AITriageDetails() {
   }
 
   return (
-    <DefaultPageLayout withContainer>
-      <div className="flex flex-col gap-6 p-6">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Button
-              variant="neutral-secondary"
-              size="small"
-              icon={<ArrowLeft />}
-              onClick={() => navigate('/reports?tab=ai-triage')}
-            >
-              Back to Reports
-            </Button>
-            <div className="flex items-center gap-2">
-              <Bot className="w-6 h-6 text-brand-primary" />
-              <h1 className="text-heading-2 font-heading-2 text-default-font">{pageTitle}</h1>
-            </div>
-          </div>
-          
-          <DateRangePicker
-            value={dateRange}
-            onChange={handleDateRangeChange}
-            presets={['-24h', '-7d', '-30d', '-90d']}
-            size="small"
-          />
-        </div>
+    <AdminPageLayout
+      title={pageTitle}
+      subtitle="Review AI triage recommendation outcomes"
+      actionButton={(
+        <DateRangePicker
+          value={dateRange}
+          onChange={handleDateRangeChange}
+          presets={['-24h', '-7d', '-30d', '-90d']}
+          size="medium"
+        />
+      )}
+    >
+      <div className="flex flex-col gap-6 w-full">
         
         {/* Filters */}
         <div className="flex items-center gap-4 flex-wrap">
           <div className="flex items-center gap-2">
             <span className="text-body text-subtext-color">Disposition:</span>
             <Select
+              className="w-56"
               placeholder="All"
               value={dispositionFilter || '__all__'}
               onValueChange={(val) => handleFilterChange('disposition', val === '__all__' ? null : val)}
             >
               <Select.Item value="__all__">All Dispositions</Select.Item>
-              <Select.Item value="TRUE_POSITIVE">True Positive</Select.Item>
-              <Select.Item value="FALSE_POSITIVE">False Positive</Select.Item>
-              <Select.Item value="BENIGN_POSITIVE">Benign Positive</Select.Item>
-              <Select.Item value="NEEDS_INVESTIGATION">Needs Investigation</Select.Item>
-              <Select.Item value="DUPLICATE">Duplicate</Select.Item>
-              <Select.Item value="INCONCLUSIVE">Inconclusive</Select.Item>
+              <Select.Item value="TRUE_POSITIVE">
+                <span className="flex items-center gap-2">
+                  <Check className="h-4 w-4" />
+                  True Positive
+                </span>
+              </Select.Item>
+              <Select.Item value="FALSE_POSITIVE">
+                <span className="flex items-center gap-2">
+                  <XCircle className="h-4 w-4" />
+                  False Positive
+                </span>
+              </Select.Item>
+              <Select.Item value="BENIGN">
+                <span className="flex items-center gap-2">
+                  <CheckCircle className="h-4 w-4" />
+                  Benign Positive
+                </span>
+              </Select.Item>
+              <Select.Item value="NEEDS_INVESTIGATION">
+                <span className="flex items-center gap-2">
+                  <HelpCircle className="h-4 w-4" />
+                  Needs Investigation
+                </span>
+              </Select.Item>
+              <Select.Item value="DUPLICATE">
+                <span className="flex items-center gap-2">
+                  <Copy className="h-4 w-4" />
+                  Duplicate
+                </span>
+              </Select.Item>
+              <Select.Item value="UNKNOWN">
+                <span className="flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4" />
+                  Unknown
+                </span>
+              </Select.Item>
             </Select>
           </div>
           
           <div className="flex items-center gap-2">
             <span className="text-body text-subtext-color">Rejection Reason:</span>
             <Select
+              className="w-64"
               placeholder="All"
               value={rejectionCategoryFilter || '__all__'}
               onValueChange={(val) => handleFilterChange('rejection_category', val === '__all__' ? null : val)}
@@ -243,16 +307,42 @@ export default function AITriageDetails() {
           <div className="flex items-center gap-2">
             <span className="text-body text-subtext-color">Status:</span>
             <Select
+              className="w-52"
               placeholder="All"
               value={statusFilter || '__all__'}
               onValueChange={(val) => handleFilterChange('status', val === '__all__' ? null : val)}
             >
               <Select.Item value="__all__">All Statuses</Select.Item>
-              <Select.Item value="PENDING">Pending</Select.Item>
-              <Select.Item value="ACCEPTED">Accepted</Select.Item>
-              <Select.Item value="REJECTED">Rejected</Select.Item>
-              <Select.Item value="QUEUED">Queued</Select.Item>
-              <Select.Item value="FAILED">Failed</Select.Item>
+              <Select.Item value="PENDING">
+                <span className="flex items-center gap-2">
+                  <Clock3 className="h-4 w-4" />
+                  Pending
+                </span>
+              </Select.Item>
+              <Select.Item value="ACCEPTED">
+                <span className="flex items-center gap-2">
+                  <Check className="h-4 w-4" />
+                  Accepted
+                </span>
+              </Select.Item>
+              <Select.Item value="REJECTED">
+                <span className="flex items-center gap-2">
+                  <XCircle className="h-4 w-4" />
+                  Rejected
+                </span>
+              </Select.Item>
+              <Select.Item value="QUEUED">
+                <span className="flex items-center gap-2">
+                  <Clock3 className="h-4 w-4" />
+                  Queued
+                </span>
+              </Select.Item>
+              <Select.Item value="FAILED">
+                <span className="flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4" />
+                  Failed
+                </span>
+              </Select.Item>
             </Select>
           </div>
           
@@ -294,27 +384,36 @@ export default function AITriageDetails() {
                     <Table.HeaderCell>Status</Table.HeaderCell>
                     <Table.HeaderCell>Rejection Reason</Table.HeaderCell>
                     <Table.HeaderCell>Reviewed By</Table.HeaderCell>
-                    <Table.HeaderCell>Created</Table.HeaderCell>
-                    <Table.HeaderCell></Table.HeaderCell>
+                    <Table.HeaderCell>Reviewed At</Table.HeaderCell>
+                    <Table.HeaderCell>Created At</Table.HeaderCell>
                   </Table.HeaderRow>
                 }
               >
                 {(data.items ?? []).map((item: TriageRecommendationDetail) => (
                   <Table.Row key={item.id}>
                     <Table.Cell>
-                      <div className="flex flex-col">
-                        <span className="text-body-bold font-body-bold text-default-font">
+                      <div className="flex max-w-[16rem] flex-col">
+                        <Link
+                          to={`/alerts/${item.alert_human_id}`}
+                          className={cn(
+                            'text-body-bold font-body-bold hover:underline',
+                            isDarkTheme ? 'text-brand-primary' : 'text-brand-900'
+                          )}
+                        >
                           {item.alert_human_id}
-                        </span>
-                        <span className="text-caption text-subtext-color truncate max-w-xs">
+                        </Link>
+                        <span className="text-caption text-subtext-color truncate max-w-[16rem]">
                           {item.alert_title}
                         </span>
                       </div>
                     </Table.Cell>
                     <Table.Cell>
                       {item.disposition && (
-                        <Badge variant={getDispositionBadgeVariant(item.disposition)}>
-                          {DISPOSITION_LABELS[item.disposition] || item.disposition}
+                        <Badge
+                          variant={getDispositionBadgeVariant(item.disposition)}
+                          className="w-full"
+                        >
+                          {getDispositionLabel(item.disposition)}
                         </Badge>
                       )}
                     </Table.Cell>
@@ -325,7 +424,10 @@ export default function AITriageDetails() {
                     </Table.Cell>
                     <Table.Cell>
                       {item.status && (
-                        <Badge variant={getStatusBadgeVariant(item.status)}>
+                        <Badge
+                          variant={getStatusBadgeVariant(item.status)}
+                          className="w-full"
+                        >
                           {STATUS_LABELS[item.status] || item.status}
                         </Badge>
                       )}
@@ -334,7 +436,7 @@ export default function AITriageDetails() {
                       {item.rejection_category ? (
                         <div className="flex flex-col">
                           <span className="text-body text-default-font">
-                            {REJECTION_CATEGORY_LABELS[item.rejection_category] || item.rejection_category}
+                            {getRejectionCategoryLabel(item.rejection_category)}
                           </span>
                           {item.rejection_reason && (
                             <span className="text-caption text-subtext-color truncate max-w-xs">
@@ -348,33 +450,28 @@ export default function AITriageDetails() {
                     </Table.Cell>
                     <Table.Cell>
                       {item.reviewed_by ? (
-                        <div className="flex flex-col">
-                          <span className="text-body">{item.reviewed_by}</span>
-                          {item.reviewed_at && (
-                            <span className="text-caption text-subtext-color">
-                              {formatAbsoluteTime(item.reviewed_at, 'MMM d, yyyy h:mm a')}
-                            </span>
-                          )}
-                        </div>
+                        <span className="text-body">{item.reviewed_by}</span>
                       ) : (
                         <span className="text-subtext-color">-</span>
                       )}
                     </Table.Cell>
                     <Table.Cell>
-                      <span className="text-caption text-subtext-color">
-                        {formatAbsoluteTime(item.created_at, 'MMM d, yyyy h:mm a')}
-                      </span>
+                      {item.reviewed_at ? (
+                        <CopyableTimestamp
+                          value={item.reviewed_at}
+                          showFull={false}
+                          variant="default-right"
+                        />
+                      ) : (
+                        <span className="text-subtext-color">-</span>
+                      )}
                     </Table.Cell>
                     <Table.Cell>
-                      <Link to={`/alerts/${item.alert_human_id}`}>
-                        <Button
-                          variant="neutral-tertiary"
-                          size="small"
-                          icon={<ExternalLink className="w-4 h-4" />}
-                        >
-                          View Alert
-                        </Button>
-                      </Link>
+                      <CopyableTimestamp
+                        value={item.created_at}
+                        showFull={false}
+                        variant="default-right"
+                      />
                     </Table.Cell>
                   </Table.Row>
                 ))}
@@ -410,6 +507,6 @@ export default function AITriageDetails() {
           </>
         )}
       </div>
-    </DefaultPageLayout>
+    </AdminPageLayout>
   );
 }

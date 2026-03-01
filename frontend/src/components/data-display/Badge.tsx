@@ -37,7 +37,7 @@ const BadgeRoot = React.forwardRef<HTMLDivElement, BadgeRootProps>(
               variant === "warning",
             "border border-solid border-error-100 bg-error-100":
               variant === "error",
-            "border border-solid border-neutral-100 bg-neutral-100":
+            "border border-solid border-neutral-200 bg-neutral-200":
               variant === "neutral",
           },
           className
@@ -51,8 +51,8 @@ const BadgeRoot = React.forwardRef<HTMLDivElement, BadgeRootProps>(
               "text-caption font-caption text-brand-800",
               {
                 "text-success-900": variant === "success",
-                "text-warning-800": variant === "warning",
-                "text-error-700": variant === "error",
+                "text-warning-900": variant === "warning",
+                "text-error-800": variant === "error",
                 "text-neutral-700": variant === "neutral",
               }
             )}
@@ -67,7 +67,7 @@ const BadgeRoot = React.forwardRef<HTMLDivElement, BadgeRootProps>(
               {
                 hidden: compact,
                 "text-success-900": variant === "success",
-                "text-warning-800": variant === "warning",
+                "text-warning-900": variant === "warning",
                 "text-error-800": variant === "error",
                 "text-neutral-700": variant === "neutral",
               }
