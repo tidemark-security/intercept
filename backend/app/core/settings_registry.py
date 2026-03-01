@@ -123,23 +123,6 @@ _register(
         default="your-super-secret-key-change-this-in-production",
     ),
     _def(
-        "algorithm",
-        env_var="ALGORITHM",
-        local_only=True,
-        category="bootstrap",
-        description="Token signing algorithm",
-        default="HS256",
-    ),
-    _def(
-        "access_token_expire_minutes",
-        env_var="ACCESS_TOKEN_EXPIRE_MINUTES",
-        value_type=SettingType.NUMBER,
-        local_only=True,
-        category="bootstrap",
-        description="Access token lifetime in minutes",
-        default=30,
-    ),
-    _def(
         "log_level",
         env_var="LOG_LEVEL",
         local_only=True,
