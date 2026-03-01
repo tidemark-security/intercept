@@ -89,7 +89,7 @@ worker:
 | `HEALTH_PORT` | `8001` | Port for health/metrics server |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `WORKER_ID` | hostname | Identifier for metrics/logging |
-| `JWT_SECRET_KEY` | required | Encryption key (same as backend) |
+| `SECRET_KEY` | required | Encryption key (same as backend) |
 
 ### Scaling Workers
 
@@ -146,7 +146,7 @@ The task queue uses the same PostgreSQL database as the main application. Config
 
 ```python
 # Initialized during app startup in main.py
-await initialize_task_queue_service(settings.database_url)
+await initialize_task_queue_service(get_local("database.url"))
 ```
 
 ### Connection Pooling
@@ -256,7 +256,7 @@ This is called automatically in `main.py`:
 
 ```python
 # In app/main.py lifespan
-await initialize_task_queue_service(settings.database_url)
+await initialize_task_queue_service(get_local("database.url"))
 register_task_handlers()
 ```
 

@@ -13,7 +13,6 @@ from uuid import UUID
 import httpx
 from datetime import datetime, timezone
 
-from app.core.config import settings
 from app.services.settings_service import SettingsService
 
 logger = logging.getLogger(__name__)

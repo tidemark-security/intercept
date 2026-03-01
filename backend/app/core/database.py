@@ -4,13 +4,13 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy import text
 from typing import AsyncGenerator
 import logging
-from app.core.config import settings
+from app.core.settings_registry import get_local
 
 logger = logging.getLogger(__name__)
 
 # Create async engine
 engine = create_async_engine(
-    settings.database_url,
+    get_local("database.url"),
     echo=True,  # Set to False in production
     future=True
 )
@@ -58,7 +58,7 @@ async def test_db_connection():
             "🐘 Using local PostgreSQL:\n"
             "   sudo systemctl start postgresql\n"
             "   # or on macOS: brew services start postgresql\n\n"
-            f"Database URL: {settings.database_url}\n"
+            f"Database URL: {get_local('database.url')}\n"
             f"Error details: {str(e)}\n"
             "="*80
         )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import asyncio
 import hashlib
 import logging
@@ -15,11 +15,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.config import settings
+from app.core.settings_registry import get_local
 from app.models.enums import AccountType, SessionRevokedReason, UserRole, UserStatus
 from app.models.models import AuthSession, UserAccount, PASSWORD_POLICY_REGEX
 from app.services import AuditContext, AuthAuditService, PasswordHasher
 from app.services.passkey_service import passkey_service
+from app.services.security.password_hasher import Argon2Parameters
 
 logger = logging.getLogger(__name__)
 
@@ -142,15 +143,26 @@ class AuthService:
         password_hasher: Optional[PasswordHasher] = None,
         audit_service: Optional[AuthAuditService] = None,
     ) -> None:
-        self._password_hasher = password_hasher or PasswordHasher(settings.build_argon2_parameters())
+        # Argon2 params are local_only (changing breaks existing hashes)
+        argon2_params = Argon2Parameters(
+            time_cost=get_local("auth.argon2.time_cost"),
+            memory_cost=get_local("auth.argon2.memory_cost_kib"),
+            parallelism=get_local("auth.argon2.parallelism"),
+            hash_len=get_local("auth.argon2.hash_len"),
+            salt_len=get_local("auth.argon2.salt_len"),
+            encoding=get_local("auth.argon2.encoding"),
+        )
+        self._password_hasher = password_hasher or PasswordHasher(argon2_params)
         self._audit = audit_service or AuthAuditService()
-        self._lockout_threshold = settings.login_lockout_threshold
-        self._lockout_duration = settings.login_lockout_duration
-        self._idle_timeout = settings.session_idle_timeout
-        self._absolute_timeout = settings.session_absolute_timeout
+        # Session timeouts are local_only (read per-request from frozen values)
+        self._idle_timeout = timedelta(hours=get_local("auth.session.idle_timeout_hours"))
+        self._absolute_timeout = timedelta(hours=get_local("auth.session.absolute_timeout_hours"))
+        # Login protection settings are hot-swappable — read per-call via
+        # _get_login_settings().  We keep a default rate limiter that is
+        # rebuilt when settings change.
         self._rate_limiter = SlidingWindowRateLimiter(
-            capacity=settings.login_rate_limit_attempts,
-            window_seconds=settings.login_rate_limit_window_seconds,
+            capacity=get_local("auth.login.rate_limit_attempts"),
+            window_seconds=get_local("auth.login.rate_limit_window_seconds"),
         )
 
     # ------------------------------------------------------------------
@@ -162,6 +174,18 @@ class AuthService:
         if not allowed:
             logger.warning("Login rate limit exceeded", extra={"auth": {"key": key, "retry_after": retry_after}})
         return allowed, retry_after
+
+    async def _get_login_settings(self, db: AsyncSession) -> tuple[int, timedelta]:
+        """Read hot-swappable login protection settings from DB.
+
+        Returns ``(lockout_threshold, lockout_duration)``.
+        """
+        from app.services.settings_service import SettingsService
+
+        svc = SettingsService(db)  # type: ignore[arg-type]
+        threshold = await svc.get("auth.login.lockout_threshold", default=5)
+        duration_minutes = await svc.get("auth.login.lockout_duration_minutes", default=15)
+        return int(threshold), timedelta(minutes=int(duration_minutes))
 
     # ------------------------------------------------------------------
     # Authentication flows
@@ -244,10 +268,11 @@ class AuthService:
             user.failed_login_attempts += 1
             user.updated_at = now
 
-            attempts_remaining = max(0, self._lockout_threshold - user.failed_login_attempts)
-            if user.failed_login_attempts >= self._lockout_threshold:
+            lockout_threshold, lockout_duration = await self._get_login_settings(db)
+            attempts_remaining = max(0, lockout_threshold - user.failed_login_attempts)
+            if user.failed_login_attempts >= lockout_threshold:
                 user.status = UserStatus.LOCKED
-                user.lockout_expires_at = now + self._lockout_duration
+                user.lockout_expires_at = now + lockout_duration
                 self._audit.account_locked(
                     user_id=user.id,
                     username=user.username,

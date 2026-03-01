@@ -21,10 +21,10 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # type: ignore[attr-defined]
 from sqlmodel import select
 
-from app.core.config import settings
+from app.core.settings_registry import get_local
 from app.models.enums import UserRole, UserStatus
 from app.models.models import UserAccount
-from app.services.security.password_hasher import PasswordHasher
+from app.services.security.password_hasher import Argon2Parameters, PasswordHasher
 
 
 # Test user configurations
@@ -55,10 +55,19 @@ TEST_USERS = [
 
 async def seed_test_users() -> None:
     """Create test users if they don't exist."""
-    engine = create_async_engine(settings.database_url, echo=False)
+    engine = create_async_engine(get_local("database.url"), echo=False)
     session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     
-    password_hasher = PasswordHasher(settings.build_argon2_parameters())
+    password_hasher = PasswordHasher(
+        Argon2Parameters(
+            time_cost=get_local("auth.argon2.time_cost"),
+            memory_cost=get_local("auth.argon2.memory_cost_kib"),
+            parallelism=get_local("auth.argon2.parallelism"),
+            hash_len=get_local("auth.argon2.hash_len"),
+            salt_len=get_local("auth.argon2.salt_len"),
+            encoding=get_local("auth.argon2.encoding"),
+        )
+    )
     now = datetime.now(timezone.utc)
     
     print("=" * 60)

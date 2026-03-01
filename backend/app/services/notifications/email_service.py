@@ -7,21 +7,41 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
-from app.core.config import settings
-
 logger = logging.getLogger(__name__)
 
 
 class EmailService:
-    """Service for sending email notifications via SMTP."""
+    """Service for sending email notifications via SMTP.
+
+    SMTP settings are hot-swappable — they are read fresh from the unified
+    settings service on every send, so admin changes take effect immediately
+    without a restart.
+    """
 
     def __init__(self) -> None:
-        self._smtp_host = settings.smtp_host
-        self._smtp_port = settings.smtp_port
-        self._smtp_username = settings.smtp_username
-        self._smtp_password = settings.smtp_password
-        self._smtp_use_tls = settings.smtp_use_tls
-        self._smtp_from_address = settings.smtp_from_address
+        # No settings cached at init — read per-send for hot-swap support
+        pass
+
+    async def _load_smtp_settings(self) -> dict:
+        """Load SMTP settings through the unified precedence chain.
+
+        Uses a one-off async session so that callers don't need to pass ``db``.
+        """
+        from app.core.database import async_session_factory
+        from app.services.settings_service import SettingsService
+
+        async with async_session_factory() as session:
+            svc = SettingsService(session)  # type: ignore[arg-type]
+            return {
+                "host": await svc.get("smtp.host", default="localhost"),
+                "port": await svc.get("smtp.port", default=1025),
+                "username": await svc.get("smtp.username"),
+                "password": await svc.get("smtp.password"),
+                "use_tls": await svc.get("smtp.use_tls", default=False),
+                "from_address": await svc.get(
+                    "smtp.from_address", default="security-admin@example.com"
+                ),
+            }
 
     async def send_temporary_credential(
         self,
@@ -117,8 +137,16 @@ Intercept Security Platform
         Returns:
             Message ID or delivery reference
         """
+        smtp = await self._load_smtp_settings()
+        smtp_host = smtp["host"]
+        smtp_port = int(smtp["port"])
+        smtp_username = smtp["username"]
+        smtp_password = smtp["password"]
+        smtp_use_tls = smtp["use_tls"]
+        smtp_from_address = smtp["from_address"]
+
         # For development/testing, just log the email instead of sending
-        if not self._smtp_host or self._smtp_host == "localhost":
+        if not smtp_host or smtp_host == "localhost":
             logger.info(
                 f"[EMAIL STUB] Would send email to {recipient}:\n"
                 f"Subject: {subject}\n"
@@ -129,7 +157,7 @@ Intercept Security Platform
         try:
             # Create message
             msg = MIMEMultipart("alternative")
-            msg["From"] = self._smtp_from_address
+            msg["From"] = smtp_from_address
             msg["To"] = recipient
             msg["Subject"] = subject
 
@@ -142,14 +170,14 @@ Intercept Security Platform
                 msg.attach(part2)
 
             # Send via SMTP
-            if self._smtp_use_tls:
-                server = smtplib.SMTP(self._smtp_host, self._smtp_port)
+            if smtp_use_tls:
+                server = smtplib.SMTP(smtp_host, smtp_port)
                 server.starttls()
             else:
-                server = smtplib.SMTP(self._smtp_host, self._smtp_port)
+                server = smtplib.SMTP(smtp_host, smtp_port)
 
-            if self._smtp_username and self._smtp_password:
-                server.login(self._smtp_username, self._smtp_password)
+            if smtp_username and smtp_password:
+                server.login(smtp_username, smtp_password)
 
             server.send_message(msg)
             server.quit()

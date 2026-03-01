@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.config import settings
+from app.core.settings_registry import get_local
 from app.models.enums import (
     AccountType,
     ResetDeliveryChannel,
@@ -29,6 +29,7 @@ from app.models.models import (
 from app.services import AuditContext, AuthAuditService, PasswordHasher
 from app.services.auth_service import RequestMetadata
 from app.services.notifications import email_service
+from app.services.security.password_hasher import Argon2Parameters
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,16 @@ class AdminAuthService:
         password_hasher: Optional[PasswordHasher] = None,
         audit_service: Optional[AuthAuditService] = None,
     ) -> None:
-        self._hasher = password_hasher or PasswordHasher(settings.build_argon2_parameters())
+        self._hasher = password_hasher or PasswordHasher(
+            Argon2Parameters(
+                time_cost=get_local("auth.argon2.time_cost"),
+                memory_cost=get_local("auth.argon2.memory_cost_kib"),
+                parallelism=get_local("auth.argon2.parallelism"),
+                hash_len=get_local("auth.argon2.hash_len"),
+                salt_len=get_local("auth.argon2.salt_len"),
+                encoding=get_local("auth.argon2.encoding"),
+            )
+        )
         self._audit = audit_service or AuthAuditService()
 
     async def create_user(

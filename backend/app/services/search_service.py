@@ -60,6 +60,23 @@ class QueryClassification:
     numeric_id: Optional[int] = None            # Plain numeric ID (could match any entity type)
 
 
+@dataclass
+class LegacyTotalByType:
+    """Backward-compatible per-entity totals used by legacy unit tests."""
+
+    alert: int = 0
+    case: int = 0
+    task: int = 0
+
+
+@dataclass
+class LegacyGlobalSearchResponse:
+    """Backward-compatible global search response shape."""
+
+    results: List[SearchResultItem]
+    total_by_type: LegacyTotalByType
+
+
 # Regex patterns for query classification
 # Order matters - more specific patterns should be checked first
 
@@ -1018,6 +1035,117 @@ class SearchService:
         return await self._search_entity(
             db, "tasks", EntityType.TASK, query, start_date, end_date, limit
         )
+
+    async def fuzzy_search(
+        self,
+        db: AsyncSession,
+        query: str,
+        entity_types: List[EntityType],
+        similarity_threshold: float = 0.3,
+        limit_per_type: int = 5,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ) -> List[SearchResultItem]:
+        """Backward-compatible fuzzy search entrypoint.
+
+        Kept for legacy unit tests and callers that still invoke ``fuzzy_search``
+        directly.
+        """
+        now = datetime.now(timezone.utc)
+        resolved_end = end_date or now
+        resolved_start = start_date or (resolved_end - timedelta(days=30))
+
+        table_map = {
+            EntityType.ALERT: "alerts",
+            EntityType.CASE: "cases",
+            EntityType.TASK: "tasks",
+        }
+
+        all_items: List[SearchResultItem] = []
+        for entity_type in entity_types:
+            table_name = table_map.get(entity_type)
+            if not table_name:
+                continue
+            items, _ = await self._fuzzy_search_entity_paginated(
+                db=db,
+                table_name=table_name,
+                entity_type=entity_type,
+                query=query,
+                start_date=resolved_start,
+                end_date=resolved_end,
+                skip=0,
+                limit=limit_per_type,
+                similarity_threshold=similarity_threshold,
+            )
+            all_items.extend(items)
+
+        all_items.sort(key=lambda x: (-x.score, -x.created_at.timestamp()))
+        return all_items
+
+    async def global_search(
+        self,
+        db: AsyncSession,
+        query: str,
+        entity_types: List[EntityType],
+        limit_per_type: int = 5,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ) -> LegacyGlobalSearchResponse:
+        """Backward-compatible non-paginated global search.
+
+        Runs full-text search per entity type and only falls back to fuzzy search
+        for entity types that return no full-text/jsonb matches.
+        """
+        now = datetime.now(timezone.utc)
+        resolved_end = end_date or now
+        resolved_start = start_date or (resolved_end - timedelta(days=30))
+
+        table_map = {
+            EntityType.ALERT: "alerts",
+            EntityType.CASE: "cases",
+            EntityType.TASK: "tasks",
+        }
+        total_by_type = LegacyTotalByType()
+        merged_results: List[SearchResultItem] = []
+
+        for entity_type in entity_types:
+            table_name = table_map.get(entity_type)
+            if not table_name:
+                continue
+
+            items, count = await self._search_entity(
+                db=db,
+                table_name=table_name,
+                entity_type=entity_type,
+                query=query,
+                start_date=resolved_start,
+                end_date=resolved_end,
+                limit=limit_per_type,
+            )
+
+            if count == 0:
+                items, count = await self._fuzzy_search_entity_paginated(
+                    db=db,
+                    table_name=table_name,
+                    entity_type=entity_type,
+                    query=query,
+                    start_date=resolved_start,
+                    end_date=resolved_end,
+                    skip=0,
+                    limit=limit_per_type,
+                )
+
+            if entity_type == EntityType.ALERT:
+                total_by_type.alert = count
+            elif entity_type == EntityType.CASE:
+                total_by_type.case = count
+            elif entity_type == EntityType.TASK:
+                total_by_type.task = count
+
+            merged_results.extend(items)
+
+        merged_results.sort(key=lambda x: (-x.score, -x.created_at.timestamp()))
+        return LegacyGlobalSearchResponse(results=merged_results, total_by_type=total_by_type)
 
     async def paginated_search(
         self,

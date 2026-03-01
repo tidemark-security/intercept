@@ -5,7 +5,7 @@ import logging
 from fastapi_pagination import add_pagination
 from fastapi_pagination.cursor import CursorParams
 
-from app.core.config import settings
+from app.core.settings_registry import get_local
 from app.core.database import test_db_connection
 from app.core.security import initialize_encryption_service
 from app.services.task_queue_service import initialize_task_queue_service, shutdown_task_queue_service
@@ -17,7 +17,7 @@ from app.models import models
 
 # Configure logging
 logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper()),
+    level=getattr(logging, get_local("log_level").upper()),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ async def app_lifespan(app: FastAPI):
     
     # Initialize encryption service
     logger.info("Initializing encryption service...")
-    initialize_encryption_service(settings.secret_key.encode())
+    initialize_encryption_service(get_local("secret_key").encode())
     
     # Test database connection first
     logger.info("Testing database connection...")
@@ -43,7 +43,7 @@ async def app_lifespan(app: FastAPI):
     # See worker.py and docker-compose.yml worker service
     logger.info("Initializing task queue service...")
     try:
-        await initialize_task_queue_service(settings.database_url)
+        await initialize_task_queue_service(get_local("database.url"))
         register_task_handlers()
         logger.info("✅ Task queue service initialized (enqueue-only mode)")
     except Exception as e:
@@ -78,7 +78,7 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=get_local("cors_origins"),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=[

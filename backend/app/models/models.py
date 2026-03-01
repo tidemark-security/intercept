@@ -1602,6 +1602,8 @@ class AppSettingRead(AppSettingBase):
     id: int
     created_at: datetime
     updated_at: datetime
+    local_only: bool = False
+    source: str = "default"  # "env", "database", or "default"
     # Note: Service layer masks value if is_secret=true
 
 
@@ -1696,7 +1698,7 @@ class LangFlowMessageBase(SQLModel):
     """Base model for LangFlow messages."""
     
     role: MessageRole = Field(description="Message author role")
-    content: str = Field(min_length=1, description="Message text content")
+    content: str = Field(default="", description="Message text content")
     message_metadata: Dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSONB),

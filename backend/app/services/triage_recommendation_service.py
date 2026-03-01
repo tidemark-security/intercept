@@ -55,7 +55,7 @@ def _build_state_change_note(
     changes: List[str] = []
 
     if after_status != before_status and after_status is not None:
-        changes.append(f"set status to `{after_status.value}`")
+        changes.append(f"set status to {after_status.value}")
 
     if after_priority != before_priority and after_priority is not None:
         changes.append(f"set priority to `{after_priority.value}`")
@@ -79,7 +79,7 @@ def _build_state_change_note(
     if not changes:
         return None
 
-    return f"Accepted AI recommendation and " + "; ".join(changes) + "."
+    return f"accepted AI recommendation and " + "; ".join(changes) + "."
 
 
 async def get_by_alert_id(

@@ -4,10 +4,12 @@ Feature Flags API Routes
 Public endpoint for retrieving feature flags without authentication.
 Used by frontend to conditionally enable/disable features based on backend configuration.
 """
-from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel, Field
 import logging
+import json
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.services.settings_service import SettingsService
@@ -26,13 +28,10 @@ DEFAULT_CASE_CLOSURE_RECOMMENDED_TAGS = [
 ]
 
 
-def _parse_recommended_tags(setting_value: str | None) -> list[str]:
-    if not setting_value:
-        return DEFAULT_CASE_CLOSURE_RECOMMENDED_TAGS
-
+def _normalize_tags(tags: list[str]) -> list[str]:
     parsed_tags: list[str] = []
     seen_tags: set[str] = set()
-    for tag in setting_value.split(","):
+    for tag in tags:
         normalized_tag = tag.strip()
         if not normalized_tag:
             continue
@@ -45,6 +44,28 @@ def _parse_recommended_tags(setting_value: str | None) -> list[str]:
     return parsed_tags or DEFAULT_CASE_CLOSURE_RECOMMENDED_TAGS
 
 
+def _parse_recommended_tags(setting_value: str | list[str] | None) -> list[str]:
+    if setting_value is None:
+        return DEFAULT_CASE_CLOSURE_RECOMMENDED_TAGS
+
+    if isinstance(setting_value, list):
+        string_tags = [tag for tag in setting_value if isinstance(tag, str)]
+        return _normalize_tags(string_tags)
+
+    if not setting_value.strip():
+        return DEFAULT_CASE_CLOSURE_RECOMMENDED_TAGS
+
+    try:
+        parsed_json = json.loads(setting_value)
+        if isinstance(parsed_json, list):
+            string_tags = [tag for tag in parsed_json if isinstance(tag, str)]
+            return _normalize_tags(string_tags)
+    except json.JSONDecodeError:
+        pass
+
+    return _normalize_tags(setting_value.split(","))
+
+
 class FeatureFlags(BaseModel):
     """Public feature flags for frontend."""
     
@@ -53,7 +74,7 @@ class FeatureFlags(BaseModel):
         description="Whether AI triage is available (LangFlow alert triage flow is configured)"
     )
     ai_triage_auto_enqueue: bool = Field(
-        default=True,
+        default=False,
         description="Whether to automatically enqueue triage when alerts are created"
     )
     case_closure_recommended_tags: list[str] = Field(
@@ -79,14 +100,12 @@ async def get_feature_flags(
     triage_flow_id = await settings.get_typed_value("langflow.alert_triage_flow_id")
     ai_triage_enabled = bool(triage_flow_id)
     
-    # Check if auto-enqueue is enabled (defaults to True if not set)
+    # Check if auto-enqueue is enabled (defaults to False if not set)
     auto_enqueue = await settings.get_typed_value("triage.auto_enqueue")
-    ai_triage_auto_enqueue = auto_enqueue if auto_enqueue is not None else True
+    ai_triage_auto_enqueue = auto_enqueue if auto_enqueue is not None else False
 
     recommended_tags_setting = await settings.get_typed_value("case_closure.recommended_tags")
-    case_closure_recommended_tags = _parse_recommended_tags(
-        str(recommended_tags_setting) if recommended_tags_setting is not None else None
-    )
+    case_closure_recommended_tags = _parse_recommended_tags(recommended_tags_setting)
     
     return FeatureFlags(
         ai_triage_enabled=ai_triage_enabled,

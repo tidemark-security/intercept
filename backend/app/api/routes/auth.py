@@ -14,7 +14,7 @@ from app.api.route_utils import (
     read_session_cookie,
     revoke_session_cookie,
 )
-from app.core.config import settings
+from app.core.settings_registry import get_local
 from app.core.database import get_db
 from app.models.enums import AccountType, SessionRevokedReason, UserRole, UserStatus
 from app.services.auth_service import (
@@ -198,7 +198,7 @@ async def login(
     allowed, retry_after = await auth_service.check_rate_limit(limiter_key)
     if not allowed:
         if retry_after is None:
-            retry_after = settings.login_rate_limit_window_seconds
+            retry_after = get_local("auth.login.rate_limit_window_seconds")
         payload = ValidationErrorResponse(
             message="Too many login attempts. Please try again later.",
             fields=[],

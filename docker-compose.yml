@@ -40,8 +40,12 @@ services:
       MINIO_SECRET_KEY: minioadmin
       MINIO_BUCKET: intercept-attachments
       MINIO_USE_SSL: "false"
-      JWT_SECRET_KEY: dev-secret-key-change-in-production
-      ADMIN_API_KEY: dev-admin-key-change-in-production
+      LANGFLOW__BASE_URL: http://langflow:7860/api/v1
+      LANGFLOW__DEFAULT_FLOW_ID: "tmi_general_purpose"
+      LANGFLOW__CASE_DETAIL_FLOW_ID: "tmi_case_agent"
+      LANGFLOW__TASK_DETAIL_FLOW_ID: "tmi_task_agent"
+      LANGFLOW__ALERT_TRIAGE_FLOW_ID: "tmi_alert_triage"
+      SECRET_KEY: dev-secret-key-change-in-production
     ports:
       - "8000:8000"
     volumes:
@@ -120,7 +124,12 @@ services:
       dockerfile: Dockerfile.dev
     environment:
       DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@postgres:5432/intercept_case_db
-      JWT_SECRET_KEY: dev-secret-key-change-in-production
+      SECRET_KEY: dev-secret-key-change-in-production
+      LANGFLOW__BASE_URL: http://langflow:7860/api/v1
+      LANGFLOW__DEFAULT_FLOW_ID: "tmi_general_purpose"
+      LANGFLOW__CASE_DETAIL_FLOW_ID: "tmi_case_agent"
+      LANGFLOW__TASK_DETAIL_FLOW_ID: "tmi_task_agent"
+      LANGFLOW__ALERT_TRIAGE_FLOW_ID: "tmi_alert_triage"
       WORKER_CONCURRENCY: "20"
       HEALTH_PORT: "8001"
       LOG_LEVEL: "INFO"

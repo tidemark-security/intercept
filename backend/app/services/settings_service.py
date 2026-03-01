@@ -1,84 +1,225 @@
 """
-Settings service for managing application configuration.
+Unified settings service for managing application configuration.
 
-Provides CRUD operations for app settings with:
-- Environment variable precedence
+Resolves settings through a strict precedence chain:
+    1. Environment variable (real env var)
+    2. .env file (resolved via Pydantic BaseSettings / os.getenv)
+    3. Database (app_settings table) — skipped for local_only settings
+    4. Default from the declarative registry
+
+Provides CRUD operations for DB-backed settings with:
 - Encryption for secret values
-- Audit logging for changes
 - Type coercion (STRING, NUMBER, BOOLEAN, JSON)
+- Registry-driven metadata (local_only, category, description)
 """
+from __future__ import annotations
+
+import logging
 import os
 import json
-import logging
-from typing import Optional, List, Any, Dict
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.security import get_encryption_service
+from app.core.settings_registry import (
+    SETTINGS_REGISTRY,
+    SettingDefinition,
+    _coerce,
+    _load_dotenv,
+)
+from app.models.enums import SettingType
 from app.models.models import (
     AppSetting,
     AppSettingCreate,
-    AppSettingUpdate,
     AppSettingRead,
+    AppSettingUpdate,
 )
-from app.models.enums import SettingType
-from app.core.security import get_encryption_service
 
 logger = logging.getLogger(__name__)
 
 
 class SettingsService:
-    """Service for managing application settings."""
+    """Unified service for resolving, reading, and writing application settings.
 
-    def __init__(self, db: AsyncSession):
+    Reads use the precedence chain: env var → .env → database → registry default.
+    Writes target the ``app_settings`` database table (rejected for local_only keys).
+    """
+
+    def __init__(self, db: AsyncSession) -> None:
         self.db = db
-        self.encryption = get_encryption_service()
+        self._encryption: Optional[Any] = None
+
+    @property
+    def encryption(self):
+        """Lazy-load encryption service (only needed for secret values)."""
+        if self._encryption is None:
+            self._encryption = get_encryption_service()
+        return self._encryption
+
+    @staticmethod
+    def _env_lookup(env_var: str) -> Optional[str]:
+        """Look up an env var from os.environ, then fall back to .env file."""
+        val = os.getenv(env_var)
+        if val is not None:
+            return val
+        return _load_dotenv().get(env_var)
+
+    @staticmethod
+    def _validate_value_type(
+        key: str,
+        raw_value: Optional[str],
+        value_type: SettingType,
+    ) -> None:
+        """Validate a raw setting value against its declared SettingType."""
+        if raw_value is None:
+            return
+
+        if value_type == SettingType.BOOLEAN:
+            normalized = raw_value.strip().lower()
+            if normalized not in {"true", "false", "1", "0", "yes", "no", "on", "off"}:
+                raise ValueError(
+                    f"Invalid value for setting '{key}': expected BOOLEAN "
+                    f"(accepted: true/false/1/0/yes/no/on/off), got {raw_value!r}"
+                )
+            return
+
+        try:
+            _coerce(raw_value, value_type)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Invalid value for setting '{key}': expected {value_type.value}, got {raw_value!r}"
+            ) from exc
+
+    # ------------------------------------------------------------------
+    # Unified resolution
+    # ------------------------------------------------------------------
+
+    async def get(self, key: str, default: Any = None) -> Any:
+        """Resolve a single setting value through the full precedence chain.
+
+        Returns the *typed* value (coerced via ``SettingType`` from the
+        registry).  If the key is unknown to the registry the method still
+        falls back to the database so that ad-hoc settings continue to work.
+        """
+        defn = SETTINGS_REGISTRY.get(key)
+
+        # 1. Environment variable (covers both real env and .env)
+        if defn is not None:
+            env_value = self._env_lookup(defn.env_var)
+            if env_value is not None:
+                return _coerce(env_value, defn.value_type)
+
+        # 2. Database (skip for local_only)
+        if defn is None or not defn.local_only:
+            db_value = await self._get_db_value(key, decrypt=True)
+            if db_value is not None:
+                vtype = defn.value_type if defn else SettingType.STRING
+                return _coerce(db_value, vtype)
+
+        # 3. Registry default → caller default
+        if defn is not None and defn.default is not None:
+            return defn.default
+
+        return default
+
+    # Backward-compatible alias
+    async def get_typed_value(self, key: str, default: Any = None) -> Any:
+        """Alias for :meth:`get` — keeps existing call-sites working."""
+        return await self.get(key, default=default)
+
+    # ------------------------------------------------------------------
+    # Read (API-facing, includes metadata)
+    # ------------------------------------------------------------------
 
     async def get_all_settings(
         self,
         category: Optional[str] = None,
         include_secrets: bool = False,
     ) -> List[AppSettingRead]:
+        """Return all registered settings with resolved values.
+
+        Iterates the full ``SETTINGS_REGISTRY`` so that every known setting
+        appears in the response — even those that only exist in env vars or
+        as defaults.  Also includes any *ad-hoc* database rows not in the
+        registry.
         """
-        Get all settings, optionally filtered by category.
-        
-        Args:
-            category: Filter by category (optional)
-            include_secrets: If True, decrypt secret values; otherwise mask them
-            
-        Returns:
-            List of settings
-        """
+        # Load all DB settings in one query
         query = select(AppSetting)
-        
-        if category:
-            query = query.where(AppSetting.category == category)
-        
         result = await self.db.execute(query)
-        settings = result.scalars().all()
-        
-        # Process settings to apply environment variable precedence and masking
-        settings_list = []
-        for setting in settings:
-            setting_dict = setting.model_dump()
-            
-            # Check for environment variable override
-            env_key = self._get_env_key(setting.key)
-            env_value = os.getenv(env_key)
-            
-            if env_value is not None:
-                # Environment variable takes precedence
-                setting_dict['value'] = env_value
-            elif setting.is_secret:
-                if include_secrets:
-                    # Decrypt the value
-                    setting_dict['value'] = self.encryption.decrypt(setting.value or "")
-                else:
-                    # Mask the secret
-                    setting_dict['value'] = self.encryption.mask_secret(setting.value)
-            
-            settings_list.append(AppSettingRead(**setting_dict))
-        
+        db_settings: Dict[str, AppSetting] = {
+            s.key: s for s in result.scalars().all()
+        }
+
+        settings_list: List[AppSettingRead] = []
+        now = datetime.now(timezone.utc)
+
+        for defn in SETTINGS_REGISTRY.values():
+            if category and defn.category != category:
+                continue
+
+            value, source = self._resolve_value(defn, db_settings.get(defn.key))
+            db_row = db_settings.pop(defn.key, None)
+
+            # Mask secret values for display
+            display_value = value
+            if defn.is_secret and value is not None and not include_secrets:
+                display_value = self._mask(str(value))
+
+            settings_list.append(
+                AppSettingRead(
+                    id=db_row.id if db_row else 0,
+                    key=defn.key,
+                    value=self._serialize_display_value(display_value, defn.value_type),
+                    value_type=defn.value_type,
+                    is_secret=defn.is_secret,
+                    description=defn.description,
+                    category=defn.category,
+                    local_only=defn.local_only,
+                    source=source,
+                    created_at=db_row.created_at if db_row else now,
+                    updated_at=db_row.updated_at if db_row else now,
+                )
+            )
+
+        # Include ad-hoc DB rows that are NOT in the registry
+        for key, db_row in db_settings.items():
+            if category and db_row.category != category:
+                continue
+
+            value: Optional[str] = db_row.value
+            source = "database"
+            env_key = key.upper().replace(".", "__")
+            env_val = self._env_lookup(env_key)
+            if env_val is not None:
+                value = env_val
+                source = "env"
+            elif db_row.is_secret and value:
+                # Decrypt DB-stored secret so we can mask it below
+                value = self.encryption.decrypt(value)
+
+            # Mask all secret values unless caller explicitly wants them
+            if db_row.is_secret and value and not include_secrets:
+                value = self._mask(value)
+
+            settings_list.append(
+                AppSettingRead(
+                    id=db_row.id,
+                    key=db_row.key,
+                    value=value,
+                    value_type=db_row.value_type,
+                    is_secret=db_row.is_secret,
+                    description=db_row.description,
+                    category=db_row.category,
+                    local_only=False,
+                    source=source,
+                    created_at=db_row.created_at,
+                    updated_at=db_row.updated_at,
+                )
+            )
+
         return settings_list
 
     async def get_setting(
@@ -86,299 +227,328 @@ class SettingsService:
         key: str,
         include_secret: bool = False,
     ) -> Optional[AppSettingRead]:
-        """
-        Get a single setting by key.
-        
-        Args:
-            key: Setting key
-            include_secret: If True, decrypt secret value; otherwise mask it
-            
-        Returns:
-            Setting or None if not found
-        """
-        # Check environment variable first
-        env_key = self._get_env_key(key)
-        env_value = os.getenv(env_key)
-        
-        # Get from database
-        result = await self.db.execute(
-            select(AppSetting).where(AppSetting.key == key)
-        )
-        setting = result.scalar_one_or_none()
-        
-        if setting:
-            setting_dict = setting.model_dump()
-            
-            if env_value is not None:
-                # Environment variable takes precedence
-                setting_dict['value'] = env_value
-            elif setting.is_secret:
-                if include_secret:
-                    # Decrypt the value
-                    setting_dict['value'] = self.encryption.decrypt(setting.value or "")
-                else:
-                    # Mask the secret
-                    setting_dict['value'] = self.encryption.mask_secret(setting.value)
-            
-            return AppSettingRead(**setting_dict)
-        
-        # Setting not in database, but might have env var
-        if env_value is not None:
-            # Return a pseudo-setting from environment
-            return AppSettingRead(
-                id=0,
-                key=key,
-                value=env_value,
-                value_type=SettingType.STRING,
-                is_secret=False,
-                description=f"From environment variable {env_key}",
-                category="environment",
-                created_at=datetime.now(timezone.utc),
-                updated_at=datetime.now(timezone.utc),
+        """Return a single setting with resolved value and metadata."""
+        defn = SETTINGS_REGISTRY.get(key)
+        now = datetime.now(timezone.utc)
+
+        # Load DB row (unless local_only)
+        db_row: Optional[AppSetting] = None
+        if defn is None or not defn.local_only:
+            res = await self.db.execute(
+                select(AppSetting).where(AppSetting.key == key)
             )
-        
+            db_row = res.scalar_one_or_none()
+
+        if defn is not None:
+            value, source = self._resolve_value(defn, db_row)
+
+            display_value = value
+            if defn.is_secret and value is not None and not include_secret:
+                display_value = self._mask(str(value))
+
+            return AppSettingRead(
+                id=db_row.id if db_row else 0,
+                key=defn.key,
+                value=self._serialize_display_value(display_value, defn.value_type),
+                value_type=defn.value_type,
+                is_secret=defn.is_secret,
+                description=defn.description,
+                category=defn.category,
+                local_only=defn.local_only,
+                source=source,
+                created_at=db_row.created_at if db_row else now,
+                updated_at=db_row.updated_at if db_row else now,
+            )
+
+        # Not in registry — fall back to DB-only behaviour
+        if db_row is not None:
+            value = db_row.value
+            source = "database"
+            env_key = key.upper().replace(".", "__")
+            env_val = self._env_lookup(env_key)
+            if env_val is not None:
+                value = env_val
+                source = "env"
+            elif db_row.is_secret and value:
+                # Decrypt DB-stored secret so we can mask it below
+                value = self.encryption.decrypt(value)
+
+            # Mask all secret values unless caller explicitly wants them
+            if db_row.is_secret and value and not include_secret:
+                value = self._mask(value)
+
+            return AppSettingRead(
+                id=db_row.id,
+                key=db_row.key,
+                value=value,
+                value_type=db_row.value_type,
+                is_secret=db_row.is_secret,
+                description=db_row.description,
+                category=db_row.category,
+                local_only=False,
+                source=source,
+                created_at=db_row.created_at,
+                updated_at=db_row.updated_at,
+            )
+
         return None
 
+    # ------------------------------------------------------------------
+    # Write operations (DB-backed settings only)
+    # ------------------------------------------------------------------
+
     async def create_setting(
-        self,
-        setting_create: AppSettingCreate,
+        self, setting_create: AppSettingCreate
     ) -> AppSettingRead:
+        """Create a new DB-backed setting.
+
+        Raises ``ValueError`` for local_only keys or duplicate keys.
         """
-        Create a new setting.
-        
-        Args:
-            setting_create: Setting creation data
-            
-        Returns:
-            Created setting
-            
-        Raises:
-            ValueError: If setting key already exists
-        """
-        # Check if setting already exists
+        defn = SETTINGS_REGISTRY.get(setting_create.key)
+        if defn is not None and defn.local_only:
+            raise ValueError(
+                f"Setting '{setting_create.key}' is local-only and cannot be "
+                f"stored in the database. Set it via the {defn.env_var} "
+                f"environment variable instead."
+            )
+
         existing = await self.db.execute(
             select(AppSetting).where(AppSetting.key == setting_create.key)
         )
         if existing.scalar_one_or_none():
-            raise ValueError(f"Setting with key '{setting_create.key}' already exists")
-        
-        # Encrypt value if it's a secret
-        value_to_store = setting_create.value
-        if setting_create.is_secret and value_to_store:
-            value_to_store = self.encryption.encrypt(value_to_store)
-        
-        # Create the setting
-        setting = AppSetting(
-            **setting_create.model_dump(exclude={"value"}),
-            value=value_to_store,
+            raise ValueError(
+                f"Setting with key '{setting_create.key}' already exists"
+            )
+
+        effective_value_type = (
+            defn.value_type if defn is not None else setting_create.value_type
         )
-        
+        self._validate_value_type(
+            setting_create.key,
+            setting_create.value,
+            effective_value_type,
+        )
+
+        value_to_store = setting_create.value
+        is_secret = setting_create.is_secret
+        if defn is not None:
+            is_secret = defn.is_secret
+        if is_secret and value_to_store:
+            value_to_store = self.encryption.encrypt(value_to_store)
+
+        setting_data = setting_create.model_dump(exclude={"value"})
+        if defn is not None:
+            setting_data["value_type"] = defn.value_type
+            setting_data["is_secret"] = defn.is_secret
+            setting_data["category"] = defn.category
+            setting_data["description"] = defn.description
+
+        setting = AppSetting(**setting_data, value=value_to_store)
         self.db.add(setting)
         await self.db.commit()
         await self.db.refresh(setting)
-        
+
         logger.info(
-            f"Created setting: key={setting.key}, category={setting.category}, "
-            f"is_secret={setting.is_secret}"
+            "Created setting: key=%s, category=%s, is_secret=%s",
+            setting.key,
+            setting.category,
+            setting.is_secret,
         )
-        
-        # Return with masked secret
+
         setting_dict = setting.model_dump()
         if setting.is_secret:
-            setting_dict['value'] = self.encryption.mask_secret(setting.value)
-        
+            setting_dict["value"] = self._mask(setting.value)
+        setting_dict["local_only"] = False
+        setting_dict["source"] = "database"
         return AppSettingRead(**setting_dict)
 
     async def update_setting(
-        self,
-        key: str,
-        setting_update: AppSettingUpdate,
+        self, key: str, setting_update: AppSettingUpdate
     ) -> AppSettingRead:
+        """Update an existing DB-backed setting.
+
+        Raises ``ValueError`` for local_only keys or missing keys.
         """
-        Update an existing setting.
-        
-        Args:
-            key: Setting key
-            setting_update: Setting update data
-            
-        Returns:
-            Updated setting
-            
-        Raises:
-            ValueError: If setting not found
-        """
-        # Get existing setting
-        result = await self.db.execute(
+        defn = SETTINGS_REGISTRY.get(key)
+        if defn is not None and defn.local_only:
+            raise ValueError(
+                f"Setting '{key}' is local-only and cannot be updated via "
+                f"the admin API. Set it via the {defn.env_var} environment "
+                f"variable instead."
+            )
+
+        res = await self.db.execute(
             select(AppSetting).where(AppSetting.key == key)
         )
-        setting = result.scalar_one_or_none()
-        
+        setting = res.scalar_one_or_none()
         if not setting:
             raise ValueError(f"Setting with key '{key}' not found")
-        
-        # Store old value for audit log
+
         old_value = setting.value
         if setting.is_secret and old_value:
-            old_value = self.encryption.mask_secret(old_value)
-        
-        # Update fields
+            old_value = self._mask(old_value)
+
         update_data = setting_update.model_dump(exclude_unset=True)
-        
-        # Encrypt new value if it's a secret
-        if 'value' in update_data and setting.is_secret:
-            if update_data['value']:
-                update_data['value'] = self.encryption.encrypt(update_data['value'])
-        
+        effective_is_secret = defn.is_secret if defn is not None else setting.is_secret
+        if setting.is_secret != effective_is_secret:
+            setting.is_secret = effective_is_secret
+
+        if "value" in update_data:
+            effective_value_type = defn.value_type if defn is not None else setting.value_type
+            self._validate_value_type(
+                key,
+                update_data.get("value"),
+                effective_value_type,
+            )
+        if "value" in update_data and effective_is_secret and update_data["value"]:
+            update_data["value"] = self.encryption.encrypt(update_data["value"])
+
         for field, value in update_data.items():
             setattr(setting, field, value)
-        
         setting.updated_at = datetime.now(timezone.utc)
-        
+
         await self.db.commit()
         await self.db.refresh(setting)
-        
-        # Log the change
+
         new_value = setting.value
         if setting.is_secret and new_value:
-            new_value = self.encryption.mask_secret(new_value)
-        
+            new_value = self._mask(new_value)
         logger.info(
-            f"Updated setting: key={key}, old_value={old_value}, new_value={new_value}"
+            "Updated setting: key=%s, old=%s, new=%s", key, old_value, new_value
         )
-        
-        # Return with masked secret
+
         setting_dict = setting.model_dump()
         if setting.is_secret:
-            setting_dict['value'] = self.encryption.mask_secret(setting.value)
-        
+            setting_dict["value"] = self._mask(setting.value)
+        setting_dict["local_only"] = False
+        setting_dict["source"] = "database"
         return AppSettingRead(**setting_dict)
 
     async def delete_setting(self, key: str) -> bool:
+        """Delete a DB-backed setting.
+
+        Returns True if deleted, False if not found.
+        Raises ``ValueError`` for local_only keys.
         """
-        Delete a setting.
-        
-        Args:
-            key: Setting key
-            
-        Returns:
-            True if deleted, False if not found
-        """
-        result = await self.db.execute(
+        defn = SETTINGS_REGISTRY.get(key)
+        if defn is not None and defn.local_only:
+            raise ValueError(
+                f"Setting '{key}' is local-only and cannot be deleted."
+            )
+
+        res = await self.db.execute(
             select(AppSetting).where(AppSetting.key == key)
         )
-        setting = result.scalar_one_or_none()
-        
+        setting = res.scalar_one_or_none()
         if not setting:
             return False
-        
+
         await self.db.delete(setting)
         await self.db.commit()
-        
-        logger.info(f"Deleted setting: key={key}")
-        
+        logger.info("Deleted setting: key=%s", key)
         return True
 
-    async def get_typed_value(
-        self,
-        key: str,
-        default: Any = None,
-    ) -> Any:
-        """
-        Get a setting value with type coercion.
-        
-        Args:
-            key: Setting key
-            default: Default value if setting not found
-            
-        Returns:
-            Typed value (str, int, float, bool, dict/list)
-        """
-        setting = await self.get_setting(key, include_secret=True)
-        
-        if not setting:
-            return default
-        
-        value = setting.value
-        
-        if value is None:
-            return default
-        
-        # Type coercion based on value_type
-        try:
-            if setting.value_type == SettingType.NUMBER:
-                # Try int first, then float
-                try:
-                    return int(value)
-                except ValueError:
-                    return float(value)
-            elif setting.value_type == SettingType.BOOLEAN:
-                # Handle various boolean representations
-                return value.lower() in ('true', '1', 'yes', 'on')
-            elif setting.value_type == SettingType.JSON:
-                return json.loads(value)
-            else:  # STRING
-                return value
-        except (ValueError, json.JSONDecodeError) as e:
-            logger.warning(
-                f"Failed to coerce value for setting {key}: {e}. "
-                f"Returning raw value."
-            )
-            return value
-
-    @staticmethod
-    def _get_env_key(setting_key: str) -> str:
-        """
-        Convert setting key to environment variable name.
-        
-        Examples:
-            langflow.base_url -> LANGFLOW__BASE_URL
-            langflow.api_key -> LANGFLOW__API_KEY
-        """
-        return setting_key.upper().replace('.', '__')
+    # ------------------------------------------------------------------
+    # LangFlow flow resolution (preserved for backward compatibility)
+    # ------------------------------------------------------------------
 
     async def get_flow_id_for_context(self, context_type: str) -> str:
-        """
-        Get the LangFlow flow ID for a given context type.
-        
-        Args:
-            context_type: Context type (general, case, task, alert)
-            
-        Returns:
-            Flow ID for the context type, or default flow ID if not configured
-            
-        Raises:
-            ValueError: If no flow ID is configured for the context and no default exists
-        """
+        """Get the LangFlow flow ID for a given context type."""
         from app.models.enums import LangFlowContextType
-        
-        # Map context types to setting keys
+
         context_to_setting = {
             LangFlowContextType.general: "langflow.default_flow_id",
             LangFlowContextType.case: "langflow.case_detail_flow_id",
             LangFlowContextType.task: "langflow.task_detail_flow_id",
             LangFlowContextType.alert: "langflow.alert_triage_flow_id",
         }
-        
-        # Normalize context_type to enum
+
         try:
             context_enum = LangFlowContextType(context_type)
         except ValueError:
             context_enum = LangFlowContextType.general
-        
-        # Get the setting key for this context
-        setting_key = context_to_setting.get(context_enum, "langflow.default_flow_id")
-        
-        # Try to get the context-specific flow ID
-        flow_id = await self.get_typed_value(setting_key)
-        
-        # Fall back to default flow ID if context-specific is not set
+
+        setting_key = context_to_setting.get(
+            context_enum, "langflow.default_flow_id"
+        )
+        flow_id = await self.get(setting_key)
+
         if not flow_id and context_enum != LangFlowContextType.general:
-            flow_id = await self.get_typed_value("langflow.default_flow_id")
-        
+            flow_id = await self.get("langflow.default_flow_id")
+
         if not flow_id:
             raise ValueError(
                 f"No flow ID configured for context '{context_type}'. "
-                f"Please set '{setting_key}' or 'langflow.default_flow_id' in settings."
+                f"Please set '{setting_key}' or 'langflow.default_flow_id' "
+                f"in settings."
             )
-        
         return flow_id
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_value(
+        self, defn: SettingDefinition, db_row: Optional[AppSetting]
+    ) -> tuple[Any, str]:
+        """Return ``(value, source)`` using the precedence chain."""
+        # 1. Env var (real env + .env)
+        env_val = self._env_lookup(defn.env_var)
+        if env_val is not None:
+            return env_val, "env"
+
+        # 2. Database (skip for local_only)
+        if not defn.local_only and db_row is not None and db_row.value is not None:
+            value = db_row.value
+            if defn.is_secret:
+                try:
+                    value = self.encryption.decrypt(value)
+                except Exception:
+                    pass  # If decryption fails, return raw
+            return value, "database"
+
+        # 3. Registry default
+        if defn.default is not None:
+            return defn.default, "default"
+
+        return None, "default"
+
+    async def _get_db_value(
+        self, key: str, decrypt: bool = False
+    ) -> Optional[str]:
+        """Fetch a raw value from the app_settings table."""
+        res = await self.db.execute(
+            select(AppSetting).where(AppSetting.key == key)
+        )
+        row = res.scalar_one_or_none()
+        if row is None or row.value is None:
+            return None
+
+        value = row.value
+        if decrypt and row.is_secret:
+            try:
+                value = self.encryption.decrypt(value)
+            except Exception:
+                pass
+        return value
+
+    @staticmethod
+    def _mask(value: Optional[str]) -> str:
+        """Mask a value for display."""
+        if not value or len(value) <= 8:
+            return "****"
+        return value[:2] + "****" + value[-2:]
+
+    @staticmethod
+    def _serialize_display_value(value: Any, value_type: SettingType) -> Optional[str]:
+        """Serialize resolved values for API display consistently."""
+        if value is None:
+            return None
+
+        if value_type == SettingType.BOOLEAN and isinstance(value, bool):
+            return "true" if value else "false"
+
+        if value_type == SettingType.JSON and not isinstance(value, str):
+            return json.dumps(value)
+
+        return str(value)

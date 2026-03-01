@@ -32,12 +32,13 @@ def _get_stix_path() -> Path:
     2. MITRE_ATTACK_STIX_PATH environment variable (fallback)
     3. Default location relative to this file's models directory
     """
-    # Try to get from settings first
+    # Try to get from settings registry first
     try:
-        from app.core.config import settings
-        if settings.mitre_attack_stix_path:
-            return Path(settings.mitre_attack_stix_path)
-    except ImportError:
+        from app.core.settings_registry import get_local
+        stix_path = get_local("mitre.attack_stix_path")
+        if stix_path:
+            return Path(stix_path)
+    except (ImportError, KeyError):
         pass
     
     # Fallback to environment variable

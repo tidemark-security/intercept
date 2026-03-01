@@ -31,7 +31,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import app modules after logging is configured
-from app.core.config import settings
+from app.core.settings_registry import get_local
 from app.core.security import initialize_encryption_service
 from app.services.task_queue_service import (
     initialize_task_queue_service,
@@ -238,11 +238,11 @@ async def run_worker():
     try:
         # Initialize encryption service (needed for some operations)
         logger.info("Initializing encryption service...")
-        initialize_encryption_service(settings.secret_key.encode())
+        initialize_encryption_service(get_local("secret_key").encode())
         
         # Initialize task queue service
         logger.info("Connecting to task queue...")
-        service = await initialize_task_queue_service(settings.database_url)
+        service = await initialize_task_queue_service(get_local("database.url"))
         
         # Register all task handlers
         logger.info("Registering task handlers...")

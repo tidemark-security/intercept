@@ -25,7 +25,7 @@ from webauthn.helpers.structs import (
     UserVerificationRequirement,
 )
 
-from app.core.config import settings
+from app.core.settings_registry import get_local
 from app.models.enums import AccountType
 from app.models.models import AppSetting, PasskeyCredential, UserAccount, WebAuthnChallenge
 from app.services.settings_service import SettingsService
@@ -398,19 +398,22 @@ class PasskeyService:
         return challenge_row
 
     async def _load_config(self, db: AsyncSession) -> PasskeyConfig:
+        import json
+
         settings_service = SettingsService(db)  # type: ignore[arg-type]
 
         rp_id = await settings_service.get_typed_value(
             "auth.passkeys.rp_id",
-            default=(settings.session_cookie_domain or "localhost"),
+            default=(get_local("auth.session.cookie_domain") or "localhost"),
         )
         rp_name = await settings_service.get_typed_value(
             "auth.passkeys.rp_name",
             default="Tidemark Intercept",
         )
+        cors_origins_fallback = get_local("cors_origins", default=[])
         expected_origins_raw = await settings_service.get_typed_value(
             "auth.passkeys.expected_origins",
-            default=settings.cors_origins,
+            default=cors_origins_fallback,
         )
         timeout_ms = await settings_service.get_typed_value("auth.passkeys.timeout_ms", default=60000)
         challenge_ttl_seconds = await settings_service.get_typed_value(
@@ -435,11 +438,32 @@ class PasskeyService:
         )
 
         if isinstance(expected_origins_raw, str):
-            expected_origins = [origin.strip() for origin in expected_origins_raw.split(",") if origin.strip()]
+            parsed_json = None
+            try:
+                parsed_json = json.loads(expected_origins_raw)
+            except json.JSONDecodeError:
+                parsed_json = None
+
+            if isinstance(parsed_json, list):
+                expected_origins = [
+                    str(origin).strip()
+                    for origin in parsed_json
+                    if str(origin).strip()
+                ]
+            else:
+                expected_origins = [
+                    origin.strip()
+                    for origin in expected_origins_raw.split(",")
+                    if origin.strip()
+                ]
         elif isinstance(expected_origins_raw, list):
             expected_origins = [str(origin) for origin in expected_origins_raw if str(origin).strip()]
         else:
-            expected_origins = list(settings.cors_origins)
+            expected_origins = [
+                str(origin).strip()
+                for origin in cors_origins_fallback
+                if str(origin).strip()
+            ]
 
         if not expected_origins:
             raise PasskeyConfigError("No expected WebAuthn origins configured")

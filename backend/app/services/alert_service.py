@@ -82,9 +82,9 @@ class AlertService:
                 logger.debug(f"AI triage not enabled - skipping auto-enqueue for alert {alert_id}")
                 return
             
-            # Check if auto-enqueue is enabled (defaults to True)
+            # Check if auto-enqueue is enabled (defaults to False)
             auto_enqueue = await settings.get_typed_value("triage.auto_enqueue")
-            if auto_enqueue is False:  # Explicit False, not None
+            if auto_enqueue is not True:
                 logger.debug(f"Auto-enqueue disabled - skipping for alert {alert_id}")
                 return
             

@@ -84,10 +84,13 @@ async def create_setting(
     try:
         return await service.create_setting(setting)
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e)
+        detail = str(e)
+        code = (
+            status.HTTP_409_CONFLICT
+            if "already exists" in detail.lower()
+            else status.HTTP_400_BAD_REQUEST
         )
+        raise HTTPException(status_code=code, detail=detail)
 
 
 @router.put("/{key}", response_model=AppSettingRead)
@@ -109,10 +112,13 @@ async def update_setting(
     try:
         return await service.update_setting(key, setting_update)
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
+        detail = str(e)
+        code = (
+            status.HTTP_404_NOT_FOUND
+            if "not found" in detail.lower()
+            else status.HTTP_400_BAD_REQUEST
         )
+        raise HTTPException(status_code=code, detail=detail)
 
 
 @router.delete("/{key}", status_code=status.HTTP_204_NO_CONTENT)
@@ -128,7 +134,13 @@ async def delete_setting(
     """
     service = SettingsService(db)
     
-    deleted = await service.delete_setting(key)
+    try:
+        deleted = await service.delete_setting(key)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
     
     if not deleted:
         raise HTTPException(

@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, Optional
 from fastapi import HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 
-from app.core.config import settings
+from app.core.settings_registry import get_local
 
 
 def get_timeline_item_types(union_type):
@@ -182,6 +182,36 @@ def create_human_id_decorator(id_prefix: str, default_param_name: str = "id"):
 # ---------------------------------------------------------------------------
 
 
+def _cookie_kwargs(expires_at: Optional[datetime] = None) -> dict:
+    """Build keyword arguments for ``Response.set_cookie`` from the settings registry."""
+    kwargs: dict[str, object] = {
+        "key": get_local("auth.session.cookie_name"),
+        "httponly": get_local("auth.session.cookie_http_only"),
+        "secure": get_local("auth.session.cookie_secure"),
+        "samesite": get_local("auth.session.cookie_same_site"),
+        "path": get_local("auth.session.cookie_path"),
+    }
+
+    domain = get_local("auth.session.cookie_domain")
+    if domain:
+        kwargs["domain"] = domain
+
+    if isinstance(expires_at, datetime):
+        expiry = expires_at
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        else:
+            expiry = expiry.astimezone(timezone.utc)
+        kwargs["expires"] = expiry
+    elif expires_at is not None:
+        kwargs["expires"] = expires_at
+
+    idle_hours = get_local("auth.session.idle_timeout_hours")
+    kwargs["max_age"] = int(idle_hours * 3600)
+
+    return kwargs
+
+
 def issue_session_cookie(response: Response, session_token: str, expires_at: datetime) -> None:
     """Attach the secure session cookie to the response.
 
@@ -203,27 +233,31 @@ def issue_session_cookie(response: Response, session_token: str, expires_at: dat
     else:
         expiry = expiry.astimezone(timezone.utc)
 
-    kwargs = settings.cookie_kwargs(expires_at=expiry)
+    kwargs = _cookie_kwargs(expires_at=expiry)
     response.set_cookie(value=session_token, **kwargs)
 
 
 def revoke_session_cookie(response: Response) -> None:
     """Delete the session cookie from the client response."""
 
-    if settings.session_cookie_domain:
+    cookie_name = get_local("auth.session.cookie_name")
+    cookie_path = get_local("auth.session.cookie_path")
+    cookie_domain = get_local("auth.session.cookie_domain")
+
+    if cookie_domain:
         response.delete_cookie(
-            key=settings.session_cookie_name,
-            path=settings.session_cookie_path,
-            domain=settings.session_cookie_domain,
+            key=cookie_name,
+            path=cookie_path,
+            domain=cookie_domain,
         )
     else:
         response.delete_cookie(
-            key=settings.session_cookie_name,
-            path=settings.session_cookie_path,
+            key=cookie_name,
+            path=cookie_path,
         )
 
 
 def read_session_cookie(request: Request) -> Optional[str]:
     """Return the session token from the incoming request, if present."""
 
-    return request.cookies.get(settings.session_cookie_name)
+    return request.cookies.get(get_local("auth.session.cookie_name"))
