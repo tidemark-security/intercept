@@ -7,6 +7,7 @@ from fastapi_pagination.cursor import CursorParams
 
 from app.core.settings_registry import get_local
 from app.core.database import test_db_connection
+from app.core.database import async_session_factory
 from app.core.security import initialize_encryption_service
 from app.services.task_queue_service import initialize_task_queue_service, shutdown_task_queue_service
 from app.services.tasks import register_task_handlers
@@ -186,7 +187,6 @@ class MCPApiKeyAuthMiddleware:
             return
         
         # Validate the API key
-        from app.core.database import async_session_factory
         client_host = None
         
         try:
