@@ -249,9 +249,11 @@ const ActivityItemRoot = React.forwardRef<
         </div>
         <div
           className={cn(
-            "flex w-0.5 grow shrink-0 basis-0 flex-col items-start gap-2 bg-brand-primary",
+            "flex w-0.5 grow shrink-0 basis-0 flex-col items-start gap-2",
             {
               hidden: end,
+              "bg-brand-primary": isDarkTheme,
+              "bg-neutral-1000": !isDarkTheme,
               "bg-accent-1-300": highlighted,
               "bg-error-300": flagged,
             }

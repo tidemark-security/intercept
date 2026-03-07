@@ -12,6 +12,8 @@ import { DropdownMenu } from "@/components/overlays/DropdownMenu";
 import { Accordion } from "@/components/misc/Accordion";
 import { Button } from "@/components/buttons/Button";
 import { TextField } from "@/components/forms/TextField";
+import { useTheme } from "@/contexts/ThemeContext";
+import { cn } from "@/utils/cn";
 import { Calendar, ChevronDown } from 'lucide-react';
 import {
   formatForBackend,
@@ -56,6 +58,9 @@ export function DateRangePicker({
   className,
   variant = "neutral-secondary",
 }: DateRangePickerProps) {
+  const { resolvedTheme } = useTheme();
+  const isDarkTheme = resolvedTheme === "dark";
+
   // Local state for custom date range inputs
   const [customStart, setCustomStart] = React.useState<string>('');
   const [customEnd, setCustomEnd] = React.useState<string>('');
@@ -174,6 +179,12 @@ export function DateRangePicker({
     return 'Custom range';
   }, [value, showAllTime]);
 
+  const presetRowClass = cn(
+    "flex w-full cursor-pointer items-center gap-2 px-3 py-2",
+    "bg-neutral-50",
+    isDarkTheme ? "hover:bg-neutral-100" : "hover:bg-brand-primary"
+  );
+
   return (
     <DropdownMenu.Root open={isOpen} onOpenChange={setIsOpen}>
       <DropdownMenu.Trigger asChild>
@@ -209,7 +220,7 @@ export function DateRangePicker({
                 {presets.map((expr) => (
                   <div
                     key={expr}
-                    className="flex w-full items-center gap-2 bg-neutral-50 px-3 py-2 cursor-pointer hover:bg-neutral-100"
+                    className={presetRowClass}
                     onClick={() => handlePresetClick(expr)}
                   >
                     <span className="grow shrink-0 basis-0 text-body font-body text-default-font">
@@ -220,7 +231,7 @@ export function DateRangePicker({
                 {/* All time option - clears date filter */}
                 {showAllTime && (
                   <div
-                    className="flex w-full items-center gap-2 bg-neutral-50 px-3 py-2 cursor-pointer hover:bg-neutral-100"
+                    className={presetRowClass}
                     onClick={() => handlePresetClick(null)}
                   >
                     <span className="grow shrink-0 basis-0 text-body font-body text-default-font">
@@ -241,7 +252,7 @@ export function DateRangePicker({
                 </div>
               }
             >
-              <div className="flex w-full grow shrink-0 basis-0 flex-col items-start gap-3 border-t border-solid border-neutral-border px-3 py-3">
+              <div className="flex w-full grow shrink-0 basis-0 flex-col items-start gap-3 border-t border-solid border-neutral-border bg-neutral-50 px-3 py-3">
                 <div className="flex w-full items-start gap-2 text-caption font-caption text-subtext-color">
                   Times shown in your local timezone ({userTimezone})
                 </div>

@@ -11,6 +11,7 @@ import * as RadixSelect from "@radix-ui/react-select";
 import { cn } from "@/utils/cn";
 import { IconWrapper } from "@/utils/IconWrapper";
 import { usePortalContainer } from "@/contexts/PortalContainerContext";
+import { useTheme } from "@/contexts/ThemeContext";
 import { Check, ChevronDown } from 'lucide-react';
 
 interface ItemProps extends React.ComponentPropsWithoutRef<typeof RadixSelect.Item> {
@@ -23,12 +24,18 @@ const Item = React.forwardRef<HTMLDivElement, ItemProps>(function Item(
   { value, children, className, ...otherProps }: ItemProps,
   ref
 ) {
+  const { resolvedTheme } = useTheme();
+  const isDarkTheme = resolvedTheme === "dark";
+
   return (
     <RadixSelect.Item
       value={value}
       className={cn(
         "group/969e345b flex h-8 w-full cursor-pointer items-center gap-1 rounded-md px-3 outline-none",
-        "hover:bg-neutral-100 focus:bg-neutral-100 active:bg-neutral-50",
+        "active:bg-neutral-50",
+        isDarkTheme
+          ? "hover:bg-neutral-100 focus:bg-neutral-100 data-[highlighted]:bg-neutral-100"
+          : "hover:bg-brand-primary focus:bg-brand-primary data-[highlighted]:bg-brand-primary",
         "data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
         className
       )}
@@ -41,7 +48,7 @@ const Item = React.forwardRef<HTMLDivElement, ItemProps>(function Item(
         </span>
       </RadixSelect.ItemText>
       <RadixSelect.ItemIndicator>
-        <Check className="text-body font-body text-brand-600" />
+        <Check className="text-body font-body text-neutral-1000" />
       </RadixSelect.ItemIndicator>
     </RadixSelect.Item>
   );
@@ -244,7 +251,7 @@ const SelectRoot = React.forwardRef<HTMLDivElement, SelectRootProps>(
           ) : null}
           <div
             className={cn(
-              "flex h-8 w-full flex-none flex-col items-start rounded-md border border-solid border-neutral-border bg-default-background group-focus-within/bb88f90b:border group-focus-within/bb88f90b:border-solid group-focus-within/bb88f90b:border-brand-primary",
+              "flex h-8 w-full flex-none flex-col items-start rounded-md border border-solid border-neutral-border bg-default-background group-focus-within/bb88f90b:border group-focus-within/bb88f90b:border-solid group-focus-within/bb88f90b:border-focus-border",
               {
                 "border border-solid border-neutral-100 bg-neutral-100 group-hover/bb88f90b:border group-hover/bb88f90b:border-solid group-hover/bb88f90b:border-neutral-border group-hover/bb88f90b:bg-neutral-100":
                   variant === "filled",

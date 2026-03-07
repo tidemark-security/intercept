@@ -21,6 +21,9 @@
   --color-default-font: 200 200 200;
   --color-subtext-color: 165 165 165;
   --color-neutral-border: 65 65 65;
+  --color-focus-border: 208 255 0;
+  --color-default-shadow: 208 255 0;
+  --color-scrollbar-thumb: 208 255 0;
   --color-default-background: 10 10 10;
   --color-page-background: 25 25 25;
   --color-brand-secondary: 10 15 13;
@@ -49,6 +52,9 @@
   --color-default-font: 23 23 23;
   --color-subtext-color: 82 82 82;
   --color-neutral-border: 212 212 212;
+  --color-focus-border: 10 10 10;
+  --color-default-shadow: 10 10 10;
+  --color-scrollbar-thumb: 10 10 10;
   --color-default-background: 245 245 245;
   --color-page-background: 30 30 30;
   --color-brand-secondary: 250 250 250;
@@ -74,6 +80,9 @@
     --color-default-font: 23 23 23;
     --color-subtext-color: 82 82 82;
     --color-neutral-border: 212 212 212;
+    --color-focus-border: 10 10 10;
+    --color-default-shadow: 10 10 10;
+    --color-scrollbar-thumb: 10 10 10;
     --color-default-background: 255 255 255;
     --color-page-background: 245 245 245;
     --color-brand-secondary: 250 250 250;
@@ -242,7 +251,7 @@ body {
 
 
 * {
-	scrollbar-color: theme('colors.brand-primary') transparent !important;
+  scrollbar-color: rgb(var(--color-scrollbar-thumb)) transparent !important;
 }
 
 ::-webkit-scrollbar-track {
@@ -250,7 +259,7 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-	background-color: theme('colors.brand-primary');
+  background-color: rgb(var(--color-scrollbar-thumb));
 }
 
 /* Beveled corner effect using CSS corner-shape */

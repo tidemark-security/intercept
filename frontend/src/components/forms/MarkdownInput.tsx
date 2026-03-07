@@ -380,7 +380,7 @@ const MarkdownInputRoot = React.forwardRef<
         anchorElement={linkButtonRef.current || undefined}
       />
       
-      <div className="flex w-full flex-1 flex-col items-start border border-solid border-brand-primary min-h-0 overflow-hidden">
+      <div className="flex w-full flex-1 flex-col items-start border border-solid border-neutral-border focus-within:border-focus-border min-h-0 overflow-hidden">
         <MDXEditor
           ref={mdxEditorRef}
           markdown={value || ''}

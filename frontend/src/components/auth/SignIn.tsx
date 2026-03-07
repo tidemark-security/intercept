@@ -2,6 +2,7 @@
 
 import React from "react";
 import { cn } from "@/utils/cn";
+import { useTheme } from "@/contexts/ThemeContext";
 
 interface SignInRootProps extends React.HTMLAttributes<HTMLDivElement> {
   logo?: string;
@@ -29,6 +30,9 @@ const SignInRoot = React.forwardRef<HTMLDivElement, SignInRootProps>(
     }: SignInRootProps,
     ref
   ) {
+    const { resolvedTheme } = useTheme();
+    const isDarkTheme = resolvedTheme === "dark";
+
     return (
       <div
         className={cn(
@@ -48,7 +52,7 @@ const SignInRoot = React.forwardRef<HTMLDivElement, SignInRootProps>(
             { flex: enableExternal }
           )}
         >
-          <div className="flex h-px w-full flex-none flex-col items-center gap-2 bg-brand-primary" />
+          <hr className={cn("w-full", isDarkTheme ? "border-brand-primary" : "border-neutral-1000")} />
           <span className="w-full text-heading-2 font-heading-2 text-subtext-color">
             External sign in
           </span>
@@ -59,7 +63,7 @@ const SignInRoot = React.forwardRef<HTMLDivElement, SignInRootProps>(
           ) : null}
         </div>
         <div className="flex w-full flex-col items-center justify-center gap-4">
-          <div className="flex h-px w-full flex-none flex-col items-center gap-2 bg-brand-primary" />
+          <hr className={cn("w-full", isDarkTheme ? "border-brand-primary" : "border-neutral-1000")} />
           <span className="w-full text-heading-2 font-heading-2 text-subtext-color">
             Local sign in
           </span>
@@ -83,7 +87,7 @@ const SignInRoot = React.forwardRef<HTMLDivElement, SignInRootProps>(
               {submitButton}
             </div>
           ) : null}
-          <div className="flex h-px w-full flex-none flex-col items-center gap-2 bg-brand-primary" />
+          <hr className={cn("w-full", isDarkTheme ? "border-brand-primary" : "border-neutral-1000")} />
         </div>
       </div>
     );

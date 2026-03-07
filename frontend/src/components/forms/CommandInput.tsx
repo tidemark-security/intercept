@@ -309,7 +309,7 @@ export const CommandInput = forwardRef<CommandInputRef, CommandInputProps>(
 
           {/* Container that floats above content when expanded */}
           <div
-            className={`flex items-start gap-2 px-3 py-2 border border-solid border-neutral-border bg-default-background rounded-md transition-all focus-within:border-brand-primary focus-within:ring-1 focus-within:ring-brand-primary ${
+            className={`flex items-start gap-2 px-3 py-2 border border-solid border-neutral-border bg-default-background rounded-md transition-all focus-within:border-focus-border focus-within:ring-1 focus-within:ring-focus-border ${
               shouldFloat ? "absolute bottom-0 left-0 right-0 shadow-lg z-10" : "absolute bottom-0 left-0 right-0"
             }`}
             style={{

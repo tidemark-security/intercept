@@ -15,6 +15,7 @@ import * as RadixDropdownMenu from "@radix-ui/react-dropdown-menu";
 import { cn } from "@/utils/cn";
 import { IconWrapper } from "@/utils/IconWrapper";
 import { usePortalContainer } from "@/contexts/PortalContainerContext";
+import { useTheme } from "@/contexts/ThemeContext";
 
 import { Star } from 'lucide-react';
 
@@ -91,6 +92,9 @@ const DropdownItem = React.forwardRef<HTMLDivElement, DropdownItemProps>(
     }: DropdownItemProps,
     ref
   ) {
+    const { resolvedTheme } = useTheme();
+    const isDarkTheme = resolvedTheme === "dark";
+
     const content = (
       <div
         className={cn(
@@ -103,8 +107,10 @@ const DropdownItem = React.forwardRef<HTMLDivElement, DropdownItemProps>(
           <div
             className={cn(
               "flex h-8 w-full flex-none items-center gap-2 rounded-md px-3",
-              "group-hover/adcae8d6:bg-neutral-100 group-focus/adcae8d6:bg-neutral-100",
-              "group-active/adcae8d6:bg-neutral-50 group-data-[highlighted]/adcae8d6:bg-neutral-100",
+              "group-active/adcae8d6:bg-neutral-50",
+              isDarkTheme
+                ? "group-hover/adcae8d6:bg-neutral-100 group-focus/adcae8d6:bg-neutral-100 group-data-[highlighted]/adcae8d6:bg-neutral-100"
+                : "group-hover/adcae8d6:bg-brand-primary group-focus/adcae8d6:bg-brand-primary group-data-[highlighted]/adcae8d6:bg-brand-primary",
               { "flex-row flex-nowrap gap-4 pl-3 pr-1 py-0": showHint }
             )}
           >
