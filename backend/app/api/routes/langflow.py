@@ -30,7 +30,7 @@ from app.models.models import (
     LangFlowMessageRead,
     UserAccount,
 )
-from app.models.enums import SessionStatus, MessageRole, MessageFeedback
+from app.models.enums import SessionStatus, MessageRole, MessageFeedback, UserRole
 from app.services.langflow_service import (
     LangFlowService,
     LangFlowConfigurationError,
@@ -98,6 +98,8 @@ async def verify_session_access(
     session_id: UUID,
     user: UserAccount,
     db: AsyncSession,
+    target_user_id: Optional[UUID] = None,
+    target_username: Optional[str] = None,
 ) -> LangFlowSession:
     """Verify user has access to the session."""
     result = await db.execute(
@@ -111,14 +113,58 @@ async def verify_session_access(
             detail=f"Session {session_id} not found"
         )
     
-    # Users can only access their own sessions
-    if session.user_id != user.id:
+    # By default users can only access their own sessions.
+    expected_owner_id = target_user_id or user.id
+    if session.user_id != expected_owner_id:
+        # Admin callers requesting another user's data should not see sessions outside that scope.
+        if user.role == UserRole.ADMIN and target_user_id is not None:
+            target_desc = f" for user '{target_username}'" if target_username else ""
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session {session_id} not found{target_desc}"
+            )
+
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied to this session"
         )
     
     return session
+
+
+async def resolve_target_chat_user(
+    current_user: UserAccount,
+    db: AsyncSession,
+    username: Optional[str],
+) -> UserAccount:
+    """Resolve target chat owner for read operations with admin-only override."""
+    if username is None:
+        return current_user
+
+    normalized_username = username.strip().lower()
+    if not normalized_username:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="username query parameter must not be blank"
+        )
+
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can query chats for other users"
+        )
+
+    result = await db.execute(
+        select(UserAccount).where(col(UserAccount.username) == normalized_username)
+    )
+    target_user = result.scalar_one_or_none()
+    if not target_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User '{normalized_username}' not found"
+        )
+
+    return target_user
 
 
 # Endpoints
@@ -177,21 +223,25 @@ async def create_session(
 async def list_sessions(
     skip: int = 0,
     limit: int = 50,
+    username: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_authenticated_user),
 ):
     """
-    List all chat sessions for the current user.
+    List chat sessions for the current user by default.
     
     Requires authentication. Returns sessions in reverse chronological order (most recent first).
-    Supports pagination with skip and limit parameters.
+    Supports pagination with skip and limit parameters. Admin users may provide
+    a username query parameter to list sessions for a specific user.
     """
     from sqlalchemy import func
+
+    target_user = await resolve_target_chat_user(current_user, db, username)
     
     # Query sessions for current user with message counts
     result = await db.execute(
         select(LangFlowSession)
-        .where(LangFlowSession.user_id == current_user.id)
+        .where(LangFlowSession.user_id == target_user.id)
         .order_by(col(LangFlowSession.updated_at).desc())
         .offset(skip)
         .limit(limit)
@@ -214,7 +264,9 @@ async def list_sessions(
     logger.info(
         f"Listed LangFlow sessions",
         extra={
-            "user_id": str(current_user.id),
+            "requesting_user_id": str(current_user.id),
+            "target_user_id": str(target_user.id),
+            "target_username": target_user.username,
             "count": len(session_reads),
             "skip": skip,
             "limit": limit,
@@ -227,15 +279,24 @@ async def list_sessions(
 @router.get("/sessions/{session_id}", response_model=LangFlowSessionRead)
 async def get_session(
     session_id: UUID,
+    username: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_authenticated_user),
 ):
     """
-    Get a specific session.
+    Get a specific session for the current user by default.
     
     Requires authentication. Users can only access their own sessions.
+    Admin users may provide a username query parameter to get sessions for a specific user.
     """
-    session = await verify_session_access(session_id, current_user, db)
+    target_user = await resolve_target_chat_user(current_user, db, username)
+    session = await verify_session_access(
+        session_id,
+        current_user,
+        db,
+        target_user_id=target_user.id,
+        target_username=target_user.username,
+    )
     
     # Count messages
     messages_result = await db.execute(
@@ -337,6 +398,7 @@ async def delete_session(
 @router.get("/sessions/{session_id}/messages", response_model=List[LangFlowMessageRead])
 async def get_session_messages(
     session_id: UUID,
+    username: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_authenticated_user),
 ):
@@ -344,10 +406,19 @@ async def get_session_messages(
     Get all messages for a session.
     
     Requires authentication. Users can only access messages from their own sessions.
-    Returns messages in chronological order.
+    Returns messages in chronological order. Admin users may provide a username
+    query parameter to access messages for sessions belonging to a specific user.
     """
+    target_user = await resolve_target_chat_user(current_user, db, username)
+
     # Verify access
-    await verify_session_access(session_id, current_user, db)
+    await verify_session_access(
+        session_id,
+        current_user,
+        db,
+        target_user_id=target_user.id,
+        target_username=target_user.username,
+    )
     
     # Get messages
     result = await db.execute(

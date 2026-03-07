@@ -1085,7 +1085,7 @@ function Reports() {
                             variant="neutral-tertiary"
                             size="small"
                             icon={<ExternalLink className="w-4 h-4" />}
-                            onClick={() => navigate(`/ai-chat?session=${item.session_id}`)}
+                            onClick={() => navigate(`/ai-chat?session=${item.session_id}&user=${encodeURIComponent(item.username)}`)}
                           >
                             Open Chat
                           </Button>

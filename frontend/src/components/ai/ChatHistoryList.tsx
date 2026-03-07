@@ -47,6 +47,8 @@ export interface ChatHistoryListProps {
     onSessionsLoaded?: (sessions: LangFlowSession[]) => void;
     /** Key to trigger refresh of sessions list */
     refreshKey?: number;
+    /** Optional username filter for admin cross-user chat access */
+    targetUsername?: string;
     /** Additional class names */
     className?: string;
 }
@@ -373,6 +375,7 @@ export function ChatHistoryList({
     onClose,
     onSessionsLoaded,
     refreshKey,
+    targetUsername,
     className = '',
 }: ChatHistoryListProps) {
     const { resolvedTheme } = useTheme();
@@ -403,7 +406,7 @@ export function ChatHistoryList({
         setError(null);
 
         try {
-            const data = await langflowApi.listSessions();
+            const data = await langflowApi.listSessions(undefined, undefined, targetUsername);
             setSessions(data);
             if (onSessionsLoaded) {
                 onSessionsLoaded(data);
@@ -413,7 +416,7 @@ export function ChatHistoryList({
         } finally {
             setIsLoading(false);
         }
-    }, [onSessionsLoaded]);
+    }, [onSessionsLoaded, targetUsername]);
 
     // Load sessions on mount and when refreshKey changes
     useEffect(() => {

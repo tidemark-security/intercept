@@ -40,19 +40,22 @@ export class LangflowService {
     }
     /**
      * List Sessions
-     * List all chat sessions for the current user.
+     * List chat sessions for the current user by default.
      *
      * Requires authentication. Returns sessions in reverse chronological order (most recent first).
-     * Supports pagination with skip and limit parameters.
+     * Supports pagination with skip and limit parameters. Admin users may provide
+     * a username query parameter to list sessions for a specific user.
      * @returns LangFlowSessionRead Successful Response
      * @throws ApiError
      */
     public static listSessionsApiV1LangflowSessionsGet({
         skip,
         limit = 50,
+        username,
     }: {
         skip?: number,
         limit?: number,
+        username?: (string | null),
     }): CancelablePromise<Array<LangFlowSessionRead>> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -60,6 +63,7 @@ export class LangflowService {
             query: {
                 'skip': skip,
                 'limit': limit,
+                'username': username,
             },
             errors: {
                 422: `Validation Error`,
@@ -68,22 +72,28 @@ export class LangflowService {
     }
     /**
      * Get Session
-     * Get a specific session.
+     * Get a specific session for the current user by default.
      *
      * Requires authentication. Users can only access their own sessions.
+     * Admin users may provide a username query parameter to get sessions for a specific user.
      * @returns LangFlowSessionRead Successful Response
      * @throws ApiError
      */
     public static getSessionApiV1LangflowSessionsSessionIdGet({
         sessionId,
+        username,
     }: {
         sessionId: string,
+        username?: (string | null),
     }): CancelablePromise<LangFlowSessionRead> {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/api/v1/langflow/sessions/{session_id}',
             path: {
                 'session_id': sessionId,
+            },
+            query: {
+                'username': username,
             },
             errors: {
                 422: `Validation Error`,
@@ -147,20 +157,26 @@ export class LangflowService {
      * Get all messages for a session.
      *
      * Requires authentication. Users can only access messages from their own sessions.
-     * Returns messages in chronological order.
+     * Returns messages in chronological order. Admin users may provide a username
+     * query parameter to access messages for sessions belonging to a specific user.
      * @returns LangFlowMessageRead Successful Response
      * @throws ApiError
      */
     public static getSessionMessagesApiV1LangflowSessionsSessionIdMessagesGet({
         sessionId,
+        username,
     }: {
         sessionId: string,
+        username?: (string | null),
     }): CancelablePromise<Array<LangFlowMessageRead>> {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/api/v1/langflow/sessions/{session_id}/messages',
             path: {
                 'session_id': sessionId,
+            },
+            query: {
+                'username': username,
             },
             errors: {
                 422: `Validation Error`,

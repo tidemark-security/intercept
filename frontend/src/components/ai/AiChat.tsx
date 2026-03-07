@@ -131,6 +131,7 @@ export function AiChat({
   entityId,
   entityHumanId,
   username,
+  sessionOwnerUsername,
   persistSession,
   initialSessionId,
   onSessionChange,
@@ -255,13 +256,13 @@ export function AiChat({
    */
   const loadSessionMessages = useCallback(async (existingSessionId: string) => {
     try {
-      const existingMessages = await langflowApi.getMessages(existingSessionId);
+      const existingMessages = await langflowApi.getMessages(existingSessionId, sessionOwnerUsername);
       
       // Parse and clean messages, extracting prompts from the last assistant message
       let extractedPrompts: SuggestedPrompt[] | null = null;
       const mappedMessages = existingMessages.map((msg, index) => {
         const isAssistant = msg.role !== 'USER';
-        let content = msg.content;
+        let content = msg.content ?? '';
         
         if (isAssistant) {
           const { cleanContent, prompts } = parseSuggestedPrompts(content);
@@ -290,7 +291,7 @@ export function AiChat({
       console.warn('Failed to load existing session messages:', err);
       return false;
     }
-  }, []);
+  }, [sessionOwnerUsername]);
 
   /**
    * Build the LangFlow context (tweaks) payload for entity-aware conversations.

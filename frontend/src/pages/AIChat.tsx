@@ -9,6 +9,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { DefaultPageLayout } from '@/components/layout/DefaultPageLayout';
 import { ThreeColumnLayout } from '../components/layout/ThreeColumnLayout';
 import { getPersistedWidth } from '../components/layout/ColumnRail';
@@ -16,6 +17,7 @@ import { AiChat } from '../components/ai';
 import { ChatHistoryList } from '@/components/ai/ChatHistoryList';
 import { useBreakpointContext } from '../contexts/BreakpointContext';
 import { useSession } from '../contexts/sessionContext';
+import { useToast } from '@/contexts/ToastContext';
 import type { VisibleColumns } from '../components/layout/ThreeColumnLayout.types';
 import type { LangFlowSession } from '../services/langflowApi';
 
@@ -42,6 +44,14 @@ function getPersistedHistoryWidth(): number {
   return isNaN(parsed) ? 320 : parsed;
 }
 
+function normalizeUsernameParam(raw: string | null): string | null {
+  if (!raw) {
+    return null;
+  }
+  const normalized = raw.trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
 /**
  * Column config for AIChat page layout
  */
@@ -65,9 +75,15 @@ const aiChatColumnConfig = {
 };
 
 export function AIChat() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const { breakpoint } = useBreakpointContext();
-  const { user } = useSession();
+  const { user, isAdmin } = useSession();
+  const { showToast } = useToast();
   const currentUser = user?.username || null;
+  const initialUserParam = normalizeUsernameParam(searchParams.get('user'));
+  const initialHasUnauthorizedUserParam = Boolean(initialUserParam && !isAdmin);
+  const initialSessionFromUrl = initialHasUnauthorizedUserParam ? null : searchParams.get('session');
+  const initialTargetUsername = initialHasUnauthorizedUserParam ? null : (isAdmin ? initialUserParam : null);
   
   // History pane visibility (persisted on desktop, always start collapsed on mobile)
   const [historyCollapsed, setHistoryCollapsed] = useState<boolean>(() => {
@@ -90,7 +106,8 @@ export function AIChat() {
   });
   
   // Session selection state
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(initialSessionFromUrl);
+  const targetUsername: string | null = initialTargetUsername;
   
   // Key to force AiChat remount when session changes
   const [chatKey, setChatKey] = useState(0);
@@ -100,6 +117,16 @@ export function AIChat() {
   
   // Track if we've done initial auto-select
   const hasAutoSelectedRef = useRef(false);
+
+  // Handle unauthorized user query params for non-admin users.
+  useEffect(() => {
+    if (!initialHasUnauthorizedUserParam) {
+      return;
+    }
+
+    showToast('Permission denied', 'Only admins can open chats for another user', 'error');
+    setSearchParams({}, { replace: true });
+  }, [initialHasUnauthorizedUserParam, setSearchParams, showToast]);
 
   // Toggle history pane visibility
   const handleToggleHistory = useCallback(() => {
@@ -170,6 +197,11 @@ export function AIChat() {
     // Only auto-select on initial load, not on subsequent refreshes
     if (hasAutoSelectedRef.current) return;
     hasAutoSelectedRef.current = true;
+
+    // Respect explicit session from URL deep links.
+    if (selectedSessionId) {
+      return;
+    }
     
     // If there are existing sessions, select the most recent one
     if (sessions.length > 0) {
@@ -178,7 +210,24 @@ export function AIChat() {
       setChatKey(prev => prev + 1);
     }
     // If no sessions exist, AiChat will create a new one on mount
-  }, []);
+  }, [selectedSessionId]);
+
+  // Keep URL query params synchronized with selected session and optional target user.
+  useEffect(() => {
+    const nextParams = new URLSearchParams();
+    if (selectedSessionId) {
+      nextParams.set('session', selectedSessionId);
+    }
+    if (targetUsername) {
+      nextParams.set('user', targetUsername);
+    }
+
+    const next = nextParams.toString();
+    const current = searchParams.toString();
+    if (next !== current) {
+      setSearchParams(nextParams, { replace: true });
+    }
+  }, [searchParams, selectedSessionId, setSearchParams, targetUsername]);
 
   return (
     <DefaultPageLayout>
@@ -199,6 +248,7 @@ export function AIChat() {
             onClose={handleToggleHistory}
             onSessionsLoaded={handleSessionsLoaded}
             refreshKey={historyRefreshKey}
+            targetUsername={targetUsername ?? undefined}
           />
         }
         centerColumn={
@@ -206,6 +256,7 @@ export function AIChat() {
             key={chatKey}
             contextType="general"
             username={currentUser ?? undefined}
+            sessionOwnerUsername={targetUsername ?? undefined}
             inputPlaceholder="Ask about threat analysis, incident response, or investigation techniques..."
             initialSessionId={selectedSessionId ?? undefined}
             onSessionChange={handleSessionChange}

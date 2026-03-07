@@ -27,10 +27,15 @@ export type ChatResponse = GeneratedChatResponse;
 /**
  * List all chat sessions for the current user
  */
-export async function listSessions(skip?: number, limit?: number): Promise<LangFlowSession[]> {
+export async function listSessions(
+  skip?: number,
+  limit?: number,
+  username?: string,
+): Promise<LangFlowSession[]> {
   return LangflowService.listSessionsApiV1LangflowSessionsGet({
     skip,
     limit,
+    username,
   });
 }
 
@@ -46,9 +51,10 @@ export async function createSession(data: CreateSessionRequest): Promise<LangFlo
 /**
  * Get session details
  */
-export async function getSession(sessionId: string): Promise<LangFlowSession> {
+export async function getSession(sessionId: string, username?: string): Promise<LangFlowSession> {
   return LangflowService.getSessionApiV1LangflowSessionsSessionIdGet({
     sessionId,
+    username,
   });
 }
 
@@ -74,9 +80,10 @@ export async function deleteSession(sessionId: string): Promise<void> {
 /**
  * Get message history for a session
  */
-export async function getMessages(sessionId: string): Promise<LangFlowMessage[]> {
+export async function getMessages(sessionId: string, username?: string): Promise<LangFlowMessage[]> {
   return LangflowService.getSessionMessagesApiV1LangflowSessionsSessionIdMessagesGet({
     sessionId,
+    username,
   });
 }
 

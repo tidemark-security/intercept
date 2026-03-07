@@ -90,6 +90,11 @@ export interface AiChatProps {
    * When provided, this is sent to LangFlow as the username tweak.
    */
   username?: string;
+  /**
+   * Optional username used for read-only session loading in admin mode.
+   * When provided, session/message fetches are scoped to this username.
+   */
+  sessionOwnerUsername?: string;
   /** 
    * Whether to persist session ID in localStorage.
    * When true, returning to the same entity will resume the previous conversation.

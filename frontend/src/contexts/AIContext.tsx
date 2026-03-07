@@ -68,7 +68,7 @@ export function AIProvider({ children }: AIProviderProps) {
       setMessages(existingMessages.map(msg => ({
         id: msg.id,
         role: msg.role,
-        content: msg.content,
+        content: msg.content ?? '',
         timestamp: msg.created_at,
       })));
     } catch (err) {
