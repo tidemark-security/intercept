@@ -5,9 +5,12 @@ import React from "react";
 import * as HoverCard from "@radix-ui/react-hover-card";
 import { cn } from "@/utils/cn";
 import { useTheme } from "@/contexts/ThemeContext";
+import { useTimezonePreference } from "@/contexts/TimezoneContext";
 import { Badge } from "@/components/data-display/Badge";
 import { Priority } from "@/components/misc/Priority";
 import { State } from "@/components/misc/State";
+import { parseISO8601 } from "@/utils/dateFilters";
+import { formatTimestampForPreference } from "@/utils/timezonePreference";
 import {
   getMenuCardMetaClassName,
   getMenuCardTitleClassName,
@@ -68,7 +71,20 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
     ref
   ) {
     const { resolvedTheme } = useTheme();
+    const { timezonePreference } = useTimezonePreference();
     const isDarkTheme = resolvedTheme === "dark";
+    const formattedTimestamp = React.useMemo(() => {
+      if (typeof timestamp !== "string") {
+        return timestamp;
+      }
+
+      const parsed = parseISO8601(timestamp);
+      if (!parsed) {
+        return timestamp;
+      }
+
+      return formatTimestampForPreference(parsed, timezonePreference);
+    }, [timestamp, timezonePreference]);
 
     return (
       <MenuCardBase
@@ -97,7 +113,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
                   {id}
                 </span>
               ) : null}
-              {timestamp ? (
+              {formattedTimestamp ? (
                 <span
                   className={getMenuCardMetaClassName(
                     isDarkTheme,
@@ -105,7 +121,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
                     "grow shrink-0 basis-0 whitespace-nowrap text-caption text-right"
                   )}
                 >
-                  {timestamp}
+                  {formattedTimestamp}
                 </span>
               ) : null}
             </div>
