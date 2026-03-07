@@ -80,17 +80,19 @@ export function CopyableTimestamp({
     return null;
   }
 
+  const timestampTextClasses = isDefaultVariant
+    ? 'text-default-font'
+    : (isDarkTheme ? 'text-accent-1-600 hover:text-accent-1-500' : 'text-accent-1-800 hover:text-accent-1-700');
+
   const iconClasses = cn(
     'h-3 w-3 transition-opacity',
-    isDefaultVariant ? 'text-default-font' : 'text-accent-1-400',
+    timestampTextClasses,
     { 'opacity-0': !isHovered && !isCopied, 'opacity-100': isHovered || isCopied }
   );
 
   const timestampClasses = cn(
     'text-caption font-mono',
-    isDefaultVariant
-      ? 'text-default-font'
-      : (isDarkTheme ? 'text-accent-1-600 hover:text-accent-1-700' : 'text-accent-1-800 hover:text-accent-1-900')
+    timestampTextClasses
   );
 
   const icon = isCopied ? (
