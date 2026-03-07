@@ -9,6 +9,7 @@ import { DropdownMenu } from "@/components/overlays/DropdownMenu";
 import { ToggleGroup } from "@/components/buttons/ToggleGroup";
 import { SidebarRailWithLabels } from "@/components/navigation/SidebarRailWithLabels";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
+import { useTheme } from "@/contexts/ThemeContext";
 import { useTimezonePreference } from "@/contexts/TimezoneContext";
 import { cn } from "@/utils/cn";
 
@@ -23,9 +24,11 @@ import {
   MapPin,
   Menu,
   MessageCircle,
+  Moon,
   NotebookPen,
   Search,
   Settings,
+  Sun,
   User,
 } from "lucide-react";
 type NavigationItem = {
@@ -126,6 +129,7 @@ const DefaultPageLayoutRoot = React.forwardRef<
   const location = useLocation();
   const navigate = useViewTransitionNavigate();
   const { timezonePreference, setTimezonePreference } = useTimezonePreference();
+  const { resolvedTheme, setThemePreference } = useTheme();
   const mobileNavItems = navigationItems.filter((item) => item.key !== "admin");
 
   // Global search state
@@ -295,6 +299,35 @@ const DefaultPageLayoutRoot = React.forwardRef<
                   <span className="text-caption text-default-font">
                     Datetime inputs are always in your local timezone regardless of this setting.
                   </span>
+                  <div className="h-px w-full bg-neutral-border" />
+                  <span className="text-caption-bold font-caption-bold text-default-font">
+                    Display Theme
+                  </span>
+                  <ToggleGroup
+                    type="single"
+                    value={resolvedTheme}
+                    onValueChange={(value) => {
+                      if (value === "dark" || value === "light") {
+                        setThemePreference(value);
+                      }
+                    }}
+                    className="w-full justify-start"
+                  >
+                    <ToggleGroup.Item
+                      value="light"
+                      icon={<Sun />}
+                      className="flex-1 justify-center"
+                    >
+                      Light
+                    </ToggleGroup.Item>
+                    <ToggleGroup.Item
+                      value="dark"
+                      icon={<Moon />}
+                      className="flex-1 justify-center"
+                    >
+                      Dark
+                    </ToggleGroup.Item>
+                  </ToggleGroup>
                 </div>
               </DropdownMenu.Content>
             </DropdownMenu.Root>
@@ -340,7 +373,7 @@ const DefaultPageLayoutRoot = React.forwardRef<
       {children ? (
         <div
           className={cn(
-            "relative flex grow shrink-0 basis-0 flex-col items-start self-stretch overflow-hidden bg-page-background transition-all duration-500",
+            "relative flex grow shrink-0 basis-0 flex-col items-start self-stretch overflow-hidden bg-page-background",
           )}
         >
           <div
