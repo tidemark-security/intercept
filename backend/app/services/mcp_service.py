@@ -5,9 +5,7 @@ various backend services to fulfill MCP tool requests.
 """
 
 import asyncio
-import os
 import shutil
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union, cast
@@ -45,8 +43,10 @@ from app.services import triage_recommendation_service
 
 _MERMAID_VALIDATION_TIMEOUT_SECONDS = 10
 _MERMAID_MAX_ERROR_LINES = 10
-_MERMAID_PUPPETEER_CONFIG = Path(__file__).resolve().parents[2] / "puppeteer-config.json"
-_MERMAID_CHROMIUM_PATH = Path("/usr/bin/chromium")
+_MERMAID_VALIDATOR_SCRIPT_CANDIDATES = (
+    Path("/opt/mermaid-validator/validate_mermaid_syntax.mjs"),
+    Path(__file__).resolve().parents[2] / "scripts" / "mermaid-validator" / "validate_mermaid_syntax.mjs",
+)
 _MERMAID_INVALID_ERROR_MARKERS = (
     "parse error",
     "syntax error",
@@ -63,26 +63,31 @@ _MERMAID_OPERATIONAL_ERROR_MARKERS = (
     "spawn",
     "enoent",
     "eacces",
+    "err_module_not_found",
+    "cannot find package",
+    "cannot find module",
+    "dompurify.addhook is not a function",
+    "dompurify.sanitize is not a function",
 )
 
 
-def _resolve_mmdc_path() -> str:
-    """Resolve the Mermaid CLI executable or raise a clear operational error."""
-    mmdc_path = shutil.which("mmdc")
-    if mmdc_path:
-        return mmdc_path
+def _resolve_mermaid_validator_command() -> list[str]:
+    """Resolve parser-based Mermaid validator dependencies and invocation command."""
+    node_path = shutil.which("node")
+    if not node_path:
+        raise HTTPException(
+            status_code=503,
+            detail="Mermaid validation is unavailable because 'node' is not installed on PATH.",
+        )
+
+    for script_path in _MERMAID_VALIDATOR_SCRIPT_CANDIDATES:
+        if script_path.exists():
+            return [node_path, str(script_path)]
 
     raise HTTPException(
         status_code=503,
-        detail="Mermaid validation is unavailable because 'mmdc' is not installed on PATH.",
+        detail="Mermaid validation is unavailable because the parser script is missing.",
     )
-
-
-def _get_mermaid_puppeteer_config() -> str | None:
-    """Return the puppeteer config path when the container Chromium path exists."""
-    if _MERMAID_PUPPETEER_CONFIG.exists() and _MERMAID_CHROMIUM_PATH.exists():
-        return str(_MERMAID_PUPPETEER_CONFIG)
-    return None
 
 
 def _collect_mermaid_error_lines(*parts: str) -> List[str]:
@@ -121,7 +126,7 @@ def _is_invalid_mermaid_failure(error_text: str) -> bool:
 
 
 async def validate_mermaid(diagram: str) -> ValidateMermaidOutput:
-    """Validate Mermaid syntax using the local Mermaid CLI.
+    """Validate Mermaid syntax using the local parser script.
 
     Args:
         diagram: Mermaid diagram source to validate.
@@ -130,21 +135,12 @@ async def validate_mermaid(diagram: str) -> ValidateMermaidOutput:
         Validation result with syntax status and normalized errors.
 
     Raises:
-        HTTPException(503): Mermaid CLI is unavailable or cannot launch.
-        HTTPException(504): Mermaid CLI timed out during validation.
+        HTTPException(503): Validator dependencies are unavailable or cannot launch.
+        HTTPException(504): Validator timed out during validation.
     """
-    mmdc_path = _resolve_mmdc_path()
-    puppeteer_config = _get_mermaid_puppeteer_config()
+    command = _resolve_mermaid_validator_command()
 
-    temp_output_path = ""
     try:
-        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as temp_output:
-            temp_output_path = temp_output.name
-
-        command = [mmdc_path, "--input", "-", "--output", temp_output_path]
-        if puppeteer_config:
-            command.extend(["-p", puppeteer_config])
-
         process = await asyncio.create_subprocess_exec(
             *command,
             stdin=asyncio.subprocess.PIPE,
@@ -162,7 +158,7 @@ async def validate_mermaid(diagram: str) -> ValidateMermaidOutput:
             await process.communicate()
             raise HTTPException(
                 status_code=504,
-                detail="Mermaid validation timed out while invoking 'mmdc'.",
+                detail="Mermaid validation timed out while invoking parser validator.",
             ) from exc
 
         stdout_text = stdout.decode("utf-8", errors="replace")
@@ -179,7 +175,7 @@ async def validate_mermaid(diagram: str) -> ValidateMermaidOutput:
         if _is_operational_mermaid_failure(combined_output):
             raise HTTPException(
                 status_code=503,
-                detail="Mermaid validation is unavailable because 'mmdc' could not run correctly.",
+                detail="Mermaid validation is unavailable because parser validator could not run correctly.",
             )
 
         error_lines = _collect_mermaid_error_lines(stderr_text, stdout_text)
@@ -195,19 +191,13 @@ async def validate_mermaid(diagram: str) -> ValidateMermaidOutput:
 
         raise HTTPException(
             status_code=503,
-            detail="Mermaid validation failed due to an unexpected Mermaid CLI error.",
+            detail="Mermaid validation failed due to an unexpected parser validator error.",
         )
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=503,
-            detail="Mermaid validation is unavailable because 'mmdc' is not installed on PATH.",
+            detail="Mermaid validation is unavailable because parser dependencies are missing.",
         ) from exc
-    finally:
-        if temp_output_path:
-            try:
-                os.unlink(temp_output_path)
-            except FileNotFoundError:
-                pass
 
 
 

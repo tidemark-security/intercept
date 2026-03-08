@@ -18,15 +18,15 @@ The MCP server is **not** auto-generated from FastAPI routes. Instead, it provid
 | `record_triage_decision` | Record AI triage recommendations | No |
 | `add_timeline_item` | Append notes to timelines | No |
 | `get_item` | Retrieve full content of truncated items | Yes |
-| `validate_mermaid` | Validate Mermaid diagram syntax with Mermaid CLI | Yes |
+| `validate_mermaid` | Validate Mermaid diagram syntax with Mermaid parser script | Yes |
 
 ## Mermaid Validation Runtime
 
-The `validate_mermaid` tool shells out to the locally installed `mmdc` binary.
+The `validate_mermaid` tool shells out to a local Node-based parser script (`scripts/mermaid-validator/validate_mermaid_syntax.mjs`).
 
-- Backend Docker images install `@mermaid-js/mermaid-cli`, Chromium, and required fonts.
-- Non-Docker environments must provide `mmdc` on `PATH`.
-- If `mmdc` is not installed or cannot launch correctly, the tool returns an operational error instead of a syntax-validation result.
+- Backend Docker images install Node.js and parser dependencies under `/opt/mermaid-validator`.
+- Non-Docker environments must provide `node` on `PATH` and install validator dependencies from `backend/scripts/mermaid-validator/package.json`.
+- If parser dependencies are unavailable or the script cannot run correctly, the tool returns an operational error instead of a syntax-validation result.
 
 ## Environment Variables
 
