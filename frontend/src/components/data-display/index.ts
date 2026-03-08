@@ -8,6 +8,7 @@ export type { EntityListProps } from './EntityList.types';
 export { InlineMarkdown } from './InlineMarkdown';
 export { LinkBadge } from './LinkBadge';
 export { default as MarkdownContent } from './MarkdownContent';
+export { default as MermaidRenderer } from './MermaidRenderer';
 export { RelativeTime } from './RelativeTime';
 export { ReferenceBadge } from './ReferenceBadge';
 export { SemiDonutChart } from './SemiDonutChart';

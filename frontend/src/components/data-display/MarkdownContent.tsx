@@ -7,6 +7,7 @@ import { oneLight, vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/
 
 import { cn } from '@/utils/cn';
 import { useTheme } from '@/contexts/ThemeContext';
+import MermaidRenderer from '@/components/data-display/MermaidRenderer';
 
 import { Check, Copy } from 'lucide-react';
 import { LinkBadge } from '@/components/data-display/LinkBadge';
@@ -214,6 +215,10 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({ content, className })
             // Block code with syntax highlighting
             const language = match ? match[1] : 'text';
             const codeString = String(children).replace(/\n$/, '');
+
+            if (language === 'mermaid') {
+              return <MermaidRenderer code={codeString} />;
+            }
 
             return <CodeBlock language={language} code={codeString} resolvedTheme={resolvedTheme} />;
           },
