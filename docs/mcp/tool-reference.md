@@ -4,7 +4,7 @@
 
 This document provides a comprehensive reference for all MCP tools available in Tidemark Intercept.
 
-The MCP server provides **6 intentionally designed tools** (not auto-generated from API routes):
+The MCP server provides **7 intentionally designed tools** (not auto-generated from API routes):
 
 | Tool | Category | Read-Only | Description |
 |------|----------|-----------|-------------|
@@ -14,6 +14,7 @@ The MCP server provides **6 intentionally designed tools** (not auto-generated f
 | `record_triage_decision` | Triage | No | Record AI triage recommendations |
 | `add_timeline_item` | Timeline | No | Append notes to timelines |
 | `get_item` | Content | Yes | Retrieve full content |
+| `validate_mermaid` | Validation | Yes | Validate Mermaid diagram syntax using Mermaid CLI |
 
 **MCP URL**: `http://localhost:8000/mcp/sse`
 
@@ -450,6 +451,47 @@ Supports pagination for very large items.
   },
   "next_cursor": null,
   "is_truncated": false
+}
+```
+
+---
+
+## validate_mermaid
+
+Validate Mermaid diagram syntax using the backend-installed Mermaid CLI.
+
+This tool validates syntax only. It does not return rendered SVG/PNG/PDF output.
+
+### Annotations
+- `readOnlyHint`: true
+
+### Parameters
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `diagram` | string | Yes | - | Raw Mermaid diagram source |
+
+### Returns
+
+```json
+{
+  "valid": false,
+  "message": "Mermaid diagram syntax is invalid.",
+  "errors": [
+    "Parse error on line 3:",
+    "Expecting 'TEXT', got 'EOF'"
+  ]
+}
+```
+
+### Example
+
+```json
+{
+  "name": "validate_mermaid",
+  "arguments": {
+    "diagram": "graph TD\nA-->B"
+  }
 }
 ```
 

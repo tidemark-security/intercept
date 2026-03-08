@@ -265,3 +265,19 @@ class GetItemOutput(BaseModel):
     metadata: ItemMetadata
     next_cursor: Optional[str] = None
     is_truncated: bool = False
+
+
+# ============================================================================
+# User Story 7: validate_mermaid
+# ============================================================================
+
+class ValidateMermaidInput(BaseModel):
+    """Input schema for validate_mermaid tool."""
+    diagram: str = Field(min_length=1, max_length=100000)
+
+
+class ValidateMermaidOutput(BaseModel):
+    """Output schema for validate_mermaid tool."""
+    valid: bool
+    message: str
+    errors: List[str] = Field(default_factory=list)

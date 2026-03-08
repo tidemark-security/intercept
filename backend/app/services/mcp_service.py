@@ -4,7 +4,12 @@ This service provides business logic for MCP tools, coordinating between
 various backend services to fulfill MCP tool requests.
 """
 
+import asyncio
+import os
+import shutil
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, List, Dict, Any, Union, cast
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,12 +34,181 @@ from app.mcp.schemas import (
     AddTimelineItemOutput,
     GetItemOutput,
     ItemMetadata,
+    ValidateMermaidOutput,
     WorkItemPreview,
     RelatedMatch,
 )
 from app.services.observable_service import extract_observables, extract_high_signal_entities
 from app.services.similarity_service import count_similar_alerts
 from app.services import triage_recommendation_service
+
+
+_MERMAID_VALIDATION_TIMEOUT_SECONDS = 10
+_MERMAID_MAX_ERROR_LINES = 10
+_MERMAID_PUPPETEER_CONFIG = Path(__file__).resolve().parents[2] / "puppeteer-config.json"
+_MERMAID_CHROMIUM_PATH = Path("/usr/bin/chromium")
+_MERMAID_INVALID_ERROR_MARKERS = (
+    "parse error",
+    "syntax error",
+    "lexical error",
+    "expecting",
+    "unknowndiagramerror",
+    "no diagram type detected",
+)
+_MERMAID_OPERATIONAL_ERROR_MARKERS = (
+    "browser was not found",
+    "could not find expected browser",
+    "failed to launch the browser process",
+    "failed to launch the browser",
+    "spawn",
+    "enoent",
+    "eacces",
+)
+
+
+def _resolve_mmdc_path() -> str:
+    """Resolve the Mermaid CLI executable or raise a clear operational error."""
+    mmdc_path = shutil.which("mmdc")
+    if mmdc_path:
+        return mmdc_path
+
+    raise HTTPException(
+        status_code=503,
+        detail="Mermaid validation is unavailable because 'mmdc' is not installed on PATH.",
+    )
+
+
+def _get_mermaid_puppeteer_config() -> str | None:
+    """Return the puppeteer config path when the container Chromium path exists."""
+    if _MERMAID_PUPPETEER_CONFIG.exists() and _MERMAID_CHROMIUM_PATH.exists():
+        return str(_MERMAID_PUPPETEER_CONFIG)
+    return None
+
+
+def _collect_mermaid_error_lines(*parts: str) -> List[str]:
+    """Normalize Mermaid CLI stderr/stdout into compact, user-facing errors."""
+    seen: set[str] = set()
+    errors: List[str] = []
+
+    for part in parts:
+        for raw_line in part.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line in seen:
+                continue
+            seen.add(line)
+            errors.append(line)
+            if len(errors) >= _MERMAID_MAX_ERROR_LINES:
+                return errors
+
+    return errors
+
+
+def _is_operational_mermaid_failure(error_text: str) -> bool:
+    """Detect non-syntax failures that indicate an environment/runtime problem."""
+    lowered = error_text.lower()
+    if any(marker in lowered for marker in _MERMAID_OPERATIONAL_ERROR_MARKERS):
+        return True
+
+    return "timeout" in lowered and "parse error" not in lowered
+
+
+def _is_invalid_mermaid_failure(error_text: str) -> bool:
+    """Detect failures that should be reported as invalid Mermaid syntax."""
+    lowered = error_text.lower()
+    return any(marker in lowered for marker in _MERMAID_INVALID_ERROR_MARKERS)
+
+
+async def validate_mermaid(diagram: str) -> ValidateMermaidOutput:
+    """Validate Mermaid syntax using the local Mermaid CLI.
+
+    Args:
+        diagram: Mermaid diagram source to validate.
+
+    Returns:
+        Validation result with syntax status and normalized errors.
+
+    Raises:
+        HTTPException(503): Mermaid CLI is unavailable or cannot launch.
+        HTTPException(504): Mermaid CLI timed out during validation.
+    """
+    mmdc_path = _resolve_mmdc_path()
+    puppeteer_config = _get_mermaid_puppeteer_config()
+
+    temp_output_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as temp_output:
+            temp_output_path = temp_output.name
+
+        command = [mmdc_path, "--input", "-", "--output", temp_output_path]
+        if puppeteer_config:
+            command.extend(["-p", puppeteer_config])
+
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(diagram.encode("utf-8")),
+                timeout=_MERMAID_VALIDATION_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            process.kill()
+            await process.communicate()
+            raise HTTPException(
+                status_code=504,
+                detail="Mermaid validation timed out while invoking 'mmdc'.",
+            ) from exc
+
+        stdout_text = stdout.decode("utf-8", errors="replace")
+        stderr_text = stderr.decode("utf-8", errors="replace")
+        combined_output = "\n".join(part for part in (stderr_text, stdout_text) if part).strip()
+
+        if process.returncode == 0:
+            return ValidateMermaidOutput(
+                valid=True,
+                message="Mermaid diagram syntax is valid.",
+                errors=[],
+            )
+
+        if _is_operational_mermaid_failure(combined_output):
+            raise HTTPException(
+                status_code=503,
+                detail="Mermaid validation is unavailable because 'mmdc' could not run correctly.",
+            )
+
+        error_lines = _collect_mermaid_error_lines(stderr_text, stdout_text)
+        if not error_lines:
+            error_lines = ["Mermaid validation failed."]
+
+        if _is_invalid_mermaid_failure(combined_output) or error_lines:
+            return ValidateMermaidOutput(
+                valid=False,
+                message="Mermaid diagram syntax is invalid.",
+                errors=error_lines,
+            )
+
+        raise HTTPException(
+            status_code=503,
+            detail="Mermaid validation failed due to an unexpected Mermaid CLI error.",
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Mermaid validation is unavailable because 'mmdc' is not installed on PATH.",
+        ) from exc
+    finally:
+        if temp_output_path:
+            try:
+                os.unlink(temp_output_path)
+            except FileNotFoundError:
+                pass
+
 
 
 async def get_summary(

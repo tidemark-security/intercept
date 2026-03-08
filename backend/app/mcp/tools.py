@@ -1,12 +1,13 @@
 """MCP tool function definitions.
 
-This module contains the 6 intentional MCP tools:
+This module contains the 7 intentional MCP tools:
 1. get_summary - Bounded context retrieval
 2. list_work - Global work discovery
 3. find_related - Similarity search
 4. record_triage_decision - Triage recommendations
 5. add_timeline_item - Timeline note appending
 6. get_item - Full content retrieval
+7. validate_mermaid - Mermaid syntax validation
 
 Tool implementations added per User Stories (Phase 3-8).
 """
@@ -131,7 +132,7 @@ async def record_triage_decision_tool(
     disposition: str,
     confidence: float,
     reasoning_bullets: list[str] | None = None,
-    recommended_actions: list[str] | None = None,
+    recommended_actions: list[dict[str, Any]] | None = None,
     suggested_status: str | None = None,
     suggested_priority: str | None = None,
     suggested_assignee: str | None = None,
@@ -231,4 +232,10 @@ async def get_item_tool(
             hint_parent_id=hint_parent_id,
         )
         return result.model_dump()
+
+
+async def validate_mermaid_tool(diagram: str) -> Dict[str, Any]:
+    """Validate Mermaid syntax using the local Mermaid CLI."""
+    result = await mcp_service.validate_mermaid(diagram=diagram)
+    return result.model_dump()
 

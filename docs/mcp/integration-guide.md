@@ -4,8 +4,8 @@
 
 The Tidemark Intercept MCP (Model Context Protocol) server enables AI assistants, automation tools, and custom applications to interact with the case management platform through a standardized protocol.
 
-The MCP server provides **6 purpose-built tools** designed for AI agent workflows:
-- Read operations: `get_summary`, `list_work`, `find_related`, `get_item`
+The MCP server provides **7 purpose-built tools** designed for AI agent workflows:
+- Read operations: `get_summary`, `list_work`, `find_related`, `get_item`, `validate_mermaid`
 - Write operations: `record_triage_decision`, `add_timeline_item`
 
 **MCP URL**: `http://localhost:8000/mcp/sse`
@@ -100,7 +100,7 @@ Any MCP-compatible client can connect using:
 
 ## Available Tools
 
-The MCP server provides 6 intentionally designed tools:
+The MCP server provides 7 intentionally designed tools:
 
 ### Read-Only Tools
 
@@ -110,6 +110,7 @@ The MCP server provides 6 intentionally designed tools:
 | `list_work` | List and filter alerts, cases, or tasks |
 | `find_related` | Find similar/related items |
 | `get_item` | Retrieve full content of truncated timeline items |
+| `validate_mermaid` | Validate Mermaid diagram syntax before saving or sharing diagrams |
 
 ### Write Tools
 
@@ -205,6 +206,19 @@ related = await mcp.call_tool("find_related", {
 for match in related["matches"]:
     print(f"{match['human_id']}: {match['why']}")
     # Output: "CAS-0000789: ['shared_ip:10.0.0.1', 'same_source_title']"
+
+### Pattern 4: Diagram Validation
+
+Validate Mermaid before persisting documentation or sending it to a frontend renderer:
+
+```python
+result = await mcp.call_tool("validate_mermaid", {
+  "diagram": "graph TD\nA[Analyst] --> B[Case]"
+})
+
+if not result["valid"]:
+  raise ValueError(result["errors"])
+```
 ```
 
 ## Dry-Run Mode

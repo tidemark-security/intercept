@@ -12,6 +12,7 @@ from app.mcp.tools import (
     record_triage_decision_tool,
     add_timeline_item_tool,
     get_item_tool,
+    validate_mermaid_tool,
 )
 
 
@@ -19,7 +20,7 @@ from app.mcp.tools import (
 mcp = FastMCP("Tidemark Intercept MCP")
 
 
-# Register tools explicitly (Phase 2 skeleton - implementations in Phase 3+)
+# Register tools explicitly.
 
 @mcp.tool(annotations={"readOnlyHint": True})
 async def get_summary(
@@ -218,6 +219,23 @@ async def get_item(
         hint_parent_id: Optional parent entity ID hint
     """
     return await get_item_tool(item_id, mode, max_chars, cursor, hint_kind, hint_parent_id)
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def validate_mermaid(
+    diagram: str,
+) -> dict:
+    """Validate Mermaid diagram syntax with Mermaid CLI.
+
+    Returns:
+        - valid: Whether the Mermaid source parsed successfully
+        - message: Summary of the validation result
+        - errors: Normalized CLI error lines when invalid
+
+    Args:
+        diagram: Raw Mermaid diagram definition to validate
+    """
+    return await validate_mermaid_tool(diagram)
 
 
 # Export MCP server instance
