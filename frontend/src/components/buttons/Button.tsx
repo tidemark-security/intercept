@@ -9,6 +9,7 @@ import React from "react";
 import { cn } from "@/utils/cn";
 import { IconWrapper } from "@/utils/IconWrapper";
 import { Loader } from "@/components/feedback/Loader";
+import { useTheme } from "@/contexts/ThemeContext";
 
 interface ButtonRootProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -49,6 +50,9 @@ const ButtonRoot = React.forwardRef<HTMLButtonElement, ButtonRootProps>(
     }: ButtonRootProps,
     ref
   ) {
+    const { resolvedTheme } = useTheme();
+    const isDarkTheme = resolvedTheme === "dark";
+
     return (
       <button
         className={cn(
@@ -74,6 +78,8 @@ const ButtonRoot = React.forwardRef<HTMLButtonElement, ButtonRootProps>(
               variant === "brand-tertiary",
             "border border-solid border-brand-primary bg-default-background hover:bg-brand-1100 active:bg-default-background":
               variant === "brand-secondary",
+            "border border-solid border-brand-700":
+              variant === "brand-primary" && !isDarkTheme,
           },
           className
         )}
