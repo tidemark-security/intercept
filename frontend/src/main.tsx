@@ -5,11 +5,16 @@ import App from "./App.tsx";
 import "./index.css";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { TimezoneProvider } from "./contexts/TimezoneContext";
+import { VisualFilterProvider } from "./contexts/VisualFilterContext";
 import {
   applyResolvedTheme,
   getStoredThemePreference,
   resolveThemePreference,
 } from "./utils/themePreference";
+import {
+  applyVisualFilterPreference,
+  getStoredVisualFilterPreference,
+} from "./utils/visualFilterPreference";
 import { OpenAPI } from "./types/generated/core/OpenAPI";
 
 // Configure OpenAPI client
@@ -33,15 +38,18 @@ const queryClient = new QueryClient({
 
 const initialThemePreference = getStoredThemePreference();
 applyResolvedTheme(resolveThemePreference(initialThemePreference));
+applyVisualFilterPreference(getStoredVisualFilterPreference());
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ThemeProvider>
-      <TimezoneProvider>
-        <QueryClientProvider client={queryClient}>
-          <App />
-        </QueryClientProvider>
-      </TimezoneProvider>
+      <VisualFilterProvider>
+        <TimezoneProvider>
+          <QueryClientProvider client={queryClient}>
+            <App />
+          </QueryClientProvider>
+        </TimezoneProvider>
+      </VisualFilterProvider>
     </ThemeProvider>
   </React.StrictMode>
 );

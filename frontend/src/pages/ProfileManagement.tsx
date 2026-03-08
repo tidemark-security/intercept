@@ -17,11 +17,13 @@ import { IconButton } from "@/components/buttons/IconButton";
 import { IconWithBackground } from "@/components/misc/IconWithBackground";
 import { ModalShell } from "@/components/overlays";
 import { Select } from "@/components/forms/Select";
+import { Slider } from "@/components/forms/Slider";
 import { TextField } from "@/components/forms/TextField";
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useTimezonePreference } from "@/contexts/TimezoneContext";
 import { useToast } from "@/contexts/ToastContext";
+import { useVisualFilterPreference } from "@/contexts/VisualFilterContext";
 import type { ApiKeyCreateResponse } from "@/types/generated/models/ApiKeyCreateResponse";
 import type { ApiKeyRead } from "@/types/generated/models/ApiKeyRead";
 import type { PasskeyRead } from "@/types/generated/models/PasskeyRead";
@@ -33,6 +35,10 @@ import {
 import { formatAbsoluteTime } from "@/utils/dateFormatters";
 import type { ThemePreference } from "@/utils/themePreference";
 import type { TimezonePreference } from "@/utils/timezonePreference";
+import {
+  getVisualFilterLimits,
+  type VisualFilterPreference,
+} from "@/utils/visualFilterPreference";
 import { browserSupportsPasskeys, createPasskeyCredential } from "@/utils/webauthn";
 
 import {
@@ -45,9 +51,22 @@ import {
   Monitor,
   MoreHorizontal,
   Plus,
+  SlidersHorizontal,
   Shield,
   Trash2,
 } from "lucide-react";
+
+const visualFilterLimits = getVisualFilterLimits();
+
+const visualFilterPreviewSwatches = [
+  { label: "Brand", variable: "--color-brand-primary-blush", textClass: "text-black" },
+  { label: "Text", variable: "--color-default-font" },
+  { label: "Subtext", variable: "--color-subtext-color" },
+  { label: "Border", variable: "--color-neutral-border" },
+  { label: "Accent 1", variable: "--color-accent-1-primary-blush", textClass: "text-black" },
+  { label: "Accent 2", variable: "--color-accent-2-primary-blush", textClass: "text-white" },
+  { label: "Accent 3", variable: "--color-accent-3-primary-blush", textClass: "text-white" },
+];
 
 const formatDate = (dateValue?: string | null): string => {
   if (!dateValue) return "Never";
@@ -73,6 +92,11 @@ type PasskeyModalMode = "register" | "rename";
 function ProfileManagement() {
   const { themePreference, setThemePreference } = useTheme();
   const { timezonePreference, setTimezonePreference } = useTimezonePreference();
+  const {
+    visualFilterPreference,
+    setVisualFilterPreference,
+    resetVisualFilterPreference,
+  } = useVisualFilterPreference();
   const { showToast } = useToast();
   const [currentPassword, setCurrentPassword] = React.useState("");
   const [newPassword, setNewPassword] = React.useState("");
@@ -414,6 +438,13 @@ function ProfileManagement() {
     }
   };
 
+  const updateVisualFilter = React.useCallback(
+    (patch: Partial<VisualFilterPreference>) => {
+      setVisualFilterPreference((previous) => ({ ...previous, ...patch }));
+    },
+    [setVisualFilterPreference],
+  );
+
   return (
     <DefaultPageLayout withContainer>
       <div className="flex h-full w-full flex-col items-start gap-6 overflow-auto px-6 py-12 mobile:px-4 mobile:py-6">
@@ -466,6 +497,159 @@ function ProfileManagement() {
                 <Select.Item value="local">Local</Select.Item>
                 <Select.Item value="utc">UTC</Select.Item>
               </Select>
+
+              <div className="flex w-full max-w-3xl flex-col items-start gap-4 rounded-md border border-solid border-neutral-border bg-default-background px-4 py-4">
+                <div className="flex w-full items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <SlidersHorizontal className="text-heading-3 text-subtext-color" />
+                    <span className="text-caption-bold font-caption-bold text-default-font">
+                      Visual Filter
+                    </span>
+                  </div>
+                  <Button
+                    size="small"
+                    variant="neutral-secondary"
+                    onClick={resetVisualFilterPreference}
+                  >
+                    Reset
+                  </Button>
+                </div>
+
+                <span className="text-caption font-caption text-subtext-color">
+                  Tune hue shift, brightness, contrast, grayscale, and saturation for the full app on this device.
+                </span>
+
+                <div className="flex w-full flex-col items-start gap-2">
+                  <span className="text-caption-bold font-caption-bold text-default-font">Theme Colors Preview</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {visualFilterPreviewSwatches.map((swatch) => (
+                      <div
+                        key={swatch.label}
+                        className="flex h-8 min-w-[64px] items-center justify-center rounded border border-solid border-neutral-border px-2"
+                        style={{ backgroundColor: `rgb(var(${swatch.variable}))` }}
+                        title={swatch.label}
+                      >
+                        <span
+                          className={`text-[11px] font-medium leading-none ${swatch.textClass ?? "text-neutral-0"}`}
+                        >
+                          {swatch.label}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex w-full flex-col items-start gap-2">
+                  <span className="text-caption-bold font-caption-bold text-default-font">Hue Shift</span>
+                  <Slider
+                    value={[visualFilterPreference.hue]}
+                    min={visualFilterLimits.hue.min}
+                    max={visualFilterLimits.hue.max}
+                    step={1}
+                    onValueChange={(value) => updateVisualFilter({ hue: value[0] })}
+                  />
+                  <div className="flex w-full items-center justify-between">
+                    <span className="text-caption font-caption text-subtext-color">
+                      {visualFilterLimits.hue.min}deg
+                    </span>
+                    <span className="text-caption font-caption text-default-font">
+                      {visualFilterPreference.hue}deg
+                    </span>
+                    <span className="text-caption font-caption text-subtext-color">
+                      {visualFilterLimits.hue.max}deg
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex w-full flex-col items-start gap-2">
+                  <span className="text-caption-bold font-caption-bold text-default-font">Brightness</span>
+                  <Slider
+                    value={[visualFilterPreference.brightness]}
+                    min={visualFilterLimits.brightness.min}
+                    max={visualFilterLimits.brightness.max}
+                    step={1}
+                    onValueChange={(value) => updateVisualFilter({ brightness: value[0] })}
+                  />
+                  <div className="flex w-full items-center justify-between">
+                    <span className="text-caption font-caption text-subtext-color">
+                      {visualFilterLimits.brightness.min}%
+                    </span>
+                    <span className="text-caption font-caption text-default-font">
+                      {visualFilterPreference.brightness}%
+                    </span>
+                    <span className="text-caption font-caption text-subtext-color">
+                      {visualFilterLimits.brightness.max}%
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex w-full flex-col items-start gap-2">
+                  <span className="text-caption-bold font-caption-bold text-default-font">Contrast</span>
+                  <Slider
+                    value={[visualFilterPreference.contrast]}
+                    min={visualFilterLimits.contrast.min}
+                    max={visualFilterLimits.contrast.max}
+                    step={1}
+                    onValueChange={(value) => updateVisualFilter({ contrast: value[0] })}
+                  />
+                  <div className="flex w-full items-center justify-between">
+                    <span className="text-caption font-caption text-subtext-color">
+                      {visualFilterLimits.contrast.min}%
+                    </span>
+                    <span className="text-caption font-caption text-default-font">
+                      {visualFilterPreference.contrast}%
+                    </span>
+                    <span className="text-caption font-caption text-subtext-color">
+                      {visualFilterLimits.contrast.max}%
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex w-full flex-col items-start gap-2">
+                  <span className="text-caption-bold font-caption-bold text-default-font">Grayscale</span>
+                  <Slider
+                    value={[visualFilterPreference.grayscale]}
+                    min={visualFilterLimits.grayscale.min}
+                    max={visualFilterLimits.grayscale.max}
+                    step={1}
+                    onValueChange={(value) => updateVisualFilter({ grayscale: value[0] })}
+                  />
+                  <div className="flex w-full items-center justify-between">
+                    <span className="text-caption font-caption text-subtext-color">
+                      {visualFilterLimits.grayscale.min}%
+                    </span>
+                    <span className="text-caption font-caption text-default-font">
+                      {visualFilterPreference.grayscale}%
+                    </span>
+                    <span className="text-caption font-caption text-subtext-color">
+                      {visualFilterLimits.grayscale.max}%
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex w-full flex-col items-start gap-2">
+                  <span className="text-caption-bold font-caption-bold text-default-font">Saturation</span>
+                  <Slider
+                    value={[visualFilterPreference.saturation]}
+                    min={visualFilterLimits.saturation.min}
+                    max={visualFilterLimits.saturation.max}
+                    step={1}
+                    onValueChange={(value) => updateVisualFilter({ saturation: value[0] })}
+                  />
+                  <div className="flex w-full items-center justify-between">
+                    <span className="text-caption font-caption text-subtext-color">
+                      {visualFilterLimits.saturation.min}%
+                    </span>
+                    <span className="text-caption font-caption text-default-font">
+                      {visualFilterPreference.saturation}%
+                    </span>
+                    <span className="text-caption font-caption text-subtext-color">
+                      {visualFilterLimits.saturation.max}%
+                    </span>
+                  </div>
+                </div>
+
+              </div>
             </div>
 
             <div className="flex w-full flex-col items-start gap-6 rounded-md border border-solid border-neutral-border bg-neutral-50 px-6 py-6">
