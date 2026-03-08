@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, Copy, Download, Expand, Image as ImageIcon, RefreshCcw, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { Bot, Check, Copy, Download, Expand, Image as ImageIcon, Paintbrush, RefreshCcw, Sparkles, X, ZoomIn, ZoomOut } from 'lucide-react';
 
 import { Button } from '@/components/buttons/Button';
 import { IconButton } from '@/components/buttons/IconButton';
@@ -9,7 +9,113 @@ import { cn } from '@/utils/cn';
 
 interface MermaidRendererProps {
   code: string;
+  isStreaming?: boolean;
 }
+
+type MermaidTheme = 'dark' | 'default';
+
+let mermaidInitTheme: MermaidTheme | null = null;
+const mermaidRenderCache = new Map<string, string>();
+const MERMAID_RENDER_CACHE_LIMIT = 200;
+
+const getCacheKey = (theme: MermaidTheme, code: string): string => {
+  return `${theme}::${code}`;
+};
+
+const setCachedSvg = (key: string, svg: string): void => {
+  if (mermaidRenderCache.has(key)) {
+    mermaidRenderCache.delete(key);
+  }
+
+  mermaidRenderCache.set(key, svg);
+
+  if (mermaidRenderCache.size > MERMAID_RENDER_CACHE_LIMIT) {
+    const oldestKey = mermaidRenderCache.keys().next().value;
+    if (typeof oldestKey === 'string') {
+      mermaidRenderCache.delete(oldestKey);
+    }
+  }
+};
+
+const getMermaidClient = async (theme: MermaidTheme) => {
+  const mermaidModule = await import('mermaid');
+  const mermaid = mermaidModule.default;
+
+  if (mermaidInitTheme !== theme) {
+    mermaid.initialize({
+      startOnLoad: false,
+      htmlLabels: false,
+      flowchart: {
+        htmlLabels: false,
+      },
+      securityLevel: 'strict',
+      theme,
+    });
+    mermaidInitTheme = theme;
+  }
+
+  return mermaid;
+};
+
+const MermaidStreamingPlaceholder = () => {
+  return (
+    <div
+      className="my-3 overflow-hidden rounded-sm border border-neutral-border bg-default-background"
+      data-testid="mermaid-streaming-placeholder"
+    >
+      <div className="flex items-center justify-between border-b border-neutral-border bg-neutral-50 px-3 py-2">
+        <div className="flex items-center gap-3">
+          <div className="relative flex h-10 w-10 items-center justify-center rounded-sm border border-brand-primary/40 bg-brand-primary/10 text-brand-primary">
+            <Bot className="h-5 w-5" />
+            <Sparkles className="absolute -right-1 -top-1 h-3 w-3 animate-pulse text-accent-2-primary-blush" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-default-font">AI is sketching the diagram</p>
+            <p className="text-xs text-subtext-color">
+              The preview is paused until the Mermaid source finishes streaming.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1" aria-hidden="true">
+          <span className="h-2 w-2 animate-bounce rounded-full bg-brand-primary" style={{ animationDelay: '0ms' }} />
+          <span className="h-2 w-2 animate-bounce rounded-full bg-accent-2-primary-blush" style={{ animationDelay: '120ms' }} />
+          <span className="h-2 w-2 animate-bounce rounded-full bg-accent-3-primary-blush" style={{ animationDelay: '240ms' }} />
+        </div>
+      </div>
+
+      <div className="p-3">
+        <div className="rounded-sm border border-dashed border-neutral-border bg-neutral-50/70 p-3">
+          <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.12em] text-subtext-color">
+            <Paintbrush className="h-4 w-4 text-brand-primary" />
+            Thinking Through Nodes
+          </div>
+
+          <div className="mt-3 space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="h-3 w-3 rounded-full bg-brand-primary/70" />
+              <span className="h-2 w-32 animate-pulse rounded-full bg-neutral-300" />
+            </div>
+            <div className="ml-5 h-px w-12 bg-neutral-border" />
+            <div className="flex items-center gap-2">
+              <span className="h-3 w-3 rounded-full bg-accent-2-primary-blush/80" />
+              <span className="h-2 w-40 animate-pulse rounded-full bg-neutral-300" style={{ animationDelay: '120ms' }} />
+            </div>
+            <div className="ml-5 h-px w-20 bg-neutral-border" />
+            <div className="flex items-center gap-2">
+              <span className="h-3 w-3 rounded-full bg-accent-3-primary-blush/80" />
+              <span className="h-2 w-24 animate-pulse rounded-full bg-neutral-300" style={{ animationDelay: '240ms' }} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="border-t border-neutral-border px-3 py-2 text-xs text-subtext-color">
+        Streaming Mermaid can be temporarily invalid. The renderer will switch to the final diagram when the AI finishes painting.
+      </div>
+    </div>
+  );
+};
 
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 10;
@@ -118,7 +224,7 @@ const getFullscreenSvgMarkup = (markup: string): string => {
   return svgElement.outerHTML;
 };
 
-const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code }) => {
+const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, isStreaming = false }) => {
   const { resolvedTheme } = useTheme();
   const dragStateRef = React.useRef<DragState | null>(null);
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
@@ -235,8 +341,24 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code }) => {
 
     const renderDiagram = async () => {
       const trimmedCode = code.trim();
+
+      if (isStreaming) {
+        setError(null);
+        return;
+      }
+
       if (!trimmedCode) {
         setSvgMarkup('');
+        setError(null);
+        return;
+      }
+
+      const theme: MermaidTheme = resolvedTheme === 'dark' ? 'dark' : 'default';
+      const cacheKey = getCacheKey(theme, trimmedCode);
+      const cachedMarkup = mermaidRenderCache.get(cacheKey);
+
+      if (cachedMarkup) {
+        setSvgMarkup(cachedMarkup);
         setError(null);
         return;
       }
@@ -252,25 +374,7 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code }) => {
       document.body.appendChild(renderHost);
 
       try {
-        const mermaidModule = await import('mermaid');
-        const mermaid = mermaidModule.default;
-
-        mermaid.initialize({
-          startOnLoad: false,
-          htmlLabels: false,
-          flowchart: {
-            htmlLabels: false,
-          },
-          securityLevel: 'strict',
-          theme: resolvedTheme === 'dark' ? 'dark' : 'default',
-        });
-
-        const isValid = await mermaid.parse(trimmedCode, { suppressErrors: true });
-        if (isValid === false) {
-          setSvgMarkup('');
-          setError('Unable to render Mermaid diagram.');
-          return;
-        }
+        const mermaid = await getMermaidClient(theme);
 
         const renderId = `mermaid-${Math.random().toString(36).slice(2)}`;
         const { svg } = await mermaid.render(renderId, trimmedCode, renderHost);
@@ -280,6 +384,7 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code }) => {
         }
 
         setSvgMarkup(svg);
+        setCachedSvg(cacheKey, svg);
         setError(null);
         resetViewport();
       } catch (renderError) {
@@ -300,7 +405,7 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code }) => {
     return () => {
       cancelled = true;
     };
-  }, [code, resetViewport, resolvedTheme]);
+  }, [code, isStreaming, resetViewport, resolvedTheme]);
 
   const handleDownload = React.useCallback(() => {
     if (!svgMarkup) {
@@ -467,6 +572,10 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code }) => {
         </pre>
       </div>
     );
+  }
+
+  if (isStreaming && !svgMarkup) {
+    return <MermaidStreamingPlaceholder />;
   }
 
   if (!svgMarkup) {

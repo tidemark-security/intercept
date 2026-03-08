@@ -14,6 +14,7 @@ import { LinkBadge } from '@/components/data-display/LinkBadge';
 interface MarkdownContentProps {
   content: string;
   className?: string;
+  isStreamingFromAi?: boolean;
 }
 
 /**
@@ -91,7 +92,11 @@ const CodeBlock: React.FC<CodeBlockThemeProps> = ({ language, code, resolvedThem
   );
 };
 
-const MarkdownContent: React.FC<MarkdownContentProps> = ({ content, className }) => {
+const MarkdownContent: React.FC<MarkdownContentProps> = ({
+  content,
+  className,
+  isStreamingFromAi = false,
+}) => {
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === 'dark';
 
@@ -217,7 +222,7 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({ content, className })
             const codeString = String(children).replace(/\n$/, '');
 
             if (language === 'mermaid') {
-              return <MermaidRenderer code={codeString} />;
+              return <MermaidRenderer code={codeString} isStreaming={isStreamingFromAi} />;
             }
 
             return <CodeBlock language={language} code={codeString} resolvedTheme={resolvedTheme} />;
@@ -261,4 +266,10 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({ content, className })
   );
 };
 
-export default MarkdownContent;
+export default React.memo(MarkdownContent, (prevProps, nextProps) => {
+  return (
+    prevProps.content === nextProps.content &&
+    prevProps.className === nextProps.className &&
+    prevProps.isStreamingFromAi === nextProps.isStreamingFromAi
+  );
+});

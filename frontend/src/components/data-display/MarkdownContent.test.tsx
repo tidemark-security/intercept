@@ -5,7 +5,11 @@ import MarkdownContent from './MarkdownContent';
 import { ThemeProvider } from '@/contexts/ThemeContext';
 
 vi.mock('@/components/data-display/MermaidRenderer', () => ({
-  default: ({ code }: { code: string }) => <div data-testid="mermaid-renderer">{code}</div>,
+  default: ({ code, isStreaming }: { code: string; isStreaming?: boolean }) => (
+    <div data-testid="mermaid-renderer" data-streaming={isStreaming ? 'true' : 'false'}>
+      {code}
+    </div>
+  ),
 }));
 
 describe('MarkdownContent', () => {
@@ -19,6 +23,19 @@ describe('MarkdownContent', () => {
     );
 
     expect(screen.getByTestId('mermaid-renderer')).toHaveTextContent(/graph TD\s*A-->B/);
+    expect(screen.getByTestId('mermaid-renderer')).toHaveAttribute('data-streaming', 'false');
+  });
+
+  it('passes the AI streaming flag through to MermaidRenderer', () => {
+    const markdown = '```mermaid\ngraph TD\nA-->B\n```';
+
+    render(
+      <ThemeProvider>
+        <MarkdownContent content={markdown} isStreamingFromAi={true} />
+      </ThemeProvider>
+    );
+
+    expect(screen.getByTestId('mermaid-renderer')).toHaveAttribute('data-streaming', 'true');
   });
 
   it('renders non-mermaid code blocks as regular code', () => {

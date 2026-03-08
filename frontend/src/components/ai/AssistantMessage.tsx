@@ -23,7 +23,7 @@ import { Check, Copy, Sparkle, ThumbsDown, ThumbsUp } from "lucide-react";
  * - Copy button
  * - Timestamp display
  */
-export function AssistantMessage({
+function AssistantMessageComponent({
   message,
   onToolApprove,
   onToolDeny,
@@ -55,14 +55,11 @@ export function AssistantMessage({
           className={`flex w-full min-w-0 flex-col items-start gap-2 rounded-md px-3 py-3 ${isDarkTheme ? "bg-neutral-100" : "bg-neutral-200"}`}
         >
           <div className="w-full min-w-0 text-body font-body text-default-font [overflow-wrap:anywhere]">
-            <MarkdownContent content={message.content} />
+            <MarkdownContent content={message.content} isStreamingFromAi={message.isStreaming === true} />
             {message.isStreaming && (
               <div className="mt-2 flex w-full flex-col gap-1">
                 <div className="flex items-center gap-2 text-caption font-caption text-subtext-color">
                   <span>Generating response</span>
-                  <span
-                    className={`ai-caret inline-block h-4 w-[2px] ${isDarkTheme ? "bg-brand-primary" : "bg-default-font"}`}
-                  />
                 </div>
                 <div className="ai-scanline-track">
                   <span
@@ -153,5 +150,21 @@ export function AssistantMessage({
     </div>
   );
 }
+
+const areAssistantMessagePropsEqual = (
+  prevProps: AssistantMessageProps,
+  nextProps: AssistantMessageProps
+): boolean => {
+  return (
+    prevProps.message === nextProps.message &&
+    prevProps.onToolApprove === nextProps.onToolApprove &&
+    prevProps.onToolDeny === nextProps.onToolDeny &&
+    prevProps.onFeedbackPositive === nextProps.onFeedbackPositive &&
+    prevProps.onFeedbackNegative === nextProps.onFeedbackNegative &&
+    prevProps.onCopyMessage === nextProps.onCopyMessage
+  );
+};
+
+export const AssistantMessage = React.memo(AssistantMessageComponent, areAssistantMessagePropsEqual);
 
 export default AssistantMessage;

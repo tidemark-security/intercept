@@ -146,6 +146,9 @@ export function AiChat({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const streamingBufferRef = useRef<Record<string, string>>({});
   const streamingFlushTimerRef = useRef<number | null>(null);
+  const scrollDebounceTimerRef = useRef<number | null>(null);
+  const wasStreamingRef = useRef(false);
+  const prevMessageCountRef = useRef(0);
   
   // Ref to prevent race conditions during session creation
   const creatingSessionRef = useRef(false);
@@ -601,6 +604,7 @@ export function AiChat({
     if (initialSessionId && initialSessionId !== sessionId) {
       setSessionId(initialSessionId);
       setInternalMessages([]);
+      prevMessageCountRef.current = 0;
       setIsInitializing(true);
       loadSessionMessages(initialSessionId).then((loaded) => {
         if (!loaded) {
@@ -613,6 +617,7 @@ export function AiChat({
       // In lazy mode, just clear state without creating a new session
       setSessionId(null);
       setInternalMessages([]);
+      prevMessageCountRef.current = 0;
       setDynamicPrompts(null); // Reset to default prompts
       hasInitializedRef.current = true; // Prevent re-initialization
       setIsInitializing(false);
@@ -632,15 +637,68 @@ export function AiChat({
     }
   }, [sessionId, onSessionChange]);
 
-  // Auto-scroll to bottom when new messages arrive
+  // Auto-scroll to bottom only when new messages arrive or streaming completes
   useEffect(() => {
+    const messageCount = messages.length;
     const hasStreamingMessage = messages.some(m => m.isStreaming);
-    messagesEndRef.current?.scrollIntoView({ behavior: hasStreamingMessage ? "auto" : "smooth" });
+    const wasStreaming = wasStreamingRef.current;
+    const prevMessageCount = prevMessageCountRef.current;
+    
+    // Update refs for next render
+    wasStreamingRef.current = hasStreamingMessage;
+    prevMessageCountRef.current = messageCount;
+
+    const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
+      messagesEndRef.current?.scrollIntoView({ behavior, block: "end" });
+    };
+
+    // Clear any pending debounced scroll
+    if (scrollDebounceTimerRef.current !== null) {
+      window.clearTimeout(scrollDebounceTimerRef.current);
+      scrollDebounceTimerRef.current = null;
+    }
+
+    // Determine if we should scroll:
+    // 1. New message added (count increased)
+    // 2. Streaming just finished (wasStreaming && !hasStreamingMessage)
+    const isNewMessage = messageCount > prevMessageCount;
+    const streamingJustFinished = wasStreaming && !hasStreamingMessage;
+    
+    if (!isNewMessage && !streamingJustFinished) {
+      // Message updated in place (e.g., feedback) - don't scroll
+      return;
+    }
+
+    if (hasStreamingMessage) {
+      // Debounce scroll during streaming (scroll at most every 300ms)
+      scrollDebounceTimerRef.current = window.setTimeout(() => {
+        scrollToBottom("auto");
+        scrollDebounceTimerRef.current = null;
+      }, 300);
+    } else if (streamingJustFinished) {
+      // Final scroll when streaming just stopped - delayed to allow Mermaid/async content to render
+      scrollDebounceTimerRef.current = window.setTimeout(() => {
+        scrollToBottom("smooth");
+        scrollDebounceTimerRef.current = null;
+      }, 150);
+    } else if (isNewMessage) {
+      // New non-streaming message - immediate, smooth
+      scrollToBottom("smooth");
+    }
+
+    return () => {
+      if (scrollDebounceTimerRef.current !== null) {
+        window.clearTimeout(scrollDebounceTimerRef.current);
+      }
+    };
   }, [messages]);
 
   useEffect(() => {
     return () => {
       stopStreamingFlushTimer();
+      if (scrollDebounceTimerRef.current !== null) {
+        window.clearTimeout(scrollDebounceTimerRef.current);
+      }
     };
   }, [stopStreamingFlushTimer]);
 
