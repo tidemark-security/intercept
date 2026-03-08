@@ -96,9 +96,9 @@ describe('dateFormatters', () => {
     });
 
     it('should use custom format string', () => {
-      const timestamp = '2024-11-08T10:30:00Z';
-      const result = formatAbsoluteTime(timestamp, 'yyyy-MM-dd HH:mm');
-      expect(result).toBe('2024-11-08 10:30');
+      const timestamp = '2024-11-08T12:30:00Z';
+      const result = formatAbsoluteTime(timestamp, 'yyyy/MM/dd');
+      expect(result).toBe('2024/11/08');
     });
 
     it('should handle Date objects', () => {

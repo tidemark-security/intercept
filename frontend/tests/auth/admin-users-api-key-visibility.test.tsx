@@ -1,12 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import AdminUsers from "../../src/pages/AdminUsers";
 import { AdminService } from "../../src/types/generated/services/AdminService";
 import { ApiKeysService } from "../../src/types/generated/services/ApiKeysService";
+import { renderWithProviders } from "../test-utils";
 
 vi.mock("@/contexts/sessionContext", () => ({
   useSession: () => ({
@@ -17,10 +16,6 @@ vi.mock("@/contexts/sessionContext", () => ({
       status: "ACTIVE",
     },
   }),
-}));
-
-vi.mock("@/contexts/ThemeContext", () => ({
-  useTheme: () => ({ resolvedTheme: "dark", themePreference: "dark", setThemePreference: vi.fn() }),
 }));
 
 vi.mock("@/types/generated/services/AdminService", () => ({
@@ -37,21 +32,7 @@ vi.mock("@/types/generated/services/ApiKeysService", () => ({
 }));
 
 function renderPage() {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: {
-        retry: false,
-      },
-    },
-  });
-
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AdminUsers />
-      </BrowserRouter>
-    </QueryClientProvider>,
-  );
+  return renderWithProviders(<AdminUsers />);
 }
 
 describe("AdminUsers API key create visibility", () => {

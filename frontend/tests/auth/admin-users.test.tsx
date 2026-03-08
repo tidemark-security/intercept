@@ -1,12 +1,10 @@
-import { PropsWithChildren, ReactNode, useState } from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi, describe, it, expect, beforeEach } from "vitest";
 
-import {
-  SessionContext,
-  SessionContextValue,
-} from "../../src/contexts/sessionContext";
+import { type SessionContextValue } from "../../src/contexts/sessionContext";
+import { renderWithProviders } from "../test-utils";
 
 // Mock the AdminUsers component
 // This will be created in T228
@@ -74,14 +72,6 @@ function createSessionValue(
   };
 }
 
-function renderWithSession(value: SessionContextValue, children: ReactNode) {
-  const Wrapper = ({ children }: PropsWithChildren) => (
-    <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
-  );
-
-  return render(children, { wrapper: Wrapper });
-}
-
 describe("Admin Users Management", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -97,7 +87,7 @@ describe("Admin Users Management", () => {
       },
     });
 
-    renderWithSession(sessionValue, <MockAdminUsers />);
+    renderWithProviders(<MockAdminUsers />, { sessionValue });
 
     expect(screen.getByText(/user management/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /create user/i })).toBeInTheDocument();
@@ -106,7 +96,7 @@ describe("Admin Users Management", () => {
   it("displays user list with status and actions", () => {
     const sessionValue = createSessionValue();
 
-    renderWithSession(sessionValue, <MockAdminUsers />);
+    renderWithProviders(<MockAdminUsers />, { sessionValue });
 
     expect(screen.getByText("analyst.user")).toBeInTheDocument();
     expect(screen.getByText("analyst@example.com")).toBeInTheDocument();
@@ -119,7 +109,7 @@ describe("Admin Users Management", () => {
   it("shows create user modal when create button is clicked", async () => {
     const sessionValue = createSessionValue();
 
-    renderWithSession(sessionValue, <MockAdminUsers />);
+    renderWithProviders(<MockAdminUsers />, { sessionValue });
 
     const user = userEvent.setup();
     const createButton = screen.getByRole("button", { name: /create user/i });
@@ -167,7 +157,7 @@ describe("Create User Form", () => {
       );
     };
 
-    renderWithSession(sessionValue, <MockCreateUserForm />);
+    renderWithProviders(<MockCreateUserForm />, { sessionValue });
 
     expect(screen.getByLabelText(/username/i)).toBeRequired();
     expect(screen.getByLabelText(/email/i)).toBeRequired();
@@ -207,7 +197,7 @@ describe("Create User Form", () => {
       );
     };
 
-    renderWithSession(sessionValue, <MockCreateUserForm />);
+    renderWithProviders(<MockCreateUserForm />, { sessionValue });
 
     const user = userEvent.setup();
     await user.type(screen.getByLabelText(/username/i), "new.analyst");
@@ -250,7 +240,7 @@ describe("Create User Form", () => {
       );
     };
 
-    renderWithSession(sessionValue, <MockCreateUserFormWithSuccess />);
+    renderWithProviders(<MockCreateUserFormWithSuccess />, { sessionValue });
 
     const user = userEvent.setup();
     await user.type(screen.getByLabelText(/username/i), "new.user");
@@ -290,7 +280,7 @@ describe("User Status Management", () => {
       );
     };
 
-    renderWithSession(sessionValue, <MockUserRow />);
+    renderWithProviders(<MockUserRow />, { sessionValue });
 
     const user = userEvent.setup();
     expect(screen.getByText(/status: active/i)).toBeInTheDocument();
@@ -323,7 +313,7 @@ describe("User Status Management", () => {
       );
     };
 
-    renderWithSession(sessionValue, <MockUserRowWithConfirm />);
+    renderWithProviders(<MockUserRowWithConfirm />, { sessionValue });
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /disable user/i }));
@@ -357,7 +347,7 @@ describe("Password Reset", () => {
       );
     };
 
-    renderWithSession(sessionValue, <MockResetButton />);
+    renderWithProviders(<MockResetButton />, { sessionValue });
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /reset password/i }));
@@ -385,7 +375,7 @@ describe("Password Reset", () => {
       );
     };
 
-    renderWithSession(sessionValue, <MockResetWithSuccess />);
+    renderWithProviders(<MockResetWithSuccess />, { sessionValue });
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /reset password/i }));

@@ -1,14 +1,10 @@
-import { PropsWithChildren, ReactNode } from "react";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
-import { BrowserRouter } from "react-router-dom";
 
 import Login from "../../src/pages/Login";
-import {
-  SessionContext,
-  SessionContextValue,
-} from "../../src/contexts/sessionContext";
+import { type SessionContextValue } from "../../src/contexts/sessionContext";
+import { renderWithProviders } from "../test-utils";
 
 function createSessionValue(
   overrides: Partial<SessionContextValue> = {}
@@ -34,22 +30,12 @@ function createSessionValue(
   };
 }
 
-function renderWithSession(value: SessionContextValue, children: ReactNode) {
-  const Wrapper = ({ children }: PropsWithChildren) => (
-    <BrowserRouter>
-      <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
-    </BrowserRouter>
-  );
-
-  return render(children, { wrapper: Wrapper });
-}
-
 describe("Login page", () => {
   it("shows password step when no passkey is available", async () => {
     const loginWithPasskey = vi.fn().mockResolvedValue("password_required");
     const sessionValue = createSessionValue({ loginWithPasskey });
 
-    renderWithSession(sessionValue, <Login />);
+    renderWithProviders(<Login />, { sessionValue });
 
     const user = userEvent.setup();
     await user.type(screen.getByLabelText(/username/i), "analyst");
@@ -64,7 +50,7 @@ describe("Login page", () => {
     const loginWithPasskey = vi.fn().mockResolvedValue("password_required");
     const sessionValue = createSessionValue({ login, loginWithPasskey });
 
-    renderWithSession(sessionValue, <Login />);
+    renderWithProviders(<Login />, { sessionValue });
 
     const user = userEvent.setup();
     await user.type(screen.getByLabelText(/username/i), "analyst");
@@ -82,7 +68,7 @@ describe("Login page", () => {
       loginWithPasskey,
     });
 
-    renderWithSession(sessionValue, <Login />);
+    renderWithProviders(<Login />, { sessionValue });
 
     const user = userEvent.setup();
     await user.type(screen.getByLabelText(/username/i), "analyst");

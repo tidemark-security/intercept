@@ -1,44 +1,25 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import ProfileManagement from "../../src/pages/ProfileManagement";
 import { ApiKeysService } from "../../src/types/generated/services/ApiKeysService";
 import { AuthenticationService } from "../../src/types/generated/services/AuthenticationService";
+import { renderWithProviders } from "../test-utils";
 
 const renderPage = () => {
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      queries: {
-        retry: false,
-      },
-    },
-  });
-
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <ProfileManagement />
-      </BrowserRouter>
-    </QueryClientProvider>,
-  );
+  return renderWithProviders(<ProfileManagement />);
 };
 
 const showToast = vi.fn();
 
-vi.mock("@/contexts/ThemeContext", () => ({
-  useTheme: () => ({
-    themePreference: "dark",
-    setThemePreference: vi.fn(),
-    resolvedTheme: "dark",
-  }),
-}));
-
-vi.mock("@/contexts/ToastContext", () => ({
-  useToast: () => ({ showToast }),
-}));
+vi.mock("@/contexts/ToastContext", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/contexts/ToastContext")>();
+  return {
+    ...actual,
+    useToast: () => ({ showToast }),
+  };
+});
 
 vi.mock("@/types/generated/services/AuthenticationService", () => ({
   AuthenticationService: {

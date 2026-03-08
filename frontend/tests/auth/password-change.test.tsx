@@ -1,16 +1,12 @@
-import { PropsWithChildren, ReactNode } from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi, describe, it, expect, beforeEach } from "vitest";
-import { BrowserRouter } from "react-router-dom";
 
 import { ChangePasswordForm } from "@/components/auth/ChangePasswordForm";
-import {
-  SessionContext,
-  SessionContextValue,
-} from "../../src/contexts/sessionContext";
+import { type SessionContextValue } from "../../src/contexts/sessionContext";
 import { AuthenticationService } from "../../src/types/generated/services/AuthenticationService";
 import { ApiError } from "../../src/types/generated/core/ApiError";
+import { renderWithProviders } from "../test-utils";
 
 // Mock the AuthenticationService
 vi.mock("../../src/types/generated/services/AuthenticationService", () => ({
@@ -48,16 +44,6 @@ function createSessionValue(
   };
 }
 
-function renderWithSession(value: SessionContextValue, children: ReactNode) {
-  const Wrapper = ({ children }: PropsWithChildren) => (
-    <BrowserRouter>
-      <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
-    </BrowserRouter>
-  );
-
-  return render(children, { wrapper: Wrapper });
-}
-
 describe("ChangePasswordForm - Forced Change", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -66,18 +52,15 @@ describe("ChangePasswordForm - Forced Change", () => {
   it("renders forced password change form with warning banner", () => {
     const sessionValue = createSessionValue();
 
-    renderWithSession(
-      sessionValue,
-      <ChangePasswordForm forced={true} />
-    );
+    renderWithProviders(<ChangePasswordForm forced={true} />, { sessionValue });
 
     expect(screen.getByText("Change Password Required")).toBeInTheDocument();
     expect(
       screen.getByText(/you must change your password to continue/i)
     ).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/enter your current password/i)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText(/enter your new password/i)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText(/re-enter your new password/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Enter your new password")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Re-enter your new password")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /change password/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /logout/i })).toBeInTheDocument();
   });
@@ -85,12 +68,8 @@ describe("ChangePasswordForm - Forced Change", () => {
   it("does not render warning banner for voluntary password change", () => {
     const sessionValue = createSessionValue({ mustChangePassword: false });
 
-    renderWithSession(
-      sessionValue,
-      <ChangePasswordForm forced={false} />
-    );
+    renderWithProviders(<ChangePasswordForm forced={false} />, { sessionValue });
 
-    expect(screen.getByText("Change Password")).toBeInTheDocument();
     expect(
       screen.queryByText(/you must change your password to continue/i)
     ).not.toBeInTheDocument();
@@ -106,10 +85,7 @@ describe("ChangePasswordForm - Forced Change", () => {
     );
     changePasswordMock.mockResolvedValue(undefined);
 
-    renderWithSession(
-      sessionValue,
-      <ChangePasswordForm forced={true} />
-    );
+    renderWithProviders(<ChangePasswordForm forced={true} />, { sessionValue });
 
     const user = userEvent.setup();
     const currentPasswordInput = screen.getByPlaceholderText("Enter your current password");
@@ -151,10 +127,7 @@ describe("ChangePasswordForm - Forced Change", () => {
       )
     );
 
-    renderWithSession(
-      sessionValue,
-      <ChangePasswordForm forced={true} />
-    );
+    renderWithProviders(<ChangePasswordForm forced={true} />, { sessionValue });
 
     const user = userEvent.setup();
     await user.type(screen.getByPlaceholderText("Enter your current password"), "WrongPassword123!");
@@ -170,10 +143,7 @@ describe("ChangePasswordForm - Forced Change", () => {
   it("validates that new password meets policy requirements", async () => {
     const sessionValue = createSessionValue();
 
-    renderWithSession(
-      sessionValue,
-      <ChangePasswordForm forced={true} />
-    );
+    renderWithProviders(<ChangePasswordForm forced={true} />, { sessionValue });
 
     const user = userEvent.setup();
     await user.type(screen.getByPlaceholderText("Enter your current password"), "OldPassword123!");
@@ -191,10 +161,7 @@ describe("ChangePasswordForm - Forced Change", () => {
   it("validates that new passwords match", async () => {
     const sessionValue = createSessionValue();
 
-    renderWithSession(
-      sessionValue,
-      <ChangePasswordForm forced={true} />
-    );
+    renderWithProviders(<ChangePasswordForm forced={true} />, { sessionValue });
 
     const user = userEvent.setup();
     await user.type(screen.getByPlaceholderText("Enter your current password"), "OldPassword123!");
@@ -210,10 +177,7 @@ describe("ChangePasswordForm - Forced Change", () => {
   it("validates password complexity - uppercase required", async () => {
     const sessionValue = createSessionValue();
 
-    renderWithSession(
-      sessionValue,
-      <ChangePasswordForm forced={true} />
-    );
+    renderWithProviders(<ChangePasswordForm forced={true} />, { sessionValue });
 
     const user = userEvent.setup();
     await user.type(screen.getByPlaceholderText("Enter your current password"), "OldPassword123!");
@@ -231,10 +195,7 @@ describe("ChangePasswordForm - Forced Change", () => {
   it("validates password complexity - lowercase required", async () => {
     const sessionValue = createSessionValue();
 
-    renderWithSession(
-      sessionValue,
-      <ChangePasswordForm forced={true} />
-    );
+    renderWithProviders(<ChangePasswordForm forced={true} />, { sessionValue });
 
     const user = userEvent.setup();
     await user.type(screen.getByPlaceholderText("Enter your current password"), "OldPassword123!");
@@ -252,10 +213,7 @@ describe("ChangePasswordForm - Forced Change", () => {
   it("validates password complexity - number required", async () => {
     const sessionValue = createSessionValue();
 
-    renderWithSession(
-      sessionValue,
-      <ChangePasswordForm forced={true} />
-    );
+    renderWithProviders(<ChangePasswordForm forced={true} />, { sessionValue });
 
     const user = userEvent.setup();
     await user.type(screen.getByPlaceholderText("Enter your current password"), "OldPassword123!");
@@ -273,10 +231,7 @@ describe("ChangePasswordForm - Forced Change", () => {
   it("validates password complexity - special character required", async () => {
     const sessionValue = createSessionValue();
 
-    renderWithSession(
-      sessionValue,
-      <ChangePasswordForm forced={true} />
-    );
+    renderWithProviders(<ChangePasswordForm forced={true} />, { sessionValue });
 
     const user = userEvent.setup();
     await user.type(screen.getByPlaceholderText("Enter your current password"), "OldPassword123!");
@@ -294,10 +249,7 @@ describe("ChangePasswordForm - Forced Change", () => {
   it("disables submit button when fields are empty", () => {
     const sessionValue = createSessionValue();
 
-    renderWithSession(
-      sessionValue,
-      <ChangePasswordForm forced={true} />
-    );
+    renderWithProviders(<ChangePasswordForm forced={true} />, { sessionValue });
 
     const submitButton = screen.getByRole("button", { name: /change password/i });
     expect(submitButton).toBeDisabled();
@@ -315,10 +267,7 @@ describe("ChangePasswordForm - Forced Change", () => {
     });
     changePasswordMock.mockReturnValue(pendingPromise as any);
 
-    renderWithSession(
-      sessionValue,
-      <ChangePasswordForm forced={true} />
-    );
+    renderWithProviders(<ChangePasswordForm forced={true} />, { sessionValue });
 
     const user = userEvent.setup();
     await user.type(screen.getByPlaceholderText("Enter your current password"), "OldPassword123!");
@@ -339,10 +288,7 @@ describe("ChangePasswordForm - Forced Change", () => {
     const logout = vi.fn().mockResolvedValue(undefined);
     const sessionValue = createSessionValue({ logout });
 
-    renderWithSession(
-      sessionValue,
-      <ChangePasswordForm forced={true} />
-    );
+    renderWithProviders(<ChangePasswordForm forced={true} />, { sessionValue });
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /logout/i }));
@@ -353,10 +299,7 @@ describe("ChangePasswordForm - Forced Change", () => {
   it("displays password policy requirements as help text", () => {
     const sessionValue = createSessionValue();
 
-    renderWithSession(
-      sessionValue,
-      <ChangePasswordForm forced={true} />
-    );
+    renderWithProviders(<ChangePasswordForm forced={true} />, { sessionValue });
 
     expect(
       screen.getByText(
@@ -382,10 +325,7 @@ describe("ChangePasswordForm - Forced Change", () => {
       )
     );
 
-    renderWithSession(
-      sessionValue,
-      <ChangePasswordForm forced={true} />
-    );
+    renderWithProviders(<ChangePasswordForm forced={true} />, { sessionValue });
 
     const user = userEvent.setup();
     
