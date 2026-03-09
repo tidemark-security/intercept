@@ -113,7 +113,7 @@ export default function App() {
           <Route
             path="/admin"
             element={
-              <ProtectedRoute>
+              <ProtectedRoute requiredRole="ADMIN">
                 <Admin />
               </ProtectedRoute>
             }
@@ -129,7 +129,7 @@ export default function App() {
           <Route
             path="/admin/link-templates"
             element={
-              <ProtectedRoute>
+              <ProtectedRoute requiredRole="ADMIN">
                 <AdminLinkTemplates />
               </ProtectedRoute>
             }
@@ -137,7 +137,7 @@ export default function App() {
           <Route
             path="/admin/settings"
             element={
-              <ProtectedRoute>
+              <ProtectedRoute requiredRole="ADMIN">
                 <AdminSettings />
               </ProtectedRoute>
             }

@@ -9,6 +9,7 @@ import { DropdownMenu } from "@/components/overlays/DropdownMenu";
 import { ToggleGroup } from "@/components/buttons/ToggleGroup";
 import { SidebarRailWithLabels } from "@/components/navigation/SidebarRailWithLabels";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
+import { useSession } from "@/contexts/sessionContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useTimezonePreference } from "@/contexts/TimezoneContext";
 import { cn } from "@/utils/cn";
@@ -128,8 +129,12 @@ const DefaultPageLayoutRoot = React.forwardRef<
 ) {
   const location = useLocation();
   const navigate = useViewTransitionNavigate();
+  const { isAdmin } = useSession();
   const { timezonePreference, setTimezonePreference } = useTimezonePreference();
   const { resolvedTheme, setThemePreference } = useTheme();
+  const visibleNavigationItems = isAdmin
+    ? navigationItems
+    : navigationItems.filter((item) => item.key !== "admin");
   const mobileNavItems = navigationItems.filter((item) => item.key !== "admin");
 
   // Global search state
@@ -346,7 +351,7 @@ const DefaultPageLayoutRoot = React.forwardRef<
           </>
         }
       >
-        {navigationItems.map((item) => {
+        {visibleNavigationItems.map((item) => {
           const Icon = item.icon;
           const selected = isItemSelected(item);
           return (
@@ -457,13 +462,17 @@ const DefaultPageLayoutRoot = React.forwardRef<
             </SidebarRailWithLabels.NavItem>
           </DropdownMenu.Trigger>
           <DropdownMenu.Content side="bottom" align="start" sideOffset={4}>
-            <DropdownMenu.DropdownItem
-              icon={<Settings />}
-              hint=""
-              label="Admin"
-              to="/admin"
-            />
-            <div className="flex h-px w-full flex-none flex-col items-center gap-2 bg-neutral-border" />
+            {isAdmin ? (
+              <>
+                <DropdownMenu.DropdownItem
+                  icon={<Settings />}
+                  hint=""
+                  label="Admin"
+                  to="/admin"
+                />
+                <div className="flex h-px w-full flex-none flex-col items-center gap-2 bg-neutral-border" />
+              </>
+            ) : null}
             <DropdownMenu.DropdownItem
               icon={<User />}
               hint=""
