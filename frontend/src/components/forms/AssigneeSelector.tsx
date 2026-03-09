@@ -208,7 +208,7 @@ export const AssigneeSelector: React.FC<AssigneeSelectorProps> = ({
   };
 
   return (
-    <DropdownMenu.Root open={dropdownOpen} onOpenChange={handleOpenChange}>
+    <DropdownMenu.Root modal={false} open={dropdownOpen} onOpenChange={handleOpenChange}>
       <DropdownMenu.Trigger asChild>
         <Button
           className={className || (size === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-auto")}

@@ -16,6 +16,8 @@ interface CaseFormFieldsProps {
   onDescriptionChange: (value: string) => void;
   priority: Priority;
   onPriorityChange: (value: Priority) => void;
+  priorityOpen?: boolean;
+  onPriorityOpenChange?: (open: boolean) => void;
   assignee: string | null;
   onAssigneeChange: (value: string | null) => void;
   tags: string[];
@@ -37,6 +39,8 @@ export function CaseFormFields({
   onDescriptionChange,
   priority,
   onPriorityChange,
+  priorityOpen,
+  onPriorityOpenChange,
   assignee,
   onAssigneeChange,
   tags,
@@ -63,6 +67,8 @@ export function CaseFormFields({
         className="w-full"
         value={priority}
         onChange={onPriorityChange}
+        open={priorityOpen}
+        onOpenChange={onPriorityOpenChange}
       />
 
       <div className="flex w-full flex-col gap-2">
@@ -78,7 +84,7 @@ export function CaseFormFields({
           onAssignToMe={() => onAssigneeChange(currentUser)}
           onAssignToUser={(username) => onAssigneeChange(username)}
           className="w-full"
-          dropdownClassName="shadow-none bg-black w-[var(--radix-dropdown-menu-trigger-width)]"
+          dropdownClassName="w-[var(--radix-dropdown-menu-trigger-width)] shadow-none"
         />
       </div>
 

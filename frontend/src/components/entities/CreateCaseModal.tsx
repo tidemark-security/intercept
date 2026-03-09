@@ -39,6 +39,7 @@ export function CreateCaseModal({
   const [title, setTitle] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [priority, setPriority] = React.useState<Priority>("MEDIUM");
+  const [isPriorityOpen, setIsPriorityOpen] = React.useState(false);
   const [assignee, setAssignee] = React.useState<string | null>(null);
   const [tags, setTags] = React.useState<string[]>([]);
 
@@ -47,10 +48,19 @@ export function CreateCaseModal({
       setTitle("");
       setDescription("");
       setPriority("MEDIUM");
+      setIsPriorityOpen(false);
       setAssignee(null);
       setTags([]);
     }
   }, [open]);
+
+  const handleDialogOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
+      setIsPriorityOpen(false);
+    }
+
+    onOpenChange(nextOpen);
+  };
 
   const trimmedTitle = title.trim();
   const trimmedDescription = description.trim();
@@ -71,7 +81,7 @@ export function CreateCaseModal({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleDialogOpenChange}>
       <Dialog.Content className="w-[760px] max-w-[95vw] overflow-hidden">
         <div className="flex w-full items-center gap-4 border-b border-solid border-neutral-border px-6 py-4">
           <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
@@ -91,6 +101,8 @@ export function CreateCaseModal({
             onDescriptionChange={setDescription}
             priority={priority}
             onPriorityChange={setPriority}
+            priorityOpen={isPriorityOpen}
+            onPriorityOpenChange={setIsPriorityOpen}
             assignee={assignee}
             onAssigneeChange={setAssignee}
             tags={tags}
@@ -113,7 +125,7 @@ export function CreateCaseModal({
           <Button
             variant="neutral-secondary"
             icon={<X />}
-            onClick={() => onOpenChange(false)}
+            onClick={() => handleDialogOpenChange(false)}
             disabled={isSubmitting}
           >
             Cancel

@@ -49,12 +49,17 @@ const DialogRoot = React.forwardRef<HTMLDivElement, DialogRootProps>(
     { children, className, open, onOpenChange, modal = true, ...otherProps }: DialogRootProps,
     ref
   ) {
-    // Create a ref for the portal container (the overlay element)
+    // Keep portaled children inside the dialog content's focus scope.
     const [portalContainer, setPortalContainer] = useState<HTMLElement | null>(null);
 
-    // Callback ref to capture the overlay element for portal container
-    const overlayRef = useCallback((node: HTMLDivElement | null) => {
+    const contentRef = useCallback((node: HTMLDivElement | null) => {
       setPortalContainer(node);
+
+      if (typeof ref === "function") {
+        ref(node);
+      } else if (ref) {
+        ref.current = node;
+      }
     }, []);
 
     return (
@@ -69,7 +74,6 @@ const DialogRoot = React.forwardRef<HTMLDivElement, DialogRootProps>(
                 "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
                 className
               )}
-              ref={overlayRef}
               {...otherProps}
             >
               <RadixDialog.Content asChild>
@@ -81,7 +85,7 @@ const DialogRoot = React.forwardRef<HTMLDivElement, DialogRootProps>(
                     "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
                     "data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95"
                   )}
-                  ref={ref}
+                  ref={contentRef}
                 >
                   <PortalContainerProvider container={portalContainer}>
                     {children}

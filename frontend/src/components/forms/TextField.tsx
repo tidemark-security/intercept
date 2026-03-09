@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { useTheme } from "@/contexts/ThemeContext";
 import { cn } from "@/utils/cn";
 import { IconWrapper } from "@/utils/IconWrapper";
 
@@ -58,6 +59,9 @@ const TextFieldRoot = React.forwardRef<HTMLLabelElement, TextFieldRootProps>(
     }: TextFieldRootProps,
     ref
   ) {
+    const { resolvedTheme } = useTheme();
+    const isDarkTheme = resolvedTheme === "dark";
+
     return (
       <label
         className={cn(
@@ -75,10 +79,10 @@ const TextFieldRoot = React.forwardRef<HTMLLabelElement, TextFieldRootProps>(
         <div
           className={cn(
             "flex h-8 w-full flex-none items-center gap-1 rounded-md border border-solid border-neutral-border bg-default-background px-2 group-focus-within/be48ca43:border group-focus-within/be48ca43:border-solid",
+            variant === "filled" &&
+              `border border-solid border-neutral-100 ${isDarkTheme ? "bg-neutral-100" : "bg-neutral-200"} group-hover/be48ca43:border group-hover/be48ca43:border-solid group-hover/be48ca43:border-neutral-border group-focus-within/be48ca43:bg-default-background`,
             {
               "group-focus-within/be48ca43:border-focus-border": true,
-              "border border-solid border-neutral-100 bg-neutral-100 group-hover/be48ca43:border group-hover/be48ca43:border-solid group-hover/be48ca43:border-neutral-border group-focus-within/be48ca43:bg-default-background":
-                variant === "filled",
               "border border-solid border-error-600": error,
               "border border-solid border-neutral-300 bg-neutral-300": disabled,
             }
