@@ -1096,8 +1096,10 @@ async def get_item(
             detail=f"Timeline item '{item_id}' not found"
         )
     
-    # Extract content from item
-    full_content = found_item.get("body") or found_item.get("content") or ""
+    # Extract content from item.
+    # Notes are stored under the canonical timeline field `description`,
+    # while older items may still use `body` or `content`.
+    full_content = found_item.get("body") or found_item.get("content") or found_item.get("description") or ""
     
     # Handle pagination cursor
     offset = 0
