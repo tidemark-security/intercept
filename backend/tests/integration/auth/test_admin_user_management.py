@@ -15,6 +15,17 @@ from app.models.models import AdminResetRequest, AuthSession, UserAccount
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
+async def _login_and_get_cookie(client: AsyncClient, username: str) -> str:
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"username": username, "password": DEFAULT_TEST_PASSWORD},
+    )
+    assert response.status_code == 200
+    session_cookie = response.cookies.get("intercept_session")
+    assert session_cookie is not None
+    return session_cookie
+
+
 @pytest.mark.asyncio
 async def test_admin_create_user_success(
     client: AsyncClient,
@@ -176,6 +187,78 @@ async def test_admin_create_user_rejects_duplicate_username(
     response_data = response.json()
     assert "detail" in response_data
     assert "username" in response_data["detail"]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_non_admin_can_get_users_summary(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+    admin_user_factory,
+) -> None:
+    """Authenticated non-admin users can load active human users for assignee dropdowns."""
+    analyst = analyst_user_factory(username="analyst.viewer")
+    admin = admin_user_factory(username="admin.visible")
+    disabled_user = analyst_user_factory(username="analyst.disabled")
+    disabled_user.status = UserStatus.DISABLED
+
+    async with session_maker() as session:
+        session.add(analyst)
+        session.add(admin)
+        session.add(disabled_user)
+        await session.commit()
+
+    session_cookie = await _login_and_get_cookie(client, analyst.username)
+
+    response = await client.get(
+        "/api/v1/admin/auth/users/summary",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    usernames = [item["username"] for item in payload]
+
+    assert analyst.username in usernames
+    assert admin.username in usernames
+    assert disabled_user.username not in usernames
+    assert all(item["accountType"] == "HUMAN" for item in payload)
+
+
+@pytest.mark.asyncio
+async def test_users_summary_requires_authentication(
+    client: AsyncClient,
+) -> None:
+    """Listing lightweight users still requires authentication."""
+    response = await client.get("/api/v1/admin/auth/users/summary")
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_non_admin_cannot_list_full_users(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    """The router split must not widen access to admin-only user management endpoints."""
+    analyst = analyst_user_factory(username="analyst.noadmin")
+
+    async with session_maker() as session:
+        session.add(analyst)
+        await session.commit()
+
+    session_cookie = await _login_and_get_cookie(client, analyst.username)
+
+    response = await client.get(
+        "/api/v1/admin/auth/users",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 403
+    response_data = response.json()
+    assert "detail" in response_data
+    assert "admin" in response_data["detail"]["message"].lower()
 
 
 @pytest.mark.asyncio

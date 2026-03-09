@@ -111,6 +111,90 @@ class AuthAuditService:
 
         self._logger.info(payload["event"], extra={"auth": payload})
 
+    def oidc_login_success(
+        self,
+        *,
+        user_id: UUID,
+        username: str,
+        role: UserRole,
+        oidc_issuer: str,
+        oidc_subject: str,
+        session_id: UUID,
+        context: Optional[AuditContext] = None,
+    ) -> None:
+        payload = {
+            "event": "auth.oidc.login.success",
+            "user_id": str(user_id),
+            "username": username,
+            "role": role.value,
+            "oidc_issuer": oidc_issuer,
+            "oidc_subject": oidc_subject,
+            "session_id": str(session_id),
+        }
+        payload.update((context or AuditContext()).to_payload())
+
+        self._logger.info(payload["event"], extra={"auth": payload})
+
+    def oidc_login_failure(
+        self,
+        *,
+        reason: str,
+        oidc_issuer: Optional[str],
+        username: Optional[str] = None,
+        context: Optional[AuditContext] = None,
+    ) -> None:
+        payload = {
+            "event": "auth.oidc.login.failure",
+            "reason": reason,
+            "oidc_issuer": oidc_issuer,
+            "username": username,
+        }
+        payload.update((context or AuditContext()).to_payload())
+
+        self._logger.warning(payload["event"], extra={"auth": payload})
+
+    def oidc_account_linked(
+        self,
+        *,
+        user_id: UUID,
+        username: str,
+        oidc_issuer: str,
+        oidc_subject: str,
+        context: Optional[AuditContext] = None,
+    ) -> None:
+        payload = {
+            "event": "auth.oidc.account_linked",
+            "user_id": str(user_id),
+            "username": username,
+            "oidc_issuer": oidc_issuer,
+            "oidc_subject": oidc_subject,
+        }
+        payload.update((context or AuditContext()).to_payload())
+
+        self._logger.info(payload["event"], extra={"auth": payload})
+
+    def oidc_account_provisioned(
+        self,
+        *,
+        user_id: UUID,
+        username: str,
+        role: UserRole,
+        oidc_issuer: str,
+        oidc_subject: str,
+        context: Optional[AuditContext] = None,
+    ) -> None:
+        payload = {
+            "event": "auth.oidc.account_provisioned",
+            "user_id": str(user_id),
+            "username": username,
+            "role": role.value,
+            "oidc_issuer": oidc_issuer,
+            "oidc_subject": oidc_subject,
+        }
+        payload.update((context or AuditContext()).to_payload())
+
+        self._logger.info(payload["event"], extra={"auth": payload})
+
     # ------------------------------------------------------------------
     # Security protections
     # ------------------------------------------------------------------

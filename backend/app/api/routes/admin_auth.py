@@ -95,6 +95,8 @@ class UserSummary(BaseModel):
     email: Optional[str] = Field(description="User email")
     role: UserRole = Field(description="User role")
     accountType: AccountType = Field(description="Account type (HUMAN, NHI)")
+    oidcIssuer: Optional[str] = Field(default=None, description="OIDC issuer for linked SSO identities")
+    oidcSubject: Optional[str] = Field(default=None, description="OIDC subject for linked SSO identities")
 
 
 
@@ -307,6 +309,14 @@ async def require_authenticated_user(
         HTTPException: 401 if not authenticated
     """
     return await _authenticate_from_request(request, db)
+
+
+# Authenticated router for lightweight user-discovery endpoints.
+authenticated_router = APIRouter(
+    prefix="/admin/auth",
+    tags=["admin"],
+    dependencies=[Depends(require_authenticated_user)],
+)
 
 
 # Re-create router with admin authentication dependency
@@ -581,7 +591,7 @@ async def issue_password_reset(
         )
 
 
-@router.get(
+@authenticated_router.get(
     "/users/summary",
     response_model=List[UserSummary],
     summary="Get user list for dropdowns",
@@ -592,7 +602,7 @@ async def get_users_summary(
     role: Optional[UserRole] = None,
     account_type: Optional[AccountType] = AccountType.HUMAN,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user),
+    _current_user: UserAccount = Depends(require_authenticated_user),
 ) -> List[UserSummary]:
     """
     Get list of users for dropdowns and filtering.
@@ -620,6 +630,8 @@ async def get_users_summary(
                 email=user.email,
                 role=user.role,
                 accountType=user.account_type,
+                oidcIssuer=user.oidc_issuer,
+                oidcSubject=user.oidc_subject,
             )
             for user in users
         ]
@@ -658,6 +670,8 @@ async def list_users(
             "id": str(user.id),
             "username": user.username,
             "email": user.email,
+            "oidcIssuer": user.oidc_issuer,
+            "oidcSubject": user.oidc_subject,
             "accountType": user.account_type.value,
             "role": user.role.value,
             "status": user.status.value,

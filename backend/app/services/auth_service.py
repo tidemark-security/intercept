@@ -20,6 +20,7 @@ from app.models.enums import AccountType, SessionRevokedReason, UserRole, UserSt
 from app.models.models import AuthSession, UserAccount, PASSWORD_POLICY_REGEX
 from app.services import AuditContext, AuthAuditService, PasswordHasher
 from app.services.passkey_service import passkey_service
+from app.services.settings_service import SettingsService
 from app.services.security.password_hasher import Argon2Parameters
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,10 @@ class AuthService:
         duration_minutes = await svc.get("auth.login.lockout_duration_minutes", default=15)
         return int(threshold), timedelta(minutes=int(duration_minutes))
 
+    async def _is_oidc_password_login_enforced(self, db: AsyncSession) -> bool:
+        svc = SettingsService(db)
+        return bool(await svc.get("oidc.enabled", default=False))
+
     # ------------------------------------------------------------------
     # Authentication flows
     # ------------------------------------------------------------------
@@ -253,6 +258,19 @@ class AuthService:
             )
             raise AccountLockedError(lockout_expires_at=user.lockout_expires_at)
 
+        if await self._is_oidc_password_login_enforced(db):
+            from app.services.oidc_service import oidc_service
+
+            if not await oidc_service.is_password_login_allowed(db, user=user):
+                self._audit.login_failure(
+                    username=normalized_username,
+                    role=user.role,
+                    reason="oidc_password_login_blocked",
+                    attempts_remaining=None,
+                    context=metadata.to_audit_context(),
+                )
+                raise InvalidCredentialsError()
+
         has_active_passkeys = await passkey_service.user_has_active_passkeys(db, user_id=user.id)
         if has_active_passkeys:
             self._audit.login_failure(
@@ -263,6 +281,16 @@ class AuthService:
                 context=metadata.to_audit_context(),
             )
             raise PasswordLoginDisabledError()
+
+        if not user.password_hash:
+            self._audit.login_failure(
+                username=normalized_username,
+                role=user.role,
+                reason="password_unavailable",
+                attempts_remaining=None,
+                context=metadata.to_audit_context(),
+            )
+            raise InvalidCredentialsError()
 
         if not self._password_hasher.verify(user.password_hash, password):
             user.failed_login_attempts += 1

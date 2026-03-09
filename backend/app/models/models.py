@@ -33,7 +33,7 @@ from app.models.enums import (
 )
 
 
-USERNAME_REGEX = re.compile(r"^[a-z0-9._-]{3,64}$")
+USERNAME_REGEX = re.compile(r"^[a-z0-9._@-]{3,64}$")
 PASSWORD_POLICY_REGEX = re.compile(
     r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{12,}$"
 )
@@ -1013,13 +1013,16 @@ class UserAccountBase(SQLModel):
         normalized = str(value).strip().lower()
         if not USERNAME_REGEX.match(normalized):
             raise ValueError(
-                "username must be 3-64 chars and contain lowercase letters, numbers, '.', '_', or '-'"
+                "username must be 3-64 chars and contain lowercase letters, numbers, '.', '_', '@', or '-'"
             )
         return normalized
 
 
 class UserAccount(UserAccountBase, table=True):
     __tablename__ = "user_accounts"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_user_accounts_oidc_identity"),
+    )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
     account_type: AccountType = Field(
@@ -1036,7 +1039,19 @@ class UserAccount(UserAccountBase, table=True):
         default=None,
         max_length=256,
         sa_column=Column(String(256), nullable=True),
-        description="Argon2id password hash (required for HUMAN accounts)",
+        description="Argon2id password hash (nullable for OIDC-only HUMAN accounts)",
+    )
+    oidc_subject: Optional[str] = Field(
+        default=None,
+        max_length=255,
+        sa_column=Column(String(255), nullable=True),
+        description="OIDC subject claim for linked SSO identities",
+    )
+    oidc_issuer: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        sa_column=Column(String(500), nullable=True),
+        description="OIDC issuer for linked SSO identities",
     )
     password_updated_at: Optional[datetime] = Field(
         default=None,
@@ -1089,13 +1104,17 @@ class UserAccount(UserAccountBase, table=True):
         if self.account_type == AccountType.HUMAN:
             if not self.email:
                 raise ValueError("email is required for HUMAN accounts")
-            if not self.password_hash:
-                raise ValueError("password_hash is required for HUMAN accounts")
+            if not self.password_hash and not self.oidc_subject:
+                raise ValueError("password_hash or oidc_subject is required for HUMAN accounts")
+            if self.oidc_subject and not self.oidc_issuer:
+                raise ValueError("oidc_issuer is required when oidc_subject is set")
         elif self.account_type == AccountType.NHI:
             if self.email is not None:
                 raise ValueError("email must be null for NHI accounts")
             if self.password_hash is not None:
                 raise ValueError("password_hash must be null for NHI accounts")
+            if self.oidc_subject is not None or self.oidc_issuer is not None:
+                raise ValueError("oidc identity fields must be null for NHI accounts")
         return self
 
 
@@ -1116,6 +1135,8 @@ class UserAccountRead(UserAccountBase):
     id: UUID
     account_type: AccountType
     email: Optional[EmailStr] = None
+    oidc_subject: Optional[str] = None
+    oidc_issuer: Optional[str] = None
     status: UserStatus
     must_change_password: bool
     failed_login_attempts: int
@@ -1262,6 +1283,20 @@ class WebAuthnChallenge(SQLModel, table=True):
         sa_column=Column(UTCDateTime()),
     )
     challenge_metadata: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB))
+
+
+class OIDCAuthRequest(SQLModel, table=True):
+    __tablename__ = "oidc_auth_requests"  # type: ignore
+
+    state: str = Field(primary_key=True, max_length=255)
+    nonce: str = Field(max_length=255)
+    redirect_to: str = Field(max_length=2048)
+    expires_at: datetime = Field(sa_column=Column(UTCDateTime(), index=True))
+    consumed_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
 
 
 class AdminResetRequestBase(SQLModel):

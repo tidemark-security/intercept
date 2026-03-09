@@ -15,7 +15,7 @@ export type LangFlowMessageRead = {
     /**
      * Message text content
      */
-    content: string;
+    content?: string;
     /**
      * Additional message context (tokens, model, etc.)
      */

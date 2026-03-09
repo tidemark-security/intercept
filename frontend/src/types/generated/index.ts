@@ -91,6 +91,8 @@ export type { NetworkTrafficItem } from './models/NetworkTrafficItem';
 export type { NoteItem } from './models/NoteItem';
 export type { ObservableItem } from './models/ObservableItem';
 export type { ObservableType } from './models/ObservableType';
+export type { OIDCConfigResponse } from './models/OIDCConfigResponse';
+export type { OIDCTestResponse } from './models/OIDCTestResponse';
 export type { Page_AlertRead_ } from './models/Page_AlertRead_';
 export type { Page_CaseRead_ } from './models/Page_CaseRead_';
 export type { Page_TaskRead_ } from './models/Page_TaskRead_';

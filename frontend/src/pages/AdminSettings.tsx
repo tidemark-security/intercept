@@ -11,6 +11,7 @@ import { cn } from "@/utils/cn";
 
 import { useSession } from "../contexts/sessionContext";
 import { ApiError } from "../types/generated/core/ApiError";
+import { AuthenticationService } from "../types/generated/services/AuthenticationService";
 import { LangflowService } from "../types/generated/services/LangflowService";
 import type { AppSettingRead } from "../types/generated";
 import type { SettingType } from "../types/generated/models/SettingType";
@@ -149,6 +150,11 @@ function AdminSettings() {
     success: boolean;
     message: string;
   } | null>(null);
+  const [testingOidcDiscovery, setTestingOidcDiscovery] = useState(false);
+  const [oidcDiscoveryStatus, setOidcDiscoveryStatus] = useState<{
+    success: boolean;
+    message: string;
+  } | null>(null);
 
   const isAdmin = currentUser?.role === "ADMIN";
 
@@ -221,6 +227,24 @@ function AdminSettings() {
     }
   };
 
+  const testOidcDiscovery = async () => {
+    try {
+      setTestingOidcDiscovery(true);
+      setOidcDiscoveryStatus(null);
+
+      const data =
+        await AuthenticationService.testOidcDiscoveryApiV1AuthOidcTestDiscoveryGet();
+      setOidcDiscoveryStatus(data);
+    } catch (err) {
+      setOidcDiscoveryStatus({
+        success: false,
+        message: extractApiErrorMessage(err, "OIDC discovery test failed"),
+      });
+    } finally {
+      setTestingOidcDiscovery(false);
+    }
+  };
+
   const handleSaveSetting = (
     key: string,
     value: string,
@@ -246,6 +270,17 @@ function AdminSettings() {
     "langflow.timeout",
     "triage.auto_enqueue",
     "case_closure.recommended_tags",
+    "oidc.enabled",
+    "oidc.discovery_url",
+    "oidc.client_id",
+    "oidc.client_secret",
+    "oidc.scopes",
+    "oidc.provider_name",
+    "oidc.jit_provisioning",
+    "oidc.default_role",
+    "oidc.role_claim_path",
+    "oidc.role_mapping",
+    "oidc.sso_bypass_users",
   ]);
 
   // Group remaining settings by category for the Advanced section
@@ -510,6 +545,173 @@ function AdminSettings() {
                   )
                 }
               />
+            </section>
+
+            <section className="flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6">
+              <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
+                <Settings className="text-[20px] text-subtext-color" />
+                <h2 className="text-heading-3 font-heading-3 text-default-font">
+                  OIDC / Single Sign-On
+                </h2>
+              </div>
+
+              <StatusCallout
+                variant={
+                  parseBooleanValue(getSetting("oidc.enabled"))
+                    ? getSetting("oidc.discovery_url") && getSetting("oidc.client_id")
+                      ? "success"
+                      : "warning"
+                    : "warning"
+                }
+                title={
+                  parseBooleanValue(getSetting("oidc.enabled"))
+                    ? "OIDC is enabled"
+                    : "OIDC is disabled"
+                }
+                description={
+                  parseBooleanValue(getSetting("oidc.enabled"))
+                    ? "OIDC sign-in swaps the external token for the app's normal session cookie."
+                    : "Enable OIDC to route sign-in through your external identity provider."
+                }
+                isDarkTheme={isDarkTheme}
+              />
+
+              <BooleanSettingField
+                label="Enable OIDC"
+                description={settingMeta("oidc.enabled").description}
+                source={settingMeta("oidc.enabled").source}
+                readOnly={settingMeta("oidc.enabled").readOnly}
+                value={parseBooleanValue(getSetting("oidc.enabled"))}
+                onSave={(value) =>
+                  handleSaveSetting(
+                    "oidc.enabled",
+                    value ? "true" : "false",
+                    false,
+                    "BOOLEAN",
+                  )
+                }
+              />
+
+              <SettingField
+                label="Discovery URL"
+                {...settingMeta("oidc.discovery_url")}
+                onSave={(value) => handleSaveSetting("oidc.discovery_url", value)}
+                placeholder="https://idp.example.com/.well-known/openid-configuration"
+              />
+
+              <SettingField
+                label="Client ID"
+                {...settingMeta("oidc.client_id")}
+                onSave={(value) => handleSaveSetting("oidc.client_id", value)}
+                placeholder="intercept-backend"
+              />
+
+              <SettingField
+                label="Client Secret"
+                {...settingMeta("oidc.client_secret")}
+                onSave={(value) => handleSaveSetting("oidc.client_secret", value, true)}
+                placeholder="Client secret"
+                isSecret
+              />
+
+              <SettingField
+                label="Scopes"
+                {...settingMeta("oidc.scopes")}
+                onSave={(value) => handleSaveSetting("oidc.scopes", value)}
+                placeholder="openid email profile"
+              />
+
+              <SettingField
+                label="Provider Name"
+                {...settingMeta("oidc.provider_name")}
+                onSave={(value) => handleSaveSetting("oidc.provider_name", value)}
+                placeholder="SSO"
+              />
+
+              <BooleanSettingField
+                label="Just-In-Time Provisioning"
+                description={settingMeta("oidc.jit_provisioning").description}
+                source={settingMeta("oidc.jit_provisioning").source}
+                readOnly={settingMeta("oidc.jit_provisioning").readOnly}
+                value={parseBooleanValue(getSetting("oidc.jit_provisioning"))}
+                onSave={(value) =>
+                  handleSaveSetting(
+                    "oidc.jit_provisioning",
+                    value ? "true" : "false",
+                    false,
+                    "BOOLEAN",
+                  )
+                }
+              />
+
+              <SettingField
+                label="Default Role"
+                {...settingMeta("oidc.default_role")}
+                onSave={(value) => handleSaveSetting("oidc.default_role", value)}
+                placeholder="ANALYST"
+              />
+
+              <SettingField
+                label="Role Claim Path"
+                {...settingMeta("oidc.role_claim_path")}
+                onSave={(value) => handleSaveSetting("oidc.role_claim_path", value)}
+                placeholder="realm_access.roles"
+              />
+
+              <SettingField
+                label="Role Mapping JSON"
+                {...settingMeta("oidc.role_mapping")}
+                onSave={(value) => handleSaveSetting("oidc.role_mapping", value, false, "JSON")}
+                placeholder='{"idp-admins":"ADMIN","idp-auditors":"AUDITOR"}'
+              />
+
+              <TagsSettingField
+                label="Password Login Bypass Users"
+                description={`${settingMeta("oidc.sso_bypass_users").description} Admin users are always allowed.`}
+                source={settingMeta("oidc.sso_bypass_users").source}
+                readOnly={settingMeta("oidc.sso_bypass_users").readOnly}
+                value={getSetting("oidc.sso_bypass_users")}
+                onSave={(tags) =>
+                  handleSaveSetting(
+                    "oidc.sso_bypass_users",
+                    JSON.stringify(tags),
+                    false,
+                    "JSON",
+                  )
+                }
+              />
+
+              <div className="flex flex-col gap-2 border-t border-neutral-border pt-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-body-bold font-body-bold text-default-font">
+                      Test Discovery
+                    </span>
+                    <p className="text-caption font-caption text-subtext-color">
+                      Validate the provider discovery document and required endpoints.
+                    </p>
+                  </div>
+                  <Button
+                    variant="neutral-tertiary"
+                    onClick={testOidcDiscovery}
+                    disabled={testingOidcDiscovery}
+                  >
+                    {testingOidcDiscovery ? "Testing..." : "Test Discovery"}
+                  </Button>
+                </div>
+                {oidcDiscoveryStatus && (
+                  <StatusCallout
+                    variant={oidcDiscoveryStatus.success ? "success" : "error"}
+                    title={
+                      oidcDiscoveryStatus.success
+                        ? "OIDC discovery succeeded"
+                        : "OIDC discovery failed"
+                    }
+                    description={oidcDiscoveryStatus.message}
+                    isDarkTheme={isDarkTheme}
+                  />
+                )}
+              </div>
             </section>
 
             {/* Advanced Settings — auto-generated from registry */}

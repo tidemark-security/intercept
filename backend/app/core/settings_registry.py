@@ -294,32 +294,92 @@ _register(
 )
 
 # ---------------------------------------------------------------------------
-# OIDC  (hot-swappable — currently unused but registered for future use)
+# OIDC  (hot-swappable)
 # ---------------------------------------------------------------------------
-# _register(
-#     _def(
-#         "oidc.connect_url",
-#         env_var="OPENID_CONNECT_URL",
-#         category="oidc",
-#         description="OpenID Connect discovery URL",
-#         default="http://localhost:8080/auth/realms/intercept-case",
-#     ),
-#     _def(
-#         "oidc.client_id",
-#         env_var="OIDC_CLIENT_ID",
-#         category="oidc",
-#         description="OIDC client ID",
-#         default="intercept-case-backend",
-#     ),
-#     _def(
-#         "oidc.client_secret",
-#         env_var="OIDC_CLIENT_SECRET",
-#         is_secret=True,
-#         category="oidc",
-#         description="OIDC client secret",
-#         default="your-client-secret-here",
-#     ),
-# )
+_register(
+    _def(
+        "oidc.enabled",
+        env_var="OIDC_ENABLED",
+        value_type=SettingType.BOOLEAN,
+        category="oidc",
+        description="Enable OpenID Connect single sign-on",
+        default=False,
+    ),
+    _def(
+        "oidc.discovery_url",
+        env_var="OIDC_DISCOVERY_URL",
+        category="oidc",
+        description="OpenID Connect discovery URL",
+        default=None,
+    ),
+    _def(
+        "oidc.client_id",
+        env_var="OIDC_CLIENT_ID",
+        category="oidc",
+        description="OIDC client ID",
+        default=None,
+    ),
+    _def(
+        "oidc.client_secret",
+        env_var="OIDC_CLIENT_SECRET",
+        is_secret=True,
+        category="oidc",
+        description="OIDC client secret",
+        default=None,
+    ),
+    _def(
+        "oidc.scopes",
+        env_var="OIDC_SCOPES",
+        category="oidc",
+        description="Space-delimited OIDC scopes requested during login",
+        default="openid email profile",
+    ),
+    _def(
+        "oidc.provider_name",
+        env_var="OIDC_PROVIDER_NAME",
+        category="oidc",
+        description="Display name for the OIDC provider on the login page",
+        default="SSO",
+    ),
+    _def(
+        "oidc.jit_provisioning",
+        env_var="OIDC_JIT_PROVISIONING",
+        value_type=SettingType.BOOLEAN,
+        category="oidc",
+        description="Automatically create local user accounts for first-time OIDC sign-ins",
+        default=True,
+    ),
+    _def(
+        "oidc.default_role",
+        env_var="OIDC_DEFAULT_ROLE",
+        category="oidc",
+        description="Fallback local role assigned to OIDC users when claim mapping does not apply",
+        default="ANALYST",
+    ),
+    _def(
+        "oidc.role_claim_path",
+        env_var="OIDC_ROLE_CLAIM_PATH",
+        category="oidc",
+        description="Dot-path to the OIDC claim used for role mapping, e.g. realm_access.roles",
+        default="",
+    ),
+    _def(
+        "oidc.role_mapping",
+        env_var="OIDC_ROLE_MAPPING",
+        value_type=SettingType.JSON,
+        category="oidc",
+        description="JSON object mapping IdP claim values to local roles",
+        default={},
+    ),
+    _def(
+        "oidc.sso_bypass_users",
+        env_var="OIDC_SSO_BYPASS_USERS",
+        value_type=SettingType.JSON,
+        category="oidc",
+        description="JSON array of usernames allowed to use local password login while OIDC is enabled",
+        default=[],
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # SMTP  (hot-swappable)

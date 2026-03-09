@@ -4,6 +4,8 @@
 /* eslint-disable */
 import type { LoginRequest } from '../models/LoginRequest';
 import type { LoginResponse } from '../models/LoginResponse';
+import type { OIDCConfigResponse } from '../models/OIDCConfigResponse';
+import type { OIDCTestResponse } from '../models/OIDCTestResponse';
 import type { PasskeyBeginAuthenticationRequest } from '../models/PasskeyBeginAuthenticationRequest';
 import type { PasskeyBeginRegistrationRequest } from '../models/PasskeyBeginRegistrationRequest';
 import type { PasskeyBeginResponse } from '../models/PasskeyBeginResponse';
@@ -263,6 +265,76 @@ export class AuthenticationService {
             errors: {
                 422: `Validation Error`,
             },
+        });
+    }
+    /**
+     * Get Oidc Config
+     * @returns OIDCConfigResponse Successful Response
+     * @throws ApiError
+     */
+    public static getOidcConfigApiV1AuthOidcConfigGet(): CancelablePromise<OIDCConfigResponse> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/auth/oidc/config',
+        });
+    }
+    /**
+     * Begin Oidc Login
+     * @returns any Successful Response
+     * @throws ApiError
+     */
+    public static beginOidcLoginApiV1AuthOidcLoginGet({
+        next,
+    }: {
+        /**
+         * Absolute frontend URL to return to after authentication
+         */
+        next: string,
+    }): CancelablePromise<any> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/auth/oidc/login',
+            query: {
+                'next': next,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Finish Oidc Login
+     * @returns any Successful Response
+     * @throws ApiError
+     */
+    public static finishOidcLoginApiV1AuthOidcCallbackGet({
+        code,
+        state,
+    }: {
+        code: string,
+        state: string,
+    }): CancelablePromise<any> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/auth/oidc/callback',
+            query: {
+                'code': code,
+                'state': state,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Test Oidc Discovery
+     * @returns OIDCTestResponse Successful Response
+     * @throws ApiError
+     */
+    public static testOidcDiscoveryApiV1AuthOidcTestDiscoveryGet(): CancelablePromise<OIDCTestResponse> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/auth/oidc/test-discovery',
         });
     }
 }

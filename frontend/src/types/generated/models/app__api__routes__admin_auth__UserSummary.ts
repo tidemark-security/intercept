@@ -28,5 +28,13 @@ export type app__api__routes__admin_auth__UserSummary = {
      * Account type (HUMAN, NHI)
      */
     accountType: AccountType;
+    /**
+     * OIDC issuer for linked SSO identities
+     */
+    oidcIssuer?: (string | null);
+    /**
+     * OIDC subject for linked SSO identities
+     */
+    oidcSubject?: (string | null);
 };
 
