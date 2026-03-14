@@ -2,6 +2,7 @@
 
 import React from "react";
 
+import { useTheme } from "@/contexts/ThemeContext";
 import { cn } from "@/utils/cn";
 import { IconWrapper } from "@/utils/IconWrapper";
 
@@ -29,18 +30,25 @@ const ToastRoot = React.forwardRef<HTMLDivElement, ToastRootProps>(
     }: ToastRootProps,
     ref
   ) {
+    const { resolvedTheme } = useTheme();
+    const isDarkTheme = resolvedTheme === "dark";
+
     return (
       <div
         className={cn(
           "group/2c7966c2 flex w-80 items-center gap-4 rounded-md border border-solid border-neutral-border bg-default-background px-4 py-3 shadow-black-shadow-medium",
-          {
-            "border border-solid border-success-600 shadow-md":
-              variant === "success",
-            "border border-solid border-accent-2-primary shadow-accent-2-shadow-medium":
-              variant === "error",
-            "border border-solid border-brand-primary shadow-md":
-              variant === "brand",
-          },
+          variant === "success" &&
+            (isDarkTheme
+              ? "border border-solid border-success-600 shadow-md"
+              : "border border-solid border-success-800 shadow-md"),
+          variant === "error" &&
+            (isDarkTheme
+              ? "border border-solid border-error-500 shadow-accent-2-shadow-medium"
+              : "border border-solid border-error-700 shadow-accent-2-shadow-medium"),
+          variant === "brand" &&
+            (isDarkTheme
+              ? "border border-solid border-brand-primary shadow-md"
+              : "border border-solid border-back shadow-black-shadow-medium"),
           className
         )}
         ref={ref}
@@ -50,11 +58,9 @@ const ToastRoot = React.forwardRef<HTMLDivElement, ToastRootProps>(
           <IconWrapper
             className={cn(
               "text-heading-3 font-heading-3 text-neutral-700",
-              {
-                "text-success-700": variant === "success",
-                "text-error-700": variant === "error",
-                "text-brand-600": variant === "brand",
-              }
+              variant === "success" && (isDarkTheme ? "text-success-700" : "text-success-900"),
+              variant === "error" && (isDarkTheme ? "text-error-700" : "text-error-900"),
+              variant === "brand" && (isDarkTheme ? "text-brand-600" : "text-black")
             )}
           >
             {icon}
@@ -65,11 +71,9 @@ const ToastRoot = React.forwardRef<HTMLDivElement, ToastRootProps>(
             <span
               className={cn(
                 "w-full text-body-bold font-body-bold text-default-font",
-                {
-                  "text-success-700": variant === "success",
-                  "text-error-700": variant === "error",
-                  "text-brand-primary": variant === "brand",
-                }
+                variant === "success" && (isDarkTheme ? "text-success-700" : "text-success-900"),
+                variant === "error" && (isDarkTheme ? "text-error-700" : "text-error-900"),
+                variant === "brand" && (isDarkTheme ? "text-brand-600" : "text-black")
               )}
             >
               {title}
