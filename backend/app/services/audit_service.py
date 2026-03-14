@@ -356,7 +356,93 @@ class TimelineAuditService:
     
     def __init__(self, *, logger_: Optional[logging.Logger] = None) -> None:
         self._logger = logger_ or logger
-    
+
+    def log_entity_updated(
+        self,
+        *,
+        entity_type: str,
+        entity_id: int,
+        changes: list[dict[str, Any]],
+        user: str,
+        context: Optional[AuditContext] = None,
+    ) -> None:
+        """Log field-level changes when an entity (alert, task) is updated."""
+        payload = {
+            "event": f"{entity_type}.updated",
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "user": user,
+            "changes": changes,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        payload.update((context or AuditContext()).to_payload())
+        self._logger.info(payload["event"], extra={"timeline_audit": payload})
+
+    def log_entity_deleted(
+        self,
+        *,
+        entity_type: str,
+        entity_id: int,
+        user: str,
+        context: Optional[AuditContext] = None,
+    ) -> None:
+        """Log when an entity (alert, task) is deleted."""
+        payload = {
+            "event": f"{entity_type}.deleted",
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "user": user,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        payload.update((context or AuditContext()).to_payload())
+        self._logger.info(payload["event"], extra={"timeline_audit": payload})
+
+    def log_timeline_item_added(
+        self,
+        *,
+        entity_type: str,
+        entity_id: int,
+        item_id: str,
+        item_type: str,
+        user: str,
+        context: Optional[AuditContext] = None,
+    ) -> None:
+        """Log when a timeline item is added to an entity."""
+        payload = {
+            "event": "timeline.item.added",
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "item_id": item_id,
+            "item_type": item_type,
+            "user": user,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        payload.update((context or AuditContext()).to_payload())
+        self._logger.info(payload["event"], extra={"timeline_audit": payload})
+
+    def log_timeline_item_deleted(
+        self,
+        *,
+        entity_type: str,
+        entity_id: int,
+        item_id: str,
+        item_type: str,
+        user: str,
+        context: Optional[AuditContext] = None,
+    ) -> None:
+        """Log when a timeline item is deleted from an entity."""
+        payload = {
+            "event": "timeline.item.deleted",
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "item_id": item_id,
+            "item_type": item_type,
+            "user": user,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        payload.update((context or AuditContext()).to_payload())
+        self._logger.info(payload["event"], extra={"timeline_audit": payload})
+
     def log_timeline_edit(
         self,
         *,

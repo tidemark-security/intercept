@@ -232,6 +232,8 @@ class TaskService:
             
             # Update fields
             update_data = task_update.model_dump(exclude_unset=True)
+            # Capture original values before mutating for audit logging
+            original_values = {field: getattr(db_task, field, None) for field in update_data if hasattr(db_task, field)}
             
             # Track if case_id is being set for the first time
             old_case_id = db_task.case_id
@@ -310,6 +312,20 @@ class TaskService:
             await db.commit()
             await db.refresh(db_task)
             
+            # Audit log field-level changes
+            audit_changes = [
+                {"field": field, "before": original_values.get(field), "after": getattr(db_task, field, None)}
+                for field in update_data
+                if field in original_values and str(original_values.get(field)) != str(getattr(db_task, field, None))
+            ]
+            if audit_changes:
+                timeline_audit_service.log_entity_updated(
+                    entity_type="task",
+                    entity_id=task_id,
+                    changes=audit_changes,
+                    user=updated_by,
+                )
+
             logger.info(f"Task {task_id} updated by {updated_by}")
             return await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK")
             
@@ -333,6 +349,11 @@ class TaskService:
             await db.delete(db_task)
             await db.commit()
             
+            timeline_audit_service.log_entity_deleted(
+                entity_type="task",
+                entity_id=task_id,
+                user=deleted_by,
+            )
             logger.info(f"Task {task_id} deleted by {deleted_by}")
             return True
             
@@ -377,6 +398,13 @@ class TaskService:
             await db.commit()
             await db.refresh(db_task)
             
+            timeline_audit_service.log_timeline_item_added(
+                entity_type="task",
+                entity_id=task_id,
+                item_id=item_dict.get("id", ""),
+                item_type=item_dict.get("type", "unknown"),
+                user=added_by,
+            )
             logger.info(f"Timeline item added to task by {added_by}")
             return await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK")
             
@@ -488,6 +516,13 @@ class TaskService:
             await db.commit()
             await db.refresh(db_task)
             
+            timeline_audit_service.log_timeline_item_deleted(
+                entity_type="task",
+                entity_id=task_id,
+                item_id=item_id,
+                item_type=item_to_remove.get("type", "unknown"),
+                user=removed_by,
+            )
             logger.info(f"Timeline item {item_id} removed from task by {removed_by}")
             return await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK")
             

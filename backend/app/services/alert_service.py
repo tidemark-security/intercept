@@ -306,6 +306,8 @@ class AlertService:
             new_status = None
             
             update_data = alert_update.model_dump(exclude_unset=True)
+            # Capture original values before mutating for audit logging
+            original_values = {field: getattr(db_alert, field, None) for field in update_data if hasattr(db_alert, field)}
             for field, value in update_data.items():
                 if hasattr(db_alert, field):
                     if field == 'status' and value != old_status:
@@ -362,6 +364,21 @@ class AlertService:
                         db, alert_id, updated_by
                     )
             
+            # Audit log all field-level changes
+            if updated_by and update_data:
+                audit_changes = [
+                    {"field": field, "before": original_values.get(field), "after": value}
+                    for field, value in update_data.items()
+                    if field in original_values and original_values.get(field) != value
+                ]
+                if audit_changes:
+                    timeline_audit_service.log_entity_updated(
+                        entity_type="alert",
+                        entity_id=alert_id,
+                        changes=audit_changes,
+                        user=updated_by,
+                    )
+
             await db.commit()
             await db.refresh(db_alert)
             
@@ -545,6 +562,13 @@ class AlertService:
             await db.commit()
             await db.refresh(db_alert)
             
+            timeline_audit_service.log_timeline_item_added(
+                entity_type="alert",
+                entity_id=alert_id,
+                item_id=item_dict.get("id", ""),
+                item_type=item_dict.get("type", "unknown"),
+                user=added_by,
+            )
             logger.info(f"Timeline item added to alert by {added_by}")
             return await timeline_service.denormalize_entity_timeline(db, db_alert, human_prefix="ALT")
             
@@ -657,6 +681,13 @@ class AlertService:
             await db.commit()
             await db.refresh(db_alert)
             
+            timeline_audit_service.log_timeline_item_deleted(
+                entity_type="alert",
+                entity_id=alert_id,
+                item_id=item_id,
+                item_type=item_to_remove.get("type", "unknown"),
+                user=removed_by,
+            )
             logger.info(f"Timeline item {item_id} removed from alert by {removed_by}")
             return await timeline_service.denormalize_entity_timeline(db, db_alert, human_prefix="ALT")
             
