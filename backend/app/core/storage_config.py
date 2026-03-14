@@ -1,8 +1,8 @@
 """Object storage configuration for file uploads."""
 
 from typing import List
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, field_validator
 
 
 class StorageConfig(BaseSettings):
@@ -13,26 +13,32 @@ class StorageConfig(BaseSettings):
     # Connection settings
     storage_endpoint: str = Field(
         default="localhost:9000",
+        validation_alias=AliasChoices("STORAGE_ENDPOINT", "MINIO_ENDPOINT"),
         description="MinIO/S3 endpoint URL"
     )
     storage_access_key: str = Field(
         default="minioadmin",
+        validation_alias=AliasChoices("STORAGE_ACCESS_KEY", "MINIO_ACCESS_KEY"),
         description="Storage access key"
     )
     storage_secret_key: str = Field(
         default="minioadmin",
+        validation_alias=AliasChoices("STORAGE_SECRET_KEY", "MINIO_SECRET_KEY"),
         description="Storage secret key"
     )
     storage_bucket: str = Field(
         default="intercept-attachments",
+        validation_alias=AliasChoices("STORAGE_BUCKET", "MINIO_BUCKET"),
         description="Storage bucket name"
     )
     storage_use_ssl: bool = Field(
         default=False,  # True in production
+        validation_alias=AliasChoices("STORAGE_USE_SSL", "MINIO_USE_SSL"),
         description="Use SSL for storage connections"
     )
     storage_region: str = Field(
         default="us-east-1",
+        validation_alias=AliasChoices("STORAGE_REGION", "MINIO_REGION"),
         description="Storage region"
     )
     
