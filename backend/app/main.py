@@ -306,7 +306,7 @@ async def options_handler(path: str):
 async def global_exception_handler(request, exc):
     """Global exception handler."""
     logger.error(f"Unhandled exception: {exc}")
-    return HTTPException(
+    return JSONResponse(
         status_code=500,
-        detail="Internal server error"
+        content={"detail": "Internal server error"},
     )
