@@ -467,13 +467,13 @@ function AdminSettings() {
     );
   }
 
-  const getSetting = (key: string): string => {
+  function getSetting(key: string): string {
     const setting = settings.find((s) => s.key === key);
     return setting?.value || "";
-  };
+  }
 
   /** Pull value + registry metadata for a setting key */
-  const settingMeta = (key: string) => {
+  function settingMeta(key: string) {
     const s = settings.find((s) => s.key === key);
     const localOnly = !!s?.local_only;
     const envOverride = s?.source === "env";
@@ -486,7 +486,7 @@ function AdminSettings() {
       envOverride,
       readOnly,
     };
-  };
+  }
 
   return (
     <AdminPageLayout
