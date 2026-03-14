@@ -292,7 +292,11 @@ class AuthService:
             )
             raise InvalidCredentialsError()
 
-        if not self._password_hasher.verify(user.password_hash, password):
+        loop = asyncio.get_running_loop()
+        password_valid = await loop.run_in_executor(
+            None, self._password_hasher.verify, user.password_hash, password
+        )
+        if not password_valid:
             user.failed_login_attempts += 1
             user.updated_at = now
 
@@ -449,7 +453,11 @@ class AuthService:
         if user is None:
             raise SessionNotFoundError()
 
-        if not self._password_hasher.verify(user.password_hash, current_password):
+        loop = asyncio.get_running_loop()
+        current_valid = await loop.run_in_executor(
+            None, self._password_hasher.verify, user.password_hash, current_password
+        )
+        if not current_valid:
             raise InvalidCredentialsError()
 
         candidate = new_password.strip()
@@ -460,7 +468,7 @@ class AuthService:
                 "Password must include upper, lower, number, and special character"
             )
 
-        hashed = self._password_hasher.hash(candidate)
+        hashed = await loop.run_in_executor(None, self._password_hasher.hash, candidate)
         now = datetime.now(timezone.utc)
 
         was_forced = user.must_change_password

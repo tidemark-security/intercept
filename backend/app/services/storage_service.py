@@ -64,8 +64,9 @@ class StorageService:
         Returns:
             Presigned PUT URL
         """
-        # Ensure bucket exists before generating URL
-        self._ensure_bucket_exists()
+        # Ensure bucket exists before generating URL (run in executor to avoid blocking)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._ensure_bucket_exists)
         
         if expires_minutes is None:
             expires_minutes = storage_config.upload_timeout_minutes
@@ -73,7 +74,6 @@ class StorageService:
         expiry = timedelta(minutes=expires_minutes)
         
         # Run blocking MinIO call in thread pool
-        loop = asyncio.get_event_loop()
         url = await loop.run_in_executor(
             _executor,
             lambda: self.client.presigned_put_object(
@@ -110,7 +110,7 @@ class StorageService:
         expiry = timedelta(minutes=expires_minutes)
         
         # Run blocking MinIO call in thread pool
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         url = await loop.run_in_executor(
             _executor,
             lambda: self.client.presigned_get_object(
@@ -137,7 +137,7 @@ class StorageService:
             True if file exists, False otherwise
         """
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 _executor,
                 lambda: self.client.stat_object(self.bucket_name, storage_key)
@@ -157,7 +157,7 @@ class StorageService:
             storage_key: Object storage key (path)
         """
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(
                 _executor,
                 lambda: self.client.remove_object(self.bucket_name, storage_key)

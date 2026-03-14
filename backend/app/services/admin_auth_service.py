@@ -1,6 +1,7 @@
 """Admin authentication service for user management operations."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
@@ -131,7 +132,8 @@ class AdminAuthService:
 
         # Generate temporary password
         temporary_password = self._generate_temporary_password()
-        password_hash = self._hasher.hash(temporary_password)
+        loop = asyncio.get_running_loop()
+        password_hash = await loop.run_in_executor(None, self._hasher.hash, temporary_password)
 
         # Create user account
         now = datetime.now(timezone.utc)
@@ -312,7 +314,8 @@ class AdminAuthService:
 
         # Generate temporary password
         temporary_password = self._generate_temporary_password()
-        password_hash = self._hasher.hash(temporary_password)
+        loop = asyncio.get_running_loop()
+        password_hash = await loop.run_in_executor(None, self._hasher.hash, temporary_password)
 
         # Update user
         now = datetime.now(timezone.utc)
