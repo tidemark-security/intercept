@@ -4,6 +4,8 @@
 
 # Byte-compiled / optimized files
 __pycache__/
+backend/tests/fixtures/maxmind/*.mmdb
+backend/tests/fixtures/maxmind/*.json
 *.py[cod]
 *$py.class
 *.so

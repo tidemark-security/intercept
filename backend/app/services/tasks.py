@@ -16,6 +16,7 @@ from app.services.langflow_service import LangFlowService, LangFlowConfiguration
 from app.services.settings_service import SettingsService
 from app.core.database import async_session_factory
 from app.services.enrichment.service import enrichment_service
+from app.services.maxmind_service import maxmind_service
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ TASK_LANGFLOW_BATCH = "langflow_batch"
 TASK_TRIAGE_ALERT = "triage_alert"
 TASK_ENRICH_ITEM = "enrich_item"
 TASK_DIRECTORY_SYNC = "directory_sync"
+TASK_MAXMIND_UPDATE = "maxmind_update"
 
 
 async def handle_langflow_chat(payload: Dict[str, Any]):
@@ -217,8 +219,6 @@ async def handle_triage_alert(payload: Dict[str, Any]):
             # which supersedes the QUEUED placeholder. If it didn't, the record stays QUEUED
             # and will be picked up on retry or marked failed after max retries.
             
-            return response
-            
         except Exception as e:
             # Mark the QUEUED recommendation as FAILED
             await _mark_triage_failed(alert_id, str(e))
@@ -300,6 +300,32 @@ async def handle_directory_sync(payload: Dict[str, Any]):
         await enrichment_service.run_directory_sync(db, provider_id)
 
 
+async def handle_maxmind_update(payload: Dict[str, Any]):
+    """Download and refresh MaxMind MMDB files on workers."""
+    reschedule = bool(payload.get("reschedule", False))
+
+    logger.info("Processing MaxMind update task", extra={"reschedule": reschedule})
+
+    async with async_session_factory() as db:
+        settings = SettingsService(db)
+        enabled = bool(await settings.get("enrichment.maxmind.enabled", False))
+        if not enabled:
+            logger.info("Skipping MaxMind update because provider is disabled")
+            return
+
+        results = await maxmind_service.download_databases(db)
+        synced = await maxmind_service.sync_local_cache(settings=settings)
+        await maxmind_service.ensure_readers_loaded(settings=settings)
+
+        logger.info(
+            "Completed MaxMind update task",
+            extra={"results": results, "synced_editions": synced},
+        )
+
+        if reschedule:
+            await maxmind_service.enqueue_next_scheduled_update(db)
+
+
 def register_task_handlers():
     """
     Register all task handlers with the task queue service.
@@ -339,6 +365,12 @@ def register_task_handlers():
         task_queue.register_handler(
             task_name=TASK_DIRECTORY_SYNC,
             handler=handle_directory_sync,
+            max_retries=2,
+        )
+
+        task_queue.register_handler(
+            task_name=TASK_MAXMIND_UPDATE,
+            handler=handle_maxmind_update,
             max_retries=2,
         )
         

@@ -1,7 +1,9 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { AdminPageLayout } from "../components/layout/AdminPageLayout";
 import { TextField } from "@/components/forms/TextField";
+import { TextArea } from "@/components/forms/TextArea";
 import { Button } from "@/components/buttons/Button";
 import { Switch } from "@/components/forms/Switch";
 import { TagsManager } from "@/components/forms/TagsManager";
@@ -11,9 +13,14 @@ import { cn } from "@/utils/cn";
 
 import { useSession } from "../contexts/sessionContext";
 import { ApiError } from "../types/generated/core/ApiError";
+import { AdminService } from "../types/generated/services/AdminService";
 import { AuthenticationService } from "../types/generated/services/AuthenticationService";
 import { LangflowService } from "../types/generated/services/LangflowService";
-import type { AppSettingRead } from "../types/generated";
+import type {
+  AppSettingRead,
+  MaxMindConfigureResponse,
+  MaxMindDatabaseStatus,
+} from "../types/generated";
 import type { SettingType } from "../types/generated/models/SettingType";
 import {
   useSettings,
@@ -26,10 +33,14 @@ import {
   CheckCircle,
   ChevronDown,
   ChevronRight,
+  FileText,
+  Globe2,
   Lock,
+  RefreshCw,
   Save,
   Settings,
   Sparkles,
+  Upload,
 } from "lucide-react";
 
 const DEFAULT_CASE_CLOSURE_RECOMMENDED_TAGS = [
@@ -40,6 +51,8 @@ const DEFAULT_CASE_CLOSURE_RECOMMENDED_TAGS = [
   "No Action Required",
   "Duplicate",
 ];
+
+const MAXMIND_DATABASES_QUERY_KEY = ["admin", "maxmind", "databases"] as const;
 
 const parseTagsValue = (value: string): string[] => {
   const trimmedValue = value.trim();
@@ -141,9 +154,11 @@ function AdminSettings() {
     isLoading: loading,
     error: queryError,
   } = useSettings();
+  const queryClient = useQueryClient();
   const { showToast } = useToast();
   const updateMutation = useUpdateSetting();
   const createMutation = useCreateSetting();
+  const geoipConfFileInputRef = useRef<HTMLInputElement>(null);
 
   const [testingConnection, setTestingConnection] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<{
@@ -155,8 +170,75 @@ function AdminSettings() {
     success: boolean;
     message: string;
   } | null>(null);
+  const [geoipConfText, setGeoipConfText] = useState("");
+  const [isMaxMindDragging, setIsMaxMindDragging] = useState(false);
+  const [maxMindConfigureStatus, setMaxMindConfigureStatus] = useState<{
+    variant: StatusVariant;
+    title: string;
+    description: string;
+  } | null>(null);
+  const [maxMindUpdateStatus, setMaxMindUpdateStatus] = useState<{
+    variant: StatusVariant;
+    title: string;
+    description: string;
+  } | null>(null);
 
   const isAdmin = currentUser?.role === "ADMIN";
+
+  const {
+    data: maxMindDatabases = [],
+    isLoading: maxMindDatabasesLoading,
+  } = useQuery({
+    queryKey: MAXMIND_DATABASES_QUERY_KEY,
+    queryFn: () => AdminService.getMaxmindDatabaseStatusApiV1AdminEnrichmentsMaxmindDatabasesGet(),
+    enabled: isAdmin,
+    staleTime: 30_000,
+  });
+
+  const maxMindConfigureMutation = useMutation({
+    mutationFn: (confText: string) =>
+      AdminService.configureMaxmindApiV1AdminEnrichmentsMaxmindConfigurePost({
+        requestBody: { conf_text: confText },
+      }),
+    onSuccess: async (response: MaxMindConfigureResponse) => {
+      setMaxMindConfigureStatus({
+        variant: "success",
+        title: "GeoIP.conf imported",
+        description: `Saved ${response.settings_saved ?? 0} settings and queued initial download${response.task_id ? ` (${response.task_id})` : ""}.`,
+      });
+      setGeoipConfText("");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["admin", "settings"] }),
+        queryClient.invalidateQueries({ queryKey: MAXMIND_DATABASES_QUERY_KEY }),
+      ]);
+    },
+    onError: (err) => {
+      setMaxMindConfigureStatus({
+        variant: "error",
+        title: "GeoIP.conf import failed",
+        description: extractApiErrorMessage(err, "Failed to import GeoIP.conf"),
+      });
+    },
+  });
+
+  const maxMindUpdateMutation = useMutation({
+    mutationFn: () => AdminService.triggerMaxmindUpdateApiV1AdminEnrichmentsMaxmindUpdatePost(),
+    onSuccess: async (response: { task_id?: string | null }) => {
+      setMaxMindUpdateStatus({
+        variant: "success",
+        title: "Update queued",
+        description: `Worker queued a MaxMind database refresh${response?.task_id ? ` (${response.task_id})` : ""}.`,
+      });
+      await queryClient.invalidateQueries({ queryKey: MAXMIND_DATABASES_QUERY_KEY });
+    },
+    onError: (err) => {
+      setMaxMindUpdateStatus({
+        variant: "error",
+        title: "Failed to queue update",
+        description: extractApiErrorMessage(err, "Failed to queue MaxMind update"),
+      });
+    },
+  });
 
   // Surface React Query errors
   useEffect(() => {
@@ -259,6 +341,70 @@ function AdminSettings() {
     }
   };
 
+  const submitGeoIpConf = () => {
+    const trimmed = geoipConfText.trim();
+    if (!trimmed) {
+      setMaxMindConfigureStatus({
+        variant: "warning",
+        title: "GeoIP.conf required",
+        description: "Paste a GeoIP.conf file or drop one into the import area before saving.",
+      });
+      return;
+    }
+    setMaxMindConfigureStatus(null);
+    maxMindConfigureMutation.mutate(trimmed);
+  };
+
+  const loadGeoIpConfFile = (file: File | null) => {
+    if (!file) {
+      return;
+    }
+    file.text()
+      .then((text) => {
+        setGeoipConfText(text);
+        setMaxMindConfigureStatus({
+          variant: "success",
+          title: "GeoIP.conf loaded",
+          description: `${file.name} is ready to import. Review the contents below and save when ready.`,
+        });
+      })
+      .catch((err: unknown) => {
+        setMaxMindConfigureStatus({
+          variant: "error",
+          title: "Failed to read file",
+          description: extractApiErrorMessage(err, "Failed to read the selected GeoIP.conf file"),
+        });
+      });
+  };
+
+  const formatFileSize = (value?: number | null) => {
+    if (!value || value <= 0) {
+      return "-";
+    }
+    if (value < 1024) {
+      return `${value} B`;
+    }
+    if (value < 1024 * 1024) {
+      return `${(value / 1024).toFixed(1)} KB`;
+    }
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const formatTimestamp = (value?: string | null) => {
+    if (!value) {
+      return "-";
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return "-";
+    }
+    return parsed.toLocaleString();
+  };
+
+  const maxMindConfigured =
+    Boolean(getSetting("enrichment.maxmind.account_id")) &&
+    Boolean(getSetting("enrichment.maxmind.license_key"));
+
   // Keys rendered in custom sections above — excluded from the generic Advanced section
   const CUSTOM_KEYS = new Set([
     "langflow.base_url",
@@ -281,6 +427,12 @@ function AdminSettings() {
     "oidc.role_claim_path",
     "oidc.role_mapping",
     "oidc.sso_bypass_users",
+    "enrichment.maxmind.enabled",
+    "enrichment.maxmind.account_id",
+    "enrichment.maxmind.license_key",
+    "enrichment.maxmind.edition_ids",
+    "enrichment.maxmind.update_frequency_hours",
+    "enrichment.maxmind.ttl_seconds",
   ]);
 
   // Group remaining settings by category for the Advanced section
@@ -714,6 +866,263 @@ function AdminSettings() {
               </div>
             </section>
 
+            <section className="flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6">
+              <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
+                <Globe2 className="text-[20px] text-subtext-color" />
+                <h2 className="text-heading-3 font-heading-3 text-default-font">
+                  MaxMind GeoIP
+                </h2>
+              </div>
+
+              <StatusCallout
+                variant={maxMindConfigured ? "success" : "warning"}
+                title={maxMindConfigured ? "MaxMind is configured" : "MaxMind is not configured"}
+                description={
+                  maxMindConfigured
+                    ? "Workers will use MMDB databases stored in blob storage for IP enrichment."
+                    : "Import a GeoIP.conf file or populate the MaxMind settings below to enable database downloads."
+                }
+                isDarkTheme={isDarkTheme}
+              />
+
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <span className="text-body-bold font-body-bold text-default-font">
+                      GeoIP.conf Import
+                    </span>
+                    <p className="text-caption font-caption text-subtext-color">
+                      Drop a GeoIP.conf file here, select one from disk, or paste its contents below to preconfigure MaxMind downloads.
+                    </p>
+                  </div>
+                  <input
+                    ref={geoipConfFileInputRef}
+                    type="file"
+                    accept=".conf,text/plain"
+                    className="hidden"
+                    onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
+                      loadGeoIpConfFile(event.target.files?.[0] ?? null);
+                      event.target.value = "";
+                    }}
+                  />
+                  <Button
+                    variant="neutral-tertiary"
+                    onClick={() => geoipConfFileInputRef.current?.click()}
+                    icon={<FileText className="text-[16px]" />}
+                  >
+                    Choose File
+                  </Button>
+                </div>
+
+                <div
+                  className={cn(
+                    "flex min-h-[120px] cursor-pointer flex-col items-center justify-center gap-3 rounded-md border-2 border-dashed px-6 py-8 transition-colors",
+                    isMaxMindDragging
+                      ? "border-focus-border bg-neutral-100"
+                      : "border-neutral-border bg-default-background hover:border-neutral-400"
+                  )}
+                  onClick={() => geoipConfFileInputRef.current?.click()}
+                  onDragOver={(event: React.DragEvent<HTMLDivElement>) => {
+                    event.preventDefault();
+                    setIsMaxMindDragging(true);
+                  }}
+                  onDragLeave={(event: React.DragEvent<HTMLDivElement>) => {
+                    event.preventDefault();
+                    setIsMaxMindDragging(false);
+                  }}
+                  onDrop={(event: React.DragEvent<HTMLDivElement>) => {
+                    event.preventDefault();
+                    setIsMaxMindDragging(false);
+                    loadGeoIpConfFile(event.dataTransfer.files?.[0] ?? null);
+                  }}
+                >
+                  <Upload className="text-[24px] text-subtext-color" />
+                  <div className="flex flex-col items-center gap-1 text-center">
+                    <span className="text-body-bold font-body-bold text-default-font">
+                      Drop GeoIP.conf here
+                    </span>
+                    <span className="text-caption font-caption text-subtext-color">
+                      The file contents will be parsed and saved into the MaxMind admin settings.
+                    </span>
+                  </div>
+                </div>
+
+                <TextArea
+                  label="GeoIP.conf contents"
+                  helpText="Paste the file contents exactly as provided by MaxMind. The import saves AccountID, LicenseKey, and EditionIDs."
+                >
+                  <TextArea.Input
+                    value={geoipConfText}
+                    onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => {
+                      setGeoipConfText(event.target.value);
+                    }}
+                    placeholder="# Paste GeoIP.conf here"
+                  />
+                </TextArea>
+
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="brand-primary"
+                    onClick={submitGeoIpConf}
+                    disabled={maxMindConfigureMutation.isPending}
+                    icon={<Save className="text-[16px]" />}
+                  >
+                    {maxMindConfigureMutation.isPending ? "Importing..." : "Import GeoIP.conf"}
+                  </Button>
+                  <Button
+                    variant="neutral-secondary"
+                    onClick={() => setGeoipConfText("")}
+                    disabled={maxMindConfigureMutation.isPending || !geoipConfText.trim()}
+                  >
+                    Clear
+                  </Button>
+                </div>
+
+                {maxMindConfigureStatus && (
+                  <StatusCallout
+                    variant={maxMindConfigureStatus.variant}
+                    title={maxMindConfigureStatus.title}
+                    description={maxMindConfigureStatus.description}
+                    isDarkTheme={isDarkTheme}
+                  />
+                )}
+              </div>
+
+              <BooleanSettingField
+                label="Enable MaxMind Enrichment"
+                description={settingMeta("enrichment.maxmind.enabled").description}
+                source={settingMeta("enrichment.maxmind.enabled").source}
+                readOnly={settingMeta("enrichment.maxmind.enabled").readOnly}
+                value={parseBooleanValue(getSetting("enrichment.maxmind.enabled"))}
+                onSave={(value) =>
+                  handleSaveSetting(
+                    "enrichment.maxmind.enabled",
+                    value ? "true" : "false",
+                    false,
+                    "BOOLEAN",
+                  )
+                }
+              />
+
+              <SettingField
+                label="Account ID"
+                {...settingMeta("enrichment.maxmind.account_id")}
+                onSave={(value) => handleSaveSetting("enrichment.maxmind.account_id", value)}
+                placeholder="1313424"
+              />
+
+              <SettingField
+                label="License Key"
+                {...settingMeta("enrichment.maxmind.license_key")}
+                onSave={(value) => handleSaveSetting("enrichment.maxmind.license_key", value, true)}
+                placeholder="License key"
+                isSecret
+              />
+
+              <TagsSettingField
+                label="Edition IDs"
+                description={settingMeta("enrichment.maxmind.edition_ids").description}
+                source={settingMeta("enrichment.maxmind.edition_ids").source}
+                readOnly={settingMeta("enrichment.maxmind.edition_ids").readOnly}
+                value={getSetting("enrichment.maxmind.edition_ids")}
+                onSave={(tags) =>
+                  handleSaveSetting(
+                    "enrichment.maxmind.edition_ids",
+                    JSON.stringify(tags),
+                    false,
+                    "JSON",
+                  )
+                }
+              />
+
+              <SettingField
+                label="Update Frequency (hours)"
+                {...settingMeta("enrichment.maxmind.update_frequency_hours")}
+                onSave={(value) => handleSaveSetting("enrichment.maxmind.update_frequency_hours", value, false, "NUMBER")}
+                placeholder="24"
+              />
+
+              <SettingField
+                label="Enrichment TTL (seconds)"
+                {...settingMeta("enrichment.maxmind.ttl_seconds")}
+                onSave={(value) => handleSaveSetting("enrichment.maxmind.ttl_seconds", value, false, "NUMBER")}
+                placeholder="604800"
+              />
+
+              <div className="flex flex-col gap-4 border-t border-neutral-border pt-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <span className="text-body-bold font-body-bold text-default-font">
+                      Database Status
+                    </span>
+                    <p className="text-caption font-caption text-subtext-color">
+                      Shows which MMDB editions are present in blob storage and currently loaded on this node.
+                    </p>
+                  </div>
+                  <Button
+                    variant="neutral-tertiary"
+                    onClick={() => maxMindUpdateMutation.mutate()}
+                    disabled={maxMindUpdateMutation.isPending || !maxMindConfigured}
+                    icon={<RefreshCw className={cn("text-[16px]", maxMindUpdateMutation.isPending && "animate-spin")} />}
+                  >
+                    {maxMindUpdateMutation.isPending ? "Queueing..." : "Check for Updates"}
+                  </Button>
+                </div>
+
+                {maxMindUpdateStatus && (
+                  <StatusCallout
+                    variant={maxMindUpdateStatus.variant}
+                    title={maxMindUpdateStatus.title}
+                    description={maxMindUpdateStatus.description}
+                    isDarkTheme={isDarkTheme}
+                  />
+                )}
+
+                <div className="overflow-x-auto rounded-md border border-neutral-border">
+                  <table className="min-w-full divide-y divide-neutral-border">
+                    <thead className="bg-neutral-50">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-caption-bold font-caption-bold text-default-font">Edition</th>
+                        <th className="px-4 py-3 text-left text-caption-bold font-caption-bold text-default-font">Storage</th>
+                        <th className="px-4 py-3 text-left text-caption-bold font-caption-bold text-default-font">Loaded</th>
+                        <th className="px-4 py-3 text-left text-caption-bold font-caption-bold text-default-font">Size</th>
+                        <th className="px-4 py-3 text-left text-caption-bold font-caption-bold text-default-font">Last Updated</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-border bg-default-background">
+                      {maxMindDatabasesLoading ? (
+                        <tr>
+                          <td colSpan={5} className="px-4 py-6 text-body text-subtext-color">
+                            Loading database status...
+                          </td>
+                        </tr>
+                      ) : maxMindDatabases.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="px-4 py-6 text-body text-subtext-color">
+                            No MaxMind editions configured yet.
+                          </td>
+                        </tr>
+                      ) : (
+                        maxMindDatabases.map((database: MaxMindDatabaseStatus) => (
+                          <tr key={database.edition_id}>
+                            <td className="px-4 py-3 text-body text-default-font">{database.edition_id}</td>
+                            <td className="px-4 py-3 text-body text-default-font">
+                              <StatusPill active={!!database.available_in_storage} activeLabel="Stored" inactiveLabel="Missing" />
+                            </td>
+                            <td className="px-4 py-3 text-body text-default-font">
+                              <StatusPill active={!!database.loaded} activeLabel="Loaded" inactiveLabel="Idle" />
+                            </td>
+                            <td className="px-4 py-3 text-body text-subtext-color">{formatFileSize(database.file_size_bytes)}</td>
+                            <td className="px-4 py-3 text-body text-subtext-color">{formatTimestamp(database.last_updated)}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+
             {/* Advanced Settings — auto-generated from registry */}
             {advancedByCategory.length > 0 && (
               <section className="flex flex-col gap-4 rounded-lg border border-neutral-border bg-default-background p-6">
@@ -1116,6 +1525,27 @@ function SourceBadge({
           <Lock className="h-3 w-3 text-subtext-color" />
         </span>
       )}
+    </span>
+  );
+}
+
+function StatusPill({
+  active,
+  activeLabel,
+  inactiveLabel,
+}: {
+  active: boolean;
+  activeLabel: string;
+  inactiveLabel: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium leading-tight",
+        active ? "bg-success-50 text-success-900" : "bg-neutral-100 text-neutral-600"
+      )}
+    >
+      {active ? activeLabel : inactiveLabel}
     </span>
   );
 }

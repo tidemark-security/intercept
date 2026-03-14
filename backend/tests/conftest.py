@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
 from urllib.parse import urlparse
 
+import httpx
 import pytest
 import pytest_asyncio
 from contextlib import asynccontextmanager
@@ -28,6 +29,17 @@ TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
     "postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_test_db",
 )
+MAXMIND_TEST_DATA_DIR = PROJECT_ROOT / "backend" / "tests" / "fixtures" / "maxmind"
+MAXMIND_TEST_DB_FILES = [
+    "GeoLite2-ASN-Test.mmdb",
+    "GeoLite2-City-Test.mmdb",
+    "GeoLite2-Country-Test.mmdb",
+    "GeoIP2-Anonymous-IP-Test.mmdb",
+    "GeoIP2-Connection-Type-Test.mmdb",
+    "GeoIP2-Domain-Test.mmdb",
+    "GeoIP2-Enterprise-Test.mmdb",
+    "GeoIP2-ISP-Test.mmdb",
+]
 
 if not TEST_DATABASE_URL.startswith("postgresql+asyncpg://"):
     raise RuntimeError(
@@ -66,6 +78,20 @@ def _extract_database_name(database_url: str) -> str:
     return db_name
 
 
+def _download_maxmind_test_data(target_dir: Path) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    with httpx.Client(timeout=60, follow_redirects=True) as client:
+        for file_name in MAXMIND_TEST_DB_FILES:
+            target_path = target_dir / file_name
+            if target_path.exists():
+                continue
+            response = client.get(
+                f"https://raw.githubusercontent.com/maxmind/MaxMind-DB/main/test-data/{file_name}"
+            )
+            response.raise_for_status()
+            target_path.write_bytes(response.content)
+
+
 @pytest.fixture(scope="session")
 def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
     loop = asyncio.new_event_loop()
@@ -73,6 +99,12 @@ def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
         yield loop
     finally:
         loop.close()
+
+
+@pytest.fixture(scope="session")
+def maxmind_test_data_dir() -> Path:
+    _download_maxmind_test_data(MAXMIND_TEST_DATA_DIR)
+    return MAXMIND_TEST_DATA_DIR
 
 
 @pytest_asyncio.fixture()
@@ -92,6 +124,9 @@ async def async_engine() -> AsyncGenerator[AsyncEngine, None]:
 @pytest.fixture(scope="session", autouse=True)
 def ensure_postgres_container() -> None:
     """Start and wait for docker-compose postgres used by backend tests."""
+    if os.getenv("SKIP_DOCKER_TEST_SETUP", "").strip().lower() in {"1", "true", "yes"}:
+        return
+
     compose_cmd = _compose_base_command()
 
     if not COMPOSE_FILE.exists():
@@ -141,6 +176,9 @@ def ensure_postgres_container() -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def ensure_test_database(ensure_postgres_container: None) -> None:
+    if os.getenv("SKIP_DOCKER_TEST_SETUP", "").strip().lower() in {"1", "true", "yes"}:
+        return
+
     compose_cmd = _compose_base_command()
     database_name = _extract_database_name(TEST_DATABASE_URL)
 

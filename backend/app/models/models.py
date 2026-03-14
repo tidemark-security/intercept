@@ -1741,6 +1741,33 @@ class EnrichmentProviderStatusRead(SQLModel):
     last_activity_at: Optional[datetime] = None
 
 
+class MaxMindConfigureRequest(SQLModel):
+    """Admin request payload for importing a GeoIP.conf file."""
+
+    conf_text: str = Field(min_length=1, description="Raw GeoIP.conf contents")
+
+
+class MaxMindConfigureResponse(SQLModel):
+    """Summary of a successful GeoIP.conf import."""
+
+    account_id: str
+    edition_ids: List[str] = Field(default_factory=list)
+    settings_saved: int = 0
+    task_id: Optional[str] = None
+
+
+class MaxMindDatabaseStatus(SQLModel):
+    """Current worker/storage status for a configured MaxMind database."""
+
+    edition_id: str
+    available_in_storage: bool = False
+    loaded: bool = False
+    local_path: Optional[str] = None
+    file_size_bytes: Optional[int] = None
+    last_updated: Optional[datetime] = None
+    content_sha256: Optional[str] = None
+
+
 # LangFlowSession Models - AI chat session tracking
 
 class LangFlowSessionBase(SQLModel):

@@ -19,6 +19,9 @@ import type { EnrichmentAliasCreate } from '../models/EnrichmentAliasCreate';
 import type { EnrichmentAliasRead } from '../models/EnrichmentAliasRead';
 import type { EnrichmentAliasUpdate } from '../models/EnrichmentAliasUpdate';
 import type { EnrichmentProviderStatusRead } from '../models/EnrichmentProviderStatusRead';
+import type { MaxMindConfigureRequest } from '../models/MaxMindConfigureRequest';
+import type { MaxMindConfigureResponse } from '../models/MaxMindConfigureResponse';
+import type { MaxMindDatabaseStatus } from '../models/MaxMindDatabaseStatus';
 import type { UserRole } from '../models/UserRole';
 import type { UserStatus } from '../models/UserStatus';
 import type { CancelablePromise } from '../core/CancelablePromise';
@@ -454,6 +457,48 @@ export class AdminService {
             errors: {
                 422: `Validation Error`,
             },
+        });
+    }
+    /**
+     * Configure Maxmind
+     * @returns MaxMindConfigureResponse Successful Response
+     * @throws ApiError
+     */
+    public static configureMaxmindApiV1AdminEnrichmentsMaxmindConfigurePost({
+        requestBody,
+    }: {
+        requestBody: MaxMindConfigureRequest,
+    }): CancelablePromise<MaxMindConfigureResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/admin/enrichments/maxmind/configure',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Get Maxmind Database Status
+     * @returns MaxMindDatabaseStatus Successful Response
+     * @throws ApiError
+     */
+    public static getMaxmindDatabaseStatusApiV1AdminEnrichmentsMaxmindDatabasesGet(): CancelablePromise<Array<MaxMindDatabaseStatus>> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/admin/enrichments/maxmind/databases',
+        });
+    }
+    /**
+     * Trigger Maxmind Update
+     * @returns any Successful Response
+     * @throws ApiError
+     */
+    public static triggerMaxmindUpdateApiV1AdminEnrichmentsMaxmindUpdatePost(): CancelablePromise<any> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/admin/enrichments/maxmind/update',
         });
     }
 }

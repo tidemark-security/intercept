@@ -10,6 +10,7 @@ from app.core.database import test_db_connection
 from app.core.database import async_session_factory
 from app.core.security import initialize_encryption_service
 from app.services.task_queue_service import initialize_task_queue_service, shutdown_task_queue_service
+from app.services.enrichment.providers import register_providers
 from app.services.tasks import register_task_handlers
 from app.api.routes import admin_auth, alerts, auth, cases, dashboard, dummy_data, link_templates, mitre, tasks, settings as settings_routes, langflow, api_keys, soc_metrics, triage_recommendations, search, validation, features, oidc, enrichments
 # from app.api.routes import admin_auth, alerts, auth, cases, dashboard, dummy_data, link_templates, mitre, soc_metrics, tasks, api_keys
@@ -42,6 +43,8 @@ async def app_lifespan(app: FastAPI):
     # Initialize task queue service (for enqueueing tasks)
     # Note: The actual worker processing runs in separate worker containers
     # See worker.py and docker-compose.yml worker service
+    register_providers()
+
     logger.info("Initializing task queue service...")
     try:
         await initialize_task_queue_service(get_local("database.url"))

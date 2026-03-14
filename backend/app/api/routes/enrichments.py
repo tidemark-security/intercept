@@ -7,14 +7,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.admin_auth import require_admin_user, require_authenticated_user
 from app.core.database import get_db
+from app.models.enums import SettingType
 from app.models.models import (
+    AppSettingCreate,
+    AppSettingUpdate,
     EnrichmentAliasCreate,
     EnrichmentAliasRead,
     EnrichmentAliasUpdate,
     EnrichmentProviderStatusRead,
+    MaxMindConfigureRequest,
+    MaxMindConfigureResponse,
+    MaxMindDatabaseStatus,
 )
 from app.services.enrichment.registry import enrichment_registry
 from app.services.enrichment.service import enrichment_service
+from app.services.maxmind_service import maxmind_service
+from app.services.settings_service import SettingsService
 
 
 router = APIRouter(
@@ -132,3 +140,87 @@ async def clear_cache(
 ):
     cleared = await enrichment_service.clear_cache(db, provider_id)
     return {"cleared": cleared, "provider_id": provider_id}
+
+
+async def _upsert_setting(
+    settings_service: SettingsService,
+    *,
+    key: str,
+    value: str,
+    is_secret: bool = False,
+    value_type: SettingType = SettingType.STRING,
+) -> None:
+    existing = await settings_service.get_setting(key, include_secret=True)
+    if existing is not None and existing.id > 0:
+        await settings_service.update_setting(key, AppSettingUpdate(value=value))
+        return
+
+    await settings_service.create_setting(
+        AppSettingCreate(
+            key=key,
+            value=value,
+            value_type=value_type,
+            is_secret=is_secret,
+            category="enrichment",
+            description="",
+        )
+    )
+
+
+@admin_router.post("/maxmind/configure", response_model=MaxMindConfigureResponse)
+async def configure_maxmind(
+    request: MaxMindConfigureRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        parsed = maxmind_service.parse_geoip_conf(request.conf_text)
+        settings_service = SettingsService(db)  # type: ignore[arg-type]
+
+        await _upsert_setting(
+            settings_service,
+            key="enrichment.maxmind.account_id",
+            value=parsed["account_id"],
+        )
+        await _upsert_setting(
+            settings_service,
+            key="enrichment.maxmind.license_key",
+            value=parsed["license_key"],
+            is_secret=True,
+        )
+        await _upsert_setting(
+            settings_service,
+            key="enrichment.maxmind.edition_ids",
+            value=maxmind_service.serialize_edition_ids(parsed["edition_ids"]),
+            value_type=SettingType.JSON,
+        )
+        await _upsert_setting(
+            settings_service,
+            key="enrichment.maxmind.enabled",
+            value="true",
+            value_type=SettingType.BOOLEAN,
+        )
+
+        task_id = await maxmind_service.enqueue_update(db, reschedule=True)
+        return MaxMindConfigureResponse(
+            account_id=parsed["account_id"],
+            edition_ids=parsed["edition_ids"],
+            settings_saved=4,
+            task_id=task_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@admin_router.get("/maxmind/databases", response_model=List[MaxMindDatabaseStatus])
+async def get_maxmind_database_status(db: AsyncSession = Depends(get_db)):
+    statuses = await maxmind_service.get_database_status(db)
+    return [MaxMindDatabaseStatus.model_validate(status_row) for status_row in statuses]
+
+
+@admin_router.post("/maxmind/update")
+async def trigger_maxmind_update(db: AsyncSession = Depends(get_db)):
+    try:
+        task_id = await maxmind_service.enqueue_update(db, reschedule=False)
+        return {"enqueued": True, "task_id": task_id}
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))

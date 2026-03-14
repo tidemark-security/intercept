@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # Import app modules after logging is configured
 from app.core.settings_registry import get_local
 from app.core.security import initialize_encryption_service
+from app.services.enrichment.providers import register_providers
 from app.services.task_queue_service import (
     initialize_task_queue_service,
     shutdown_task_queue_service,
@@ -243,6 +244,8 @@ async def run_worker():
         # Initialize task queue service
         logger.info("Connecting to task queue...")
         service = await initialize_task_queue_service(get_local("database.url"))
+
+        register_providers()
         
         # Register all task handlers
         logger.info("Registering task handlers...")
