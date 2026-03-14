@@ -1,6 +1,7 @@
 """Email notification service for user credential delivery."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -169,18 +170,22 @@ Intercept Security Platform
                 part2 = MIMEText(body_html, "html")
                 msg.attach(part2)
 
-            # Send via SMTP
-            if smtp_use_tls:
-                server = smtplib.SMTP(smtp_host, smtp_port)
-                server.starttls()
-            else:
-                server = smtplib.SMTP(smtp_host, smtp_port)
+            # Send via SMTP — run blocking call in a thread to avoid blocking the event loop
+            def _smtp_send() -> None:
+                if smtp_use_tls:
+                    server = smtplib.SMTP(smtp_host, smtp_port)
+                    server.starttls()
+                else:
+                    server = smtplib.SMTP(smtp_host, smtp_port)
 
-            if smtp_username and smtp_password:
-                server.login(smtp_username, smtp_password)
+                if smtp_username and smtp_password:
+                    server.login(smtp_username, smtp_password)
 
-            server.send_message(msg)
-            server.quit()
+                server.send_message(msg)
+                server.quit()
+
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _smtp_send)
 
             logger.info(f"Email sent successfully to {recipient}")
             return msg["Message-ID"] or f"sent-{recipient}"
