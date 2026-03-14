@@ -176,10 +176,14 @@ interface HintBadgeProps extends React.HTMLAttributes<HTMLDivElement> {
 
 const HintBadge = React.forwardRef<HTMLDivElement, HintBadgeProps>(
   function HintBadge({ text, className, ...otherProps }: HintBadgeProps, ref) {
+    const { resolvedTheme } = useTheme();
+    const isDarkTheme = resolvedTheme === "dark";
+
     return (
       <div
         className={cn(
-          "flex flex-col items-start gap-4 rounded-md bg-neutral-100 px-1 py-1",
+          "flex flex-col items-start gap-4 rounded-md px-1 py-1",
+          isDarkTheme ? "bg-neutral-100" : "bg-neutral-800",
           className
         )}
         ref={ref}
