@@ -541,6 +541,165 @@ _register(
 )
 
 # ---------------------------------------------------------------------------
+# Enrichment framework  (hot-swappable)
+# ---------------------------------------------------------------------------
+_register(
+    _def(
+        "enrichment.cache.default_ttl_seconds",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="Default TTL for provider cache entries in seconds",
+        default=86400,
+    ),
+    _def(
+        "enrichment.cache.hot_cache_max_size",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="Maximum number of process-local enrichment cache entries",
+        default=1024,
+    ),
+    _def(
+        "enrichment.entra_id.enabled",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Enable Microsoft Entra ID user enrichment provider",
+        default=False,
+    ),
+    _def(
+        "enrichment.entra_id.tenant_id",
+        category="enrichment",
+        description="Microsoft Entra tenant ID used for Graph API authentication",
+        default=None,
+    ),
+    _def(
+        "enrichment.entra_id.client_id",
+        category="enrichment",
+        description="Microsoft Entra client ID for the enrichment application",
+        default=None,
+    ),
+    _def(
+        "enrichment.entra_id.client_secret",
+        is_secret=True,
+        category="enrichment",
+        description="Microsoft Entra client secret for the enrichment application",
+        default=None,
+    ),
+    _def(
+        "enrichment.entra_id.ttl_seconds",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="TTL for Microsoft Entra enrichment results in seconds",
+        default=86400,
+    ),
+    _def(
+        "enrichment.google_workspace.enabled",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Enable Google Workspace user enrichment provider",
+        default=False,
+    ),
+    _def(
+        "enrichment.google_workspace.domain",
+        category="enrichment",
+        description="Primary Google Workspace domain for directory lookups",
+        default=None,
+    ),
+    _def(
+        "enrichment.google_workspace.service_account_json",
+        is_secret=True,
+        category="enrichment",
+        description="Google service account JSON used for directory access",
+        default=None,
+    ),
+    _def(
+        "enrichment.google_workspace.ttl_seconds",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="TTL for Google Workspace enrichment results in seconds",
+        default=86400,
+    ),
+    _def(
+        "enrichment.ldap.enabled",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Enable LDAP user enrichment provider",
+        default=False,
+    ),
+    _def(
+        "enrichment.ldap.url",
+        category="enrichment",
+        description="LDAP or LDAPS connection URL",
+        default=None,
+    ),
+    _def(
+        "enrichment.ldap.bind_dn",
+        category="enrichment",
+        description="LDAP bind DN for enrichment queries",
+        default=None,
+    ),
+    _def(
+        "enrichment.ldap.bind_password",
+        is_secret=True,
+        category="enrichment",
+        description="LDAP bind password for enrichment queries",
+        default=None,
+    ),
+    _def(
+        "enrichment.ldap.search_base",
+        category="enrichment",
+        description="LDAP base DN used for user searches",
+        default=None,
+    ),
+    _def(
+        "enrichment.ldap.ttl_seconds",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="TTL for LDAP enrichment results in seconds",
+        default=86400,
+    ),
+    _def(
+        "enrichment.maxmind_geo.enabled",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Enable MaxMind GeoIP enrichment provider",
+        default=False,
+    ),
+    _def(
+        "enrichment.maxmind_geo.database_path",
+        category="enrichment",
+        description="Filesystem path to the MaxMind GeoIP database",
+        default=None,
+    ),
+    _def(
+        "enrichment.maxmind_geo.ttl_seconds",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="TTL for MaxMind GeoIP enrichment results in seconds",
+        default=604800,
+    ),
+    _def(
+        "enrichment.maxmind_asn.enabled",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Enable MaxMind ASN enrichment provider",
+        default=False,
+    ),
+    _def(
+        "enrichment.maxmind_asn.database_path",
+        category="enrichment",
+        description="Filesystem path to the MaxMind ASN database",
+        default=None,
+    ),
+    _def(
+        "enrichment.maxmind_asn.ttl_seconds",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="TTL for MaxMind ASN enrichment results in seconds",
+        default=604800,
+    ),
+)
+
+# ---------------------------------------------------------------------------
 # Passkey / WebAuthn  (hot-swappable)
 # ---------------------------------------------------------------------------
 _register(

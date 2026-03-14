@@ -655,6 +655,17 @@ class TimelineService:
         
         # Add to timeline (for non-task items)
         self.add_timeline_item(entity, normalized, created_by=created_by)
+
+        if entity_id is not None:
+            from app.services.enrichment.service import enrichment_service
+
+            await enrichment_service.maybe_enqueue_item_enrichment(
+                db,
+                entity=entity,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                item=normalized,
+            )
         
         return normalized
 

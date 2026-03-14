@@ -15,12 +15,44 @@ import type { app__api__routes__admin_auth__UserSummary } from '../models/app__a
 import type { AppSettingCreate } from '../models/AppSettingCreate';
 import type { AppSettingRead } from '../models/AppSettingRead';
 import type { AppSettingUpdate } from '../models/AppSettingUpdate';
+import type { EnrichmentAliasCreate } from '../models/EnrichmentAliasCreate';
+import type { EnrichmentAliasRead } from '../models/EnrichmentAliasRead';
+import type { EnrichmentAliasUpdate } from '../models/EnrichmentAliasUpdate';
+import type { EnrichmentProviderStatusRead } from '../models/EnrichmentProviderStatusRead';
 import type { UserRole } from '../models/UserRole';
 import type { UserStatus } from '../models/UserStatus';
 import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
 import { request as __request } from '../core/request';
 export class AdminService {
+    /**
+     * Get user list for dropdowns
+     * Returns lightweight user summaries for assignee dropdowns and filtering. Available to all authenticated users.
+     * @returns app__api__routes__admin_auth__UserSummary Successful Response
+     * @throws ApiError
+     */
+    public static getUsersSummaryApiV1AdminAuthUsersSummaryGet({
+        userStatus,
+        role,
+        accountType,
+    }: {
+        userStatus?: (UserStatus | null),
+        role?: (UserRole | null),
+        accountType?: (AccountType | null),
+    }): CancelablePromise<Array<app__api__routes__admin_auth__UserSummary>> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/admin/auth/users/summary',
+            query: {
+                'user_status': userStatus,
+                'role': role,
+                'account_type': accountType,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
     /**
      * List all user accounts
      * Admin endpoint to retrieve all user accounts
@@ -141,34 +173,6 @@ export class AdminService {
             url: '/api/v1/admin/auth/password-resets',
             body: requestBody,
             mediaType: 'application/json',
-            errors: {
-                422: `Validation Error`,
-            },
-        });
-    }
-    /**
-     * Get user list for dropdowns
-     * Returns lightweight user summaries for assignee dropdowns and filtering. Available to all authenticated users.
-     * @returns app__api__routes__admin_auth__UserSummary Successful Response
-     * @throws ApiError
-     */
-    public static getUsersSummaryApiV1AdminAuthUsersSummaryGet({
-        userStatus,
-        role,
-        accountType,
-    }: {
-        userStatus?: (UserStatus | null),
-        role?: (UserRole | null),
-        accountType?: (AccountType | null),
-    }): CancelablePromise<Array<app__api__routes__admin_auth__UserSummary>> {
-        return __request(OpenAPI, {
-            method: 'GET',
-            url: '/api/v1/admin/auth/users/summary',
-            query: {
-                'user_status': userStatus,
-                'role': role,
-                'account_type': accountType,
-            },
             errors: {
                 422: `Validation Error`,
             },
@@ -324,6 +328,128 @@ export class AdminService {
             url: '/api/v1/admin/settings/{key}',
             path: {
                 'key': key,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Get Provider Statuses
+     * @returns EnrichmentProviderStatusRead Successful Response
+     * @throws ApiError
+     */
+    public static getProviderStatusesApiV1AdminEnrichmentsProvidersGet(): CancelablePromise<Array<EnrichmentProviderStatusRead>> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/admin/enrichments/providers',
+        });
+    }
+    /**
+     * Enqueue Directory Sync
+     * @returns any Successful Response
+     * @throws ApiError
+     */
+    public static enqueueDirectorySyncApiV1AdminEnrichmentsProvidersProviderIdDirectorySyncPost({
+        providerId,
+    }: {
+        providerId: string,
+    }): CancelablePromise<any> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/admin/enrichments/providers/{provider_id}/directory-sync',
+            path: {
+                'provider_id': providerId,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Create Alias
+     * @returns EnrichmentAliasRead Successful Response
+     * @throws ApiError
+     */
+    public static createAliasApiV1AdminEnrichmentsAliasesPost({
+        requestBody,
+    }: {
+        requestBody: EnrichmentAliasCreate,
+    }): CancelablePromise<EnrichmentAliasRead> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/admin/enrichments/aliases',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Update Alias
+     * @returns EnrichmentAliasRead Successful Response
+     * @throws ApiError
+     */
+    public static updateAliasApiV1AdminEnrichmentsAliasesAliasIdPut({
+        aliasId,
+        requestBody,
+    }: {
+        aliasId: number,
+        requestBody: EnrichmentAliasUpdate,
+    }): CancelablePromise<EnrichmentAliasRead> {
+        return __request(OpenAPI, {
+            method: 'PUT',
+            url: '/api/v1/admin/enrichments/aliases/{alias_id}',
+            path: {
+                'alias_id': aliasId,
+            },
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Delete Alias
+     * @returns void
+     * @throws ApiError
+     */
+    public static deleteAliasApiV1AdminEnrichmentsAliasesAliasIdDelete({
+        aliasId,
+    }: {
+        aliasId: number,
+    }): CancelablePromise<void> {
+        return __request(OpenAPI, {
+            method: 'DELETE',
+            url: '/api/v1/admin/enrichments/aliases/{alias_id}',
+            path: {
+                'alias_id': aliasId,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Clear Cache
+     * @returns any Successful Response
+     * @throws ApiError
+     */
+    public static clearCacheApiV1AdminEnrichmentsCacheClearPost({
+        providerId,
+    }: {
+        /**
+         * Optional provider identifier to clear
+         */
+        providerId?: (string | null),
+    }): CancelablePromise<any> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/admin/enrichments/cache/clear',
+            query: {
+                'provider_id': providerId,
             },
             errors: {
                 422: `Validation Error`,

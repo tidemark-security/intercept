@@ -15,6 +15,7 @@ from app.services.task_queue_service import get_task_queue_service
 from app.services.langflow_service import LangFlowService, LangFlowConfigurationError
 from app.services.settings_service import SettingsService
 from app.core.database import async_session_factory
+from app.services.enrichment.service import enrichment_service
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,8 @@ logger = logging.getLogger(__name__)
 TASK_LANGFLOW_CHAT = "langflow_chat"
 TASK_LANGFLOW_BATCH = "langflow_batch"
 TASK_TRIAGE_ALERT = "triage_alert"
+TASK_ENRICH_ITEM = "enrich_item"
+TASK_DIRECTORY_SYNC = "directory_sync"
 
 
 async def handle_langflow_chat(payload: Dict[str, Any]):
@@ -267,6 +270,36 @@ async def _mark_triage_failed(alert_id: int, error_message: str):
         )
 
 
+async def handle_enrich_item(payload: Dict[str, Any]):
+    """Handle timeline item enrichment in the background worker."""
+    entity_type = str(payload["entity_type"])
+    entity_id = int(payload["entity_id"])
+    item_id = str(payload["item_id"])
+
+    logger.info(
+        "Processing enrichment task",
+        extra={"entity_type": entity_type, "entity_id": entity_id, "item_id": item_id},
+    )
+
+    async with async_session_factory() as db:
+        await enrichment_service.run_item_enrichment(
+            db,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            item_id=item_id,
+        )
+
+
+async def handle_directory_sync(payload: Dict[str, Any]):
+    """Handle full provider directory synchronization."""
+    provider_id = str(payload["provider_id"])
+
+    logger.info("Processing directory sync task", extra={"provider_id": provider_id})
+
+    async with async_session_factory() as db:
+        await enrichment_service.run_directory_sync(db, provider_id)
+
+
 def register_task_handlers():
     """
     Register all task handlers with the task queue service.
@@ -295,6 +328,18 @@ def register_task_handlers():
             task_name=TASK_TRIAGE_ALERT,
             handler=handle_triage_alert,
             max_retries=3,
+        )
+
+        task_queue.register_handler(
+            task_name=TASK_ENRICH_ITEM,
+            handler=handle_enrich_item,
+            max_retries=3,
+        )
+
+        task_queue.register_handler(
+            task_name=TASK_DIRECTORY_SYNC,
+            handler=handle_directory_sync,
+            max_retries=2,
         )
         
         logger.info("Registered all task handlers")

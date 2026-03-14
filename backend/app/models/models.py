@@ -104,6 +104,11 @@ class ItemBase(SQLModel):
     tags: Optional[List[str]] = Field(default_factory=list)
     flagged: bool = Field(default=False, description="Whether this item is flagged as significant")
     highlighted: bool = Field(default=False, description="Whether this item is highlighted for attention")
+    enrichment_status: Optional[str] = Field(default=None, description="Background enrichment status")
+    enrichments: Optional[Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Provider enrichment payloads keyed by provider identifier",
+    )
     # Reply support: parent_id references another timeline item's id for threaded conversations
     parent_id: Optional[str] = Field(default=None, description="ID of parent timeline item for replies (null for top-level items)")
     # Replies use Dict[str, Any] in base for JSON storage, but typed in Union definitions below
@@ -1639,6 +1644,101 @@ class AppSettingRead(AppSettingBase):
     local_only: bool = False
     source: str = "default"  # "env", "database", or "default"
     # Note: Service layer masks value if is_secret=true
+
+
+class EnrichmentCacheEntryBase(SQLModel):
+    """Base model for durable enrichment cache entries."""
+
+    provider_id: str = Field(max_length=100, index=True)
+    cache_key: str = Field(max_length=500, index=True)
+    result: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB))
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), index=True))
+
+
+class EnrichmentCacheEntry(EnrichmentCacheEntryBase, table=True):
+    """Durable provider cache used to reduce external enrichment calls."""
+
+    __tablename__ = "enrichment_cache"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint("provider_id", "cache_key", name="uq_enrichment_cache_provider_key"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True))
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True))
+    )
+
+
+class EnrichmentAliasBase(SQLModel):
+    """Base model for alias resolution across enrichment providers."""
+
+    provider_id: str = Field(max_length=100, index=True)
+    entity_type: str = Field(max_length=100, index=True)
+    canonical_value: str = Field(max_length=500, index=True)
+    canonical_display: Optional[str] = Field(default=None, max_length=200)
+    alias_type: str = Field(max_length=100, index=True)
+    alias_value: str = Field(max_length=500, index=True)
+    attributes: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB))
+
+
+class EnrichmentAlias(EnrichmentAliasBase, table=True):
+    """Canonical alias mappings populated by providers and admin actions."""
+
+    __tablename__ = "enrichment_aliases"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint("provider_id", "alias_type", "alias_value", name="uq_enrichment_alias_provider_type_value"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True))
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True))
+    )
+
+
+class EnrichmentAliasCreate(EnrichmentAliasBase):
+    """Schema for creating enrichment aliases."""
+
+
+class EnrichmentAliasUpdate(SQLModel):
+    """Schema for updating enrichment aliases."""
+
+    canonical_value: Optional[str] = Field(default=None, max_length=500)
+    canonical_display: Optional[str] = Field(default=None, max_length=200)
+    alias_type: Optional[str] = Field(default=None, max_length=100)
+    alias_value: Optional[str] = Field(default=None, max_length=500)
+    attributes: Optional[Dict[str, Any]] = None
+
+
+class EnrichmentAliasRead(EnrichmentAliasBase):
+    """Schema for reading enrichment aliases."""
+
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class EnrichmentProviderStatusRead(SQLModel):
+    """Runtime status for a registered enrichment provider."""
+
+    provider_id: str
+    display_name: str
+    settings_prefix: str
+    enabled: bool
+    supports_bulk_sync: bool
+    item_types: List[str] = Field(default_factory=list)
+    cache_entry_count: int = 0
+    alias_count: int = 0
+    last_activity_at: Optional[datetime] = None
 
 
 # LangFlowSession Models - AI chat session tracking

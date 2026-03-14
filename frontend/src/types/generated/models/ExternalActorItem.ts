@@ -37,6 +37,14 @@ export type ExternalActorItem = {
      */
     highlighted?: boolean;
     /**
+     * Background enrichment status
+     */
+    enrichment_status?: (string | null);
+    /**
+     * Provider enrichment payloads keyed by provider identifier
+     */
+    enrichments?: (Record<string, any> | null);
+    /**
      * ID of parent timeline item for replies (null for top-level items)
      */
     parent_id?: (string | null);
