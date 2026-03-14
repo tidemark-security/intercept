@@ -66,3 +66,50 @@ async def test_lookup_ip_reads_real_mmdb_data(maxmind_test_data_dir: Path, tmp_p
     assert asn_result["databases"]["GeoLite2-ASN"]["autonomous_system_organization"] == "Telstra Pty Ltd"
 
     await maxmind_service.close_readers()
+
+
+@pytest.mark.asyncio
+async def test_get_database_status_handles_unavailable_storage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    await maxmind_service.close_readers()
+
+    settings = StubSettings(
+        {
+            "enrichment.maxmind.edition_ids": ["GeoLite2-ASN", "GeoLite2-City"],
+            "enrichment.maxmind.local_cache_dir": str(tmp_path / "maxmind"),
+            "enrichment.maxmind.storage_prefix": "maxmind/",
+            "enrichment.maxmind.account_id": "1234567",
+            "enrichment.maxmind.license_key": "test-license",
+            "enrichment.maxmind.ttl_seconds": 604800,
+            "enrichment.maxmind.update_frequency_hours": 24,
+        }
+    )
+
+    async def fake_get_settings(
+        _db: object,
+        *,
+        strict_editions: bool = True,
+    ) -> tuple[StubSettings, dict[str, object]]:
+        return settings, {
+            "account_id": "1234567",
+            "license_key": "test-license",
+            "edition_ids": ["GeoLite2-ASN", "GeoLite2-City"],
+            "storage_prefix": "maxmind/",
+            "local_cache_dir": str(tmp_path / "maxmind"),
+            "ttl_seconds": 604800,
+            "update_frequency_hours": 24,
+        }
+
+    async def fake_ensure_bucket() -> None:
+        raise ConnectionError("storage unavailable")
+
+    monkeypatch.setattr(maxmind_service, "_get_settings", fake_get_settings)
+    monkeypatch.setattr(maxmind_service, "_ensure_bucket", fake_ensure_bucket)
+
+    statuses = await maxmind_service.get_database_status(db=None)  # type: ignore[arg-type]
+
+    assert [status["edition_id"] for status in statuses] == ["GeoLite2-ASN", "GeoLite2-City"]
+    assert all(status["available_in_storage"] is False for status in statuses)
+    assert all(status["loaded"] is False for status in statuses)
+    assert all(status["local_path"] is None for status in statuses)
+
+    await maxmind_service.close_readers()

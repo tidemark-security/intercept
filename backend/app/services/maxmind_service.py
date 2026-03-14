@@ -93,7 +93,12 @@ class MaxMindService:
     def serialize_edition_ids(self, edition_ids: Iterable[str]) -> str:
         return json.dumps(list(edition_ids))
 
-    async def _get_settings(self, db: AsyncSession) -> tuple[SettingsService, dict[str, Any]]:
+    async def _get_settings(
+        self,
+        db: AsyncSession,
+        *,
+        strict_editions: bool = True,
+    ) -> tuple[SettingsService, dict[str, Any]]:
         settings = SettingsService(db)  # type: ignore[arg-type]
         edition_ids = await settings.get("enrichment.maxmind.edition_ids", ["GeoLite2-ASN", "GeoLite2-City", "GeoLite2-Country"])
         if isinstance(edition_ids, str):
@@ -105,12 +110,16 @@ class MaxMindService:
         normalized_editions = [str(item).strip() for item in edition_ids or [] if str(item).strip()]
         unsupported = [edition for edition in normalized_editions if edition not in SUPPORTED_EDITIONS]
         if unsupported:
-            raise ValueError(f"Unsupported MaxMind edition IDs: {', '.join(unsupported)}")
+            if strict_editions:
+                raise ValueError(f"Unsupported MaxMind edition IDs: {', '.join(unsupported)}")
+            logger.warning("Ignoring unsupported MaxMind edition IDs: %s", ", ".join(unsupported))
+
+        supported_editions = [edition for edition in normalized_editions if edition in SUPPORTED_EDITIONS]
 
         return settings, {
             "account_id": str(await settings.get("enrichment.maxmind.account_id", "") or ""),
             "license_key": str(await settings.get("enrichment.maxmind.license_key", "") or ""),
-            "edition_ids": normalized_editions,
+            "edition_ids": supported_editions if not strict_editions else normalized_editions,
             "storage_prefix": str(await settings.get("enrichment.maxmind.storage_prefix", "maxmind/") or "maxmind/"),
             "local_cache_dir": str(await settings.get("enrichment.maxmind.local_cache_dir", "/tmp/tmi-maxmind") or "/tmp/tmi-maxmind"),
             "ttl_seconds": int(await settings.get("enrichment.maxmind.ttl_seconds", 604800) or 604800),
@@ -144,7 +153,11 @@ class MaxMindService:
         )
 
     async def _get_object_bytes(self, key: str) -> Optional[bytes]:
-        await self._ensure_bucket()
+        try:
+            await self._ensure_bucket()
+        except Exception as exc:
+            logger.warning("MaxMind storage unavailable while reading %s: %s", key, exc)
+            return None
 
         def _read() -> Optional[bytes]:
             response = None
@@ -161,7 +174,11 @@ class MaxMindService:
         return await asyncio.to_thread(_read)
 
     async def _stat_object(self, key: str) -> Any:
-        await self._ensure_bucket()
+        try:
+            await self._ensure_bucket()
+        except Exception as exc:
+            logger.warning("MaxMind storage unavailable while checking %s: %s", key, exc)
+            return None
 
         def _stat() -> Any:
             try:
@@ -379,8 +396,16 @@ class MaxMindService:
         }
 
     async def get_database_status(self, db: AsyncSession) -> list[dict[str, Any]]:
-        settings, cfg = await self._get_settings(db)
-        await self.ensure_readers_loaded(settings=settings)
+        settings, cfg = await self._get_settings(db, strict_editions=False)
+        storage_available = True
+        try:
+            await self._ensure_bucket()
+        except Exception as exc:
+            storage_available = False
+            logger.warning("MaxMind storage unavailable while loading database status: %s", exc)
+
+        if storage_available:
+            await self.ensure_readers_loaded(settings=settings)
 
         statuses: list[dict[str, Any]] = []
         local_cache_dir = cfg["local_cache_dir"]
@@ -390,8 +415,11 @@ class MaxMindService:
             loaded_editions = set(self._readers)
 
         for edition_id in cfg["edition_ids"]:
-            metadata = await self._load_metadata(prefix, edition_id)
-            object_stat = await self._stat_object(self._storage_key(prefix, edition_id))
+            metadata: dict[str, Any] = {}
+            object_stat = None
+            if storage_available:
+                metadata = await self._load_metadata(prefix, edition_id)
+                object_stat = await self._stat_object(self._storage_key(prefix, edition_id))
             local_path = self._local_db_path(local_cache_dir, edition_id)
             last_updated = metadata.get("downloaded_at")
             statuses.append(

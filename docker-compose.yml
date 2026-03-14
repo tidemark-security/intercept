@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     build:
@@ -35,11 +33,11 @@ services:
       dockerfile: Dockerfile.dev
     environment:
       DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@postgres:5432/intercept_case_db
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
-      MINIO_BUCKET: intercept-attachments
-      MINIO_USE_SSL: "false"
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: minioadmin
+      STORAGE_SECRET_KEY: minioadmin
+      STORAGE_BUCKET: intercept-attachments
+      STORAGE_USE_SSL: "false"
       LANGFLOW__BASE_URL: http://langflow:7860/api/v1
       LANGFLOW__DEFAULT_FLOW_ID: "tmi_general_purpose"
       LANGFLOW__CASE_DETAIL_FLOW_ID: "tmi_case_agent"
@@ -124,6 +122,11 @@ services:
       dockerfile: Dockerfile.dev
     environment:
       DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@postgres:5432/intercept_case_db
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: minioadmin
+      STORAGE_SECRET_KEY: minioadmin
+      STORAGE_BUCKET: intercept-attachments
+      STORAGE_USE_SSL: "false"
       SECRET_KEY: dev-secret-key-change-in-production
       LANGFLOW__BASE_URL: http://langflow:7860/api/v1
       LANGFLOW__DEFAULT_FLOW_ID: "tmi_general_purpose"
