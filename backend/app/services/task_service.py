@@ -84,15 +84,8 @@ class TaskService:
             logger.error(f"Error creating task: {e}")
             raise
     
-    async def get_task(self, db: AsyncSession, task_id: int, include_linked_timelines: bool = False) -> Optional[Task]:
-        """Get task by ID with denormalized timeline.
-        
-        Args:
-            db: Database session
-            task_id: Task ID
-            include_linked_timelines: If True, case and alert timeline items will include
-                source_timeline_items from the linked entity
-        """
+    async def _get_task_model(self, db: AsyncSession, task_id: int) -> Optional[Task]:
+        """Get the tracked task model."""
         try:
             query = select(Task).where(Task.id == task_id)
             result = await db.execute(query)
@@ -103,11 +96,31 @@ class TaskService:
             # Eager load all entities referenced in timeline items to avoid N+1 queries
             if db_task.timeline_items:
                 await self._preload_timeline_entities(db, db_task.timeline_items)
-            
-            return await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK", include_linked_timelines=include_linked_timelines)
+
+            return db_task
         except Exception as e:
             logger.error(f"Error fetching task {task_id}: {e}")
             raise
+
+    async def get_task(self, db: AsyncSession, task_id: int, include_linked_timelines: bool = False) -> Optional[Task]:
+        """Get task by ID with denormalized timeline.
+        
+        Args:
+            db: Database session
+            task_id: Task ID
+            include_linked_timelines: If True, case and alert timeline items will include
+                source_timeline_items from the linked entity
+        """
+        db_task = await self._get_task_model(db, task_id)
+        if not db_task:
+            return None
+
+        return await timeline_service.denormalize_entity_timeline(
+            db,
+            db_task,
+            human_prefix="TSK",
+            include_linked_timelines=include_linked_timelines,
+        )
     
     async def get_tasks(
         self, 
@@ -221,7 +234,7 @@ class TaskService:
         """Update a task. Updated_at timestamp is automatically refreshed."""
         try:
             # Get existing task
-            db_task = await self.get_task(db, task_id)
+            db_task = await self._get_task_model(db, task_id)
             if not db_task:
                 return None
             
@@ -342,7 +355,7 @@ class TaskService:
     ) -> bool:
         """Delete a task."""
         try:
-            db_task = await self.get_task(db, task_id)
+            db_task = await self._get_task_model(db, task_id)
             if not db_task:
                 return False
             
@@ -375,7 +388,7 @@ class TaskService:
         Tasks cannot be nested within other tasks.
         """
         try:
-            db_task = await self.get_task(db, task_id)
+            db_task = await self._get_task_model(db, task_id)
             if not db_task:
                 return None
             
@@ -426,7 +439,7 @@ class TaskService:
     ) -> Optional[Task]:
         """Update a specific timeline item in a task with permission checks and audit logging."""
         try:
-            db_task = await self.get_task(db, task_id)
+            db_task = await self._get_task_model(db, task_id)
             if not db_task:
                 return None
             
@@ -498,7 +511,7 @@ class TaskService:
     ) -> Optional[Task]:
         """Remove a specific timeline item from a task and clean up associated resources."""
         try:
-            db_task = await self.get_task(db, task_id)
+            db_task = await self._get_task_model(db, task_id)
             if not db_task:
                 return None
             

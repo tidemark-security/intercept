@@ -4,11 +4,12 @@ Uses the Google Admin SDK Directory API with a service account JWT.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
 import logging
-import time
 from typing import Any, Dict, List, Optional
 
+from authlib.jose import jwt
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,65 +21,51 @@ logger = logging.getLogger(__name__)
 _ADMIN_SDK_BASE = "https://admin.googleapis.com/admin/directory/v1"
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
 _SCOPE = "https://www.googleapis.com/auth/admin.directory.user.readonly"
-_USER_FIELDS = "id,primaryEmail,name,givenName,familyName,emails,phones,organizations,aliases,thumbnailPhotoUrl,suspended"
+_USER_FIELDS = "id,primaryEmail,name,emails,phones,organizations,aliases,thumbnailPhotoUrl,suspended,orgUnitPath"
+
+
+def _normalize_private_key(private_key: Any) -> str:
+    if not isinstance(private_key, str):
+        return ""
+
+    normalized = private_key.strip()
+    if not normalized:
+        return ""
+
+    if normalized.startswith('"') and normalized.endswith('"'):
+        try:
+            parsed = json.loads(normalized)
+        except json.JSONDecodeError:
+            pass
+        else:
+            if isinstance(parsed, str):
+                normalized = parsed.strip()
+
+    normalized = normalized.replace("\\r\\n", "\n").replace("\\n", "\n")
+    normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
+    return normalized
 
 
 def _build_jwt(service_account: Dict[str, Any], subject_email: str) -> str:
     """Build a signed JWT for service account authentication."""
-    try:
-        import base64
-        import hashlib
-        import hmac
-
-        # Use cryptography / jwt library if available, else fall back to manual
-        try:
-            import jwt  # type: ignore[import-untyped]
-            import cryptography  # noqa: F401
-            from cryptography.hazmat.primitives.serialization import load_pem_private_key
-
-            private_key = load_pem_private_key(service_account["private_key"].encode(), password=None)
-            now = int(time.time())
-            payload = {
-                "iss": service_account["client_email"],
-                "sub": subject_email,
-                "scope": _SCOPE,
-                "aud": _TOKEN_URL,
-                "iat": now,
-                "exp": now + 3600,
-            }
-            return jwt.encode(payload, private_key, algorithm="RS256")
-        except ImportError:
-            pass
-
-        # Fallback: manual RS256 JWT via stdlib (requires openssl available via subprocess)
-        import base64 as _b64
-        import json as _json
-        import subprocess
-
-        header = _b64.urlsafe_b64encode(_json.dumps({"alg": "RS256", "typ": "JWT"}).encode()).rstrip(b"=").decode()
-        now = int(time.time())
-        claim = _b64.urlsafe_b64encode(
-            _json.dumps({
-                "iss": service_account["client_email"],
-                "sub": subject_email,
-                "scope": _SCOPE,
-                "aud": _TOKEN_URL,
-                "iat": now,
-                "exp": now + 3600,
-            }).encode()
-        ).rstrip(b"=").decode()
-        signing_input = f"{header}.{claim}".encode()
-        result = subprocess.run(
-            ["openssl", "dgst", "-sha256", "-sign", "/dev/stdin"],
-            input=service_account["private_key"].encode(),
-            capture_output=True,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"openssl failed: {result.stderr.decode()}")
-        sig = _b64.urlsafe_b64encode(result.stdout).rstrip(b"=").decode()
-        return f"{header}.{claim}.{sig}"
-    except Exception as exc:
-        raise RuntimeError(f"Cannot build service account JWT: {exc}") from exc
+    now = int(datetime.now(timezone.utc).timestamp())
+    header = {"alg": "RS256", "typ": "JWT"}
+    if service_account.get("private_key_id"):
+        header["kid"] = service_account["private_key_id"]
+    payload = {
+        "iss": service_account["client_email"],
+        "sub": subject_email,
+        "scope": _SCOPE,
+        "aud": service_account.get("token_uri") or _TOKEN_URL,
+        "iat": now,
+        "exp": now + 3600,
+    }
+    token = jwt.encode(header, payload, service_account["private_key"])
+    if isinstance(token, memoryview):
+        return token.tobytes().decode("utf-8")
+    if isinstance(token, (bytes, bytearray)):
+        return bytes(token).decode("utf-8")
+    return token
 
 
 class GoogleWorkspaceProvider(EnrichmentProvider):
@@ -90,37 +77,96 @@ class GoogleWorkspaceProvider(EnrichmentProvider):
     supported_item_types = ("internal_actor",)
     supports_bulk_sync = True
 
+    def __init__(self) -> None:
+        self._token_value: str | None = None
+        self._token_expires_at: datetime | None = None
+        self._token_cache_key: str | None = None
+
     def can_enrich(self, item: Dict[str, Any]) -> bool:
-        return item.get("type") == "internal_actor"
+        return item.get("type") == "internal_actor" and bool(self._get_identifier(item))
 
     def build_cache_key(self, item: Dict[str, Any]) -> str:
-        actor = item.get("actor") or {}
-        return (actor.get("user_id") or actor.get("email") or actor.get("name") or "").strip().lower()
+        identifier = self._get_identifier(item)
+        if not identifier:
+            raise ValueError("Cannot determine identifier for Google Workspace cache key")
+        return f"user:{identifier}"
+
+    def _get_identifier(self, item: Dict[str, Any]) -> str:
+        for key in ("user_id", "contact_email", "name"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+        return ""
 
     async def _get_settings(self, settings: SettingsService) -> Optional[Dict[str, Any]]:
-        sa_json = await settings.get(f"{self.settings_prefix}.service_account_json", "")
         domain = await settings.get(f"{self.settings_prefix}.domain", "")
         admin_email = await settings.get(f"{self.settings_prefix}.admin_email", "")
-        if not sa_json:
-            return None
-        try:
-            sa = json.loads(sa_json)
-        except json.JSONDecodeError:
+        client_email = await settings.get(f"{self.settings_prefix}.client_email", "")
+        private_key = await settings.get(f"{self.settings_prefix}.private_key", "")
+        token_uri = await settings.get(f"{self.settings_prefix}.token_uri", "")
+        private_key_id = await settings.get(f"{self.settings_prefix}.private_key_id", "")
+
+        sa: Dict[str, Any] | None = None
+        if client_email and private_key and admin_email:
+            sa = {
+                "type": "service_account",
+                "client_email": client_email,
+                "private_key": _normalize_private_key(private_key),
+            }
+            if token_uri:
+                sa["token_uri"] = token_uri
+            if private_key_id:
+                sa["private_key_id"] = private_key_id
+        else:
+            sa_json = await settings.get(f"{self.settings_prefix}.service_account_json", "")
+            if sa_json and admin_email:
+                try:
+                    parsed = json.loads(sa_json)
+                except json.JSONDecodeError:
+                    return None
+                if isinstance(parsed, dict):
+                    parsed_private_key = _normalize_private_key(parsed.get("private_key"))
+                    if parsed_private_key:
+                        parsed["private_key"] = parsed_private_key
+                    sa = parsed
+
+        if not (sa and admin_email):
             return None
         return {"service_account": sa, "domain": domain, "admin_email": admin_email}
 
     async def _get_token(self, service_account: Dict[str, Any], admin_email: str) -> str:
+        now = datetime.now(timezone.utc)
+        cache_key = "|".join(
+            [
+                str(service_account.get("client_email") or ""),
+                str(service_account.get("token_uri") or _TOKEN_URL),
+                admin_email,
+            ]
+        )
+        if (
+            self._token_value
+            and self._token_expires_at
+            and self._token_cache_key == cache_key
+            and now < self._token_expires_at
+        ):
+            return self._token_value
+
         jwt_token = _build_jwt(service_account, admin_email)
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
-                _TOKEN_URL,
+                service_account.get("token_uri") or _TOKEN_URL,
                 data={
                     "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
                     "assertion": jwt_token,
                 },
             )
             resp.raise_for_status()
-            return resp.json()["access_token"]
+            payload = resp.json()
+            self._token_value = payload["access_token"]
+            self._token_cache_key = cache_key
+            expires_in = int(payload.get("expires_in") or 3600)
+            self._token_expires_at = now + timedelta(seconds=max(60, expires_in - 60))
+            return payload["access_token"]
 
     def _build_result(self, user: Dict[str, Any]) -> EnrichmentResult:
         google_id = user.get("id", "")
@@ -142,10 +188,12 @@ class GoogleWorkspaceProvider(EnrichmentProvider):
             "job_title": org_info.get("title") or "",
             "department": org_info.get("department") or "",
             "organization": org_info.get("name") or "",
+            "org_unit_path": user.get("orgUnitPath") or "",
             "phone": phone_info.get("value") or "",
             "suspended": user.get("suspended", False),
         }
 
+        canonical_value = primary_email.lower() or google_id
         canonical_display = display_name or primary_email or google_id
         meta = {
             "department": enrichment_data["department"],
@@ -160,7 +208,7 @@ class GoogleWorkspaceProvider(EnrichmentProvider):
                 aliases.append(
                     AliasMapping(
                         entity_type="user",
-                        canonical_value=google_id,
+                        canonical_value=canonical_value,
                         canonical_display=canonical_display,
                         alias_type=alias_type,
                         alias_value=value,
@@ -182,7 +230,7 @@ class GoogleWorkspaceProvider(EnrichmentProvider):
 
         return EnrichmentResult(
             provider_id=self.provider_id,
-            cache_key=google_id or primary_email,
+            cache_key=f"user:{canonical_value or google_id}",
             enrichment_data=enrichment_data,
             aliases=aliases,
         )
@@ -200,8 +248,7 @@ class GoogleWorkspaceProvider(EnrichmentProvider):
         if not cfg:
             raise ValueError("Google Workspace provider is not fully configured")
 
-        actor = item.get("actor") or {}
-        identifier = (actor.get("user_id") or actor.get("email") or actor.get("name") or "").strip()
+        identifier = self._get_identifier(item)
         if not identifier:
             raise ValueError("Cannot determine identifier for Google Workspace lookup")
 
@@ -211,12 +258,12 @@ class GoogleWorkspaceProvider(EnrichmentProvider):
             resp = await client.get(
                 f"{_ADMIN_SDK_BASE}/users/{identifier}",
                 headers=headers,
-                params={"fields": _USER_FIELDS, "viewType": "admin_view"},
+                params={"projection": "full", "viewType": "admin_view"},
             )
             if resp.status_code == 404:
                 return EnrichmentResult(
                     provider_id=self.provider_id,
-                    cache_key=identifier,
+                    cache_key=self.build_cache_key(item),
                     enrichment_data={"error": f"User not found: {identifier}"},
                 )
             resp.raise_for_status()
@@ -241,6 +288,7 @@ class GoogleWorkspaceProvider(EnrichmentProvider):
                     "fields": f"nextPageToken,users({_USER_FIELDS})",
                     "maxResults": 500,
                     "orderBy": "email",
+                    "projection": "full",
                 }
                 if domain:
                     params["domain"] = domain

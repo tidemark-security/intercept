@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime, timezone
@@ -82,7 +83,8 @@ class TimelineService:
         db: AsyncSession, 
         entity: Any, 
         human_prefix: str,
-        include_linked_timelines: bool = False
+        include_linked_timelines: bool = False,
+        detach: bool = True,
     ) -> Any:
         """
         Set human-readable id on the entity and denormalize all timeline items.
@@ -112,6 +114,12 @@ class TimelineService:
             denormed.append(await self._denormalize_item_recursive(
                 db, it, include_linked_timelines=include_linked_timelines
             ))
+
+        if detach:
+            state = sa_inspect(entity)
+            if state.session is not None:
+                state.session.expunge(entity)
+
         entity.timeline_items = denormed
         return entity
     

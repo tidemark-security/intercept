@@ -43,6 +43,14 @@ PRIORITY_TO_QUEUE_PRIORITY = {
 class EnrichmentService:
     """Coordinates provider lookup, caching, queueing, and alias persistence."""
 
+    async def _get_provider_item(self, db: AsyncSession, item: Dict[str, Any]) -> Dict[str, Any]:
+        item_type = item.get("type")
+        if isinstance(item_type, str) and "actor" in item_type:
+            from app.services.normalization_service import normalization_service
+
+            return await normalization_service.denormalize_actor_item(db, dict(item))
+        return item
+
     async def _configure_hot_cache(self, settings: SettingsService) -> None:
         default_ttl = int(await settings.get("enrichment.cache.default_ttl_seconds", 86400))
         maxsize = int(await settings.get("enrichment.cache.hot_cache_max_size", 1024))
@@ -87,11 +95,13 @@ class EnrichmentService:
         entity_id: int,
         item: Dict[str, Any],
     ) -> Optional[str]:
-        providers = await self.get_matching_enabled_providers(db, item)
+        provider_item = await self._get_provider_item(db, item)
+        providers = await self.get_matching_enabled_providers(db, provider_item)
         if not providers:
             return None
 
         item["enrichment_status"] = "pending"
+        flag_modified(entity, "timeline_items")
 
         try:
             task_queue = get_task_queue_service()
@@ -109,6 +119,7 @@ class EnrichmentService:
         except Exception as exc:
             item["enrichment_status"] = "failed"
             item.setdefault("enrichments", {})["system"] = {"error": str(exc)}
+            flag_modified(entity, "timeline_items")
             logger.warning("Failed to enqueue enrichment task: %s", exc)
             return None
 
@@ -130,7 +141,8 @@ class EnrichmentService:
         if item is None:
             raise ValueError(f"Timeline item {item_id} not found")
 
-        providers = await self.get_matching_enabled_providers(db, item)
+        provider_item = await self._get_provider_item(db, item)
+        providers = await self.get_matching_enabled_providers(db, provider_item)
         if not providers:
             raise ValueError("No enabled enrichment providers matched this timeline item")
 
@@ -311,7 +323,8 @@ class EnrichmentService:
 
         settings = SettingsService(db)
         await self._configure_hot_cache(settings)
-        providers = await self.get_matching_enabled_providers(db, item)
+        provider_item = await self._get_provider_item(db, item)
+        providers = await self.get_matching_enabled_providers(db, provider_item)
         if not providers:
             item["enrichment_status"] = "failed"
             item.setdefault("enrichments", {})["system"] = {"error": "No enabled providers matched this timeline item"}
@@ -325,7 +338,7 @@ class EnrichmentService:
 
         try:
             for provider in providers:
-                cache_key = provider.build_cache_key(item)
+                cache_key = provider.build_cache_key(provider_item)
                 cached_payload = await enrichment_cache.get(db, provider.provider_id, cache_key)
                 if cached_payload is not None:
                     result = EnrichmentResult.from_cache_payload(cached_payload)
@@ -333,7 +346,7 @@ class EnrichmentService:
                     result = await provider.enrich(
                         db=db,
                         settings=settings,
-                        item=item,
+                        item=provider_item,
                         entity_type=entity_type,
                         entity_id=entity_id,
                     )

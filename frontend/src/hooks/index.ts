@@ -8,3 +8,4 @@ export { useFeatureFlags } from './useFeatureFlags';
 export { useEnqueueTriage } from './useEnqueueTriage';
 export { queryKeys, getEntityQueryKey, getEntityListQueryKey } from './queryKeys';
 export type { EntityType, DetailQueryOptions } from './queryKeys';
+export { useEnrichmentAliases } from './useEnrichmentAliases';

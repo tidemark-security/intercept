@@ -7,8 +7,34 @@ from enum import Enum
 from datetime import datetime, timezone
 import hashlib
 
+from app.core.id_parser import parse_entity_id
 from app.models.models import Actor, ActorSnapshot, Task
 from app.models.enums import ActorType
+
+
+INTERNAL_ACTOR_ENRICHMENT_FIELD_MAP: dict[str, dict[str, tuple[str, ...]]] = {
+    "google_workspace": {
+        "name": ("display_name",),
+        "title": ("job_title",),
+        "org": ("organization", "department", "org_unit_path"),
+        "contact_phone": ("phone",),
+        "contact_email": ("primary_email",),
+    },
+    "entra_id": {
+        "name": ("display_name",),
+        "title": ("job_title",),
+        "org": ("department", "office"),
+        "contact_phone": ("mobile_phone", "business_phones"),
+        "contact_email": ("email", "upn"),
+    },
+    "ldap": {
+        "name": ("display_name",),
+        "title": ("job_title",),
+        "org": ("company", "department", "office"),
+        "contact_phone": ("phone", "mobile"),
+        "contact_email": ("email", "upn"),
+    },
+}
 
 
 class NormalizationService:
@@ -248,7 +274,48 @@ class NormalizationService:
         for k, v in payload.items():
             if v is not None:
                 denorm[k] = v
+        self._coalesce_internal_actor_enrichments(denorm)
         return denorm
+
+    def _coalesce_internal_actor_enrichments(self, item: Dict[str, Any]) -> None:
+        if item.get("type") != "internal_actor":
+            return
+
+        enrichments = item.get("enrichments")
+        if not isinstance(enrichments, dict):
+            return
+
+        for provider_id, field_map in INTERNAL_ACTOR_ENRICHMENT_FIELD_MAP.items():
+            payload = enrichments.get(provider_id)
+            if not isinstance(payload, dict):
+                continue
+            for target_field, source_fields in field_map.items():
+                current_value = item.get(target_field)
+                if isinstance(current_value, str) and current_value.strip():
+                    continue
+                if current_value not in (None, ""):
+                    continue
+
+                enriched_value = self._get_first_enrichment_value(payload, source_fields)
+                if enriched_value:
+                    item[target_field] = enriched_value
+
+    def _get_first_enrichment_value(
+        self,
+        payload: Dict[str, Any],
+        source_fields: tuple[str, ...],
+    ) -> str | None:
+        for source_field in source_fields:
+            enriched_value = payload.get(source_field)
+            if isinstance(enriched_value, str):
+                enriched_value = enriched_value.strip()
+                if enriched_value:
+                    return enriched_value
+            elif isinstance(enriched_value, list):
+                for entry in enriched_value:
+                    if isinstance(entry, str) and entry.strip():
+                        return entry.strip()
+        return None
 
     # --- Alert helpers ---
     async def _normalize_alert(self, db: AsyncSession, item: Dict[str, Any]) -> Dict[str, Any]:
@@ -262,8 +329,12 @@ class NormalizationService:
 
         # If alert_id is a string (legacy business id), resolve to PK
         if isinstance(alert_id_val, str) and alert_id_val:
-            result = await db.execute(select(Alert).where(Alert.alert_id == alert_id_val))
-            alert = result.scalar_one_or_none()
+            try:
+                numeric_id, _ = parse_entity_id(alert_id_val, "alert")
+            except Exception:
+                numeric_id = None
+
+            alert = await db.get(Alert, numeric_id) if isinstance(numeric_id, int) else None
             if alert:
                 normalized["alert_id"] = alert.id
             else:

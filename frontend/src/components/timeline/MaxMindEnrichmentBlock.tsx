@@ -1,9 +1,15 @@
 import React from 'react';
 
 import type { TimelineItem } from '@/types/timeline';
-import { cn } from '@/utils/cn';
-
 import { Badge } from '@/components/data-display/Badge';
+import {
+  asRecord,
+  EnrichmentBlockSection,
+  EnrichmentInfoRow,
+  getNumber,
+  getString,
+  isTrue,
+} from './EnrichmentBlockShared';
 
 import {
   Building2,
@@ -24,25 +30,6 @@ type MaxMindIpPayload = {
   databases?: Record<string, Record<string, unknown>> | null;
   queried_at?: string;
 };
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-  return value as Record<string, unknown>;
-}
-
-function getString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
-
-function getNumber(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function getBoolean(value: unknown): boolean {
-  return value === true;
-}
 
 function buildLocationSummary(databases: Record<string, Record<string, unknown>>) {
   const locationPayload =
@@ -118,22 +105,22 @@ function buildAnonymousSignals(databases: Record<string, Record<string, unknown>
   }
 
   const signals: string[] = [];
-  if (getBoolean(anonymousPayload.is_anonymous_vpn)) {
+  if (isTrue(anonymousPayload.is_anonymous_vpn)) {
     signals.push('VPN');
   }
-  if (getBoolean(anonymousPayload.is_public_proxy)) {
+  if (isTrue(anonymousPayload.is_public_proxy)) {
     signals.push('Public Proxy');
   }
-  if (getBoolean(anonymousPayload.is_residential_proxy)) {
+  if (isTrue(anonymousPayload.is_residential_proxy)) {
     signals.push('Residential Proxy');
   }
-  if (getBoolean(anonymousPayload.is_tor_exit_node)) {
+  if (isTrue(anonymousPayload.is_tor_exit_node)) {
     signals.push('Tor Exit Node');
   }
-  if (getBoolean(anonymousPayload.is_hosting_provider)) {
+  if (isTrue(anonymousPayload.is_hosting_provider)) {
     signals.push('Hosting Provider');
   }
-  if (signals.length === 0 && getBoolean(anonymousPayload.is_anonymous)) {
+  if (signals.length === 0 && isTrue(anonymousPayload.is_anonymous)) {
     signals.push('Anonymous Traffic');
   }
   return signals;
@@ -164,14 +151,7 @@ export function MaxMindEnrichmentBlock({ item }: { item: TimelineItem }) {
   }
 
   return (
-    <div className="flex w-full flex-col gap-3 rounded-md border border-neutral-border bg-neutral-50/60 p-3">
-      <div className="flex items-center gap-2">
-        <Globe2 className="h-4 w-4 text-subtext-color" />
-        <span className="text-caption-bold font-caption-bold text-default-font">
-          MaxMind Enrichment
-        </span>
-      </div>
-
+    <EnrichmentBlockSection icon={<Globe2 className="h-4 w-4" />} title="MaxMind Enrichment">
       <div className="flex flex-col gap-3">
         {Object.entries(results).map(([ipAddress, rawResult]) => {
           const ipPayload = asRecord(rawResult) as MaxMindIpPayload | null;
@@ -208,7 +188,7 @@ export function MaxMindEnrichmentBlock({ item }: { item: TimelineItem }) {
 
               <div className="grid gap-2 md:grid-cols-2">
                 {location?.label && (
-                  <InfoRow
+                  <EnrichmentInfoRow
                     icon={<MapPin className="h-3.5 w-3.5" />}
                     label="Location"
                     value={location.label}
@@ -217,7 +197,7 @@ export function MaxMindEnrichmentBlock({ item }: { item: TimelineItem }) {
                 )}
 
                 {(asn?.organization || asn?.number !== undefined) && (
-                  <InfoRow
+                  <EnrichmentInfoRow
                     icon={<Building2 className="h-3.5 w-3.5" />}
                     label="ASN"
                     value={asn?.organization || `AS${asn?.number}`}
@@ -226,7 +206,7 @@ export function MaxMindEnrichmentBlock({ item }: { item: TimelineItem }) {
                 )}
 
                 {network && (
-                  <InfoRow
+                  <EnrichmentInfoRow
                     icon={<Network className="h-3.5 w-3.5" />}
                     label="Network"
                     value={network}
@@ -234,7 +214,7 @@ export function MaxMindEnrichmentBlock({ item }: { item: TimelineItem }) {
                 )}
 
                 {connectionType && (
-                  <InfoRow
+                  <EnrichmentInfoRow
                     icon={<ServerCog className="h-3.5 w-3.5" />}
                     label="Connection"
                     value={connectionType}
@@ -242,7 +222,7 @@ export function MaxMindEnrichmentBlock({ item }: { item: TimelineItem }) {
                 )}
 
                 {domain && (
-                  <InfoRow
+                  <EnrichmentInfoRow
                     icon={<Globe2 className="h-3.5 w-3.5" />}
                     label="Domain"
                     value={domain}
@@ -263,34 +243,7 @@ export function MaxMindEnrichmentBlock({ item }: { item: TimelineItem }) {
           );
         })}
       </div>
-    </div>
-  );
-}
-
-function InfoRow({
-  icon,
-  label,
-  value,
-  secondary,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  secondary?: string;
-}) {
-  return (
-    <div className="flex items-start gap-2 rounded-md bg-neutral-50 px-2.5 py-2">
-      <span className="mt-0.5 text-subtext-color">{icon}</span>
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <span className="text-[11px] font-medium uppercase tracking-wide text-subtext-color">
-          {label}
-        </span>
-        <span className="break-all text-body font-body text-default-font">{value}</span>
-        {secondary && (
-          <span className="break-all text-caption font-caption text-subtext-color">{secondary}</span>
-        )}
-      </div>
-    </div>
+    </EnrichmentBlockSection>
   );
 }
 

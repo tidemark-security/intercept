@@ -7,6 +7,7 @@ import { AlertCard } from '@/components/timeline/AlertCard';
 import { AlertCardContent } from '@/components/timeline/AlertCardContent';
 import { TaskCardContent } from '@/components/timeline/TaskCardContent';
 import { CaseCardContent } from '@/components/timeline/CaseCardContent';
+import { GoogleWorkspaceEnrichmentBlock } from '@/components/timeline/GoogleWorkspaceEnrichmentBlock';
 import { MaxMindEnrichmentBlock } from '@/components/timeline/MaxMindEnrichmentBlock';
 import MarkdownContent from '@/components/data-display/MarkdownContent';
 import { createTimelineCard } from '@/components/timeline/TimelineCardFactory';
@@ -62,13 +63,14 @@ function hasText(value: string | null | undefined): value is string {
   return !!value && value.trim().length > 0;
 }
 
-function withMaxMindEnrichment(
+function withEnrichmentBlocks(
   item: TimelineItem,
   baseChildren: React.ReactNode
 ): React.ReactNode {
   return (
     <div className="flex w-full flex-col gap-3">
       {baseChildren}
+      <GoogleWorkspaceEnrichmentBlock item={item} />
       <MaxMindEnrichmentBlock item={item} />
     </div>
   );
@@ -330,7 +332,7 @@ export function TimelineItemRenderer({
     const description = timelineCurrentItem.description;
     const descriptionNode = hasText(description) ? <MarkdownContent content={description} /> : null;
 
-    let children: React.ReactNode = withMaxMindEnrichment(timelineCurrentItem, descriptionNode);
+    let children: React.ReactNode = withEnrichmentBlocks(timelineCurrentItem, descriptionNode);
 
     if (isAlertItem(timelineCurrentItem)) {
       cardConfig.size = 'x-large';
@@ -358,7 +360,7 @@ export function TimelineItemRenderer({
         case_id: (timelineCurrentItem as TimelineItem & { case_id?: number }).case_id,
       };
 
-      children = withMaxMindEnrichment(timelineCurrentItem, (
+      children = withEnrichmentBlocks(timelineCurrentItem, (
         <div className="w-full pt-2 flex flex-col gap-3">
           <AlertCardContent data={alertData} />
         </div>
@@ -388,7 +390,7 @@ export function TimelineItemRenderer({
         case_id: (timelineCurrentItem as TimelineItem & { case_id?: number }).case_id,
       };
 
-      children = withMaxMindEnrichment(timelineCurrentItem, (
+      children = withEnrichmentBlocks(timelineCurrentItem, (
         <div className="w-full pt-2 flex flex-col gap-3">
           <TaskCardContent data={taskData} />
         </div>
@@ -416,7 +418,7 @@ export function TimelineItemRenderer({
         created_by: timelineCurrentItem.created_by || 'System',
       };
 
-      children = withMaxMindEnrichment(timelineCurrentItem, (
+      children = withEnrichmentBlocks(timelineCurrentItem, (
         <div className="w-full pt-2 flex flex-col gap-3">
           <CaseCardContent data={caseData} />
         </div>
@@ -457,7 +459,7 @@ export function TimelineItemRenderer({
       linkTemplates,
     });
 
-    let children: React.ReactNode = withMaxMindEnrichment(timelineReply, descriptionNode);
+    let children: React.ReactNode = withEnrichmentBlocks(timelineReply, descriptionNode);
 
     if (isAlertItem(timelineReply)) {
       replyCardConfig.size = 'x-large';
@@ -483,7 +485,7 @@ export function TimelineItemRenderer({
         case_id: (timelineReply as TimelineItem & { case_id?: number }).case_id,
       };
 
-      children = withMaxMindEnrichment(timelineReply, (
+      children = withEnrichmentBlocks(timelineReply, (
         <div className="w-full pt-2 flex flex-col gap-3">
           {descriptionNode}
           <AlertCard alertId={timelineReply.alert_id || 0} data={replyAlertData} />

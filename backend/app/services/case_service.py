@@ -79,20 +79,13 @@ class CaseService:
             logger.error(f"Error creating case: {e}")
             raise
     
-    async def get_case(
-        self, 
-        db: AsyncSession, 
+    async def _get_case_model(
+        self,
+        db: AsyncSession,
         case_id: int,
-        include_linked_timelines: bool = False
+        include_linked_timelines: bool = False,
     ) -> Optional[Case]:
-        """Get case by ID with related data.
-        
-        Args:
-            db: Database session
-            case_id: Case ID to fetch
-            include_linked_timelines: If True, alert and task timeline items will include
-                source_timeline_items from the linked entity
-        """
+        """Get the tracked case model with related entities loaded."""
         try:
             query = (
                 select(Case)
@@ -111,14 +104,34 @@ class CaseService:
             # Eager load all entities referenced in timeline items to avoid N+1 queries
             if db_case.timeline_items:
                 await self._preload_timeline_entities(db, db_case.timeline_items, include_linked_timelines)
-            
-            return await timeline_service.denormalize_entity_timeline(
-                db, db_case, human_prefix="CAS",
-                include_linked_timelines=include_linked_timelines
-            )
+
+            return db_case
         except Exception as e:
             logger.error(f"Error fetching case {case_id}: {e}")
             raise
+
+    async def get_case(
+        self, 
+        db: AsyncSession, 
+        case_id: int,
+        include_linked_timelines: bool = False
+    ) -> Optional[Case]:
+        """Get case by ID with related data.
+        
+        Args:
+            db: Database session
+            case_id: Case ID to fetch
+            include_linked_timelines: If True, alert and task timeline items will include
+                source_timeline_items from the linked entity
+        """
+        db_case = await self._get_case_model(db, case_id, include_linked_timelines)
+        if not db_case:
+            return None
+
+        return await timeline_service.denormalize_entity_timeline(
+            db, db_case, human_prefix="CAS",
+            include_linked_timelines=include_linked_timelines
+        )
     
     async def get_case_by_human_id(self, db: AsyncSession, human_id: str) -> Optional[Case]:
         """Get case by human_id."""
@@ -228,7 +241,7 @@ class CaseService:
         """Update a case and create audit logs."""
         try:
             # Get existing case
-            db_case = await self.get_case(db, case_id)
+            db_case = await self._get_case_model(db, case_id)
             if not db_case:
                 return None
             
@@ -536,7 +549,7 @@ class CaseService:
     async def delete_case(self, db: AsyncSession, case_id: int, deleted_by: str) -> bool:
         """Soft delete a case (mark as deleted in audit log)."""
         try:
-            db_case = await self.get_case(db, case_id)
+            db_case = await self._get_case_model(db, case_id)
             if not db_case:
                 return False
             
@@ -564,7 +577,7 @@ class CaseService:
     ) -> Optional[Case]:
         """Add a timeline item to a case."""
         try:
-            db_case = await self.get_case(db, case_id)
+            db_case = await self._get_case_model(db, case_id)
             if not db_case:
                 return None
             
@@ -605,7 +618,7 @@ class CaseService:
     ) -> Optional[Case]:
         """Update a timeline item in a case."""
         try:
-            db_case = await self.get_case(db, case_id)
+            db_case = await self._get_case_model(db, case_id)
             if not db_case or not db_case.timeline_items:
                 return None
             
@@ -654,7 +667,7 @@ class CaseService:
     ) -> Optional[Case]:
         """Remove a timeline item from a case and clean up associated resources."""
         try:
-            db_case = await self.get_case(db, case_id)
+            db_case = await self._get_case_model(db, case_id)
             if not db_case or not db_case.timeline_items:
                 return None
             

@@ -46,6 +46,8 @@ export interface TimelineFormLayoutProps {
   submitIcon?: React.ReactNode;
   /** Initial flag/highlight state for edit mode */
   initialFlagHighlight?: FlagHighlightState;
+  /** Autocomplete mode for the parent form element */
+  formAutoComplete?: React.FormHTMLAttributes<HTMLFormElement>["autoComplete"];
 }
 
 export function TimelineFormLayout({
@@ -63,15 +65,18 @@ export function TimelineFormLayout({
   showFlagHighlight = true,
   submitIcon = <Plus />,
   initialFlagHighlight,
+  formAutoComplete,
 }: TimelineFormLayoutProps) {
   const showCancelButton = Boolean(onCancel) && !editMode;
   const showClearButton = Boolean(onClear) && !editMode;
 
   return (
-    <div
+    <form
       className={cn(
         "flex h-full w-full flex-col items-center gap-6"
       )}
+      autoComplete={formAutoComplete}
+      onSubmit={(event) => event.preventDefault()}
     >
       {/* Header with Close Button */}
       <div className="flex w-full items-center gap-2">
@@ -147,6 +152,6 @@ export function TimelineFormLayout({
           </Button>
         )}
       </div>
-    </div>
+    </form>
   );
 }

@@ -129,15 +129,8 @@ class AlertService:
             # Don't fail alert creation if triage enqueue fails
             logger.warning(f"Auto-enqueue triage failed for alert {alert_id}: {e}")
     
-    async def get_alert(self, db: AsyncSession, alert_id: int, include_linked_timelines: bool = False) -> Optional[Alert]:
-        """Get alert by ID with case and triage_recommendation relationships.
-        
-        Args:
-            db: Database session
-            alert_id: Alert ID
-            include_linked_timelines: If True, case and task timeline items will include
-                source_timeline_items from the linked entity
-        """
+    async def _get_alert_model(self, db: AsyncSession, alert_id: int) -> Optional[Alert]:
+        """Get the tracked alert model with related entities loaded."""
         try:
             query = (
                 select(Alert)
@@ -155,11 +148,31 @@ class AlertService:
             # Eager load all entities referenced in timeline items to avoid N+1 queries
             if db_alert.timeline_items:
                 await self._preload_timeline_entities(db, db_alert.timeline_items)
-            
-            return await timeline_service.denormalize_entity_timeline(db, db_alert, human_prefix="ALT", include_linked_timelines=include_linked_timelines)
+
+            return db_alert
         except Exception as e:
             logger.error(f"Error fetching alert {alert_id}: {e}")
             raise
+
+    async def get_alert(self, db: AsyncSession, alert_id: int, include_linked_timelines: bool = False) -> Optional[Alert]:
+        """Get alert by ID with case and triage_recommendation relationships.
+        
+        Args:
+            db: Database session
+            alert_id: Alert ID
+            include_linked_timelines: If True, case and task timeline items will include
+                source_timeline_items from the linked entity
+        """
+        db_alert = await self._get_alert_model(db, alert_id)
+        if not db_alert:
+            return None
+
+        return await timeline_service.denormalize_entity_timeline(
+            db,
+            db_alert,
+            human_prefix="ALT",
+            include_linked_timelines=include_linked_timelines,
+        )
     
     async def get_alert_by_human_id(self, db: AsyncSession, human_id: str) -> Optional[Alert]:
         """Get alert by human_id."""
@@ -296,7 +309,7 @@ class AlertService:
     ) -> Optional[Alert]:
         """Update an alert."""
         try:
-            db_alert = await self.get_alert(db, alert_id)
+            db_alert = await self._get_alert_model(db, alert_id)
             if not db_alert:
                 return None
             
@@ -399,7 +412,7 @@ class AlertService:
     ) -> Optional[Alert]:
         """Triage an alert and optionally escalate to case."""
         try:
-            db_alert = await self.get_alert(db, alert_id)
+            db_alert = await self._get_alert_model(db, alert_id)
             if not db_alert:
                 return None
             
@@ -454,7 +467,7 @@ class AlertService:
     ) -> Optional[Alert]:
         """Link an existing alert to an existing case."""
         try:
-            db_alert = await self.get_alert(db, alert_id)
+            db_alert = await self._get_alert_model(db, alert_id)
             if not db_alert:
                 return None
             
@@ -510,7 +523,7 @@ class AlertService:
             ValueError: If alert is not linked to a case
         """
         try:
-            db_alert = await self.get_alert(db, alert_id)
+            db_alert = await self._get_alert_model(db, alert_id)
             if not db_alert:
                 return None
             
@@ -545,7 +558,7 @@ class AlertService:
     ) -> Optional[Alert]:
         """Add a single timeline item to an alert's timeline."""
         try:
-            db_alert = await self.get_alert(db, alert_id)
+            db_alert = await self._get_alert_model(db, alert_id)
             if not db_alert:
                 return None
             
@@ -591,7 +604,7 @@ class AlertService:
     ) -> Optional[Alert]:
         """Update a specific timeline item in an alert with permission checks and audit logging."""
         try:
-            db_alert = await self.get_alert(db, alert_id)
+            db_alert = await self._get_alert_model(db, alert_id)
             if not db_alert:
                 return None
             
@@ -663,7 +676,7 @@ class AlertService:
     ) -> Optional[Alert]:
         """Remove a specific timeline item from an alert and clean up associated resources."""
         try:
-            db_alert = await self.get_alert(db, alert_id)
+            db_alert = await self._get_alert_model(db, alert_id)
             if not db_alert:
                 return None
             

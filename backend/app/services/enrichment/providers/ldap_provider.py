@@ -4,6 +4,7 @@ Uses the ldap3 library for LDAP queries.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -37,13 +38,15 @@ _DEFAULT_ATTRIBUTES = [
 
 _USER_SEARCH_FILTER_TEMPLATE = (
     "(|"
-    "(sAMAccountName={value})"
-    "(userPrincipalName={value})"
-    "(mail={value})"
-    "(cn={value})"
-    "(displayName={value})"
+    "(sAMAccountName={uid})"
+    "(userPrincipalName={uid})"
+    "(mail={uid})"
+    "(cn={uid})"
+    "(displayName={uid})"
     ")"
 )
+
+_BULK_SYNC_FILTER = "(&(objectClass=user)(objectCategory=person))"
 
 
 def _format_object_guid(raw: Any) -> str:
@@ -72,17 +75,31 @@ class LDAPProvider(EnrichmentProvider):
     supports_bulk_sync = True
 
     def can_enrich(self, item: Dict[str, Any]) -> bool:
-        return item.get("type") == "internal_actor"
+        return item.get("type") == "internal_actor" and bool(self._get_identifier(item))
 
     def build_cache_key(self, item: Dict[str, Any]) -> str:
-        actor = item.get("actor") or {}
-        return (actor.get("user_id") or actor.get("email") or actor.get("name") or "").strip().lower()
+        identifier = self._get_identifier(item)
+        if not identifier:
+            raise ValueError("Cannot determine identifier for LDAP cache key")
+        return f"user:{identifier}"
 
-    async def _get_settings(self, settings: SettingsService) -> Optional[Dict[str, str]]:
+    def _get_identifier(self, item: Dict[str, Any]) -> str:
+        for key in ("user_id", "contact_email", "name"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+        return ""
+
+    async def _get_settings(self, settings: SettingsService) -> Optional[Dict[str, Any]]:
         url = await settings.get(f"{self.settings_prefix}.url", "")
         bind_dn = await settings.get(f"{self.settings_prefix}.bind_dn", "")
         bind_password = await settings.get(f"{self.settings_prefix}.bind_password", "")
         search_base = await settings.get(f"{self.settings_prefix}.search_base", "")
+        use_ssl = await settings.get(f"{self.settings_prefix}.use_ssl", True)
+        user_search_filter = await settings.get(
+            f"{self.settings_prefix}.user_search_filter",
+            _USER_SEARCH_FILTER_TEMPLATE,
+        )
         if not (url and bind_dn and bind_password and search_base):
             return None
         return {
@@ -90,9 +107,11 @@ class LDAPProvider(EnrichmentProvider):
             "bind_dn": bind_dn,
             "bind_password": bind_password,
             "search_base": search_base,
+            "use_ssl": bool(use_ssl),
+            "user_search_filter": user_search_filter,
         }
 
-    def _connect(self, url: str, bind_dn: str, bind_password: str) -> Any:
+    def _connect(self, url: str, bind_dn: str, bind_password: str, use_ssl: bool) -> Any:
         """Create and bind an ldap3 Connection. Raises ImportError if ldap3 not installed."""
         try:
             import ldap3  # type: ignore[import-untyped]
@@ -102,16 +121,15 @@ class LDAPProvider(EnrichmentProvider):
                 "Install it with: pip install ldap3"
             ) from exc
 
-        server = ldap3.Server(url, get_info=ldap3.ALL, connect_timeout=10)
+        server = ldap3.Server(url, get_info=ldap3.NONE, connect_timeout=10, use_ssl=use_ssl)
         conn = ldap3.Connection(
             server,
             user=bind_dn,
             password=bind_password,
-            auto_bind=ldap3.AUTO_BIND_TLS_BEFORE_BIND if url.startswith("ldap://") else ldap3.AUTO_BIND_NO_TLS,
+            authentication=ldap3.SIMPLE,
+            auto_bind=True,
             read_only=True,
         )
-        if not conn.bind():
-            raise RuntimeError(f"LDAP bind failed: {conn.result}")
         return conn
 
     def _entry_to_str(self, entry: Any, attr: str) -> str:
@@ -126,9 +144,7 @@ class LDAPProvider(EnrichmentProvider):
             return ""
         return str(raw)
 
-    def _build_result(self, entry: Any) -> EnrichmentResult:
-        import ldap3  # noqa: F401 — guaranteed by caller
-
+    def _build_result(self, entry: Any, *, cache_key: str) -> EnrichmentResult:
         def _s(attr: str) -> str:
             return self._entry_to_str(entry, attr)
 
@@ -164,7 +180,7 @@ class LDAPProvider(EnrichmentProvider):
             "manager_cn": manager_cn,
         }
 
-        canonical_id = object_guid or sam or email
+        canonical_id = upn.lower() or sam.lower() or email.lower() or object_guid or cache_key
         canonical_display = display_name or email or canonical_id
         meta = {
             "department": enrichment_data["department"],
@@ -198,10 +214,19 @@ class LDAPProvider(EnrichmentProvider):
 
         return EnrichmentResult(
             provider_id=self.provider_id,
-            cache_key=canonical_id,
+            cache_key=cache_key,
             enrichment_data=enrichment_data,
             aliases=aliases,
         )
+
+    def _escape_identifier(self, value: str) -> str:
+        from ldap3.utils.conv import escape_filter_chars  # type: ignore[import-untyped]
+
+        return escape_filter_chars(value)
+
+    def _build_user_search_filter(self, template: str, identifier: str) -> str:
+        escaped_identifier = self._escape_identifier(identifier)
+        return template.replace("{value}", escaped_identifier).format(uid=escaped_identifier)
 
     async def enrich(
         self,
@@ -216,21 +241,17 @@ class LDAPProvider(EnrichmentProvider):
         if not cfg:
             raise ValueError("LDAP provider is not fully configured")
 
-        actor = item.get("actor") or {}
-        identifier = (actor.get("user_id") or actor.get("email") or actor.get("name") or "").strip()
+        identifier = self._get_identifier(item)
         if not identifier:
             raise ValueError("Cannot determine identifier for LDAP lookup")
 
-        import asyncio
-
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, self._sync_lookup, cfg, identifier)
+        result = await asyncio.to_thread(self._sync_lookup, cfg, identifier, self.build_cache_key(item))
         return result
 
-    def _sync_lookup(self, cfg: Dict[str, str], identifier: str) -> EnrichmentResult:
-        conn = self._connect(cfg["url"], cfg["bind_dn"], cfg["bind_password"])
+    def _sync_lookup(self, cfg: Dict[str, Any], identifier: str, cache_key: str) -> EnrichmentResult:
+        conn = self._connect(cfg["url"], cfg["bind_dn"], cfg["bind_password"], cfg["use_ssl"])
         try:
-            search_filter = _USER_SEARCH_FILTER_TEMPLATE.format(value=identifier)
+            search_filter = self._build_user_search_filter(cfg["user_search_filter"], identifier)
             conn.search(
                 cfg["search_base"],
                 search_filter,
@@ -239,10 +260,10 @@ class LDAPProvider(EnrichmentProvider):
             if not conn.entries:
                 return EnrichmentResult(
                     provider_id=self.provider_id,
-                    cache_key=identifier,
+                    cache_key=cache_key,
                     enrichment_data={"error": f"User not found: {identifier}"},
                 )
-            return self._build_result(conn.entries[0])
+            return self._build_result(conn.entries[0], cache_key=cache_key)
         finally:
             conn.unbind()
 
@@ -251,28 +272,32 @@ class LDAPProvider(EnrichmentProvider):
         if not cfg:
             raise ValueError("LDAP provider is not fully configured")
 
-        import asyncio
-
-        results = await asyncio.get_event_loop().run_in_executor(None, self._sync_bulk_search, cfg)
+        results = await asyncio.to_thread(self._sync_bulk_search, cfg)
         logger.info("LDAP bulk sync: %d users", len(results))
         return results
 
-    def _sync_bulk_search(self, cfg: Dict[str, str]) -> List[EnrichmentResult]:
-        import ldap3  # type: ignore[import-untyped]
-
-        conn = self._connect(cfg["url"], cfg["bind_dn"], cfg["bind_password"])
+    def _sync_bulk_search(self, cfg: Dict[str, Any]) -> List[EnrichmentResult]:
+        conn = self._connect(cfg["url"], cfg["bind_dn"], cfg["bind_password"], cfg["use_ssl"])
         try:
             results: List[EnrichmentResult] = []
             conn.search(
                 cfg["search_base"],
-                "(&(objectClass=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))",
+                _BULK_SYNC_FILTER,
                 attributes=_DEFAULT_ATTRIBUTES,
                 paged_size=500,
             )
             while True:
                 for entry in conn.entries:
                     try:
-                        results.append(self._build_result(entry))
+                        canonical = (
+                            self._entry_to_str(entry, "userPrincipalName")
+                            or self._entry_to_str(entry, "mail")
+                            or self._entry_to_str(entry, "sAMAccountName")
+                            or _format_object_guid(getattr(getattr(entry, "objectGUID", None), "value", None))
+                        )
+                        if not canonical:
+                            continue
+                        results.append(self._build_result(entry, cache_key=f"user:{canonical.strip().lower()}"))
                     except Exception as exc:
                         logger.warning("LDAP: skipping entry %s: %s", getattr(entry, "distinguishedName", "?"), exc)
 
@@ -282,7 +307,7 @@ class LDAPProvider(EnrichmentProvider):
                     break
                 conn.search(
                     cfg["search_base"],
-                    "(&(objectClass=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))",
+                    _BULK_SYNC_FILTER,
                     attributes=_DEFAULT_ATTRIBUTES,
                     paged_size=500,
                     paged_cookie=cookie,

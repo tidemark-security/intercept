@@ -605,10 +605,41 @@ _register(
         default=None,
     ),
     _def(
+        "enrichment.google_workspace.client_email",
+        category="enrichment",
+        description="Google service account client email used for directory access",
+        default=None,
+    ),
+    _def(
+        "enrichment.google_workspace.private_key",
+        is_secret=True,
+        category="enrichment",
+        description="Google service account private key used for directory access",
+        default=None,
+    ),
+    _def(
+        "enrichment.google_workspace.private_key_id",
+        category="enrichment",
+        description="Optional Google service account private key ID",
+        default=None,
+    ),
+    _def(
+        "enrichment.google_workspace.token_uri",
+        category="enrichment",
+        description="Token URI used for Google service account access token exchange",
+        default="https://oauth2.googleapis.com/token",
+    ),
+    _def(
         "enrichment.google_workspace.service_account_json",
         is_secret=True,
         category="enrichment",
-        description="Google service account JSON used for directory access",
+        description="Deprecated legacy Google service account JSON blob used for directory access fallback",
+        default=None,
+    ),
+    _def(
+        "enrichment.google_workspace.admin_email",
+        category="enrichment",
+        description="Admin email to impersonate for Google Workspace directory access",
         default=None,
     ),
     _def(
@@ -649,6 +680,19 @@ _register(
         category="enrichment",
         description="LDAP base DN used for user searches",
         default=None,
+    ),
+    _def(
+        "enrichment.ldap.use_ssl",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Use SSL/TLS when connecting to the LDAP server",
+        default=True,
+    ),
+    _def(
+        "enrichment.ldap.user_search_filter",
+        category="enrichment",
+        description="LDAP search filter template for on-demand user lookups; use {uid} as the placeholder",
+        default="(|(sAMAccountName={uid})(userPrincipalName={uid})(mail={uid}))",
     ),
     _def(
         "enrichment.ldap.ttl_seconds",

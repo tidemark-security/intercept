@@ -32,7 +32,7 @@ export const AdminPageLayout: React.FC<AdminPageLayoutProps> = ({
 }) => {
   return (
     <DefaultPageLayout withContainer>
-      <div className="flex h-full w-full flex-col items-start gap-6 overflow-auto px-6 py-12 mobile:px-4 mobile:py-6">
+      <div className="flex h-full w-full flex-col items-start gap-6 px-6 py-12 mobile:px-4 mobile:py-6">
         <div className="mx-auto flex w-full max-w-7xl flex-col items-start gap-6">
           {/* Header */}
           <div className="flex w-full flex-shrink-0 items-center justify-between">

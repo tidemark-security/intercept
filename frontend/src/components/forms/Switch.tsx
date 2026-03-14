@@ -20,8 +20,8 @@ const Thumb = React.forwardRef<HTMLSpanElement, ThumbProps>(function Thumb(
   return (
     <RadixSwitch.Thumb
       className={cn(
-        "flex h-3.5 w-3.5 flex-col items-start gap-2 rounded-full bg-black shadow-sm",
-        "data-[state=checked]:translate-x-3 transition-transform",
+        "relative z-10 h-4 w-4 bg-black",
+        "data-[state=checked]:translate-x-6 transition-transform",
         className
       )}
       ref={ref}
@@ -45,8 +45,8 @@ const SwitchRoot = React.forwardRef<HTMLButtonElement, SwitchRootProps>(
       <RadixSwitch.Root
         checked={checked}
         className={cn(
-          "group/7a464794 flex h-5 w-8 cursor-pointer flex-col items-start justify-center gap-2 rounded-full border border-solid border-neutral-200 bg-neutral-200 px-0.5 py-0.5",
-          "data-[state=checked]:border data-[state=checked]:border-solid data-[state=checked]:border-brand-600 data-[state=checked]:bg-brand-600",
+          "group/7a464794 relative inline-flex h-6 w-12 cursor-pointer items-center border border-solid border-neutral-300 bg-neutral-200 px-1 py-1",
+          "data-[state=checked]:border data-[state=checked]:border-solid data-[state=checked]:border-brand-primary data-[state=checked]:bg-brand-500",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2",
           "disabled:cursor-not-allowed disabled:opacity-50",
           className
@@ -54,6 +54,24 @@ const SwitchRoot = React.forwardRef<HTMLButtonElement, SwitchRootProps>(
         ref={ref}
         {...otherProps}
       >
+        <span
+          aria-hidden="true"
+          className={cn(
+            "pointer-events-none absolute left-2 text-[10px] font-semibold leading-none transition-colors",
+            checked ? "text-black/75" : "text-transparent"
+          )}
+        >
+          O
+        </span>
+        <span
+          aria-hidden="true"
+          className={cn(
+            "pointer-events-none absolute right-2 text-[10px] font-semibold leading-none transition-colors",
+            checked ? "text-transparent" : "text-neutral-1000/75"
+          )}
+        >
+          I
+        </span>
         <Thumb />
       </RadixSwitch.Root>
     );
