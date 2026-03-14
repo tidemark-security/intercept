@@ -145,11 +145,24 @@ export const CommandInput = forwardRef<CommandInputRef, CommandInputProps>(
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const [textareaHeight, setTextareaHeight] = useState(minLines);
 
+    // Keep slash command execution behavior consistent across Enter and click paths.
+    const executeSlashCommand = useCallback(
+      (itemType: TimelineItemType) => {
+        if (!onSlashCommand) {
+          return;
+        }
+
+        onSlashCommand(itemType);
+        onChange("");
+      },
+      [onSlashCommand, onChange]
+    );
+
     // Slash command autocomplete (only if enabled)
     const slashCommands = useSlashCommands({
       inputValue: enableSlashCommands ? value : "",
       availableItemTypes: availableCommands,
-      onSlashCommand: onSlashCommand || (() => {}),
+      onSlashCommand: executeSlashCommand,
     });
 
     // Expose imperative handle
@@ -248,9 +261,8 @@ export const CommandInput = forwardRef<CommandInputRef, CommandInputProps>(
             } else {
               // Try to parse command directly
               const command = parseSlashCommand(trimmedValue);
-              if (command && onSlashCommand) {
-                onSlashCommand(command.type);
-                onChange("");
+              if (command) {
+                executeSlashCommand(command.type);
               }
             }
           } else {
@@ -282,6 +294,7 @@ export const CommandInput = forwardRef<CommandInputRef, CommandInputProps>(
         allowShiftEnter,
         submitOnEnter,
         onSlashCommand,
+        executeSlashCommand,
         onSubmit,
         onChange,
         onEscape,
