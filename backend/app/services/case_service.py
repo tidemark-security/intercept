@@ -15,9 +15,10 @@ from app.models.models import (
     AlertCreate, AlertUpdate, AlertTriageRequest,
     CaseReadWithAlerts, AlertReadWithCase, CaseTimelineItem, CaseAlertClosureUpdate,
 )
-from app.models.enums import CaseStatus, AlertStatus, TaskStatus
+from app.models.enums import CaseStatus, AlertStatus, TaskStatus, RealtimeEventType
 from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
+from app.services.realtime_service import emit_event
 
 logger = logging.getLogger(__name__)
 
@@ -320,6 +321,14 @@ class CaseService:
                     None, None, updated_by
                 )
             
+            await emit_event(
+                db,
+                entity_type="case",
+                entity_id=case_id,
+                event_type=RealtimeEventType.ENTITY_UPDATED,
+                performed_by=updated_by,
+            )
+
             await db.commit()
             await db.refresh(db_case)
             
@@ -605,6 +614,15 @@ class CaseService:
                 new_value=item_dict,
             )
             
+            await emit_event(
+                db,
+                entity_type="case",
+                entity_id=case_id,
+                event_type=RealtimeEventType.TIMELINE_ITEM_ADDED,
+                performed_by=created_by,
+                item_id=item_dict.get("id"),
+            )
+
             await db.commit()
             await db.refresh(db_case)
             
@@ -663,6 +681,15 @@ class CaseService:
                 user=updated_by,
             )
 
+            await emit_event(
+                db,
+                entity_type="case",
+                entity_id=case_id,
+                event_type=RealtimeEventType.TIMELINE_ITEM_UPDATED,
+                performed_by=updated_by,
+                item_id=item_id,
+            )
+
             await db.commit()
             await db.refresh(db_case)
 
@@ -711,6 +738,15 @@ class CaseService:
                 item_type=item_to_remove.get("type", "unknown"),
                 user=deleted_by,
                 old_value=item_to_remove,
+            )
+
+            await emit_event(
+                db,
+                entity_type="case",
+                entity_id=case_id,
+                event_type=RealtimeEventType.TIMELINE_ITEM_DELETED,
+                performed_by=deleted_by,
+                item_id=item_id,
             )
 
             await db.commit()

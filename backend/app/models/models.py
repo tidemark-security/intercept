@@ -31,6 +31,7 @@ from app.models.enums import (
     TriageDisposition,
     RejectionCategory,
     MessageFeedback,
+    RealtimeEventType,
 )
 
 
@@ -2362,4 +2363,24 @@ class ChatFeedbackDrillDownResponse(SQLModel):
     total: int = Field(default=0, description="Total count matching filters")
     limit: int = Field(default=50)
     offset: int = Field(default=0)
+
+
+# ---------------------------------------------------------------------------
+# Real-time WebSocket schemas
+# ---------------------------------------------------------------------------
+
+
+class RealtimeEventPayload(SQLModel):
+    """Payload for real-time WebSocket notifications via LISTEN/NOTIFY."""
+    entity_type: str = Field(description="Entity type: alert, case, or task")
+    entity_id: int = Field(description="Numeric ID of the entity")
+    event_type: RealtimeEventType = Field(description="Type of event that occurred")
+    item_id: Optional[str] = Field(default=None, description="Timeline item ID if applicable")
+    performed_by: str = Field(description="Username who performed the action")
+
+
+class WebSocketMessage(SQLModel):
+    """Message format for WebSocket communication."""
+    type: str = Field(description="Message type: event, subscribed, unsubscribed, ping, pong")
+    payload: Optional[Dict[str, Any]] = Field(default=None, description="Message payload")
 

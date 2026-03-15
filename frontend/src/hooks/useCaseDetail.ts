@@ -2,7 +2,8 @@ import { useQuery } from '@tanstack/react-query';
 import type { CaseReadWithAlerts } from '@/types/generated/models/CaseReadWithAlerts';
 import { CasesService } from '@/types/generated/services/CasesService';
 import { queryKeys } from './queryKeys';
-import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS } from '@/config/queryConfig';
+import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS, QUERY_REFETCH_INTERVALS_WS } from '@/config/queryConfig';
+import { useRealtimeSubscription } from './useRealtimeSubscription';
 
 /**
  * Options for useCaseDetail hook
@@ -35,6 +36,7 @@ export function useCaseDetail(
   options: UseCaseDetailOptions = {}
 ) {
   const { includeLinkedTimelines = false } = options;
+  const { isConnected } = useRealtimeSubscription('case', caseId);
 
   return useQuery<CaseReadWithAlerts | null, Error>({
     queryKey: queryKeys.case.detail(caseId, { includeLinkedTimelines }),
@@ -52,7 +54,7 @@ export function useCaseDetail(
     },
     enabled: caseId !== null, // Only fetch when we have a case ID
     staleTime: QUERY_STALE_TIMES.REALTIME, // 30 seconds for real-time collaboration
-    refetchInterval: QUERY_REFETCH_INTERVALS.DETAIL, // 30 seconds
+    refetchInterval: isConnected ? QUERY_REFETCH_INTERVALS_WS.DETAIL : QUERY_REFETCH_INTERVALS.DETAIL,
     refetchIntervalInBackground: false, // Pause polling when tab is inactive
     // Don't retry on 404 errors to show NotFoundError immediately
     retry: (failureCount, error) => {

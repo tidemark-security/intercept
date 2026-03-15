@@ -2,7 +2,8 @@ import { useQuery, UseQueryResult } from '@tanstack/react-query';
 import { AlertsService } from '@/types/generated/services/AlertsService';
 import type { AlertReadWithCase } from '@/types/generated/models/AlertReadWithCase';
 import { queryKeys } from './queryKeys';
-import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS } from '@/config/queryConfig';
+import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS, QUERY_REFETCH_INTERVALS_WS } from '@/config/queryConfig';
+import { useRealtimeSubscription } from './useRealtimeSubscription';
 
 /**
  * Options for useAlertDetail hook
@@ -29,6 +30,7 @@ export function useAlertDetail(
   options: UseAlertDetailOptions = {}
 ): UseQueryResult<AlertReadWithCase, Error> {
   const { includeLinkedTimelines = false } = options;
+  const { isConnected } = useRealtimeSubscription('alert', alertId);
 
   return useQuery({
     queryKey: queryKeys.alert.detail(alertId, { includeLinkedTimelines }),
@@ -43,14 +45,16 @@ export function useAlertDetail(
     },
     enabled: alertId !== null, // Only fetch when alertId is provided
     staleTime: QUERY_STALE_TIMES.REALTIME, // 30 seconds for real-time collaboration
-    // Dynamic polling: 3s when triage is processing, 30s otherwise
-    refetchInterval: (query) => {
-      const data = query.state.data;
-      if (data?.triage_recommendation?.status === 'QUEUED') {
-        return QUERY_REFETCH_INTERVALS.TRIAGE_ACTIVE; // 3 seconds during active triage
-      }
-      return QUERY_REFETCH_INTERVALS.DETAIL; // 30 seconds normally
-    },
+    // When WS is connected, use 5-minute fallback; otherwise dynamic polling
+    refetchInterval: isConnected
+      ? QUERY_REFETCH_INTERVALS_WS.DETAIL
+      : (query) => {
+          const data = query.state.data;
+          if (data?.triage_recommendation?.status === 'QUEUED') {
+            return QUERY_REFETCH_INTERVALS.TRIAGE_ACTIVE; // 3 seconds during active triage
+          }
+          return QUERY_REFETCH_INTERVALS.DETAIL; // 30 seconds normally
+        },
     refetchIntervalInBackground: false, // Pause polling when tab is inactive
     // Don't retry on 404 errors to show NotFoundError immediately
     retry: (failureCount, error) => {

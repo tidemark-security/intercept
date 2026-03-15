@@ -47,3 +47,14 @@ export const QUERY_REFETCH_INTERVALS = {
    */
   TRIAGE_ACTIVE: 3 * 1000, // 3 seconds
 } as const;
+
+/**
+ * Fallback refetch intervals when WebSocket is connected.
+ * Much longer than normal since real-time events handle most updates.
+ */
+export const QUERY_REFETCH_INTERVALS_WS = {
+  /** Detail views: 5 minutes fallback when WS connected */
+  DETAIL: 5 * 60 * 1000,
+  /** List views: 5 minutes fallback when WS connected */
+  LIST: 5 * 60 * 1000,
+} as const;

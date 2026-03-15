@@ -13,6 +13,7 @@ from app.services.task_queue_service import initialize_task_queue_service, shutd
 from app.services.enrichment.providers import register_providers
 from app.services.tasks import register_task_handlers
 from app.api.routes import admin_auth, alerts, audit, auth, cases, dashboard, dummy_data, link_templates, mitre, tasks, settings as settings_routes, langflow, api_keys, soc_metrics, triage_recommendations, search, validation, features, oidc, enrichments
+from app.api.routes import websocket as ws_route
 # from app.api.routes import admin_auth, alerts, auth, cases, dashboard, dummy_data, link_templates, mitre, soc_metrics, tasks, api_keys
 # Import models to register them with SQLModel
 from app.models import models
@@ -54,12 +55,28 @@ async def app_lifespan(app: FastAPI):
         logger.warning(f"Task queue service initialization failed: {e}")
         logger.warning("Continuing without background task support")
     
+    # Start real-time notification listener (LISTEN/NOTIFY)
+    from app.services.realtime_service import notification_listener
+    try:
+        await notification_listener.start()
+        logger.info("✅ Real-time notification listener started")
+    except Exception as e:
+        logger.warning(f"Notification listener failed to start: {e}")
+        logger.warning("Continuing without real-time notifications")
+
     logger.info("🚀 Tidemark Intercept is ready!")
     
     yield
     
     # Shutdown
     logger.info("Shutting down Tidemark Intercept...")
+    
+    # Stop notification listener
+    try:
+        await notification_listener.stop()
+        logger.info("✅ Notification listener stopped")
+    except Exception as e:
+        logger.warning(f"Notification listener shutdown error: {e}")
     
     # Shutdown task queue
     try:
@@ -120,6 +137,7 @@ app.include_router(api_keys.router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
 app.include_router(validation.router, prefix="/api/v1")
 app.include_router(features.router, prefix="/api/v1")
+app.include_router(ws_route.router, prefix="/api/v1")
 
 # Add pagination support
 add_pagination(app)

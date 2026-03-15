@@ -3,7 +3,8 @@ import { AlertsService } from '@/types/generated/services/AlertsService';
 import type { Page_AlertRead_ } from '@/types/generated/models/Page_AlertRead_';
 import type { AlertStatus } from '@/types/generated/models/AlertStatus';
 import type { Priority } from '@/types/generated/models/Priority';
-import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS } from '@/config/queryConfig';
+import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS, QUERY_REFETCH_INTERVALS_WS } from '@/config/queryConfig';
+import { useWebSocket } from '@/contexts/WebSocketContext';
 
 interface UseAlertsOptions {
   status?: AlertStatus[] | null;
@@ -44,6 +45,8 @@ export function useAlerts(
     size = 50,
   } = options;
 
+  const { isConnected } = useWebSocket();
+
   return useQuery({
     queryKey: ['alerts', { status, assignee, caseId, priority, source, hasCase, startDate, endDate, search, sortBy, sortOrder, page, size }],
     queryFn: () =>
@@ -63,7 +66,7 @@ export function useAlerts(
         size,
       }),
     staleTime: QUERY_STALE_TIMES.LIST, // 1 minute
-    refetchInterval: QUERY_REFETCH_INTERVALS.LIST, // 60 seconds
+    refetchInterval: isConnected ? QUERY_REFETCH_INTERVALS_WS.LIST : QUERY_REFETCH_INTERVALS.LIST,
     refetchIntervalInBackground: false, // Pause polling when tab is inactive
   });
 }

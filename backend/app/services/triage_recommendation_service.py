@@ -15,7 +15,7 @@ from app.models.models import (
 )
 from app.models.enums import (
     RecommendationStatus, TriageDisposition, AlertStatus, Priority, TaskStatus,
-    RejectionCategory
+    RejectionCategory, RealtimeEventType
 )
 from app.services.alert_triage_apply_service import (
     apply_triage_state,
@@ -23,6 +23,7 @@ from app.services.alert_triage_apply_service import (
     mark_alert_escalated,
 )
 from app.services.timeline_service import timeline_service
+from app.services.realtime_service import emit_event
 
 
 CLOSED_ALERT_STATUSES = {
@@ -164,6 +165,13 @@ async def create_or_replace_recommendation(
         existing.applied_changes = []
         
         db.add(existing)
+        await emit_event(
+            db,
+            entity_type="alert",
+            entity_id=alert_id,
+            event_type=RealtimeEventType.TRIAGE_COMPLETED,
+            performed_by=created_by,
+        )
         await db.commit()
         await db.refresh(existing)
         return existing
@@ -187,6 +195,13 @@ async def create_or_replace_recommendation(
     )
     
     db.add(recommendation)
+    await emit_event(
+        db,
+        entity_type="alert",
+        entity_id=alert_id,
+        event_type=RealtimeEventType.TRIAGE_COMPLETED,
+        performed_by=created_by,
+    )
     await db.commit()
     await db.refresh(recommendation)
     
@@ -579,6 +594,13 @@ async def accept_recommendation(
     
     db.add(alert)
     db.add(recommendation)
+    await emit_event(
+        db,
+        entity_type="alert",
+        entity_id=alert_id,
+        event_type=RealtimeEventType.TRIAGE_COMPLETED,
+        performed_by=reviewed_by,
+    )
     await db.commit()
     await db.refresh(recommendation)
     

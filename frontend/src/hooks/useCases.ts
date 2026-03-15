@@ -2,7 +2,8 @@ import { useQuery } from '@tanstack/react-query';
 import type { Page_CaseRead_ } from '@/types/generated/models/Page_CaseRead_';
 import type { CaseStatus } from '@/types/generated/models/CaseStatus';
 import { CasesService } from '@/types/generated/services/CasesService';
-import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS } from '@/config/queryConfig';
+import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS, QUERY_REFETCH_INTERVALS_WS } from '@/config/queryConfig';
+import { useWebSocket } from '@/contexts/WebSocketContext';
 
 export interface UseCasesParams {
   page?: number;
@@ -37,6 +38,8 @@ export function useCases({
   startDate = null,
   endDate = null,
 }: UseCasesParams = {}) {
+  const { isConnected } = useWebSocket();
+
   return useQuery<Page_CaseRead_, Error>({
     queryKey: ['cases', { page, size, status, assignee, search, startDate, endDate }],
     queryFn: async () => {
@@ -53,7 +56,7 @@ export function useCases({
       return response as Page_CaseRead_;
     },
     staleTime: QUERY_STALE_TIMES.LIST, // 1 minute
-    refetchInterval: QUERY_REFETCH_INTERVALS.LIST, // 60 seconds
+    refetchInterval: isConnected ? QUERY_REFETCH_INTERVALS_WS.LIST : QUERY_REFETCH_INTERVALS.LIST,
     refetchIntervalInBackground: false, // Pause polling when tab is inactive
   });
 }

@@ -12,7 +12,6 @@ from typing import Optional, List, Dict, Any, Union, cast
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
-from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.id_parser import parse_entity_id, format_entity_id, get_prefix_for_kind, ALERT_PREFIX
 from app.models.models import Alert, Case, Task
@@ -885,7 +884,10 @@ async def add_timeline_item(
 ) -> AddTimelineItemOutput:
     """Add timeline note to alert, case, or task.
     
-    Append-only operation. Idempotent via client-provided item_id.
+    Delegates to the entity service layer for the actual mutation, which
+    handles resource sync, denormalization, audit logging, and real-time
+    event emission.  MCP-specific concerns (idempotency, dry-run, ID
+    parsing, body validation) are handled here.
     
     Args:
         db: Database session
@@ -905,6 +907,10 @@ async def add_timeline_item(
         HTTPException(404): Target entity not found
     """
     from app.mcp.schemas import AddTimelineItemOutput
+    from app.models.models import NoteItem
+    from app.services.alert_service import alert_service
+    from app.services.case_service import case_service
+    from app.services.task_service import task_service
     
     # Validate body length
     if len(body) > 16000:
@@ -913,34 +919,38 @@ async def add_timeline_item(
             detail=f"Body too long: {len(body)} chars (max 16,000)"
         )
     
-    # Parse target ID
-    numeric_id, canonical_prefix = parse_entity_id(target_id_str, target_kind)
-    
-    # Fetch target entity
-    if target_kind == "alert":
-        target_entity = await db.get(Alert, numeric_id)
-    elif target_kind == "case":
-        target_entity = await db.get(Case, numeric_id)
-    elif target_kind == "task":
-        target_entity = await db.get(Task, numeric_id)
-    else:
+    # Validate target_kind
+    if target_kind not in ("alert", "case", "task"):
         raise HTTPException(
             status_code=400,
             detail=f"Invalid target_kind '{target_kind}'. Must be 'alert', 'case', or 'task'."
         )
     
-    if not target_entity:
+    # Parse target ID
+    numeric_id, canonical_prefix = parse_entity_id(target_id_str, target_kind)
+    
+    # Idempotency + existence check using a lightweight column query.
+    # IMPORTANT: We must NOT load the full entity via db.get() here, because
+    # that would place it in the session identity map without eagerly-loaded
+    # relationships.  The service layer later loads the same entity with
+    # selectinload() options — but SQLAlchemy returns the cached (bare)
+    # instance, so relationship access triggers a lazy load that fails in
+    # async context ("greenlet_spawn has not been called").
+    entity_model = {"alert": Alert, "case": Case, "task": Task}[target_kind]
+    row = (await db.execute(
+        select(entity_model.timeline_items).where(entity_model.id == numeric_id)  # type: ignore[union-attr]
+    )).first()
+    
+    if row is None:
         raise HTTPException(
             status_code=404,
             detail=f"{target_kind.capitalize()} {format_entity_id(numeric_id, canonical_prefix)} not found"
         )
     
     # Check for existing item with same item_id (idempotency)
-    timeline_items = target_entity.timeline_items or []
-    
+    timeline_items = row[0] or []
     for existing_item in timeline_items:
         if existing_item.get("id") == item_id:
-            # Item already exists - return it
             return AddTimelineItemOutput(
                 mode="already_exists",
                 item_id=item_id,
@@ -959,31 +969,28 @@ async def add_timeline_item(
             message="Dry-run preview - no changes made",
         )
     
-    # Create new timeline item
-    # Use provided created_at or default to current time
+    # Build typed timeline item and delegate to the service layer
     timestamp = created_at if created_at else datetime.now(timezone.utc)
-    new_item = {
-        "id": item_id,
-        "type": "note",
-        "timestamp": timestamp.isoformat(),
-        "created_at": timestamp.isoformat(),
-        "created_by": created_by,
-        "description": body,
+    note_item = NoteItem(
+        id=item_id,
+        description=body,
+        created_at=timestamp,
+        timestamp=timestamp,
+        created_by=created_by,
+    )
+    
+    service_map = {
+        "alert": lambda: alert_service.add_timeline_item(db, numeric_id, note_item, created_by),
+        "case": lambda: case_service.add_timeline_item(db, numeric_id, note_item, created_by),
+        "task": lambda: task_service.add_timeline_item(db, numeric_id, note_item, created_by),
     }
     
-    # Append to timeline
-    timeline_items.append(new_item)
-    target_entity.timeline_items = timeline_items
-    
-    # Flag the JSON column as modified so SQLAlchemy detects the change
-    flag_modified(target_entity, "timeline_items")
-    
-    # Update updated_at
-    target_entity.updated_at = timestamp
-    
-    db.add(target_entity)
-    await db.commit()
-    await db.refresh(target_entity)
+    result = await service_map[target_kind]()
+    if not result:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{target_kind.capitalize()} {format_entity_id(numeric_id, canonical_prefix)} not found"
+        )
     
     return AddTimelineItemOutput(
         mode="committed",

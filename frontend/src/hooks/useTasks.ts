@@ -2,7 +2,8 @@ import { useQuery } from '@tanstack/react-query';
 import type { Page_TaskRead_ } from '@/types/generated/models/Page_TaskRead_';
 import type { TaskStatus } from '@/types/generated/models/TaskStatus';
 import { TasksService } from '@/types/generated/services/TasksService';
-import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS } from '@/config/queryConfig';
+import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS, QUERY_REFETCH_INTERVALS_WS } from '@/config/queryConfig';
+import { useWebSocket } from '@/contexts/WebSocketContext';
 
 export interface UseTasksParams {
   page?: number;
@@ -39,6 +40,8 @@ export function useTasks({
   startDate = null,
   endDate = null,
 }: UseTasksParams = {}) {
+  const { isConnected } = useWebSocket();
+
   return useQuery<Page_TaskRead_, Error>({
     queryKey: ['tasks', { page, size, status, assignee, caseId, search, startDate, endDate }],
     queryFn: async () => {
@@ -56,7 +59,7 @@ export function useTasks({
       return response as Page_TaskRead_;
     },
     staleTime: QUERY_STALE_TIMES.LIST, // 1 minute
-    refetchInterval: QUERY_REFETCH_INTERVALS.LIST, // 60 seconds
+    refetchInterval: isConnected ? QUERY_REFETCH_INTERVALS_WS.LIST : QUERY_REFETCH_INTERVALS.LIST,
     refetchIntervalInBackground: false, // Pause polling when tab is inactive
   });
 }

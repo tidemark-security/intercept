@@ -11,9 +11,10 @@ from fastapi_pagination.ext.sqlalchemy import paginate
 from fastapi import HTTPException
 
 from app.models.models import Task, TaskCreate, TaskUpdate, TaskRead, TaskTimelineItem, UserAccount, Actor, Alert, Case
-from app.models.enums import TaskStatus, Priority
+from app.models.enums import TaskStatus, Priority, RealtimeEventType
 from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
+from app.services.realtime_service import emit_event
 
 logger = logging.getLogger(__name__)
 
@@ -327,6 +328,14 @@ class TaskService:
                 
                 timeline_service.add_timeline_item(db_task, status_change_item, created_by=updated_by)
             
+            await emit_event(
+                db,
+                entity_type="task",
+                entity_id=task_id,
+                event_type=RealtimeEventType.ENTITY_UPDATED,
+                performed_by=updated_by,
+            )
+
             await db.commit()
             await db.refresh(db_task)
             
@@ -429,6 +438,15 @@ class TaskService:
                 entity_id=task_id, entity_type="task"
             )
             
+            await emit_event(
+                db,
+                entity_type="task",
+                entity_id=task_id,
+                event_type=RealtimeEventType.TIMELINE_ITEM_ADDED,
+                performed_by=added_by,
+                item_id=item_dict.get("id"),
+            )
+
             await db.commit()
             await db.refresh(db_task)
             
@@ -501,6 +519,15 @@ class TaskService:
                 user=updated_by,
             )
             
+            await emit_event(
+                db,
+                entity_type="task",
+                entity_id=task_id,
+                event_type=RealtimeEventType.TIMELINE_ITEM_UPDATED,
+                performed_by=updated_by,
+                item_id=item_id,
+            )
+
             await db.commit()
             await db.refresh(db_task)
             
@@ -547,6 +574,15 @@ class TaskService:
             ):
                 raise ValueError(f"Timeline item {item_id} not found")
             
+            await emit_event(
+                db,
+                entity_type="task",
+                entity_id=task_id,
+                event_type=RealtimeEventType.TIMELINE_ITEM_DELETED,
+                performed_by=removed_by,
+                item_id=item_id,
+            )
+
             await db.commit()
             await db.refresh(db_task)
             

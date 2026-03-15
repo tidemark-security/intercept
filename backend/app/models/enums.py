@@ -98,10 +98,15 @@ class SystemType(str, Enum):
     IOT_MEDICAL = "IOT_MEDICAL"  # Patient monitors, insulin pumps
     IOT_APPLIANCE = "IOT_APPLIANCE"  # Smart fridges, washing machines
     IOT_GATEWAY = "IOT_GATEWAY"  # IoT hubs, edge gateways
-    IOT_OTHER = "IOT_OTHER"
-    
-    # General/Other
-    OTHER = "OTHER"
+
+
+class RealtimeEventType(str, Enum):
+    """Event types for WebSocket real-time notifications."""
+    TIMELINE_ITEM_ADDED = "timeline_item_added"
+    TIMELINE_ITEM_UPDATED = "timeline_item_updated"
+    TIMELINE_ITEM_DELETED = "timeline_item_deleted"
+    ENTITY_UPDATED = "entity_updated"
+    TRIAGE_COMPLETED = "triage_completed"
 
 
 class Protocol(str, Enum):

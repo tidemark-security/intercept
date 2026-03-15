@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import { SessionProvider } from './contexts/SessionProvider'
 import { ToastProvider } from './contexts/ToastProvider'
 import { BreakpointProvider } from './contexts/BreakpointContext'
+import { WebSocketProvider } from './contexts/WebSocketContext'
 import { ProtectedRoute } from './components/auth/ProtectedRoute'
 import Alerts from "./pages/Alerts"
 import Admin from "./pages/Admin"
@@ -27,6 +28,7 @@ export default function App() {
   return (
     <BreakpointProvider>
       <SessionProvider>
+        <WebSocketProvider>
         <ToastProvider>
           <Router>
           <Routes>
@@ -179,6 +181,7 @@ export default function App() {
         </Routes>
       </Router>
       </ToastProvider>
+    </WebSocketProvider>
     </SessionProvider>
     </BreakpointProvider>
   )

@@ -15,7 +15,7 @@ from app.models.models import (
     AlertCreate, AlertUpdate, AlertTriageRequest,
     AlertRead, AlertTimelineItem, TriageRecommendation
 )
-from app.models.enums import AlertStatus, Priority, RecommendationStatus, TriageDisposition
+from app.models.enums import AlertStatus, Priority, RecommendationStatus, TriageDisposition, RealtimeEventType
 from app.services.case_service import case_service
 from app.services.alert_triage_apply_service import (
     apply_triage_state,
@@ -25,6 +25,7 @@ from app.services.alert_triage_apply_service import (
 )
 from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
+from app.services.realtime_service import emit_event
 from app.services import triage_recommendation_service
 
 logger = logging.getLogger(__name__)
@@ -398,6 +399,14 @@ class AlertService:
                         user=updated_by,
                     )
 
+            await emit_event(
+                db,
+                entity_type="alert",
+                entity_id=alert_id,
+                event_type=RealtimeEventType.ENTITY_UPDATED,
+                performed_by=updated_by or "system",
+            )
+
             await db.commit()
             await db.refresh(db_alert)
             
@@ -602,6 +611,15 @@ class AlertService:
                 entity_id=alert_id, entity_type="alert"
             )
             
+            await emit_event(
+                db,
+                entity_type="alert",
+                entity_id=alert_id,
+                event_type=RealtimeEventType.TIMELINE_ITEM_ADDED,
+                performed_by=added_by,
+                item_id=item_dict.get("id"),
+            )
+
             await db.commit()
             await db.refresh(db_alert)
             
@@ -675,6 +693,15 @@ class AlertService:
                 user=updated_by,
             )
             
+            await emit_event(
+                db,
+                entity_type="alert",
+                entity_id=alert_id,
+                event_type=RealtimeEventType.TIMELINE_ITEM_UPDATED,
+                performed_by=updated_by,
+                item_id=item_id,
+            )
+
             await db.commit()
             await db.refresh(db_alert)
             
@@ -721,6 +748,15 @@ class AlertService:
             ):
                 raise ValueError(f"Timeline item {item_id} not found")
             
+            await emit_event(
+                db,
+                entity_type="alert",
+                entity_id=alert_id,
+                event_type=RealtimeEventType.TIMELINE_ITEM_DELETED,
+                performed_by=removed_by,
+                item_id=item_id,
+            )
+
             await db.commit()
             await db.refresh(db_alert)
             
