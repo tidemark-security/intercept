@@ -20,7 +20,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.enums import UserStatus
 from app.models.models import ApiKey, UserAccount
-from app.services.audit_service import AuditContext
+from app.services.audit_service import AuditContext, get_audit_service
 
 logger = logging.getLogger(__name__)
 
@@ -63,133 +63,6 @@ class UserInactiveError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# API Key Audit Service
-# ---------------------------------------------------------------------------
-
-
-class ApiKeyAuditService:
-    """Emit structured audit logs for API key events."""
-
-    def __init__(self, *, logger_: Optional[logging.Logger] = None) -> None:
-        self._logger = logger_ or logger
-
-    def api_key_created(
-        self,
-        *,
-        user_id: UUID,
-        username: str,
-        api_key_id: UUID,
-        api_key_name: str,
-        api_key_prefix: str,
-        expires_at: datetime,
-        created_by_user_id: Optional[UUID] = None,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """Record API key creation."""
-        payload: dict[str, Any] = {
-            "event": "auth.api_key.created",
-            "user_id": str(user_id),
-            "username": username,
-            "api_key_id": str(api_key_id),
-            "api_key_name": api_key_name,
-            "api_key_prefix": api_key_prefix,
-            "expires_at": expires_at.isoformat(),
-        }
-        if created_by_user_id:
-            payload["created_by_user_id"] = str(created_by_user_id)
-        payload.update((context or AuditContext()).to_payload())
-        self._logger.info(payload["event"], extra={"auth": payload})
-
-    def api_key_revoked(
-        self,
-        *,
-        user_id: UUID,
-        username: str,
-        api_key_id: UUID,
-        api_key_name: str,
-        api_key_prefix: str,
-        revoked_by_user_id: Optional[UUID] = None,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """Record API key revocation."""
-        payload: dict[str, Any] = {
-            "event": "auth.api_key.revoked",
-            "user_id": str(user_id),
-            "username": username,
-            "api_key_id": str(api_key_id),
-            "api_key_name": api_key_name,
-            "api_key_prefix": api_key_prefix,
-        }
-        if revoked_by_user_id:
-            payload["revoked_by_user_id"] = str(revoked_by_user_id)
-        payload.update((context or AuditContext()).to_payload())
-        self._logger.info(payload["event"], extra={"auth": payload})
-
-    def api_key_auth_success(
-        self,
-        *,
-        user_id: UUID,
-        username: str,
-        api_key_id: UUID,
-        api_key_prefix: str,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """Record successful API key authentication."""
-        payload = {
-            "event": "auth.api_key.auth_success",
-            "user_id": str(user_id),
-            "username": username,
-            "api_key_id": str(api_key_id),
-            "api_key_prefix": api_key_prefix,
-        }
-        payload.update((context or AuditContext()).to_payload())
-        self._logger.info(payload["event"], extra={"auth": payload})
-
-    def api_key_auth_failure(
-        self,
-        *,
-        reason: str,
-        api_key_prefix: Optional[str] = None,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """Record failed API key authentication."""
-        payload: dict[str, Any] = {
-            "event": "auth.api_key.auth_failure",
-            "reason": reason,
-        }
-        if api_key_prefix:
-            payload["api_key_prefix"] = api_key_prefix
-        payload.update((context or AuditContext()).to_payload())
-        self._logger.warning(payload["event"], extra={"auth": payload})
-
-    def nhi_account_created(
-        self,
-        *,
-        admin_user_id: UUID,
-        admin_username: str,
-        nhi_user_id: UUID,
-        nhi_username: str,
-        role: str,
-        initial_api_key_id: UUID,
-        initial_api_key_prefix: str,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """Record NHI account creation."""
-        payload = {
-            "event": "auth.nhi.account_created",
-            "admin_user_id": str(admin_user_id),
-            "admin_username": admin_username,
-            "nhi_user_id": str(nhi_user_id),
-            "nhi_username": nhi_username,
-            "role": role,
-            "initial_api_key_id": str(initial_api_key_id),
-            "initial_api_key_prefix": initial_api_key_prefix,
-        }
-        payload.update((context or AuditContext()).to_payload())
-        self._logger.info(payload["event"], extra={"auth": payload})
-
-
-# ---------------------------------------------------------------------------
 # API Key Service
 # ---------------------------------------------------------------------------
 
@@ -197,12 +70,8 @@ class ApiKeyAuditService:
 class ApiKeyService:
     """Business logic for API key management and authentication."""
 
-    def __init__(
-        self,
-        *,
-        audit_service: Optional[ApiKeyAuditService] = None,
-    ) -> None:
-        self._audit = audit_service or ApiKeyAuditService()
+    def __init__(self) -> None:
+        pass
 
     # ------------------------------------------------------------------
     # Key generation and hashing
@@ -275,7 +144,7 @@ class ApiKeyService:
         await db.flush()
 
         # Audit log
-        self._audit.api_key_created(
+        await get_audit_service(db).api_key_created(
             user_id=user_id,
             username=user.username,
             api_key_id=api_key.id,
@@ -326,7 +195,7 @@ class ApiKeyService:
 
         # Audit log
         if api_key.user:
-            self._audit.api_key_revoked(
+            await get_audit_service(db).api_key_revoked(
                 user_id=api_key.user_id,
                 username=api_key.user.username,
                 api_key_id=api_key.id,
@@ -432,7 +301,7 @@ class ApiKeyService:
         api_key = result.scalar_one_or_none()
 
         if not api_key:
-            self._audit.api_key_auth_failure(
+            await get_audit_service(db).api_key_auth_failure(
                 reason="key_not_found",
                 api_key_prefix=prefix,
                 context=context,
@@ -443,7 +312,7 @@ class ApiKeyService:
 
         # Check if revoked
         if api_key.revoked_at is not None:
-            self._audit.api_key_auth_failure(
+            await get_audit_service(db).api_key_auth_failure(
                 reason="key_revoked",
                 api_key_prefix=api_key.prefix,
                 context=context,
@@ -452,7 +321,7 @@ class ApiKeyService:
 
         # Check if expired
         if api_key.expires_at <= now:
-            self._audit.api_key_auth_failure(
+            await get_audit_service(db).api_key_auth_failure(
                 reason="key_expired",
                 api_key_prefix=api_key.prefix,
                 context=context,
@@ -461,7 +330,7 @@ class ApiKeyService:
 
         # Check user status
         if api_key.user is None or api_key.user.status != UserStatus.ACTIVE:
-            self._audit.api_key_auth_failure(
+            await get_audit_service(db).api_key_auth_failure(
                 reason="user_inactive",
                 api_key_prefix=api_key.prefix,
                 context=context,
@@ -472,7 +341,7 @@ class ApiKeyService:
         api_key.last_used_at = now
 
         # Audit success
-        self._audit.api_key_auth_success(
+        await get_audit_service(db).api_key_auth_success(
             user_id=api_key.user.id,
             username=api_key.user.username,
             api_key_id=api_key.id,
@@ -489,7 +358,6 @@ api_key_service = ApiKeyService()
 
 __all__ = [
     "ApiKeyService",
-    "ApiKeyAuditService",
     "ApiKeyResult",
     "ApiKeyNotFoundError",
     "ApiKeyExpiredError",

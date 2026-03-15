@@ -13,10 +13,9 @@ from fastapi import HTTPException
 from app.models.models import Task, TaskCreate, TaskUpdate, TaskRead, TaskTimelineItem, UserAccount, Actor, Alert, Case
 from app.models.enums import TaskStatus, Priority
 from app.services.timeline_service import timeline_service
-from app.services.audit_service import TimelineAuditService
+from app.services.audit_service import get_audit_service
 
 logger = logging.getLogger(__name__)
-timeline_audit_service = TimelineAuditService()
 
 # Valid string values for task status and priority
 VALID_TASK_STATUSES = {e.value for e in TaskStatus}
@@ -115,11 +114,17 @@ class TaskService:
         if not db_task:
             return None
 
-        return await timeline_service.denormalize_entity_timeline(
+        db_task = await timeline_service.denormalize_entity_timeline(
             db,
             db_task,
             human_prefix="TSK",
             include_linked_timelines=include_linked_timelines,
+        )
+        return await timeline_service.coalesce_timeline_audit(
+            db,
+            entity_type="task",
+            entity_id=task_id,
+            entity=db_task,
         )
     
     async def get_tasks(
@@ -332,15 +337,22 @@ class TaskService:
                 if field in original_values and str(original_values.get(field)) != str(getattr(db_task, field, None))
             ]
             if audit_changes:
-                timeline_audit_service.log_entity_updated(
+                await get_audit_service(db).log_entity_updated(
                     entity_type="task",
                     entity_id=task_id,
-                    changes=audit_changes,
+                    before={field: original_values.get(field) for field in update_data},
+                    after={field: getattr(db_task, field, None) for field in update_data},
                     user=updated_by,
                 )
 
             logger.info(f"Task {task_id} updated by {updated_by}")
-            return await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK")
+            db_task = await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK")
+            return await timeline_service.coalesce_timeline_audit(
+                db,
+                entity_type="task",
+                entity_id=task_id,
+                entity=db_task,
+            )
             
         except Exception as e:
             await db.rollback()
@@ -362,10 +374,19 @@ class TaskService:
             await db.delete(db_task)
             await db.commit()
             
-            timeline_audit_service.log_entity_deleted(
+            await get_audit_service(db).log_entity_deleted(
                 entity_type="task",
                 entity_id=task_id,
                 user=deleted_by,
+                old_value={
+                    "id": db_task.id,
+                    "title": db_task.title,
+                    "description": db_task.description,
+                    "status": db_task.status,
+                    "priority": db_task.priority,
+                    "assignee": db_task.assignee,
+                    "case_id": db_task.case_id,
+                },
             )
             logger.info(f"Task {task_id} deleted by {deleted_by}")
             return True
@@ -411,15 +432,22 @@ class TaskService:
             await db.commit()
             await db.refresh(db_task)
             
-            timeline_audit_service.log_timeline_item_added(
+            await get_audit_service(db).log_timeline_item_added(
                 entity_type="task",
                 entity_id=task_id,
                 item_id=item_dict.get("id", ""),
                 item_type=item_dict.get("type", "unknown"),
                 user=added_by,
+                new_value=item_dict,
             )
             logger.info(f"Timeline item added to task by {added_by}")
-            return await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK")
+            db_task = await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK")
+            return await timeline_service.coalesce_timeline_audit(
+                db,
+                entity_type="task",
+                entity_id=task_id,
+                entity=db_task,
+            )
             
         except ValueError as e:
             await db.rollback()
@@ -476,7 +504,7 @@ class TaskService:
             updated_dict = timeline_service._find_item_by_id(db_task.timeline_items or [], item_id) or item_dict
             
             # Audit log the edit with field-level changes
-            timeline_audit_service.log_timeline_edit(
+            await get_audit_service(db).log_timeline_edit(
                 entity_type="task",
                 entity_id=task_id,
                 item_id=item_id,
@@ -492,7 +520,13 @@ class TaskService:
             logger.info(
                 f"Timeline item {item_id} (type: {updated_dict.get('type')}) updated in task {task_id} by {updated_by}"
             )
-            return await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK")
+            db_task = await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK")
+            return await timeline_service.coalesce_timeline_audit(
+                db,
+                entity_type="task",
+                entity_id=task_id,
+                entity=db_task,
+            )
             
         except HTTPException:
             await db.rollback()
@@ -529,15 +563,22 @@ class TaskService:
             await db.commit()
             await db.refresh(db_task)
             
-            timeline_audit_service.log_timeline_item_deleted(
+            await get_audit_service(db).log_timeline_item_deleted(
                 entity_type="task",
                 entity_id=task_id,
                 item_id=item_id,
                 item_type=item_to_remove.get("type", "unknown"),
                 user=removed_by,
+                old_value=item_to_remove,
             )
             logger.info(f"Timeline item {item_id} removed from task by {removed_by}")
-            return await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK")
+            db_task = await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK")
+            return await timeline_service.coalesce_timeline_audit(
+                db,
+                entity_type="task",
+                entity_id=task_id,
+                entity=db_task,
+            )
             
         except Exception as e:
             await db.rollback()

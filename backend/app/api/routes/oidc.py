@@ -12,7 +12,7 @@ from app.api.routes.admin_auth import require_admin_user
 from app.api.route_utils import issue_session_cookie
 from app.core.database import get_db
 from app.services.auth_service import RequestMetadata, auth_service
-from app.services.audit_service import AuthAuditService
+from app.services.audit_service import get_audit_service
 from app.services.oidc_service import (
     OIDCAuthenticationError,
     OIDCConfigurationError,
@@ -22,7 +22,6 @@ from app.services.oidc_service import (
 
 
 router = APIRouter(prefix="/auth/oidc", tags=["authentication"])
-audit_service = AuthAuditService()
 
 
 class OIDCConfigResponse(BaseModel):
@@ -108,7 +107,7 @@ async def finish_oidc_login(
             user=user,
             metadata=metadata,
         )
-        audit_service.oidc_login_success(
+        await get_audit_service(db).oidc_login_success(
             user_id=user.id,
             username=user.username,
             role=user.role,
@@ -120,7 +119,7 @@ async def finish_oidc_login(
         await db.commit()
     except (OIDCConfigurationError, OIDCAuthenticationError, OIDCStateError) as exc:
         await db.rollback()
-        audit_service.oidc_login_failure(
+        await get_audit_service(db).oidc_login_failure(
             reason=str(exc),
             oidc_issuer=None,
             context=metadata.to_audit_context(),

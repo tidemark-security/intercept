@@ -10,13 +10,14 @@ from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import paginate
 
 from app.models.models import (
-    Case, Alert, CaseAuditLog, Task, Actor, ActorSnapshot,
+    Case, Alert, Task, Actor, ActorSnapshot,
     CaseCreate, CaseUpdate, CaseRead,
     AlertCreate, AlertUpdate, AlertTriageRequest,
     CaseReadWithAlerts, AlertReadWithCase, CaseTimelineItem, CaseAlertClosureUpdate,
 )
 from app.models.enums import CaseStatus, AlertStatus, TaskStatus
 from app.services.timeline_service import timeline_service
+from app.services.audit_service import get_audit_service
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +92,7 @@ class CaseService:
                 select(Case)
                 .options(
                     selectinload(Case.alerts).selectinload(Alert.triage_recommendation),
-                    selectinload(Case.tasks),
-                    selectinload(Case.audit_logs)
+                    selectinload(Case.tasks)
                 )
                 .where(Case.id == case_id)
             )
@@ -128,9 +128,15 @@ class CaseService:
         if not db_case:
             return None
 
-        return await timeline_service.denormalize_entity_timeline(
+        db_case = await timeline_service.denormalize_entity_timeline(
             db, db_case, human_prefix="CAS",
             include_linked_timelines=include_linked_timelines
+        )
+        return await timeline_service.coalesce_timeline_audit(
+            db,
+            entity_type="case",
+            entity_id=case_id,
+            entity=db_case,
         )
     
     async def get_case_by_human_id(self, db: AsyncSession, human_id: str) -> Optional[Case]:
@@ -590,18 +596,26 @@ class CaseService:
                 entity_id=case_id, entity_type="case"
             )
             
-            # Create audit log
-            await self._create_audit_log(
-                db, case_id, "timeline_item_added", 
-                f"Timeline item added: {item_dict.get('type', 'unknown')}",
-                None, item_dict.get('content', ''), created_by
+            await get_audit_service(db).log_timeline_item_added(
+                entity_type="case",
+                entity_id=case_id,
+                item_id=item_dict.get("id", ""),
+                item_type=item_dict.get("type", "unknown"),
+                user=created_by,
+                new_value=item_dict,
             )
             
             await db.commit()
             await db.refresh(db_case)
             
             logger.info(f"Timeline item added to case by {created_by}")
-            return await timeline_service.denormalize_entity_timeline(db, db_case, human_prefix="CAS")
+            db_case = await timeline_service.denormalize_entity_timeline(db, db_case, human_prefix="CAS")
+            return await timeline_service.coalesce_timeline_audit(
+                db,
+                entity_type="case",
+                entity_id=case_id,
+                entity=db_case,
+            )
             
         except Exception as e:
             await db.rollback()
@@ -630,8 +644,6 @@ class CaseService:
             if not existing_item:
                 return None
             
-            old_content = existing_item.get('content', '')
-            
             # Update via timeline service with resource sync (handles task updates, etc.)
             result = await timeline_service.update_timeline_item_with_sync(
                 db, db_case, item_id, item_dict, updated_by
@@ -640,18 +652,28 @@ class CaseService:
             if result is None:
                 return None
 
-            # Create audit log
-            await self._create_audit_log(
-                db, case_id, "timeline_item_updated", 
-                f"Timeline item updated: {existing_item.get('type', 'unknown')}",
-                old_content, item_dict.get('content', ''), updated_by
+            updated_item = timeline_service._find_item_by_id(db_case.timeline_items or [], item_id) or item_dict
+            await get_audit_service(db).log_timeline_edit(
+                entity_type="case",
+                entity_id=case_id,
+                item_id=item_id,
+                item_type=updated_item.get("type", existing_item.get("type", "unknown")),
+                before=existing_item,
+                after=updated_item,
+                user=updated_by,
             )
 
             await db.commit()
             await db.refresh(db_case)
 
             logger.info(f"Timeline item {item_id} updated in case by {updated_by}")
-            return await timeline_service.denormalize_entity_timeline(db, db_case, human_prefix="CAS")
+            db_case = await timeline_service.denormalize_entity_timeline(db, db_case, human_prefix="CAS")
+            return await timeline_service.coalesce_timeline_audit(
+                db,
+                entity_type="case",
+                entity_id=case_id,
+                entity=db_case,
+            )
             
         except Exception as e:
             await db.rollback()
@@ -682,18 +704,26 @@ class CaseService:
             ):
                 return None
 
-            # Create audit log
-            await self._create_audit_log(
-                db, case_id, "timeline_item_deleted", 
-                f"Timeline item deleted: {item_to_remove.get('type', 'unknown')}",
-                item_to_remove.get('content', ''), None, deleted_by
+            await get_audit_service(db).log_timeline_item_deleted(
+                entity_type="case",
+                entity_id=case_id,
+                item_id=item_id,
+                item_type=item_to_remove.get("type", "unknown"),
+                user=deleted_by,
+                old_value=item_to_remove,
             )
 
             await db.commit()
             await db.refresh(db_case)
 
             logger.info(f"Timeline item {item_id} deleted from case by {deleted_by}")
-            return await timeline_service.denormalize_entity_timeline(db, db_case, human_prefix="CAS")
+            db_case = await timeline_service.denormalize_entity_timeline(db, db_case, human_prefix="CAS")
+            return await timeline_service.coalesce_timeline_audit(
+                db,
+                entity_type="case",
+                entity_id=case_id,
+                entity=db_case,
+            )
             
         except Exception as e:
             await db.rollback()
@@ -792,15 +822,27 @@ class CaseService:
         performed_by: str
     ) -> None:
         """Create an audit log entry."""
-        audit_log = CaseAuditLog(
-            case_id=case_id,
-            action=action,
+        event_type_map = {
+            "created": "case.created",
+            "deleted": "case.deleted",
+            "linked_items_closed": "case.linked_items_closed",
+            "status_changed": "case.status_changed",
+            "priority_changed": "case.priority_changed",
+            "assignee_changed": "case.assignee_changed",
+            "title_changed": "case.title_changed",
+            "description_changed": "case.description_changed",
+            "tags_changed": "case.tags_changed",
+        }
+        event_type = event_type_map.get(action, f"case.{action}")
+        await get_audit_service(db).log_event(
+            event_type=event_type,
+            entity_type="case",
+            entity_id=str(case_id),
             description=description,
             old_value=old_value,
             new_value=new_value,
-            performed_by=performed_by
+            performed_by=performed_by,
         )
-        db.add(audit_log)
 
 
 case_service = CaseService()

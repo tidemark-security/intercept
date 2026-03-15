@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { TimelineItemAudit } from './TimelineItemAudit';
 /**
  * Timeline item for process execution events.
  */
@@ -52,6 +53,10 @@ export type ProcessItem = {
      * Optional nested timeline items as replies (typed in Union definitions)
      */
     replies?: null;
+    /**
+     * Response-only audit metadata dynamically coalesced from audit logs
+     */
+    audit?: (TimelineItemAudit | null);
     process_name?: (string | null);
     process_id?: (number | null);
     parent_process_id?: (number | null);

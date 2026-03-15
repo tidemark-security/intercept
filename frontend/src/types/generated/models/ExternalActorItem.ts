@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { TimelineItemAudit } from './TimelineItemAudit';
 /**
  * Timeline item for tracking external actors (customers, vendors, partners).
  */
@@ -52,6 +53,10 @@ export type ExternalActorItem = {
      * Optional nested timeline items as replies (typed in Union definitions)
      */
     replies?: null;
+    /**
+     * Response-only audit metadata dynamically coalesced from audit logs
+     */
+    audit?: (TimelineItemAudit | null);
     actor_id?: (number | null);
     snapshot_hash?: (string | null);
     name?: (string | null);

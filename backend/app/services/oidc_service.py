@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import AccountType, UserRole, UserStatus
 from app.models.models import OIDCAuthRequest, USERNAME_REGEX, UserAccount
-from app.services import AuthAuditService
+from app.services import get_audit_service
 from app.services.auth_service import RequestMetadata
 from app.services.settings_service import SettingsService
 
@@ -49,11 +49,11 @@ class OIDCProviderConfiguration:
 
 
 class OIDCService:
-    def __init__(self, *, audit_service: Optional[AuthAuditService] = None) -> None:
-        self._audit = audit_service or AuthAuditService()
+    def __init__(self) -> None:
+        pass
 
     async def get_public_config(self, db: AsyncSession) -> dict[str, Any]:
-        settings = SettingsService(db)
+        settings = SettingsService(db)  # type: ignore[arg-type]
         enabled = bool(await settings.get("oidc.enabled", default=False))
         provider_name = str(await settings.get("oidc.provider_name", default="SSO"))
         return {"enabled": enabled, "providerName": provider_name}
@@ -62,7 +62,7 @@ class OIDCService:
         if user.role == UserRole.ADMIN:
             return True
 
-        settings = SettingsService(db)
+        settings = SettingsService(db)  # type: ignore[arg-type]
         bypass_users = await settings.get("oidc.sso_bypass_users", default=[])
         if isinstance(bypass_users, str):
             bypass_users = [bypass_users]
@@ -122,7 +122,10 @@ class OIDCService:
             auth = httpx.BasicAuth(provider.client_id, provider.client_secret)
 
         async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(provider.token_endpoint, data=token_data, auth=auth)
+            if auth is not None:
+                response = await client.post(provider.token_endpoint, data=token_data, auth=auth)
+            else:
+                response = await client.post(provider.token_endpoint, data=token_data)
             response.raise_for_status()
             token_payload = response.json()
 
@@ -191,7 +194,7 @@ class OIDCService:
             user.oidc_issuer = issuer
             user.oidc_subject = subject
             user.updated_at = datetime.now(timezone.utc)
-            self._audit.oidc_account_linked(
+            await get_audit_service(db).oidc_account_linked(
                 user_id=user.id,
                 username=user.username,
                 oidc_issuer=issuer,
@@ -201,7 +204,7 @@ class OIDCService:
             await db.flush()
             return user
 
-        settings = SettingsService(db)
+        settings = SettingsService(db)  # type: ignore[arg-type]
         jit_enabled = bool(await settings.get("oidc.jit_provisioning", default=True))
         if not jit_enabled:
             raise OIDCAuthenticationError("OIDC sign-in is not enabled for unprovisioned users")
@@ -234,7 +237,7 @@ class OIDCService:
         db.add(user)
         await db.flush()
 
-        self._audit.oidc_account_provisioned(
+        await get_audit_service(db).oidc_account_provisioned(
             user_id=user.id,
             username=user.username,
             role=user.role,
@@ -245,7 +248,7 @@ class OIDCService:
         return user
 
     async def resolve_role(self, db: AsyncSession, *, claims: dict[str, Any]) -> UserRole:
-        settings = SettingsService(db)
+        settings = SettingsService(db)  # type: ignore[arg-type]
         default_role = str(await settings.get("oidc.default_role", default=UserRole.ANALYST.value)).upper()
         role_claim_path = str(await settings.get("oidc.role_claim_path", default="")).strip()
         role_mapping = await settings.get("oidc.role_mapping", default={})
@@ -264,7 +267,7 @@ class OIDCService:
             raise OIDCConfigurationError("OIDC default role is invalid") from exc
 
     async def _load_provider_configuration(self, db: AsyncSession) -> OIDCProviderConfiguration:
-        settings = SettingsService(db)
+        settings = SettingsService(db)  # type: ignore[arg-type]
         discovery_url = await settings.get("oidc.discovery_url")
         client_id = await settings.get("oidc.client_id")
         client_secret = await settings.get("oidc.client_secret")

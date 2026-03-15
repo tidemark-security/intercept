@@ -3,6 +3,7 @@
 /* tslint:disable */
 /* eslint-disable */
 import type { SystemType } from './SystemType';
+import type { TimelineItemAudit } from './TimelineItemAudit';
 /**
  * Timeline item for affected systems (e.g. servers, workstations).
  */
@@ -53,6 +54,10 @@ export type SystemItem = {
      * Optional nested timeline items as replies (typed in Union definitions)
      */
     replies?: null;
+    /**
+     * Response-only audit metadata dynamically coalesced from audit logs
+     */
+    audit?: (TimelineItemAudit | null);
     hostname?: (string | null);
     ip_address?: (string | null);
     system_type?: (SystemType | null);

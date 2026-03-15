@@ -1257,7 +1257,7 @@ class DummyDataService:
             from sqlalchemy import text
 
             # Delete in proper order due to foreign key constraints
-            await db.execute(text("DELETE FROM case_audit_logs"))
+            await db.execute(text("DELETE FROM audit_logs"))
             await db.execute(text("DELETE FROM alerts"))
             await db.execute(text("DELETE FROM cases"))
             await db.commit()

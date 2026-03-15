@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 import secrets
 import string
-from typing import Optional
+from typing import Any, Optional, cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -27,7 +27,7 @@ from app.models.models import (
     AuthSession,
     UserAccount,
 )
-from app.services import AuditContext, AuthAuditService, PasswordHasher
+from app.services import AuditContext, PasswordHasher, get_audit_service
 from app.services.auth_service import RequestMetadata
 from app.services.notifications import email_service
 from app.services.security.password_hasher import Argon2Parameters
@@ -71,7 +71,6 @@ class AdminAuthService:
         self,
         *,
         password_hasher: Optional[PasswordHasher] = None,
-        audit_service: Optional[AuthAuditService] = None,
     ) -> None:
         self._hasher = password_hasher or PasswordHasher(
             Argon2Parameters(
@@ -83,8 +82,6 @@ class AdminAuthService:
                 encoding=get_local("auth.argon2.encoding"),
             )
         )
-        self._audit = audit_service or AuthAuditService()
-
     async def create_user(
         self,
         *,
@@ -161,7 +158,7 @@ class AdminAuthService:
         # Send temporary credential via email
         try:
             await email_service.send_temporary_credential(
-                recipient_email=user.email,
+                recipient_email=cast(str, user.email),
                 username=user.username,
                 temporary_password=temporary_password,
                 expires_in_minutes=30,
@@ -171,7 +168,7 @@ class AdminAuthService:
             # Continue anyway - the user was created successfully
 
         # Audit log
-        self._audit.user_created(
+        await get_audit_service(db).user_created(
             admin_user_id=admin_user_id,
             target_user_id=user.id,
             username=user.username,
@@ -250,7 +247,7 @@ class AdminAuthService:
         await db.commit()
 
         # Audit log
-        self._audit.user_status_changed(
+        await get_audit_service(db).user_status_changed(
             admin_user_id=admin_user_id,
             target_user_id=target_user_id,
             old_status=old_status,
@@ -364,7 +361,7 @@ class AdminAuthService:
             # Continue anyway - the reset was created successfully
 
         # Audit log
-        self._audit.password_reset_issued(
+        await get_audit_service(db).password_reset_issued(
             admin_user_id=admin_user_id,
             target_user_id=target_user_id,
             reset_request_id=reset_request.id,
@@ -400,7 +397,7 @@ class AdminAuthService:
         result = await db.execute(
             select(AuthSession).where(
                 AuthSession.user_id == user_id,
-                AuthSession.revoked_at.is_(None),
+                cast(Any, AuthSession.revoked_at).is_(None),
                 AuthSession.expires_at > now,
             )
         )

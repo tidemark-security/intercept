@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 import uuid
 import logging
 
+import json
+from sqlalchemy import select
+from sqlmodel import col
+from app.models.models import AuditLog
 from app.services.normalization_service import normalization_service
 
 if TYPE_CHECKING:
@@ -122,6 +126,104 @@ class TimelineService:
 
         entity.timeline_items = denormed
         return entity
+
+    async def coalesce_timeline_audit(
+        self,
+        db: AsyncSession,
+        *,
+        entity_type: str,
+        entity_id: int | str,
+        entity: Any,
+    ) -> Any:
+        """Annotate denormalized timeline items with audit metadata and tombstones."""
+        timeline_items = list(getattr(entity, "timeline_items", None) or [])
+        if not timeline_items:
+            return entity
+
+        result = await db.execute(
+            select(AuditLog)
+            .where(
+                AuditLog.entity_type == entity_type,
+                AuditLog.entity_id == str(entity_id),
+                col(AuditLog.item_id).is_not(None),
+                col(AuditLog.event_type).in_(("timeline.item.updated", "timeline.item.deleted")),
+            )
+            .order_by(col(AuditLog.performed_at).asc())
+        )
+        audit_rows = result.scalars().all()
+        if not audit_rows:
+            return entity
+
+        edited_item_ids = {
+            row.item_id
+            for row in audit_rows
+            if row.event_type == "timeline.item.updated" and row.item_id
+        }
+        deleted_items = [row for row in audit_rows if row.event_type == "timeline.item.deleted" and row.item_id]
+
+        self._annotate_items_with_audit(timeline_items, edited_item_ids)
+        self._inject_deleted_tombstones(timeline_items, deleted_items)
+        setattr(entity, "timeline_items", timeline_items)
+        return entity
+
+    def _annotate_items_with_audit(self, items: List[Dict[str, Any]], edited_item_ids: Set[str]) -> None:
+        for item in items:
+            if item.get("id") in edited_item_ids:
+                item["audit"] = {"edited": True}
+            replies = item.get("replies")
+            if replies and isinstance(replies, list):
+                self._annotate_items_with_audit(replies, edited_item_ids)
+
+    def _inject_deleted_tombstones(self, items: List[Dict[str, Any]], deleted_rows: List[AuditLog]) -> None:
+        for row in deleted_rows:
+            if not row.item_id:
+                continue
+            snapshot = self._load_audit_snapshot(row.old_value)
+            tombstone = {
+                "id": row.item_id,
+                "type": "_deleted",
+                "deleted_at": row.performed_at.isoformat(),
+                "deleted_by": row.performed_by or "system",
+                "original_type": snapshot.get("type", "unknown"),
+                "original_created_at": snapshot.get("created_at"),
+                "original_created_by": snapshot.get("created_by"),
+                "parent_id": snapshot.get("parent_id"),
+                "replies": [],
+            }
+            parent_id = snapshot.get("parent_id")
+            if parent_id and self._add_reply_to_parent(items, parent_id, tombstone):
+                continue
+            if not self._contains_item(items, row.item_id):
+                items.append(tombstone)
+
+        items.sort(key=self._timeline_sort_key)
+
+    def _contains_item(self, items: List[Dict[str, Any]], item_id: str) -> bool:
+        for item in items:
+            if item.get("id") == item_id:
+                return True
+            replies = item.get("replies")
+            if replies and isinstance(replies, list) and self._contains_item(replies, item_id):
+                return True
+        return False
+
+    def _load_audit_snapshot(self, value: Optional[str]) -> Dict[str, Any]:
+        if not value:
+            return {}
+        try:
+            parsed = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _timeline_sort_key(self, item: Dict[str, Any]) -> str:
+        return str(
+            item.get("original_created_at")
+            or item.get("created_at")
+            or item.get("timestamp")
+            or item.get("deleted_at")
+            or ""
+        )
     
     async def _inject_linked_entity_items(
         self,
@@ -523,6 +625,8 @@ class TimelineService:
         )
         
         task = await task_service.create_task(db, task_create, created_by)
+        if task.id is None:
+            raise ValueError("Task creation did not return an ID")
         return task.id
 
     async def _update_task_for_timeline_item(
@@ -714,16 +818,17 @@ class TimelineService:
                 if not success:
                     logger.warning(f"Task {task_id} not found, may have been deleted")
             
-            # For tasks, we need to update timeline-specific reference fields in the JSON
-            # (flagged, highlighted, tags, timestamp) while leaving task entity fields alone
-            timeline_specific_update = {"updated_at": datetime.now(timezone.utc).isoformat()}
+            # For tasks, update timeline-specific reference fields in the JSON
+            # while leaving task entity fields on the Task row itself.
+            timeline_specific_update: Dict[str, Any] = {}
             
             # Include any timeline-specific reference fields that were provided
             for field in ("flagged", "highlighted", "tags", "timestamp"):
                 if field in item:
                     timeline_specific_update[field] = item[field]
             
-            self.update_timeline_item(entity, item_id, timeline_specific_update, updated_by=updated_by)
+            if timeline_specific_update:
+                self.update_timeline_item(entity, item_id, timeline_specific_update, updated_by=updated_by)
             
             # Return the existing item (caller should re-read with denormalization)
             return existing
@@ -900,8 +1005,6 @@ class TimelineService:
                 new_item["id"] = item_id
                 new_item["created_at"] = created_at
                 new_item["created_by"] = created_by
-                new_item["updated_at"] = datetime.now(timezone.utc).isoformat()
-                new_item["updated_by"] = updated_by
                 
                 # Preserve existing replies - don't allow updates to overwrite the replies structure
                 # Replies should only be modified through add_timeline_item with parent_id

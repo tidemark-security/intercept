@@ -3,6 +3,7 @@
 /* tslint:disable */
 /* eslint-disable */
 import type { ObservableType } from './ObservableType';
+import type { TimelineItemAudit } from './TimelineItemAudit';
 /**
  * Timeline item for observables (IOCs).
  */
@@ -53,6 +54,10 @@ export type ObservableItem = {
      * Optional nested timeline items as replies (typed in Union definitions)
      */
     replies?: null;
+    /**
+     * Response-only audit metadata dynamically coalesced from audit logs
+     */
+    audit?: (TimelineItemAudit | null);
     observable_type?: (ObservableType | null);
     observable_value?: (string | null);
 };

@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 from app.core.settings_registry import get_local
 from app.models.enums import AccountType, SessionRevokedReason, UserRole, UserStatus
 from app.models.models import AuthSession, UserAccount, PASSWORD_POLICY_REGEX
-from app.services import AuditContext, AuthAuditService, PasswordHasher
+from app.services import AuditContext, PasswordHasher, get_audit_service
 from app.services.passkey_service import passkey_service
 from app.services.settings_service import SettingsService
 from app.services.security.password_hasher import Argon2Parameters
@@ -142,7 +142,6 @@ class AuthService:
         self,
         *,
         password_hasher: Optional[PasswordHasher] = None,
-        audit_service: Optional[AuthAuditService] = None,
     ) -> None:
         # Argon2 params are local_only (changing breaks existing hashes)
         argon2_params = Argon2Parameters(
@@ -154,7 +153,6 @@ class AuthService:
             encoding=get_local("auth.argon2.encoding"),
         )
         self._password_hasher = password_hasher or PasswordHasher(argon2_params)
-        self._audit = audit_service or AuthAuditService()
         # Session timeouts are local_only (read per-request from frozen values)
         self._idle_timeout = timedelta(hours=get_local("auth.session.idle_timeout_hours"))
         self._absolute_timeout = timedelta(hours=get_local("auth.session.absolute_timeout_hours"))
@@ -189,7 +187,7 @@ class AuthService:
         return int(threshold), timedelta(minutes=int(duration_minutes))
 
     async def _is_oidc_password_login_enforced(self, db: AsyncSession) -> bool:
-        svc = SettingsService(db)
+        svc = SettingsService(db)  # type: ignore[arg-type]
         return bool(await svc.get("oidc.enabled", default=False))
 
     # ------------------------------------------------------------------
@@ -212,7 +210,7 @@ class AuthService:
         user = result.scalar_one_or_none()
 
         if user is None:
-            self._audit.login_failure(
+            await get_audit_service(db).login_failure(
                 username=normalized_username,
                 role=None,
                 reason="invalid_credentials",
@@ -223,7 +221,7 @@ class AuthService:
 
         # Block NHI accounts from password authentication
         if user.account_type == AccountType.NHI:
-            self._audit.login_failure(
+            await get_audit_service(db).login_failure(
                 username=normalized_username,
                 role=user.role,
                 reason="nhi_password_login_blocked",
@@ -239,7 +237,7 @@ class AuthService:
             user.status = UserStatus.ACTIVE
 
         if user.status == UserStatus.DISABLED:
-            self._audit.login_failure(
+            await get_audit_service(db).login_failure(
                 username=normalized_username,
                 role=user.role,
                 reason="account_disabled",
@@ -249,7 +247,7 @@ class AuthService:
             raise AccountDisabledError()
 
         if user.lockout_expires_at and user.lockout_expires_at > now:
-            self._audit.login_failure(
+            await get_audit_service(db).login_failure(
                 username=normalized_username,
                 role=user.role,
                 reason="lockout_active",
@@ -262,7 +260,7 @@ class AuthService:
             from app.services.oidc_service import oidc_service
 
             if not await oidc_service.is_password_login_allowed(db, user=user):
-                self._audit.login_failure(
+                await get_audit_service(db).login_failure(
                     username=normalized_username,
                     role=user.role,
                     reason="oidc_password_login_blocked",
@@ -273,7 +271,7 @@ class AuthService:
 
         has_active_passkeys = await passkey_service.user_has_active_passkeys(db, user_id=user.id)
         if has_active_passkeys:
-            self._audit.login_failure(
+            await get_audit_service(db).login_failure(
                 username=normalized_username,
                 role=user.role,
                 reason="password_login_disabled_passkey_registered",
@@ -283,7 +281,7 @@ class AuthService:
             raise PasswordLoginDisabledError()
 
         if not user.password_hash:
-            self._audit.login_failure(
+            await get_audit_service(db).login_failure(
                 username=normalized_username,
                 role=user.role,
                 reason="password_unavailable",
@@ -305,14 +303,14 @@ class AuthService:
             if user.failed_login_attempts >= lockout_threshold:
                 user.status = UserStatus.LOCKED
                 user.lockout_expires_at = now + lockout_duration
-                self._audit.account_locked(
+                await get_audit_service(db).account_locked(
                     user_id=user.id,
                     username=user.username,
                     role=user.role,
                     lockout_expires_at=user.lockout_expires_at,
                     context=metadata.to_audit_context(),
                 )
-                self._audit.login_failure(
+                await get_audit_service(db).login_failure(
                     username=normalized_username,
                     role=user.role,
                     reason="lockout",
@@ -321,7 +319,7 @@ class AuthService:
                 )
                 raise AccountLockedError(lockout_expires_at=user.lockout_expires_at)
 
-            self._audit.login_failure(
+            await get_audit_service(db).login_failure(
                 username=normalized_username,
                 role=user.role,
                 reason="invalid_credentials",
@@ -367,7 +365,7 @@ class AuthService:
         db.add(session)
         await db.flush()
 
-        self._audit.login_success(
+        await get_audit_service(db).login_success(
             user_id=user.id,
             username=user.username,
             role=user.role,
@@ -398,7 +396,7 @@ class AuthService:
             session.user = await db.get(UserAccount, session.user_id)
 
         if session.user is not None:
-            self._audit.logout(
+            await get_audit_service(db).logout(
                 user_id=session.user.id,
                 session_id=session.id,
                 reason=reason,
@@ -452,6 +450,8 @@ class AuthService:
             user = await db.get(UserAccount, session.user_id)
         if user is None:
             raise SessionNotFoundError()
+        if not user.password_hash:
+            raise InvalidCredentialsError()
 
         loop = asyncio.get_running_loop()
         current_valid = await loop.run_in_executor(
@@ -495,7 +495,7 @@ class AuthService:
         await db.commit()
 
         # Audit log and metrics
-        self._audit.password_changed(
+        await get_audit_service(db).password_changed(
             user_id=user.id,
             username=user.username,
             was_forced=was_forced,

@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { TimelineItemAudit } from './TimelineItemAudit';
 /**
  * Timeline item for forensic artifacts.
  */
@@ -52,6 +53,10 @@ export type ForensicArtifactItem = {
      * Optional nested timeline items as replies (typed in Union definitions)
      */
     replies?: null;
+    /**
+     * Response-only audit metadata dynamically coalesced from audit logs
+     */
+    audit?: (TimelineItemAudit | null);
     hash?: (string | null);
     hash_typoe?: (string | null);
     url?: (string | null);

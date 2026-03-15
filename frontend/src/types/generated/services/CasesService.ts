@@ -350,9 +350,14 @@ export class CasesService {
     public static generateDownloadUrlApiV1CasesCaseIdTimelineItemsItemIdDownloadUrlGet({
         caseId,
         itemId,
+        download = false,
     }: {
         caseId: number,
         itemId: string,
+        /**
+         * Generate a forced-download URL
+         */
+        download?: boolean,
     }): CancelablePromise<PresignedDownloadResponse> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -360,6 +365,9 @@ export class CasesService {
             path: {
                 'case_id': caseId,
                 'item_id': itemId,
+            },
+            query: {
+                'download': download,
             },
             errors: {
                 422: `Validation Error`,

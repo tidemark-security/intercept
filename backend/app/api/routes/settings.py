@@ -15,7 +15,9 @@ from app.models.models import (
     AppSettingCreate,
     AppSettingUpdate,
     AppSettingRead,
+    UserAccount,
 )
+from app.services.audit_service import AuditContext
 from app.services.settings_service import SettingsService
 
 router = APIRouter(
@@ -39,7 +41,7 @@ async def get_all_settings(
     Returns settings with secret values masked.
     Environment variables take precedence over database values.
     """
-    service = SettingsService(db)
+    service = SettingsService(db)  # type: ignore[arg-type]
     return await service.get_all_settings(category=category, include_secrets=False)
 
 
@@ -55,7 +57,7 @@ async def get_setting(
     Returns setting with secret value masked.
     Environment variables take precedence over database values.
     """
-    service = SettingsService(db)
+    service = SettingsService(db)  # type: ignore[arg-type]
     setting = await service.get_setting(key, include_secret=False)
     
     if not setting:
@@ -69,7 +71,9 @@ async def get_setting(
 
 @router.post("", response_model=AppSettingRead, status_code=status.HTTP_201_CREATED)
 async def create_setting(
+    request: Request,
     setting: AppSettingCreate,
+    current_user: UserAccount = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -79,10 +83,19 @@ async def create_setting(
     Secret values will be encrypted automatically.
     Returns created setting with secret value masked.
     """
-    service = SettingsService(db)
+    service = SettingsService(db)  # type: ignore[arg-type]
+    audit_context = AuditContext(
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        correlation_id=request.headers.get("x-correlation-id"),
+    )
     
     try:
-        return await service.create_setting(setting)
+        return await service.create_setting(
+            setting,
+            performed_by=current_user.username,
+            audit_context=audit_context,
+        )
     except ValueError as e:
         detail = str(e)
         code = (
@@ -95,8 +108,10 @@ async def create_setting(
 
 @router.put("/{key}", response_model=AppSettingRead)
 async def update_setting(
+    request: Request,
     key: str,
     setting_update: AppSettingUpdate,
+    current_user: UserAccount = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -107,10 +122,20 @@ async def update_setting(
     Secret values will be encrypted automatically.
     Returns updated setting with secret value masked.
     """
-    service = SettingsService(db)
+    service = SettingsService(db)  # type: ignore[arg-type]
+    audit_context = AuditContext(
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        correlation_id=request.headers.get("x-correlation-id"),
+    )
     
     try:
-        return await service.update_setting(key, setting_update)
+        return await service.update_setting(
+            key,
+            setting_update,
+            performed_by=current_user.username,
+            audit_context=audit_context,
+        )
     except ValueError as e:
         detail = str(e)
         code = (
@@ -123,7 +148,9 @@ async def update_setting(
 
 @router.delete("/{key}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_setting(
+    request: Request,
     key: str,
+    current_user: UserAccount = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -132,10 +159,19 @@ async def delete_setting(
     Requires ADMIN role.
     Returns 204 No Content on success.
     """
-    service = SettingsService(db)
+    service = SettingsService(db)  # type: ignore[arg-type]
+    audit_context = AuditContext(
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+        correlation_id=request.headers.get("x-correlation-id"),
+    )
     
     try:
-        deleted = await service.delete_setting(key)
+        deleted = await service.delete_setting(
+            key,
+            performed_by=current_user.username,
+            audit_context=audit_context,
+        )
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

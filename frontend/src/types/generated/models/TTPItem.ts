@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { TimelineItemAudit } from './TimelineItemAudit';
 /**
  * Timeline item for linking to MITRE ATT&CK TTPs.
  */
@@ -52,6 +53,10 @@ export type TTPItem = {
      * Optional nested timeline items as replies (typed in Union definitions)
      */
     replies?: null;
+    /**
+     * Response-only audit metadata dynamically coalesced from audit logs
+     */
+    audit?: (TimelineItemAudit | null);
     mitre_id?: (string | null);
     title?: (string | null);
     url?: (string | null);

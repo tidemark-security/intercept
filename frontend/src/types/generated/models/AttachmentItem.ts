@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { TimelineItemAudit } from './TimelineItemAudit';
 import type { UploadStatus } from './UploadStatus';
 /**
  * Timeline item for file attachments.
@@ -53,6 +54,10 @@ export type AttachmentItem = {
      * Optional nested timeline items as replies (typed in Union definitions)
      */
     replies?: null;
+    /**
+     * Response-only audit metadata dynamically coalesced from audit logs
+     */
+    audit?: (TimelineItemAudit | null);
     file_name?: (string | null);
     mime_type?: (string | null);
     file_size?: (number | null);

@@ -431,9 +431,14 @@ export class AlertsService {
     public static generateDownloadUrlApiV1AlertsAlertIdTimelineItemsItemIdDownloadUrlGet({
         alertId,
         itemId,
+        download = false,
     }: {
         alertId: number,
         itemId: string,
+        /**
+         * Generate a forced-download URL
+         */
+        download?: boolean,
     }): CancelablePromise<PresignedDownloadResponse> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -441,6 +446,9 @@ export class AlertsService {
             path: {
                 'alert_id': alertId,
                 'item_id': itemId,
+            },
+            query: {
+                'download': download,
             },
             errors: {
                 422: `Validation Error`,

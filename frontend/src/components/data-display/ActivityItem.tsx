@@ -23,6 +23,7 @@ interface ActivityItemRootProps extends React.HTMLAttributes<HTMLDivElement> {
   createdAtValue?: string | null;
   /** Sort field to determine which timestamp to display */
   sortBy?: 'created_at' | 'timestamp';
+  edited?: boolean;
   icon?: React.ReactNode;
   contents?: React.ReactNode;
   replies?: React.ReactNode;
@@ -62,6 +63,7 @@ const ActivityItemRoot = React.forwardRef<
     timestampValue,
     createdAtValue,
     sortBy = 'timestamp',
+    edited = false,
     icon = <MessageSquare />,
     contents,
     replies,
@@ -347,6 +349,11 @@ const ActivityItemRoot = React.forwardRef<
                   <span className="text-caption font-caption text-subtext-color w-24 text-right shrink-0">
                     {displayTimestamp}
                   </span>
+                  {edited ? (
+                    <span className="text-caption font-caption text-subtext-color shrink-0">
+                      (edited)
+                    </span>
+                  ) : null}
                 </div>
               ) : null}
             </div>

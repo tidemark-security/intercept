@@ -19,14 +19,13 @@ from app.services.auth_service import (
     auth_service,
 )
 from app.services.api_key_service import (
-    ApiKeyAuditService,
     ApiKeyExpiredError,
     ApiKeyNotFoundError,
     ApiKeyRevokedError,
     UserInactiveError,
     api_key_service,
 )
-from app.services.audit_service import AuditContext
+from app.services.audit_service import AuditContext, get_audit_service
 from app.services.passkey_service import (
     PasskeyCredentialNotFoundError,
     PasskeyOwnershipError,
@@ -767,8 +766,7 @@ async def create_nhi_account(
     )
     
     # Audit log for NHI creation
-    api_key_audit = ApiKeyAuditService()
-    api_key_audit.nhi_account_created(
+    await get_audit_service(db).nhi_account_created(
         admin_user_id=admin_user.id,
         admin_username=admin_user.username,
         nhi_user_id=nhi_account.id,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.admin_auth import require_admin_user, require_authenticated_user
@@ -18,7 +18,9 @@ from app.models.models import (
     MaxMindConfigureRequest,
     MaxMindConfigureResponse,
     MaxMindDatabaseStatus,
+    UserAccount,
 )
+from app.services.audit_service import AuditContext
 from app.services.enrichment.registry import enrichment_registry
 from app.services.enrichment.service import enrichment_service
 from app.services.maxmind_service import maxmind_service
@@ -149,10 +151,17 @@ async def _upsert_setting(
     value: str,
     is_secret: bool = False,
     value_type: SettingType = SettingType.STRING,
+    performed_by: Optional[str] = None,
+    audit_context: Optional[AuditContext] = None,
 ) -> None:
     existing = await settings_service.get_setting(key, include_secret=True)
     if existing is not None and existing.id > 0:
-        await settings_service.update_setting(key, AppSettingUpdate(value=value))
+        await settings_service.update_setting(
+            key,
+            AppSettingUpdate(value=value),
+            performed_by=performed_by,
+            audit_context=audit_context,
+        )
         return
 
     await settings_service.create_setting(
@@ -163,41 +172,58 @@ async def _upsert_setting(
             is_secret=is_secret,
             category="enrichment",
             description="",
-        )
+        ),
+        performed_by=performed_by,
+        audit_context=audit_context,
     )
 
 
 @admin_router.post("/maxmind/configure", response_model=MaxMindConfigureResponse)
 async def configure_maxmind(
+    http_request: Request,
     request: MaxMindConfigureRequest,
+    current_user: UserAccount = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     try:
         parsed = maxmind_service.parse_geoip_conf(request.conf_text)
         settings_service = SettingsService(db)  # type: ignore[arg-type]
+        audit_context = AuditContext(
+            ip_address=http_request.client.host if http_request.client else None,
+            user_agent=http_request.headers.get("user-agent"),
+            correlation_id=http_request.headers.get("x-correlation-id"),
+        )
 
         await _upsert_setting(
             settings_service,
             key="enrichment.maxmind.account_id",
             value=parsed["account_id"],
+            performed_by=current_user.username,
+            audit_context=audit_context,
         )
         await _upsert_setting(
             settings_service,
             key="enrichment.maxmind.license_key",
             value=parsed["license_key"],
             is_secret=True,
+            performed_by=current_user.username,
+            audit_context=audit_context,
         )
         await _upsert_setting(
             settings_service,
             key="enrichment.maxmind.edition_ids",
             value=maxmind_service.serialize_edition_ids(parsed["edition_ids"]),
             value_type=SettingType.JSON,
+            performed_by=current_user.username,
+            audit_context=audit_context,
         )
         await _upsert_setting(
             settings_service,
             key="enrichment.maxmind.enabled",
             value="true",
             value_type=SettingType.BOOLEAN,
+            performed_by=current_user.username,
+            audit_context=audit_context,
         )
 
         task_id = await maxmind_service.enqueue_update(db, reschedule=True)

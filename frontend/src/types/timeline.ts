@@ -23,11 +23,34 @@ import type { RegistryChangeItem } from '@/types/generated/models/RegistryChange
 import type { TaskItem } from '@/types/generated/models/TaskItem';
 import type { TTPItem } from '@/types/generated/models/TTPItem';
 
+export interface TimelineItemAudit {
+  edited: boolean;
+}
+
+export interface DeletedItem {
+  id: string;
+  type: '_deleted';
+  created_by?: string | null;
+  created_at?: string | null;
+  timestamp?: string | null;
+  description?: string | null;
+  flagged?: boolean;
+  highlighted?: boolean;
+  deleted_at: string;
+  deleted_by: string;
+  original_type: string;
+  original_created_at?: string | null;
+  original_created_by?: string | null;
+  parent_id?: string | null;
+  replies?: TimelineItem[] | null;
+}
+
 /**
  * Base timeline item type union (before recursive replies)
  * Matches the backend CaseTimelineItem Union type
  */
 type TimelineItemBase =
+  | DeletedItem
   | InternalActorItem
   | ExternalActorItem
   | ThreatActorItem
@@ -53,6 +76,7 @@ type TimelineItemBase =
 export type TimelineItem = TimelineItemBase & {
   parent_id?: string | null;
   replies?: TimelineItem[] | null;
+  audit?: TimelineItemAudit | null;
   /** 
    * For alert/task items on a case timeline, this contains the timeline items
    * from the linked alert or task (populated when include_linked_timelines=true)
@@ -65,6 +89,10 @@ export type TimelineItem = TimelineItemBase & {
  */
 export function isAlertItem(item: TimelineItem): item is AlertItem {
   return item.type === 'alert';
+}
+
+export function isDeletedItem(item: TimelineItem): item is DeletedItem {
+  return item.type === '_deleted';
 }
 
 /**

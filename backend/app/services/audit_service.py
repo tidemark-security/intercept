@@ -1,17 +1,20 @@
 from __future__ import annotations
 
-"""Structured audit helpers for authentication flows."""
+"""Persisted audit logging helpers."""
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import logging
 from typing import Any, Optional
 from uuid import UUID
 
-from app.models.enums import ResetDeliveryChannel, SessionRevokedReason, UserRole, UserStatus
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.models import AuditLog, AuditLogRead
 
 
-logger = logging.getLogger("app.audit.auth")
+logger = logging.getLogger("app.audit")
 
 
 @dataclass(slots=True)
@@ -33,477 +36,468 @@ class AuditContext:
         return payload
 
 
-class AuthAuditService:
-    """Emit structured audit logs and metrics for authentication events."""
+def _serialize_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
 
-    def __init__(self, *, logger_: Optional[logging.Logger] = None) -> None:
+    def default_serializer(item: Any) -> Any:
+        if isinstance(item, datetime):
+            return item.isoformat()
+        if isinstance(item, UUID):
+            return str(item)
+        if hasattr(item, "value"):
+            return item.value
+        if hasattr(item, "model_dump"):
+            return item.model_dump(mode="json")
+        return str(item)
+
+    return json.dumps(value, default=default_serializer, sort_keys=True)
+
+
+class AuditService:
+    """Persist audit rows to PostgreSQL and emit structured logs."""
+
+    def __init__(self, db: AsyncSession, *, logger_: Optional[logging.Logger] = None) -> None:
+        self._db = db
         self._logger = logger_ or logger
 
-    # ------------------------------------------------------------------
-    # Login / logout events
-    # ------------------------------------------------------------------
+    @staticmethod
+    def compute_changes(old_value: Optional[str], new_value: Optional[str]) -> list[dict[str, Any]]:
+        return AuditLogRead.compute_changes(old_value, new_value)
 
-    def login_success(
+    async def log_event(
         self,
         *,
-        user_id: UUID,
-        username: str,
-        role: UserRole,
-        session_id: UUID,
-        issued_at: datetime,
-        expires_at: datetime,
+        event_type: str,
+        entity_type: Optional[str] = None,
+        entity_id: Optional[str] = None,
+        item_id: Optional[str] = None,
+        description: Optional[str] = None,
+        old_value: Any = None,
+        new_value: Any = None,
+        performed_by: Optional[str] = None,
         context: Optional[AuditContext] = None,
-    ) -> None:
-        """Record a successful login event."""
+        extra_payload: Optional[dict[str, Any]] = None,
+    ) -> AuditLog:
+        audit_context = context or AuditContext()
+        audit_log = AuditLog(
+            event_type=event_type,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            item_id=item_id,
+            description=description,
+            old_value=_serialize_value(old_value),
+            new_value=_serialize_value(new_value),
+            performed_by=performed_by,
+            ip_address=audit_context.ip_address,
+            user_agent=audit_context.user_agent,
+            correlation_id=audit_context.correlation_id,
+        )
+        self._db.add(audit_log)
+        await self._db.flush()
 
         payload = {
-            "event": "auth.login.success",
-            "user_id": str(user_id),
-            "username": username,
-            "role": role.value,
-            "session_id": str(session_id),
-            "issued_at": issued_at.isoformat(),
-            "expires_at": expires_at.isoformat(),
-        }
-        payload.update((context or AuditContext()).to_payload())
-
-        self._logger.info(payload["event"], extra={"auth": payload})
-
-    def login_failure(
-        self,
-        *,
-        username: str,
-        role: Optional[UserRole],
-        reason: str,
-        attempts_remaining: Optional[int],
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """Record a failed login event."""
-
-        payload = {
-            "event": "auth.login.failure",
-            "username": username,
-            "role": role.value if role else None,
-            "reason": reason,
-            "attempts_remaining": attempts_remaining,
-        }
-        payload.update((context or AuditContext()).to_payload())
-
-        self._logger.warning(payload["event"], extra={"auth": payload})
-
-    def logout(
-        self,
-        *,
-        user_id: UUID,
-        session_id: UUID,
-        reason: SessionRevokedReason,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """Record an explicit session revocation."""
-
-        payload = {
-            "event": "auth.logout",
-            "user_id": str(user_id),
-            "session_id": str(session_id),
-            "reason": reason.value,
-        }
-        payload.update((context or AuditContext()).to_payload())
-
-        self._logger.info(payload["event"], extra={"auth": payload})
-
-    def oidc_login_success(
-        self,
-        *,
-        user_id: UUID,
-        username: str,
-        role: UserRole,
-        oidc_issuer: str,
-        oidc_subject: str,
-        session_id: UUID,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        payload = {
-            "event": "auth.oidc.login.success",
-            "user_id": str(user_id),
-            "username": username,
-            "role": role.value,
-            "oidc_issuer": oidc_issuer,
-            "oidc_subject": oidc_subject,
-            "session_id": str(session_id),
-        }
-        payload.update((context or AuditContext()).to_payload())
-
-        self._logger.info(payload["event"], extra={"auth": payload})
-
-    def oidc_login_failure(
-        self,
-        *,
-        reason: str,
-        oidc_issuer: Optional[str],
-        username: Optional[str] = None,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        payload = {
-            "event": "auth.oidc.login.failure",
-            "reason": reason,
-            "oidc_issuer": oidc_issuer,
-            "username": username,
-        }
-        payload.update((context or AuditContext()).to_payload())
-
-        self._logger.warning(payload["event"], extra={"auth": payload})
-
-    def oidc_account_linked(
-        self,
-        *,
-        user_id: UUID,
-        username: str,
-        oidc_issuer: str,
-        oidc_subject: str,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        payload = {
-            "event": "auth.oidc.account_linked",
-            "user_id": str(user_id),
-            "username": username,
-            "oidc_issuer": oidc_issuer,
-            "oidc_subject": oidc_subject,
-        }
-        payload.update((context or AuditContext()).to_payload())
-
-        self._logger.info(payload["event"], extra={"auth": payload})
-
-    def oidc_account_provisioned(
-        self,
-        *,
-        user_id: UUID,
-        username: str,
-        role: UserRole,
-        oidc_issuer: str,
-        oidc_subject: str,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        payload = {
-            "event": "auth.oidc.account_provisioned",
-            "user_id": str(user_id),
-            "username": username,
-            "role": role.value,
-            "oidc_issuer": oidc_issuer,
-            "oidc_subject": oidc_subject,
-        }
-        payload.update((context or AuditContext()).to_payload())
-
-        self._logger.info(payload["event"], extra={"auth": payload})
-
-    # ------------------------------------------------------------------
-    # Security protections
-    # ------------------------------------------------------------------
-
-    def account_locked(
-        self,
-        *,
-        user_id: UUID,
-        username: str,
-        role: UserRole,
-        lockout_expires_at: datetime,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """Record an account lockout event."""
-
-        payload = {
-            "event": "auth.lockout",
-            "user_id": str(user_id),
-            "username": username,
-            "role": role.value,
-            "lockout_expires_at": lockout_expires_at.isoformat(),
-        }
-        payload.update((context or AuditContext()).to_payload())
-
-        self._logger.warning(payload["event"], extra={"auth": payload})
-
-    # ------------------------------------------------------------------
-    # Administrative actions
-    # ------------------------------------------------------------------
-
-    def user_created(
-        self,
-        *,
-        admin_user_id: UUID,
-        target_user_id: UUID,
-        username: str,
-        email: str,
-        role: UserRole,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """Record a user creation event by an administrator."""
-
-        payload = {
-            "event": "auth.admin.user_created",
-            "admin_user_id": str(admin_user_id),
-            "target_user_id": str(target_user_id),
-            "username": username,
-            "email": email,
-            "role": role.value,
-        }
-        payload.update((context or AuditContext()).to_payload())
-
-        self._logger.info(payload["event"], extra={"auth": payload})
-
-    def user_status_changed(
-        self,
-        *,
-        admin_user_id: UUID,
-        target_user_id: UUID,
-        old_status: UserStatus,
-        new_status: UserStatus,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """Record a user status change by an administrator."""
-
-        payload = {
-            "event": "auth.admin.user_status_changed",
-            "admin_user_id": str(admin_user_id),
-            "target_user_id": str(target_user_id),
-            "old_status": old_status.value,
-            "new_status": new_status.value,
-        }
-        payload.update((context or AuditContext()).to_payload())
-
-        self._logger.info(payload["event"], extra={"auth": payload})
-
-    def password_reset_issued(
-        self,
-        *,
-        admin_user_id: UUID,
-        target_user_id: UUID,
-        reset_request_id: UUID,
-        delivery_channel: str,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """Record an administrator-initiated password reset."""
-
-        payload = {
-            "event": "auth.admin.password_reset_issued",
-            "admin_user_id": str(admin_user_id),
-            "target_user_id": str(target_user_id),
-            "reset_request_id": str(reset_request_id),
-            "delivery_channel": delivery_channel,
-        }
-        payload.update((context or AuditContext()).to_payload())
-
-        self._logger.info(payload["event"], extra={"auth": payload})
-
-    def admin_reset_issued(
-        self,
-        *,
-        admin_id: UUID,
-        admin_username: str,
-        target_user_id: UUID,
-        target_username: str,
-        delivery_channel: ResetDeliveryChannel,
-        reset_request_id: UUID,
-        expires_at: datetime,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """Record an administrator-initiated password reset."""
-
-        payload = {
-            "event": "auth.admin.reset_issued",
-            "admin_id": str(admin_id),
-            "admin_username": admin_username,
-            "target_user_id": str(target_user_id),
-            "target_username": target_username,
-            "delivery_channel": delivery_channel.value,
-            "reset_request_id": str(reset_request_id),
-            "expires_at": expires_at.isoformat(),
-        }
-        payload.update((context or AuditContext()).to_payload())
-
-        self._logger.info(payload["event"], extra={"auth": payload})
-
-    def password_changed(
-        self,
-        *,
-        user_id: UUID,
-        username: str,
-        was_forced: bool,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """
-        Log user password change completion.
-
-        Args:
-            user_id: ID of the user who changed their password
-            username: Username of the user
-            was_forced: Whether password change was mandatory (must_change_password flag)
-            context: Optional metadata for the audit log
-        """
-
-        payload = {
-            "event": "auth.password_changed",
-            "user_id": str(user_id),
-            "username": username,
-            "was_forced": was_forced,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        payload.update((context or AuditContext()).to_payload())
-
-        self._logger.info(payload["event"], extra={"auth": payload})
-
-
-class TimelineAuditService:
-    """Emit structured audit logs for timeline item operations."""
-    
-    def __init__(self, *, logger_: Optional[logging.Logger] = None) -> None:
-        self._logger = logger_ or logger
-
-    def log_entity_updated(
-        self,
-        *,
-        entity_type: str,
-        entity_id: int,
-        changes: list[dict[str, Any]],
-        user: str,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """Log field-level changes when an entity (alert, task) is updated."""
-        payload = {
-            "event": f"{entity_type}.updated",
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "user": user,
-            "changes": changes,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        payload.update((context or AuditContext()).to_payload())
-        self._logger.info(payload["event"], extra={"timeline_audit": payload})
-
-    def log_entity_deleted(
-        self,
-        *,
-        entity_type: str,
-        entity_id: int,
-        user: str,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """Log when an entity (alert, task) is deleted."""
-        payload = {
-            "event": f"{entity_type}.deleted",
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "user": user,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        payload.update((context or AuditContext()).to_payload())
-        self._logger.info(payload["event"], extra={"timeline_audit": payload})
-
-    def log_timeline_item_added(
-        self,
-        *,
-        entity_type: str,
-        entity_id: int,
-        item_id: str,
-        item_type: str,
-        user: str,
-        context: Optional[AuditContext] = None,
-    ) -> None:
-        """Log when a timeline item is added to an entity."""
-        payload = {
-            "event": "timeline.item.added",
+            "event": event_type,
             "entity_type": entity_type,
             "entity_id": entity_id,
             "item_id": item_id,
-            "item_type": item_type,
-            "user": user,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "description": description,
+            "performed_by": performed_by,
+            "performed_at": audit_log.performed_at.isoformat(),
         }
-        payload.update((context or AuditContext()).to_payload())
-        self._logger.info(payload["event"], extra={"timeline_audit": payload})
+        payload.update(audit_context.to_payload())
+        if extra_payload:
+            payload.update(extra_payload)
+        self._logger.info(event_type, extra={"audit": payload})
+        return audit_log
 
-    def log_timeline_item_deleted(
+    async def log_entity_updated(
         self,
         *,
         entity_type: str,
-        entity_id: int,
+        entity_id: int | str,
+        before: dict[str, Any],
+        after: dict[str, Any],
+        user: str,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
+        return await self.log_event(
+            event_type="entity.updated",
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            description=f"{entity_type} updated",
+            old_value=before,
+            new_value=after,
+            performed_by=user,
+            context=context,
+        )
+
+    async def log_entity_deleted(
+        self,
+        *,
+        entity_type: str,
+        entity_id: int | str,
+        user: str,
+        old_value: Any = None,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
+        return await self.log_event(
+            event_type="entity.deleted",
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            description=f"{entity_type} deleted",
+            old_value=old_value,
+            performed_by=user,
+            context=context,
+        )
+
+    async def log_timeline_item_added(
+        self,
+        *,
+        entity_type: str,
+        entity_id: int | str,
         item_id: str,
         item_type: str,
         user: str,
+        new_value: Any = None,
         context: Optional[AuditContext] = None,
-    ) -> None:
-        """Log when a timeline item is deleted from an entity."""
-        payload = {
-            "event": "timeline.item.deleted",
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "item_id": item_id,
-            "item_type": item_type,
-            "user": user,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        payload.update((context or AuditContext()).to_payload())
-        self._logger.info(payload["event"], extra={"timeline_audit": payload})
+    ) -> AuditLog:
+        return await self.log_event(
+            event_type="timeline.item.added",
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            item_id=item_id,
+            description=f"Timeline item added: {item_type}",
+            new_value=new_value,
+            performed_by=user,
+            context=context,
+            extra_payload={"item_type": item_type},
+        )
 
-    def log_timeline_edit(
+    async def log_timeline_item_deleted(
         self,
         *,
         entity_type: str,
-        entity_id: int,
+        entity_id: int | str,
+        item_id: str,
+        item_type: str,
+        user: str,
+        old_value: Any = None,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
+        return await self.log_event(
+            event_type="timeline.item.deleted",
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            item_id=item_id,
+            description=f"Timeline item deleted: {item_type}",
+            old_value=old_value,
+            performed_by=user,
+            context=context,
+            extra_payload={"item_type": item_type},
+        )
+
+    async def log_timeline_edit(
+        self,
+        *,
+        entity_type: str,
+        entity_id: int | str,
         item_id: str,
         item_type: str,
         before: dict[str, Any],
         after: dict[str, Any],
         user: str,
         context: Optional[AuditContext] = None,
-    ) -> None:
-        """
-        Log timeline item edit with field-level change tracking.
-        
-        Args:
-            entity_type: Type of entity (alert, case)
-            entity_id: ID of the entity containing the timeline
-            item_id: ID of the timeline item being edited
-            item_type: Type of timeline item (note, task, observable, etc.)
-            before: Item state before edit
-            after: Item state after edit
-            user: Username who performed the edit
-            context: Optional audit context
-        """
-        # Calculate field differences
-        changes = []
-        skip_fields = {'id', 'created_by', 'created_at', 'updated_by', 'updated_at', 'replies'}
-        all_fields = set(before.keys()) | set(after.keys())
-        
-        for field in all_fields:
-            if field in skip_fields:
-                continue
-            
-            before_value = before.get(field)
-            after_value = after.get(field)
-            
-            if before_value != after_value:
-                changes.append({
-                    "field": field,
-                    "before": before_value,
-                    "after": after_value,
-                })
-        
-        payload = {
-            "event": "timeline.item.updated",
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "item_id": item_id,
-            "item_type": item_type,
-            "user": user,
-            "changes": changes,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        payload.update((context or AuditContext()).to_payload())
-        
-        self._logger.info(payload["event"], extra={"timeline_audit": payload})
+    ) -> AuditLog:
+        return await self.log_event(
+            event_type="timeline.item.updated",
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            item_id=item_id,
+            description=f"Timeline item updated: {item_type}",
+            old_value=before,
+            new_value=after,
+            performed_by=user,
+            context=context,
+            extra_payload={"item_type": item_type},
+        )
+
+    async def login_success(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.login.success",
+            entity_type="user",
+            entity_id=str(kwargs["user_id"]),
+            description="User login succeeded",
+            new_value={
+                "username": kwargs["username"],
+                "role": getattr(kwargs["role"], "value", kwargs["role"]),
+                "session_id": str(kwargs["session_id"]),
+                "issued_at": kwargs["issued_at"],
+                "expires_at": kwargs["expires_at"],
+            },
+            performed_by=kwargs["username"],
+            context=kwargs.get("context"),
+        )
+
+    async def login_failure(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.login.failure",
+            entity_type="user",
+            description="User login failed",
+            new_value={
+                "username": kwargs["username"],
+                "role": getattr(kwargs.get("role"), "value", kwargs.get("role")),
+                "reason": kwargs["reason"],
+                "attempts_remaining": kwargs.get("attempts_remaining"),
+            },
+            performed_by=kwargs["username"],
+            context=kwargs.get("context"),
+        )
+
+    async def logout(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.logout",
+            entity_type="user",
+            entity_id=str(kwargs["user_id"]),
+            description="User logged out",
+            new_value={
+                "session_id": str(kwargs["session_id"]),
+                "reason": getattr(kwargs["reason"], "value", kwargs["reason"]),
+            },
+            context=kwargs.get("context"),
+        )
+
+    async def oidc_login_success(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.oidc.login.success",
+            entity_type="user",
+            entity_id=str(kwargs["user_id"]),
+            description="OIDC login succeeded",
+            new_value={
+                "username": kwargs["username"],
+                "role": getattr(kwargs["role"], "value", kwargs["role"]),
+                "oidc_issuer": kwargs["oidc_issuer"],
+                "oidc_subject": kwargs["oidc_subject"],
+                "session_id": str(kwargs["session_id"]),
+            },
+            performed_by=kwargs["username"],
+            context=kwargs.get("context"),
+        )
+
+    async def oidc_login_failure(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.oidc.login.failure",
+            entity_type="user",
+            description="OIDC login failed",
+            new_value={
+                "reason": kwargs["reason"],
+                "oidc_issuer": kwargs.get("oidc_issuer"),
+                "username": kwargs.get("username"),
+            },
+            performed_by=kwargs.get("username"),
+            context=kwargs.get("context"),
+        )
+
+    async def oidc_account_linked(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.oidc.account_linked",
+            entity_type="user",
+            entity_id=str(kwargs["user_id"]),
+            description="OIDC account linked",
+            new_value={
+                "username": kwargs["username"],
+                "oidc_issuer": kwargs["oidc_issuer"],
+                "oidc_subject": kwargs["oidc_subject"],
+            },
+            performed_by=kwargs["username"],
+            context=kwargs.get("context"),
+        )
+
+    async def oidc_account_provisioned(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.oidc.account_provisioned",
+            entity_type="user",
+            entity_id=str(kwargs["user_id"]),
+            description="OIDC account provisioned",
+            new_value={
+                "username": kwargs["username"],
+                "role": getattr(kwargs["role"], "value", kwargs["role"]),
+                "oidc_issuer": kwargs["oidc_issuer"],
+                "oidc_subject": kwargs["oidc_subject"],
+            },
+            performed_by=kwargs["username"],
+            context=kwargs.get("context"),
+        )
+
+    async def account_locked(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.lockout",
+            entity_type="user",
+            entity_id=str(kwargs["user_id"]),
+            description="Account locked",
+            new_value={
+                "username": kwargs["username"],
+                "role": getattr(kwargs["role"], "value", kwargs["role"]),
+                "lockout_expires_at": kwargs["lockout_expires_at"],
+            },
+            performed_by=kwargs["username"],
+            context=kwargs.get("context"),
+        )
+
+    async def user_created(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.admin.user_created",
+            entity_type="user",
+            entity_id=str(kwargs["target_user_id"]),
+            description="Admin created user",
+            new_value={
+                "admin_user_id": str(kwargs["admin_user_id"]),
+                "username": kwargs["username"],
+                "email": kwargs["email"],
+                "role": getattr(kwargs["role"], "value", kwargs["role"]),
+            },
+            performed_by=str(kwargs["admin_user_id"]),
+            context=kwargs.get("context"),
+        )
+
+    async def user_status_changed(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.admin.user_status_changed",
+            entity_type="user",
+            entity_id=str(kwargs["target_user_id"]),
+            description="Admin changed user status",
+            old_value={"status": getattr(kwargs["old_status"], "value", kwargs["old_status"])},
+            new_value={"status": getattr(kwargs["new_status"], "value", kwargs["new_status"])},
+            performed_by=str(kwargs["admin_user_id"]),
+            context=kwargs.get("context"),
+        )
+
+    async def password_reset_issued(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.admin.password_reset_issued",
+            entity_type="user",
+            entity_id=str(kwargs["target_user_id"]),
+            description="Admin issued password reset",
+            new_value={
+                "admin_user_id": str(kwargs["admin_user_id"]),
+                "reset_request_id": str(kwargs["reset_request_id"]),
+                "delivery_channel": kwargs["delivery_channel"],
+            },
+            performed_by=str(kwargs["admin_user_id"]),
+            context=kwargs.get("context"),
+        )
+
+    async def admin_reset_issued(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.admin.reset_issued",
+            entity_type="user",
+            entity_id=str(kwargs["target_user_id"]),
+            description="Admin reset issued",
+            new_value={
+                "admin_id": str(kwargs["admin_id"]),
+                "admin_username": kwargs["admin_username"],
+                "target_username": kwargs["target_username"],
+                "delivery_channel": getattr(kwargs["delivery_channel"], "value", kwargs["delivery_channel"]),
+                "reset_request_id": str(kwargs["reset_request_id"]),
+                "expires_at": kwargs["expires_at"],
+            },
+            performed_by=kwargs["admin_username"],
+            context=kwargs.get("context"),
+        )
+
+    async def password_changed(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.password_changed",
+            entity_type="user",
+            entity_id=str(kwargs["user_id"]),
+            description="User password changed",
+            new_value={"username": kwargs["username"], "was_forced": kwargs["was_forced"]},
+            performed_by=kwargs["username"],
+            context=kwargs.get("context"),
+        )
+
+    async def api_key_created(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.api_key.created",
+            entity_type="api_key",
+            entity_id=str(kwargs["api_key_id"]),
+            description="API key created",
+            new_value={
+                "user_id": str(kwargs["user_id"]),
+                "username": kwargs["username"],
+                "api_key_name": kwargs["api_key_name"],
+                "api_key_prefix": kwargs["api_key_prefix"],
+                "expires_at": kwargs["expires_at"],
+                "created_by_user_id": str(kwargs["created_by_user_id"]) if kwargs.get("created_by_user_id") else None,
+            },
+            performed_by=kwargs["username"],
+            context=kwargs.get("context"),
+        )
+
+    async def api_key_revoked(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.api_key.revoked",
+            entity_type="api_key",
+            entity_id=str(kwargs["api_key_id"]),
+            description="API key revoked",
+            new_value={
+                "user_id": str(kwargs["user_id"]),
+                "username": kwargs["username"],
+                "api_key_name": kwargs["api_key_name"],
+                "api_key_prefix": kwargs["api_key_prefix"],
+                "revoked_by_user_id": str(kwargs["revoked_by_user_id"]) if kwargs.get("revoked_by_user_id") else None,
+            },
+            performed_by=kwargs["username"],
+            context=kwargs.get("context"),
+        )
+
+    async def api_key_auth_success(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.api_key.auth_success",
+            entity_type="api_key",
+            entity_id=str(kwargs["api_key_id"]),
+            description="API key authenticated successfully",
+            new_value={
+                "user_id": str(kwargs["user_id"]),
+                "username": kwargs["username"],
+                "api_key_prefix": kwargs["api_key_prefix"],
+            },
+            performed_by=kwargs["username"],
+            context=kwargs.get("context"),
+        )
+
+    async def api_key_auth_failure(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.api_key.auth_failure",
+            entity_type="api_key",
+            description="API key authentication failed",
+            new_value={"reason": kwargs["reason"], "api_key_prefix": kwargs.get("api_key_prefix")},
+            context=kwargs.get("context"),
+        )
+
+    async def nhi_account_created(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.nhi.account_created",
+            entity_type="user",
+            entity_id=str(kwargs["nhi_user_id"]),
+            description="NHI account created",
+            new_value={
+                "admin_user_id": str(kwargs["admin_user_id"]),
+                "admin_username": kwargs["admin_username"],
+                "nhi_username": kwargs["nhi_username"],
+                "role": kwargs["role"],
+                "initial_api_key_id": str(kwargs["initial_api_key_id"]),
+                "initial_api_key_prefix": kwargs["initial_api_key_prefix"],
+            },
+            performed_by=kwargs["admin_username"],
+            context=kwargs.get("context"),
+        )
 
 
-__all__ = [
-    "AuditContext",
-    "AuthAuditService",
-    "TimelineAuditService",
-]
+def get_audit_service(db: AsyncSession) -> AuditService:
+    return AuditService(db)
+
+
+__all__ = ["AuditContext", "AuditService", "get_audit_service"]

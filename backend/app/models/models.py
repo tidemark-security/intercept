@@ -1,10 +1,11 @@
 import re
+import json
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Union, Literal
 from uuid import UUID, uuid4
 
 from sqlmodel import SQLModel, Field, Relationship, Column
-from sqlalchemy import DateTime, UniqueConstraint, String, Enum as SAEnum
+from sqlalchemy import DateTime, UniqueConstraint, String, Enum as SAEnum, Index, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import TypeDecorator
 from pydantic import EmailStr, computed_field, field_validator, model_validator
@@ -113,6 +114,33 @@ class ItemBase(SQLModel):
     parent_id: Optional[str] = Field(default=None, description="ID of parent timeline item for replies (null for top-level items)")
     # Replies use Dict[str, Any] in base for JSON storage, but typed in Union definitions below
     replies: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Optional nested timeline items as replies (typed in Union definitions)")
+    audit: Optional["TimelineItemAudit"] = Field(
+        default=None,
+        description="Response-only audit metadata dynamically coalesced from audit logs",
+    )
+
+
+class TimelineItemAudit(SQLModel):
+    """Response-only audit metadata for timeline items."""
+
+    edited: bool = False
+
+
+class DeletedItem(SQLModel):
+    """Response-only tombstone for deleted timeline items."""
+
+    id: str
+    type: Literal["_deleted"] = "_deleted"
+    deleted_at: datetime = Field(sa_column=Column(DateTime(timezone=True)))
+    deleted_by: str
+    original_type: str
+    original_created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True)),
+    )
+    original_created_by: Optional[str] = None
+    parent_id: Optional[str] = None
+    replies: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
 
 
 class NoteItem(ItemBase):
@@ -427,6 +455,7 @@ class RegistryChangeItem(ItemBase):
 # The frontend and type generation tools should treat replies as recursive timeline items.
 
 AlertTimelineItem = Union[
+    DeletedItem,
     InternalActorItem,
     ExternalActorItem,
     ThreatActorItem,
@@ -444,6 +473,7 @@ AlertTimelineItem = Union[
 ]
 
 CaseTimelineItem = Union[
+    DeletedItem,
     InternalActorItem,
     ExternalActorItem,
     ThreatActorItem,
@@ -464,6 +494,7 @@ CaseTimelineItem = Union[
 ]
 
 TaskTimelineItem = Union[
+    DeletedItem,
     InternalActorItem,
     ExternalActorItem,
     ThreatActorItem,
@@ -529,9 +560,6 @@ class Case(CaseBase, table=True):
     # Relationships
     alerts: List["Alert"] = Relationship(back_populates="case")
     tasks: List["Task"] = Relationship(back_populates="case")
-    audit_logs: List["CaseAuditLog"] = Relationship(back_populates="case")
-
-
 class CaseCreate(CaseBase):
     """Schema for creating a case."""
     assignee: Optional[str] = None
@@ -767,46 +795,95 @@ class TriageRecommendationRead(SQLModel):
     error_message: Optional[str] = None
 
 
-# Audit Log model
-class CaseAuditLog(SQLModel, table=True):
-    """Case audit log table model."""
+class AuditLog(SQLModel, table=True):
+    """Unified persisted audit log for all event categories."""
 
-    __tablename__ = "case_audit_logs"  # type: ignore
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    case_id: int = Field(foreign_key="cases.id")
-    action: str = Field(max_length=100)
-    description: Optional[str] = None
-    old_value: Optional[str] = None
-    new_value: Optional[str] = None
-    performed_by: str = Field(max_length=100)
-    performed_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
-        sa_column=Column(DateTime(timezone=True))
+    __tablename__ = "audit_logs"  # type: ignore
+    __table_args__ = (
+        Index("ix_audit_logs_entity_lookup", "entity_type", "entity_id"),
+        Index("ix_audit_logs_event_type", "event_type"),
+        Index("ix_audit_logs_performed_at", "performed_at"),
+        Index("ix_audit_logs_performed_by", "performed_by"),
+        Index(
+            "ix_audit_logs_timeline_coalesce",
+            "entity_type",
+            "entity_id",
+            postgresql_where=text(
+                "event_type IN ('timeline.item.updated', 'timeline.item.deleted') AND item_id IS NOT NULL"
+            ),
+        ),
     )
 
-    # Relationship
-    case: Optional[Case] = Relationship(back_populates="audit_logs")
-
-
-class CaseAuditLogRead(SQLModel):
-    """Schema for reading audit logs."""
-
-    id: int
-    action: str
+    id: Optional[int] = Field(default=None, primary_key=True)
+    event_type: str = Field(max_length=200)
+    entity_type: Optional[str] = Field(default=None, max_length=100)
+    entity_id: Optional[str] = Field(default=None, max_length=255)
+    item_id: Optional[str] = Field(default=None, max_length=255)
     description: Optional[str] = None
     old_value: Optional[str] = None
     new_value: Optional[str] = None
-    performed_by: str
+    performed_by: Optional[str] = Field(default=None, max_length=100)
+    performed_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), index=True)
+    )
+    ip_address: Optional[str] = Field(default=None, max_length=100)
+    user_agent: Optional[str] = None
+    correlation_id: Optional[str] = Field(default=None, max_length=255)
+
+
+class AuditLogRead(SQLModel):
+    """Schema for reading persisted audit logs."""
+
+    id: int
+    event_type: str
+    entity_type: Optional[str] = None
+    entity_id: Optional[str] = None
+    item_id: Optional[str] = None
+    description: Optional[str] = None
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+    performed_by: Optional[str] = None
     performed_at: datetime
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    correlation_id: Optional[str] = None
+
+    @staticmethod
+    def compute_changes(old_value: Optional[str], new_value: Optional[str]) -> List[Dict[str, Any]]:
+        """Compute field-level changes from stored snapshots at runtime."""
+        if not old_value and not new_value:
+            return []
+
+        try:
+            before = json.loads(old_value) if old_value else None
+            after = json.loads(new_value) if new_value else None
+        except (TypeError, json.JSONDecodeError):
+            if old_value != new_value:
+                return [{"field": "value", "before": old_value, "after": new_value}]
+            return []
+
+        if not isinstance(before, dict) or not isinstance(after, dict):
+            if before != after:
+                return [{"field": "value", "before": before, "after": after}]
+            return []
+
+        changes: List[Dict[str, Any]] = []
+        for field in sorted(set(before.keys()) | set(after.keys())):
+            if before.get(field) != after.get(field):
+                changes.append({
+                    "field": field,
+                    "before": before.get(field),
+                    "after": after.get(field),
+                })
+        return changes
 
 
 # Response schemas with relationships
 class CaseReadWithAlerts(CaseRead):
-    """Case with alerts and audit logs."""
+    """Case with alerts."""
 
     alerts: List[AlertRead] = []
-    audit_logs: List[CaseAuditLogRead] = []
 
 
 class AlertReadWithCase(AlertRead):

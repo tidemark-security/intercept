@@ -289,9 +289,14 @@ export class TasksService {
     public static generateDownloadUrlApiV1TasksTaskIdTimelineItemsItemIdDownloadUrlGet({
         taskId,
         itemId,
+        download = false,
     }: {
         taskId: number,
         itemId: string,
+        /**
+         * Generate a forced-download URL
+         */
+        download?: boolean,
     }): CancelablePromise<PresignedDownloadResponse> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -299,6 +304,9 @@ export class TasksService {
             path: {
                 'task_id': taskId,
                 'item_id': itemId,
+            },
+            query: {
+                'download': download,
             },
             errors: {
                 422: `Validation Error`,

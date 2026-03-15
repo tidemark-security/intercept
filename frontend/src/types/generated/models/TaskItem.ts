@@ -4,6 +4,7 @@
 /* eslint-disable */
 import type { Priority } from './Priority';
 import type { TaskStatus } from './TaskStatus';
+import type { TimelineItemAudit } from './TimelineItemAudit';
 /**
  * Timeline item for tasks.
  */
@@ -54,6 +55,10 @@ export type TaskItem = {
      * Optional nested timeline items as replies (typed in Union definitions)
      */
     replies?: null;
+    /**
+     * Response-only audit metadata dynamically coalesced from audit logs
+     */
+    audit?: (TimelineItemAudit | null);
     task_id?: (number | null);
     task_human_id?: (string | null);
     title?: (string | null);

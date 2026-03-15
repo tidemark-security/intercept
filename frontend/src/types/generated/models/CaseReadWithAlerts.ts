@@ -3,11 +3,10 @@
 /* tslint:disable */
 /* eslint-disable */
 import type { AlertRead } from './AlertRead';
-import type { CaseAuditLogRead } from './CaseAuditLogRead';
 import type { CaseStatus } from './CaseStatus';
 import type { Priority } from './Priority';
 /**
- * Case with alerts and audit logs.
+ * Case with alerts.
  */
 export type CaseReadWithAlerts = {
     title: string;
@@ -23,7 +22,6 @@ export type CaseReadWithAlerts = {
     closed_at?: (string | null);
     timeline_items?: null;
     alerts?: Array<AlertRead>;
-    audit_logs?: Array<CaseAuditLogRead>;
     readonly human_id: string;
 };
 

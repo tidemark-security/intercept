@@ -4,6 +4,7 @@
 /* eslint-disable */
 import type { AlertStatus } from './AlertStatus';
 import type { Priority } from './Priority';
+import type { TimelineItemAudit } from './TimelineItemAudit';
 /**
  * Timeline item for alerts linked to the case.
  */
@@ -54,6 +55,10 @@ export type AlertItem = {
      * Optional nested timeline items as replies (typed in Union definitions)
      */
     replies?: null;
+    /**
+     * Response-only audit metadata dynamically coalesced from audit logs
+     */
+    audit?: (TimelineItemAudit | null);
     alert_id?: (number | null);
     title?: (string | null);
     status?: (AlertStatus | null);

@@ -3,6 +3,7 @@
 /* tslint:disable */
 /* eslint-disable */
 import type { Protocol } from './Protocol';
+import type { TimelineItemAudit } from './TimelineItemAudit';
 /**
  * Timeline item for network traffic events.
  */
@@ -53,6 +54,10 @@ export type NetworkTrafficItem = {
      * Optional nested timeline items as replies (typed in Union definitions)
      */
     replies?: null;
+    /**
+     * Response-only audit metadata dynamically coalesced from audit logs
+     */
+    audit?: (TimelineItemAudit | null);
     source_ip?: (string | null);
     destination_ip?: (string | null);
     source_port?: (number | null);

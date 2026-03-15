@@ -37,6 +37,7 @@ from app.models.models import (
     AppSettingRead,
     AppSettingUpdate,
 )
+from app.services.audit_service import AuditContext, get_audit_service
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,40 @@ class SettingsService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
         self._encryption: Optional[Any] = None
+
+    def _audit_value(self, value: Optional[str], *, is_secret: bool, encrypted: bool) -> Optional[str]:
+        if value is None:
+            return None
+
+        display_value = value
+        if is_secret:
+            if encrypted:
+                try:
+                    display_value = self.encryption.decrypt(value)
+                except Exception:
+                    display_value = value
+            display_value = self._mask(str(display_value))
+        return str(display_value)
+
+    def _setting_audit_snapshot(
+        self,
+        *,
+        key: str,
+        value: Optional[str],
+        value_type: SettingType,
+        is_secret: bool,
+        description: Optional[str],
+        category: str,
+        encrypted: bool,
+    ) -> Dict[str, Any]:
+        return {
+            "key": key,
+            "value": self._audit_value(value, is_secret=is_secret, encrypted=encrypted),
+            "value_type": value_type.value,
+            "is_secret": is_secret,
+            "description": description,
+            "category": category,
+        }
 
     @property
     def encryption(self):
@@ -169,19 +204,19 @@ class SettingsService:
                 display_value = self._mask(str(value))
 
             settings_list.append(
-                AppSettingRead(
-                    id=db_row.id if db_row else 0,
-                    key=defn.key,
-                    value=self._serialize_display_value(display_value, defn.value_type),
-                    value_type=defn.value_type,
-                    is_secret=defn.is_secret,
-                    description=defn.description,
-                    category=defn.category,
-                    local_only=defn.local_only,
-                    source=source,
-                    created_at=db_row.created_at if db_row else now,
-                    updated_at=db_row.updated_at if db_row else now,
-                )
+                AppSettingRead.model_validate({
+                    "id": db_row.id if db_row else 0,
+                    "key": defn.key,
+                    "value": self._serialize_display_value(display_value, defn.value_type),
+                    "value_type": defn.value_type,
+                    "is_secret": defn.is_secret,
+                    "description": defn.description,
+                    "category": defn.category,
+                    "local_only": defn.local_only,
+                    "source": source,
+                    "created_at": db_row.created_at if db_row else now,
+                    "updated_at": db_row.updated_at if db_row else now,
+                })
             )
 
         # Include ad-hoc DB rows that are NOT in the registry
@@ -205,19 +240,19 @@ class SettingsService:
                 value = self._mask(value)
 
             settings_list.append(
-                AppSettingRead(
-                    id=db_row.id,
-                    key=db_row.key,
-                    value=value,
-                    value_type=db_row.value_type,
-                    is_secret=db_row.is_secret,
-                    description=db_row.description,
-                    category=db_row.category,
-                    local_only=False,
-                    source=source,
-                    created_at=db_row.created_at,
-                    updated_at=db_row.updated_at,
-                )
+                AppSettingRead.model_validate({
+                    "id": db_row.id,
+                    "key": db_row.key,
+                    "value": value,
+                    "value_type": db_row.value_type,
+                    "is_secret": db_row.is_secret,
+                    "description": db_row.description,
+                    "category": db_row.category,
+                    "local_only": False,
+                    "source": source,
+                    "created_at": db_row.created_at,
+                    "updated_at": db_row.updated_at,
+                })
             )
 
         return settings_list
@@ -246,19 +281,19 @@ class SettingsService:
             if defn.is_secret and value is not None and not include_secret:
                 display_value = self._mask(str(value))
 
-            return AppSettingRead(
-                id=db_row.id if db_row else 0,
-                key=defn.key,
-                value=self._serialize_display_value(display_value, defn.value_type),
-                value_type=defn.value_type,
-                is_secret=defn.is_secret,
-                description=defn.description,
-                category=defn.category,
-                local_only=defn.local_only,
-                source=source,
-                created_at=db_row.created_at if db_row else now,
-                updated_at=db_row.updated_at if db_row else now,
-            )
+            return AppSettingRead.model_validate({
+                "id": db_row.id if db_row else 0,
+                "key": defn.key,
+                "value": self._serialize_display_value(display_value, defn.value_type),
+                "value_type": defn.value_type,
+                "is_secret": defn.is_secret,
+                "description": defn.description,
+                "category": defn.category,
+                "local_only": defn.local_only,
+                "source": source,
+                "created_at": db_row.created_at if db_row else now,
+                "updated_at": db_row.updated_at if db_row else now,
+            })
 
         # Not in registry — fall back to DB-only behaviour
         if db_row is not None:
@@ -277,19 +312,19 @@ class SettingsService:
             if db_row.is_secret and value and not include_secret:
                 value = self._mask(value)
 
-            return AppSettingRead(
-                id=db_row.id,
-                key=db_row.key,
-                value=value,
-                value_type=db_row.value_type,
-                is_secret=db_row.is_secret,
-                description=db_row.description,
-                category=db_row.category,
-                local_only=False,
-                source=source,
-                created_at=db_row.created_at,
-                updated_at=db_row.updated_at,
-            )
+            return AppSettingRead.model_validate({
+                "id": db_row.id,
+                "key": db_row.key,
+                "value": value,
+                "value_type": db_row.value_type,
+                "is_secret": db_row.is_secret,
+                "description": db_row.description,
+                "category": db_row.category,
+                "local_only": False,
+                "source": source,
+                "created_at": db_row.created_at,
+                "updated_at": db_row.updated_at,
+            })
 
         return None
 
@@ -298,7 +333,11 @@ class SettingsService:
     # ------------------------------------------------------------------
 
     async def create_setting(
-        self, setting_create: AppSettingCreate
+        self,
+        setting_create: AppSettingCreate,
+        *,
+        performed_by: Optional[str] = None,
+        audit_context: Optional[AuditContext] = None,
     ) -> AppSettingRead:
         """Create a new DB-backed setting.
 
@@ -345,6 +384,24 @@ class SettingsService:
 
         setting = AppSetting(**setting_data, value=value_to_store)
         self.db.add(setting)
+        await self.db.flush()
+        await get_audit_service(self.db).log_event(
+            event_type="settings.created",
+            entity_type="setting",
+            entity_id=setting.key,
+            description=f"Setting created: {setting.key}",
+            new_value=self._setting_audit_snapshot(
+                key=setting.key,
+                value=setting.value,
+                value_type=setting.value_type,
+                is_secret=setting.is_secret,
+                description=setting.description,
+                category=setting.category,
+                encrypted=setting.is_secret,
+            ),
+            performed_by=performed_by,
+            context=audit_context,
+        )
         await self.db.commit()
         await self.db.refresh(setting)
 
@@ -363,7 +420,12 @@ class SettingsService:
         return AppSettingRead(**setting_dict)
 
     async def update_setting(
-        self, key: str, setting_update: AppSettingUpdate
+        self,
+        key: str,
+        setting_update: AppSettingUpdate,
+        *,
+        performed_by: Optional[str] = None,
+        audit_context: Optional[AuditContext] = None,
     ) -> AppSettingRead:
         """Update an existing DB-backed setting.
 
@@ -384,9 +446,15 @@ class SettingsService:
         if not setting:
             raise ValueError(f"Setting with key '{key}' not found")
 
-        old_value = setting.value
-        if setting.is_secret and old_value:
-            old_value = self._mask(old_value)
+        old_snapshot = self._setting_audit_snapshot(
+            key=setting.key,
+            value=setting.value,
+            value_type=setting.value_type,
+            is_secret=setting.is_secret,
+            description=setting.description,
+            category=setting.category,
+            encrypted=setting.is_secret,
+        )
 
         update_data = setting_update.model_dump(exclude_unset=True)
         effective_is_secret = defn.is_secret if defn is not None else setting.is_secret
@@ -407,14 +475,35 @@ class SettingsService:
             setattr(setting, field, value)
         setting.updated_at = datetime.now(timezone.utc)
 
+        new_snapshot = self._setting_audit_snapshot(
+            key=setting.key,
+            value=setting.value,
+            value_type=setting.value_type,
+            is_secret=setting.is_secret,
+            description=setting.description,
+            category=setting.category,
+            encrypted=setting.is_secret,
+        )
+
+        await get_audit_service(self.db).log_event(
+            event_type="settings.updated",
+            entity_type="setting",
+            entity_id=setting.key,
+            description=f"Setting updated: {setting.key}",
+            old_value=old_snapshot,
+            new_value=new_snapshot,
+            performed_by=performed_by,
+            context=audit_context,
+        )
+
         await self.db.commit()
         await self.db.refresh(setting)
 
-        new_value = setting.value
-        if setting.is_secret and new_value:
-            new_value = self._mask(new_value)
         logger.info(
-            "Updated setting: key=%s, old=%s, new=%s", key, old_value, new_value
+            "Updated setting: key=%s, old=%s, new=%s",
+            key,
+            old_snapshot.get("value"),
+            new_snapshot.get("value"),
         )
 
         setting_dict = setting.model_dump()
@@ -424,7 +513,13 @@ class SettingsService:
         setting_dict["source"] = "database"
         return AppSettingRead(**setting_dict)
 
-    async def delete_setting(self, key: str) -> bool:
+    async def delete_setting(
+        self,
+        key: str,
+        *,
+        performed_by: Optional[str] = None,
+        audit_context: Optional[AuditContext] = None,
+    ) -> bool:
         """Delete a DB-backed setting.
 
         Returns True if deleted, False if not found.
@@ -442,6 +537,26 @@ class SettingsService:
         setting = res.scalar_one_or_none()
         if not setting:
             return False
+
+        deleted_snapshot = self._setting_audit_snapshot(
+            key=setting.key,
+            value=setting.value,
+            value_type=setting.value_type,
+            is_secret=setting.is_secret,
+            description=setting.description,
+            category=setting.category,
+            encrypted=setting.is_secret,
+        )
+
+        await get_audit_service(self.db).log_event(
+            event_type="settings.deleted",
+            entity_type="setting",
+            entity_id=setting.key,
+            description=f"Setting deleted: {setting.key}",
+            old_value=deleted_snapshot,
+            performed_by=performed_by,
+            context=audit_context,
+        )
 
         await self.db.delete(setting)
         await self.db.commit()

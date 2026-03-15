@@ -24,7 +24,7 @@ import {
   getTimelineItemAction,
   getTimelineItemLabel,
 } from '@/utils/timelineMapping';
-import { isAlertItem, isNoteItem, isTaskItem } from '@/types/timeline';
+import { isAlertItem, isDeletedItem, isNoteItem, isTaskItem } from '@/types/timeline';
 import type { CaseItem } from '@/types/generated/models/CaseItem';
 import { convertNumericToAlertId, convertNumericToHumanId } from '@/utils/caseHelpers';
 
@@ -301,6 +301,33 @@ export function TimelineItemRenderer({
   
   // Collect all item IDs for group-level actions
   const groupItemIds = isGrouped ? itemsToRender.map(i => i.id || '').filter(Boolean) : [];
+
+  if (isDeletedItem(item)) {
+    const DeletedIcon = getTimelineItemIcon(item.original_type || 'note');
+    const deletedContents = (
+      <div className="rounded-md border border-dashed border-neutral-border bg-neutral-50/40 px-3 py-3 text-body text-subtext-color">
+        {`${item.original_type} deleted by ${item.deleted_by}`}
+      </div>
+    );
+
+    return (
+      <ActivityItem
+        key={item.id}
+        id={`timeline-item-${item.id}`}
+        itemId={item.id || ''}
+        username={item.original_created_by || 'System'}
+        icon={<DeletedIcon />}
+        action={`deleted ${item.original_type}`}
+        displayItemId={item.id}
+        timestampValue={item.deleted_at || null}
+        createdAtValue={item.original_created_at || null}
+        sortBy={sortBy}
+        readOnly={true}
+        end={index === total - 1}
+        contents={deletedContents}
+      />
+    );
+  }
 
   const renderTopLevelCard = (currentItem: TimelineItem, cardIndex: number): React.ReactNode => {
     const timelineCurrentItem = currentItem as TimelineItem;
@@ -640,6 +667,7 @@ export function TimelineItemRenderer({
             timestampValue={reply.timestamp || null}
             createdAtValue={reply.created_at || null}
             sortBy={sortBy}
+            edited={reply.audit?.edited === true}
             readOnly={isReplyReadOnly}
             end={isLastReply}
             replyEnabled={isLastReply && !isReplyReadOnly} // Only allow reply on the last flattened reply (not source/injected items)
@@ -672,6 +700,7 @@ export function TimelineItemRenderer({
       timestampValue={item.timestamp || null}
       createdAtValue={item.created_at || null}
       sortBy={sortBy}
+      edited={item.audit?.edited === true}
       replyEnabled={!hasVisibleChildren} // Only show reply button if no replies/source items exist
       readOnly={readOnly}
       variant={variant}
