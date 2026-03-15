@@ -15,7 +15,7 @@ import { Crosshair, FileText } from 'lucide-react';
 /**
  * Check if item is a TTPItem
  */
-export function isTTPItem(item: TimelineItem): item is TTPItem {
+export function isTTPItem(item: TimelineItem): item is TimelineItem & TTPItem {
   return item.type === 'ttp';
 }
 

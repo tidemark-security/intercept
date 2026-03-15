@@ -44,7 +44,7 @@ import { AiChat } from "@/components/ai";
 function TaskDetailPage() {
   const { humanId } = useParams<{ humanId: string }>();
   const navigate = useViewTransitionNavigate();
-  const { user } = useSession();
+  const { user, isAuditor } = useSession();
   const currentUser = user?.username || null;
 
   // Convert humanId to numeric ID synchronously to avoid timing issues
@@ -368,19 +368,19 @@ function TaskDetailPage() {
               usersLoading={isLoadingUsers}
               isUpdating={updateTaskMutation.isPending}
               isOverlayOpen={dockOpen}
-              mode="editable"
+              mode={isAuditor ? 'readonly' : 'editable'}
               onFlagItem={handleFlagItem}
               onHighlightItem={handleHighlightItem}
               onEditItem={handleEditItem}
               onDeleteItem={handleDeleteItem}
               onDeleteBatch={handleDeleteBatch}
-              onAssignToMe={handleAssignToMe}
-              onAssignToUser={handleAssignToUser}
-              onUnassign={handleUnassign}
-              onCloseEntity={handleCloseTask}
-              onReopenEntity={handleReopenTask}
-              onUpdateTags={handleUpdateTags}
-              onEditEntity={handleEditTask}
+              onAssignToMe={isAuditor ? undefined : handleAssignToMe}
+              onAssignToUser={isAuditor ? undefined : handleAssignToUser}
+              onUnassign={isAuditor ? undefined : handleUnassign}
+              onCloseEntity={isAuditor ? undefined : handleCloseTask}
+              onReopenEntity={isAuditor ? undefined : handleReopenTask}
+              onUpdateTags={isAuditor ? undefined : handleUpdateTags}
+              onEditEntity={isAuditor ? undefined : handleEditTask}
               onQuickTerminalSubmit={handleQuickTerminalSubmit}
               onSlashCommand={handleSlashCommand}
               onAddNote={handleAddNote}

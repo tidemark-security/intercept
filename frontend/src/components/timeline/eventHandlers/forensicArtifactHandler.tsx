@@ -6,7 +6,7 @@ import type { CardConfig, CardFactoryOptions } from '../TimelineCardFactory';
 
 import { FileText, Fingerprint, Link } from 'lucide-react';
 
-export function isForensicArtifactItem(item: TimelineItem): item is ForensicArtifactItem {
+export function isForensicArtifactItem(item: TimelineItem): item is TimelineItem & ForensicArtifactItem {
   return item.type === 'forensic_artifact';
 }
 

@@ -22,21 +22,21 @@ import { Biohazard, Briefcase, Building, Cpu, Crown, Key, Mail, MessageSquare, P
 /**
  * Check if item is an InternalActorItem
  */
-export function isInternalActorItem(item: TimelineItem): item is InternalActorItem {
+export function isInternalActorItem(item: TimelineItem): item is TimelineItem & InternalActorItem {
   return item.type === 'internal_actor';
 }
 
 /**
  * Check if item is an ExternalActorItem
  */
-export function isExternalActorItem(item: TimelineItem): item is ExternalActorItem {
+export function isExternalActorItem(item: TimelineItem): item is TimelineItem & ExternalActorItem {
   return item.type === 'external_actor';
 }
 
 /**
  * Check if item is a ThreatActorItem
  */
-export function isThreatActorItem(item: TimelineItem): item is ThreatActorItem {
+export function isThreatActorItem(item: TimelineItem): item is TimelineItem & ThreatActorItem {
   return item.type === 'threat_actor';
 }
 

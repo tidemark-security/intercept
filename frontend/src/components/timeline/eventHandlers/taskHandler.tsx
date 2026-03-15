@@ -19,7 +19,7 @@ import { Calendar, Check, CheckCircle, ChevronUp, ChevronsUp, Hash, User } from 
 /**
  * Check if item is a TaskItem
  */
-export function isTaskItem(item: TimelineItem): item is TaskItem {
+export function isTaskItem(item: TimelineItem): item is TimelineItem & TaskItem {
   return item.type === 'task';
 }
 

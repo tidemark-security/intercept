@@ -6,7 +6,7 @@ import type { CardConfig, CardFactoryOptions } from '../TimelineCardFactory';
 
 import { Database, Edit } from 'lucide-react';
 
-export function isRegistryChangeItem(item: TimelineItem): item is RegistryChangeItem {
+export function isRegistryChangeItem(item: TimelineItem): item is TimelineItem & RegistryChangeItem {
   return item.type === 'registry_change';
 }
 

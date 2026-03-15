@@ -24,7 +24,7 @@ from app.api.route_utils import (
     create_human_id_decorator,
     normalize_upload_status,
 )
-from app.api.routes.admin_auth import require_authenticated_user
+from app.api.routes.admin_auth import require_authenticated_user, require_non_auditor_user
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ handle_human_id = create_human_id_decorator(ID_PREFIX, "case_id")
 async def create_case(
     case_data: CaseCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Create a new case."""
     try:
@@ -119,7 +119,7 @@ async def update_case(
     request: Request, # pylint: disable=unused-argument
     case_update: CaseUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Update a case."""
     try:
@@ -139,7 +139,7 @@ async def delete_case(
     case_id: int,
     request: Request, # pylint: disable=unused-argument
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Delete a case."""
     try:
@@ -161,7 +161,7 @@ async def add_timeline_item(
     request: Request, # pylint: disable=unused-argument
     timeline_item: Dict[str, Any],
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Add a timeline item to a case."""
     try:
@@ -186,7 +186,7 @@ async def update_timeline_item(
     item_id: str,
     timeline_item: Dict[str, Any],
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Update a timeline item in a case."""
     try:
@@ -210,7 +210,7 @@ async def remove_timeline_item(
     request: Request, # pylint: disable=unused-argument
     item_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Remove a timeline item from a case."""
     try:
@@ -236,7 +236,7 @@ async def generate_upload_url(
     case_id: int,
     request_data: PresignedUploadRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """
     Generate presigned upload URL and create timeline attachment item.
@@ -341,7 +341,7 @@ async def update_attachment_status(
     item_id: str,
     update_data: AttachmentStatusUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """
     Update attachment upload status.

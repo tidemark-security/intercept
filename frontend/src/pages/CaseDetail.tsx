@@ -46,7 +46,7 @@ import { AiChat } from "@/components/ai";
 function CaseDetailPage() {
   const { humanId } = useParams<{ humanId: string }>();
   const navigate = useViewTransitionNavigate();
-  const { user } = useSession();
+  const { user, isAuditor } = useSession();
   const currentUser = user?.username || null;
 
   // Convert humanId to numeric ID synchronously to avoid timing issues
@@ -442,20 +442,20 @@ function CaseDetailPage() {
               usersLoading={isLoadingUsers}
               isUpdating={updateCaseMutation.isPending}
               isOverlayOpen={dockOpen}
-              mode="editable"
+              mode={isAuditor ? 'readonly' : 'editable'}
               onFlagItem={handleFlagItem}
               onHighlightItem={handleHighlightItem}
               onEditItem={handleEditItem}
               onDeleteItem={handleDeleteItem}
               onDeleteBatch={handleDeleteBatch}
-              onAssignToMe={handleAssignToMeWithStatusUpdate}
-              onAssignToUser={handleAssignToUserWithStatusUpdate}
-              onUnassign={handleUnassignWithStatusUpdate}
-              onCloseEntity={handleCloseCase}
-              onCloseCaseWithDetails={handleCloseCaseWithDetails}
-              onReopenEntity={handleReopenCase}
-              onUpdateTags={handleUpdateTags}
-              onEditEntity={handleEditCase}
+              onAssignToMe={isAuditor ? undefined : handleAssignToMeWithStatusUpdate}
+              onAssignToUser={isAuditor ? undefined : handleAssignToUserWithStatusUpdate}
+              onUnassign={isAuditor ? undefined : handleUnassignWithStatusUpdate}
+              onCloseEntity={isAuditor ? undefined : handleCloseCase}
+              onCloseCaseWithDetails={isAuditor ? undefined : handleCloseCaseWithDetails}
+              onReopenEntity={isAuditor ? undefined : handleReopenCase}
+              onUpdateTags={isAuditor ? undefined : handleUpdateTags}
+              onEditEntity={isAuditor ? undefined : handleEditCase}
               onQuickTerminalSubmit={handleQuickTerminalSubmit}
               onSlashCommand={handleSlashCommand}
               onAddNote={handleAddNote}

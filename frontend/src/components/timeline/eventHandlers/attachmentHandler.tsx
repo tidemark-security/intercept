@@ -17,7 +17,7 @@ import { FileText, HardDrive, Link } from 'lucide-react';
 /**
  * Check if item is an AttachmentItem
  */
-export function isAttachmentItem(item: TimelineItem): item is AttachmentItem {
+export function isAttachmentItem(item: TimelineItem): item is TimelineItem & AttachmentItem {
   return item.type === 'attachment';
 }
 

@@ -34,7 +34,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react';
 /**
  * Type guard for CaseItem
  */
-function isCaseItem(item: TimelineItem): item is CaseItem {
+function isCaseItem(item: TimelineItem): item is TimelineItem & CaseItem {
   return item.type === 'case';
 }
 

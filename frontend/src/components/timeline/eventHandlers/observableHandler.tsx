@@ -15,7 +15,7 @@ import { FileText, Fingerprint } from 'lucide-react';
 /**
  * Check if item is an ObservableItem
  */
-export function isObservableItem(item: TimelineItem): item is ObservableItem {
+export function isObservableItem(item: TimelineItem): item is TimelineItem & ObservableItem {
   return item.type === 'observable';
 }
 

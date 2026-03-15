@@ -650,19 +650,6 @@ class AlertService:
             if not existing_item:
                 raise ValueError(f"Timeline item {item_id} not found")
             
-            # Permission check: users can edit own items, admins can edit any
-            if existing_item.get('created_by') != updated_by:
-                # Check if user is admin
-                result = await db.execute(
-                    select(UserAccount).where(UserAccount.username == updated_by)  # type: ignore
-                )
-                user = result.scalars().first()
-                if not user or user.role.value != 'ADMIN':
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"You can only edit items you created. This item was created by {existing_item.get('created_by')}"
-                    )
-            
             # Use mode='json' to ensure datetime fields are serialized to ISO strings
             item_dict = updated_item.model_dump(mode='json')
             

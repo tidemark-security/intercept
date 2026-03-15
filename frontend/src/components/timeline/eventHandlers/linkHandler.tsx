@@ -6,7 +6,7 @@ import type { CardConfig, CardFactoryOptions } from '../TimelineCardFactory';
 
 import { FileText, Link } from 'lucide-react';
 
-export function isLinkItem(item: TimelineItem): item is LinkItem {
+export function isLinkItem(item: TimelineItem): item is TimelineItem & LinkItem {
   return item.type === 'link';
 }
 

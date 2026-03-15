@@ -98,3 +98,33 @@ def admin_user_factory(hash_password: Callable[[str], str]) -> Callable[..., Use
         )
 
     return _factory
+
+
+@pytest.fixture
+def auditor_user_factory(hash_password: Callable[[str], str]) -> Callable[..., UserAccount]:
+    """Factory fixture producing active auditor accounts with hashed passwords."""
+
+    def _factory(
+        *,
+        user_id: UUID | None = None,
+        username: str | None = None,
+        email: str | None = None,
+        password: str = DEFAULT_TEST_PASSWORD,
+    ) -> UserAccount:
+        now = datetime.now(timezone.utc)
+        unique_suffix = uuid4().hex[:6]
+        return UserAccount(
+            id=user_id or uuid4(),
+            username=(username or f"auditor_{unique_suffix}"),
+            email=(email or f"auditor_{unique_suffix}@example.com"),
+            role=UserRole.AUDITOR,
+            status=UserStatus.ACTIVE,
+            password_hash=hash_password(password),
+            password_updated_at=now,
+            must_change_password=False,
+            failed_login_attempts=0,
+            created_at=now,
+            updated_at=now,
+        )
+
+    return _factory

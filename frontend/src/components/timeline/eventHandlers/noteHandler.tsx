@@ -13,7 +13,7 @@ import type { CardConfig, CardFactoryOptions } from '../TimelineCardFactory';
 /**
  * Check if item is a NoteItem
  */
-export function isNoteItem(item: TimelineItem): item is NoteItem {
+export function isNoteItem(item: TimelineItem): item is TimelineItem & NoteItem {
   return item.type === 'note';
 }
 

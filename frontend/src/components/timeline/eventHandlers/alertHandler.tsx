@@ -7,7 +7,7 @@ import type { CardConfig, CardFactoryOptions } from '../TimelineCardFactory';
 
 import { AlertCircle, ChevronsUp, Hash, User } from 'lucide-react';
 
-export function isAlertItem(item: TimelineItem): item is AlertItem {
+export function isAlertItem(item: TimelineItem): item is TimelineItem & AlertItem {
   return item.type === 'alert';
 }
 

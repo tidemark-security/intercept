@@ -138,6 +138,7 @@ interface TriageRecommendationCardProps {
   isRejecting?: boolean;
   isRetrying?: boolean;
   defaultExpanded?: boolean;
+  canReview?: boolean;
 }
 
 export function TriageRecommendationCard({
@@ -150,6 +151,7 @@ export function TriageRecommendationCard({
   isRejecting = false,
   isRetrying = false,
   defaultExpanded = false,
+  canReview = true,
 }: TriageRecommendationCardProps) {
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === 'dark';
@@ -611,7 +613,7 @@ export function TriageRecommendationCard({
       )}
       
       {/* Action Buttons (Pending only) */}
-      {isPending && (
+      {isPending && canReview && (
         <div className="flex w-full flex-wrap items-center justify-end gap-3">
           <Button
             variant="neutral-secondary"
@@ -635,7 +637,7 @@ export function TriageRecommendationCard({
       )}
       
       {/* Rejection Dialog */}
-      <Dialog open={showRejectDialog} onOpenChange={setShowRejectDialog}>
+      <Dialog open={canReview && showRejectDialog} onOpenChange={setShowRejectDialog}>
         <Dialog.Content className="p-6">
           <div className="flex flex-col gap-4 w-[400px]">
             <div className="flex flex-col gap-1">

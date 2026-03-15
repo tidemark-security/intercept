@@ -6,7 +6,7 @@ import type { CardConfig, CardFactoryOptions } from '../TimelineCardFactory';
 
 import { ArrowRight, Network } from 'lucide-react';
 
-export function isNetworkTrafficItem(item: TimelineItem): item is NetworkTrafficItem {
+export function isNetworkTrafficItem(item: TimelineItem): item is TimelineItem & NetworkTrafficItem {
   return item.type === 'network_traffic';
 }
 

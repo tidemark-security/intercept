@@ -802,7 +802,6 @@ class AuditLog(SQLModel, table=True):
     __table_args__ = (
         Index("ix_audit_logs_entity_lookup", "entity_type", "entity_id"),
         Index("ix_audit_logs_event_type", "event_type"),
-        Index("ix_audit_logs_performed_at", "performed_at"),
         Index("ix_audit_logs_performed_by", "performed_by"),
         Index(
             "ix_audit_logs_timeline_coalesce",

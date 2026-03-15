@@ -69,7 +69,7 @@ function Alerts() {
   const navigate = useViewTransitionNavigate();
 
   // Get current authenticated user from session context
-  const { user } = useSession();
+  const { user, isAuditor } = useSession();
   const currentUser = user?.username || null;
 
   // UI state for filtering - synced with URL query params
@@ -193,6 +193,7 @@ function Alerts() {
     isLoading: isLoadingDetail,
     error: detailError,
   } = useAlertDetail(selectedAlertId, { includeLinkedTimelines: true });
+  const isAlertReadOnly = isAuditor || alertDetail?.status === 'ESCALATED' || !!alertDetail?.case_id;
 
   // Check if the error is a 404 (only relevant when an alert is selected)
   const is404Error = selectedAlertId && detailError && (
@@ -620,7 +621,7 @@ function Alerts() {
           <UnifiedTimeline
             entityDetail={alertDetail ?? null}
             entityType="alert"
-            mode={(alertDetail?.status === 'ESCALATED' || !!alertDetail?.case_id) ? 'readonly' : 'editable'}
+            mode={isAlertReadOnly ? 'readonly' : 'editable'}
             selectedEntityId={selectedAlertId}
             currentUser={currentUser}
             isLoading={isLoadingDetail}
@@ -634,14 +635,14 @@ function Alerts() {
             onEditItem={handleEditItem}
             onDeleteItem={handleDeleteItem}
             onDeleteBatch={handleDeleteBatch}
-            onAssignToMe={handleAssignToMe}
-            onAssignToUser={handleAssignToUser}
-            onUnassign={handleUnassign}
-            onCloseEntity={handleCloseAlert}
-            onReopenEntity={handleReopenAlert}
-            onLinkToCase={handleLinkToCase}
-            onUnlinkFromCase={handleUnlinkFromCase}
-            onOpenEntity={handleEscalate}
+            onAssignToMe={isAuditor ? undefined : handleAssignToMe}
+            onAssignToUser={isAuditor ? undefined : handleAssignToUser}
+            onUnassign={isAuditor ? undefined : handleUnassign}
+            onCloseEntity={isAuditor ? undefined : handleCloseAlert}
+            onReopenEntity={isAuditor ? undefined : handleReopenAlert}
+            onLinkToCase={isAuditor ? undefined : handleLinkToCase}
+            onUnlinkFromCase={isAuditor ? undefined : handleUnlinkFromCase}
+            onOpenEntity={isAuditor ? undefined : handleEscalate}
             onQuickTerminalSubmit={handleQuickTerminalSubmit}
             onSlashCommand={handleSlashCommand}
             onAddNote={handleAddNote}
@@ -650,15 +651,15 @@ function Alerts() {
             onBackToList={handleBackToList}
             scrollToItemId={scrollToItemId}
             onReplyParentIdChange={setReplyParentId}
-            onUpdateTags={handleUpdateTags}
-            onAcceptTriageRecommendation={handleAcceptTriageRecommendation}
-            onRejectTriageRecommendation={handleRejectTriageRecommendation}
+            onUpdateTags={isAuditor ? undefined : handleUpdateTags}
+            onAcceptTriageRecommendation={isAuditor ? undefined : handleAcceptTriageRecommendation}
+            onRejectTriageRecommendation={isAuditor ? undefined : handleRejectTriageRecommendation}
             onScrollToTimelineItem={handleScrollToTimelineItem}
             onNavigateToCase={handleNavigateToCase}
             isAcceptingRecommendation={acceptTriageRecommendationMutation.isPending}
             isRejectingRecommendation={rejectTriageRecommendationMutation.isPending}
-            onRetryTriage={handleRetryTriage}
-            onRequestTriage={handleRequestTriage}
+            onRetryTriage={isAuditor ? undefined : handleRetryTriage}
+            onRequestTriage={isAuditor ? undefined : handleRequestTriage}
             isEnqueuingTriage={enqueueTriageMutation.isPending}
             isTriageEnabled={isTriageEnabled}
           />

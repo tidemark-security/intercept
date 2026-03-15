@@ -6,7 +6,7 @@ import type { CardConfig, CardFactoryOptions } from '../TimelineCardFactory';
 
 import { Hash, Mail, User } from 'lucide-react';
 
-export function isEmailItem(item: TimelineItem): item is EmailItem {
+export function isEmailItem(item: TimelineItem): item is TimelineItem & EmailItem {
   return item.type === 'email';
 }
 

@@ -18,7 +18,7 @@ import { Biohazard, ChevronsUp, Cpu, Factory, Globe, Key } from 'lucide-react';
 /**
  * Check if item is a SystemItem
  */
-export function isSystemItem(item: TimelineItem): item is SystemItem {
+export function isSystemItem(item: TimelineItem): item is TimelineItem & SystemItem {
   return item.type === 'system';
 }
 

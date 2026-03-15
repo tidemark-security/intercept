@@ -103,7 +103,7 @@ export function createOptimisticTimelineItem(
     timestamp: payload.timestamp || new Date().toISOString(),
     created_at: new Date().toISOString(),
     created_by: currentUser || 'You',
-    tags: payload.tags || [],
+    tags: 'tags' in payload ? (payload.tags || []) : [],
     flagged: payload.flagged || false,
     highlighted: payload.highlighted || false,
     replies: null,

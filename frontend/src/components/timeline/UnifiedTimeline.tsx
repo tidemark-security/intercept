@@ -145,6 +145,8 @@ function UnifiedTimelineInner({
   
   const isReadOnly = mode === 'readonly';
   const isEditable = mode === 'editable';
+  const canReviewTriage = isEditable && !!onAcceptTriageRecommendation && !!onRejectTriageRecommendation;
+  const canRequestTriage = isEditable && !!onRequestTriage;
 
   // Notify parent component when reply parent ID changes
   React.useEffect(() => {
@@ -235,8 +237,8 @@ function UnifiedTimelineInner({
 
     // Sort items
     const sorted = [...filtered].sort((a, b) => {
-      let aValue: string | undefined;
-      let bValue: string | undefined;
+      let aValue: string | null | undefined;
+      let bValue: string | null | undefined;
 
       if (sortBy === 'created_at') {
         aValue = a.created_at;
@@ -562,11 +564,12 @@ function UnifiedTimelineInner({
                         recommendation={(entityDetail as AlertRead).triage_recommendation!}
                         onAccept={onAcceptTriageRecommendation || (() => {})}
                         onReject={onRejectTriageRecommendation || (() => {})}
-                        onRetry={onRetryTriage}
+                        onRetry={canReviewTriage ? onRetryTriage : undefined}
                         onNavigateToCase={onNavigateToCase}
                         isAccepting={isAcceptingRecommendation}
                         isRejecting={isRejectingRecommendation}
                         isRetrying={isEnqueuingTriage}
+                        canReview={canReviewTriage}
                       />
                     </div>
                   )}
@@ -575,7 +578,7 @@ function UnifiedTimelineInner({
                   {entityType === 'alert' && 
                    !(entityDetail as AlertRead).triage_recommendation && 
                    isTriageEnabled && 
-                   onRequestTriage && (
+                   canRequestTriage && (
                     <div className="flex w-full">
                       <TriageRequestCard
                         onRequestTriage={onRequestTriage}

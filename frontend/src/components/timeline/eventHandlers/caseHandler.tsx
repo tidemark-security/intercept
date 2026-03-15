@@ -7,7 +7,7 @@ import type { CardConfig, CardFactoryOptions } from '../TimelineCardFactory';
 
 import { Briefcase, ChevronsUp, Hash, User } from 'lucide-react';
 
-export function isCaseItem(item: TimelineItem): item is CaseItem {
+export function isCaseItem(item: TimelineItem): item is TimelineItem & CaseItem {
   return item.type === 'case';
 }
 

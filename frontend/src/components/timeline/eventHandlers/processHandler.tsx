@@ -6,7 +6,7 @@ import type { CardConfig, CardFactoryOptions } from '../TimelineCardFactory';
 
 import { Cpu, Hash, Terminal, User } from 'lucide-react';
 
-export function isProcessItem(item: TimelineItem): item is ProcessItem {
+export function isProcessItem(item: TimelineItem): item is TimelineItem & ProcessItem {
   return item.type === 'process';
 }
 

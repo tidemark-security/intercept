@@ -32,7 +32,7 @@ from app.api.route_utils import (
     create_human_id_decorator,
     normalize_upload_status,
 )
-from app.api.routes.admin_auth import require_authenticated_user
+from app.api.routes.admin_auth import require_authenticated_user, require_non_auditor_user
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,8 @@ handle_human_id = create_human_id_decorator(ID_PREFIX, "alert_id")
 @router.post("", response_model=AlertRead)
 async def create_alert(
     alert_data: AlertCreate,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    _current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     """Create a new alert."""
     try:
@@ -138,7 +139,7 @@ async def update_alert(
     request: Request, # pylint: disable=unused-argument
     alert_update: AlertUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Update an alert."""
     try:
@@ -159,7 +160,7 @@ async def triage_alert(
     request: Request, # pylint: disable=unused-argument
     triage_request: AlertTriageRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Triage an alert and optionally escalate to case."""
     try:
@@ -180,7 +181,7 @@ async def link_alert_to_case(
     request: Request,  # pylint: disable=unused-argument
     case_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Link an alert to an existing case."""
     try:
@@ -202,7 +203,7 @@ async def unlink_alert_from_case(
     alert_id: int,
     request: Request,  # pylint: disable=unused-argument
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Unlink an alert from its associated case.
     
@@ -228,7 +229,7 @@ async def add_timeline_item(
     request: Request, # pylint: disable=unused-argument
     timeline_item: dict,  # Using dict for now since we need to handle different timeline item types
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Add a timeline item to an alert."""
     try:
@@ -253,7 +254,7 @@ async def update_timeline_item(
     item_id: str,
     timeline_item: dict,  # Using dict for now since we need to handle different timeline item types
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Update a specific timeline item in an alert."""
     try:
@@ -277,7 +278,7 @@ async def remove_timeline_item(
     request: Request, # pylint: disable=unused-argument
     item_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Remove a specific timeline item from an alert."""
     try:
@@ -303,7 +304,7 @@ async def generate_upload_url(
     alert_id: int,
     request_data: PresignedUploadRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """
     Generate presigned upload URL and create timeline attachment item.
@@ -408,7 +409,7 @@ async def update_attachment_status(
     item_id: str,
     update_data: AttachmentStatusUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user)
+    current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """
     Update attachment upload status.

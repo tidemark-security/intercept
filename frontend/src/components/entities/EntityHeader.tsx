@@ -177,6 +177,7 @@ const EntityHeaderRoot = React.forwardRef<
 
   const isEscalated = status === 'ESCALATED' || (isAlert && !!caseId);
   const [isCaseClosureModalOpen, setIsCaseClosureModalOpen] = React.useState(false);
+  const showAssignmentControls = Boolean(onAssignToMe || onAssignToUser || onUnassign);
 
   // Detect mobile screen size
   const [isMobile, setIsMobile] = React.useState(false);
@@ -277,21 +278,23 @@ const EntityHeaderRoot = React.forwardRef<
             </Button>
           )}
           {/* Assignee Selector - Always shown and functional */}
-          <div className="flex items-center justify-end gap-2 self-stretch mobile:flex-1">
-            <AssigneeSelector
-              mode="assign"
-              size={assigneeSize}
-              className={assigneeSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
-              currentAssignee={assignee || null}
-              currentUser={currentUser || null}
-              users={users}
-              isLoadingUsers={isLoadingUsers}
-              disabled={isUpdating}
-              onUnassign={onUnassign}
-              onAssignToMe={onAssignToMe}
-              onAssignToUser={onAssignToUser}
-            />
-          </div>
+          {showAssignmentControls && (
+            <div className="flex items-center justify-end gap-2 self-stretch mobile:flex-1">
+              <AssigneeSelector
+                mode="assign"
+                size={assigneeSize}
+                className={assigneeSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
+                currentAssignee={assignee || null}
+                currentUser={currentUser || null}
+                users={users}
+                isLoadingUsers={isLoadingUsers}
+                disabled={isUpdating}
+                onUnassign={onUnassign}
+                onAssignToMe={onAssignToMe}
+                onAssignToUser={onAssignToUser}
+              />
+            </div>
+          )}
           {/* Close/Reopen and Primary Action Buttons - Only in editable mode or for primary action in preview */}
           {(showCloseReopenButtons || showPrimaryAction) && (
             <div className="flex items-center justify-end gap-2 self-stretch mobile:flex-1">

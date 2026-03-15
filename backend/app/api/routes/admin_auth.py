@@ -295,6 +295,32 @@ async def require_admin_user(
     return user
 
 
+async def require_non_auditor_user(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> UserAccount:
+    """
+    Dependency that validates the current user is authenticated and not an auditor.
+
+    Supports both API key and session cookie authentication.
+
+    Raises:
+        HTTPException: 401 if not authenticated, 403 if auditor
+    """
+    user = await _authenticate_from_request(request, db)
+
+    if user.role == UserRole.AUDITOR:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ValidationErrorResponse(
+                message="Auditor accounts have read-only access",
+                fields=[],
+            ).model_dump(),
+        )
+
+    return user
+
+
 async def require_authenticated_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
