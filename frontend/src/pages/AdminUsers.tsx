@@ -53,6 +53,7 @@ import {
   Lock,
   Microscope,
   MoreHorizontal,
+  Pencil,
   Plus,
   Search,
   User,
@@ -64,6 +65,7 @@ interface User {
   id: string;
   username: string;
   email: string;
+  description: string;
   accountType: AccountType;
   role: UserRole;
   status: UserStatus;
@@ -152,6 +154,7 @@ function mapApiUser(raw: Record<string, unknown>): User {
     id: typeof raw.id === "string" ? raw.id : "",
     username: typeof raw.username === "string" ? raw.username : "",
     email: typeof raw.email === "string" ? raw.email : "",
+    description: typeof raw.description === "string" ? raw.description : "",
     accountType: normalizeAccountType(raw.accountType ?? raw.account_type),
     role: normalizeUserRole(raw.role),
     status: normalizeUserStatus(raw.status),
@@ -179,6 +182,11 @@ function AdminUsers() {
   const [createSuccess, setCreateSuccess] = useState<string | null>(null);
   const [createdNhiResponse, setCreatedNhiResponse] =
     useState<AdminCreateNHIResponse | null>(null);
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [editFormData, setEditFormData] = useState<CreateUserFormData>(
+    INITIAL_CREATE_FORM_DATA,
+  );
+  const [editLoading, setEditLoading] = useState(false);
 
   // Action states
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -287,10 +295,23 @@ function AdminUsers() {
     setCreateApiKeyFormData((prev) => ({ ...prev, [field]: value }));
   };
 
+  const updateEditFormField = <K extends keyof CreateUserFormData>(
+    field: K,
+    value: CreateUserFormData[K],
+  ) => {
+    setEditFormData((prev) => ({ ...prev, [field]: value }));
+  };
+
   const closeCreateUserModal = () => {
     setShowCreateModal(false);
     resetCreateForm();
     setCreateSuccess(null);
+    setError(null);
+  };
+
+  const closeEditUserModal = () => {
+    setEditingUser(null);
+    setEditFormData(INITIAL_CREATE_FORM_DATA);
     setError(null);
   };
 
@@ -388,6 +409,61 @@ function AdminUsers() {
       } finally {
         setCreateLoading(false);
       }
+    }
+  };
+
+  const handleOpenEditUserModal = (user: User) => {
+    setEditingUser(user);
+    setEditFormData({
+      accountType: user.accountType,
+      username: user.username,
+      email: user.email,
+      role: user.role,
+      description: user.description,
+      initialApiKeyName: "",
+      initialApiKeyExpiresAt: "",
+    });
+    setError(null);
+  };
+
+  const handleEditUser = async () => {
+    if (!editingUser) {
+      return;
+    }
+
+    if (!editFormData.username.trim()) {
+      setError("Username is required");
+      return;
+    }
+
+    if (editingUser.accountType === "HUMAN" && !editFormData.email.trim()) {
+      setError("Email is required for human accounts");
+      return;
+    }
+
+    try {
+      setEditLoading(true);
+      setError(null);
+      await AdminService.updateUserApiV1AdminAuthUsersUserIdPatch({
+        userId: editingUser.id,
+        requestBody: {
+          username: editFormData.username,
+          email:
+            editingUser.accountType === "HUMAN"
+              ? editFormData.email
+              : undefined,
+          role: editFormData.role,
+          description: editFormData.description,
+        },
+      });
+
+      await refreshUsers();
+      closeEditUserModal();
+      showActionSuccess("User updated successfully");
+    } catch (err) {
+      setError(extractErrorMessage(err, "Failed to update user"));
+    } finally {
+      setEditLoading(false);
     }
   };
 
@@ -791,6 +867,12 @@ function AdminUsers() {
           />
         </DropdownMenu.Trigger>
         <DropdownMenu.Content side="bottom" align="end" sideOffset={8}>
+          <DropdownMenu.DropdownItem
+            icon={<Pencil />}
+            label="Edit User"
+            onClick={() => handleOpenEditUserModal(user)}
+          />
+          <DropdownMenu.DropdownDivider />
           {user.accountType !== "NHI" && (
             <DropdownMenu.DropdownItem
               icon={<Key />}
@@ -1129,7 +1211,7 @@ function AdminUsers() {
               <TextField
                 className="h-auto w-full flex-none"
                 label="Username"
-                helpText="Lowercase, 3-64 characters, letters, numbers, '.', '_', or '-'"
+                helpText="Lowercase, 3-1024 characters, letters, numbers, '.', '_', or '-'"
               >
                 <TextField.Input
                   placeholder={
@@ -1258,6 +1340,132 @@ function AdminUsers() {
               {createFormData.accountType === "HUMAN"
                 ? "Create User"
                 : "Create Service Account"}
+            </Button>
+          </div>
+        </ModalShell>
+      )}
+
+      {/* Edit User Modal */}
+      {editingUser && (
+        <ModalShell>
+          <div className="flex w-full items-center gap-2">
+            <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
+              <span className="text-heading-2 font-heading-2 text-default-font">
+                Edit User
+              </span>
+              <span className="text-body font-body text-subtext-color">
+                {editingUser.accountType === "HUMAN"
+                  ? "Update the user account details and role"
+                  : "Update the service account details and role"}
+              </span>
+            </div>
+            {editingUser.accountType === "NHI" ? (
+              <Bot className="text-[24px] text-default-font" />
+            ) : (
+              <User className="text-[24px] text-default-font" />
+            )}
+          </div>
+
+          <div className="flex w-full items-start rounded-md border border-solid border-neutral-border bg-default-background">
+            <div className="flex grow shrink-0 basis-0 flex-col items-start gap-6 px-4 py-4">
+              <TextField
+                className="h-auto w-full flex-none"
+                label="Username"
+                helpText="Lowercase, 3-1024 characters, letters, numbers, '.', '_', or '-'"
+              >
+                <TextField.Input
+                  placeholder={
+                    editingUser.accountType === "HUMAN"
+                      ? "analyst.user"
+                      : "svc.integration"
+                  }
+                  value={editFormData.username}
+                  onChange={(e) =>
+                    updateEditFormField("username", e.target.value)
+                  }
+                />
+              </TextField>
+
+              {editingUser.accountType === "HUMAN" ? (
+                <>
+                  <TextField
+                    className="h-auto w-full flex-none"
+                    label="Email"
+                    helpText="Used for temporary credential delivery"
+                  >
+                    <TextField.Input
+                      type="email"
+                      placeholder="analyst@example.com"
+                      value={editFormData.email}
+                      onChange={(e) =>
+                        updateEditFormField("email", e.target.value)
+                      }
+                    />
+                  </TextField>
+
+                  <TextField
+                    className="h-auto w-full flex-none"
+                    label="Job Title / Description"
+                    helpText="User's job title or role description (optional)"
+                  >
+                    <TextField.Input
+                      placeholder="Senior Security Analyst"
+                      value={editFormData.description}
+                      onChange={(e) =>
+                        updateEditFormField("description", e.target.value)
+                      }
+                    />
+                  </TextField>
+                </>
+              ) : (
+                <TextField
+                  className="h-auto w-full flex-none"
+                  label="Description"
+                  helpText="Purpose or description of this service account (optional)"
+                >
+                  <TextField.Input
+                    placeholder="Integration with SIEM platform"
+                    value={editFormData.description}
+                    onChange={(e) =>
+                      updateEditFormField("description", e.target.value)
+                    }
+                  />
+                </TextField>
+              )}
+
+              <div className="flex w-full flex-col items-start gap-2">
+                <span className="text-body-bold font-body-bold text-default-font">
+                  Role
+                </span>
+                <div className="flex w-full gap-2">
+                  {ALLOWED_ROLES.map((role) => (
+                    <Button
+                      key={role}
+                      variant={
+                        editFormData.role === role
+                          ? "brand-primary"
+                          : "neutral-secondary"
+                      }
+                      onClick={() => updateEditFormField("role", role)}
+                    >
+                      {role}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex w-full items-center justify-end gap-2">
+            <Button
+              variant="neutral-secondary"
+              onClick={closeEditUserModal}
+              disabled={editLoading}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleEditUser} loading={editLoading}>
+              Save Changes
             </Button>
           </div>
         </ModalShell>

@@ -260,6 +260,92 @@ class AdminAuthService:
             f"from {old_status.value} to {new_status.value}"
         )
 
+    async def update_user(
+        self,
+        *,
+        admin_user_id: UUID,
+        target_user_id: UUID,
+        username: Optional[str] = None,
+        email: Optional[str] = None,
+        role: Optional[UserRole] = None,
+        description: Optional[str] = None,
+        request_metadata: RequestMetadata,
+        db: AsyncSession,
+    ) -> UserAccount:
+        """Update editable fields on a user account."""
+        result = await db.execute(
+            select(UserAccount).where(UserAccount.id == target_user_id)
+        )
+        user = result.scalar_one_or_none()
+
+        if user is None:
+            raise ValueError(f"User with ID {target_user_id} not found")
+
+        old_values = {
+            "username": user.username,
+            "email": user.email,
+            "role": user.role.value,
+            "description": user.description,
+        }
+
+        if username is not None:
+            normalized_username = username.strip().lower()
+            duplicate_username_result = await db.execute(
+                select(UserAccount).where(
+                    UserAccount.username == normalized_username,
+                    UserAccount.id != target_user_id,
+                )
+            )
+            if duplicate_username_result.scalar_one_or_none() is not None:
+                raise ValueError(f"Username '{normalized_username}' already exists")
+            user.username = normalized_username
+
+        if email is not None:
+            if user.account_type == AccountType.NHI:
+                raise ValueError("NHI accounts cannot have an email address")
+            normalized_email = email.strip().lower()
+            duplicate_email_result = await db.execute(
+                select(UserAccount).where(
+                    UserAccount.email == normalized_email,
+                    UserAccount.id != target_user_id,
+                )
+            )
+            if duplicate_email_result.scalar_one_or_none() is not None:
+                raise ValueError(f"Email '{normalized_email}' already exists")
+            user.email = normalized_email
+
+        if role is not None:
+            user.role = role
+
+        if description is not None:
+            normalized_description = description.strip()
+            user.description = normalized_description or None
+
+        user.updated_at = datetime.now(timezone.utc)
+
+        await db.commit()
+        await db.refresh(user)
+
+        await get_audit_service(db).user_updated(
+            admin_user_id=admin_user_id,
+            target_user_id=target_user_id,
+            old_value=old_values,
+            new_value={
+                "username": user.username,
+                "email": user.email,
+                "role": user.role.value,
+                "description": user.description,
+            },
+            context=request_metadata.to_audit_context(),
+        )
+
+        logger.info(
+            f"Admin {admin_user_id} updated user {target_user_id} "
+            f"({user.username})"
+        )
+
+        return user
+
     async def issue_password_reset(
         self,
         *,

@@ -10,7 +10,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import select
 
-from app.models.enums import UserRole, UserStatus
+from app.models.enums import AccountType, UserRole, UserStatus
 from app.models.models import AdminResetRequest, AuthSession, UserAccount
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
@@ -408,6 +408,115 @@ async def test_admin_enable_user_success(
         result = await session.get(UserAccount, analyst_id)
         assert result is not None
         assert result.status == UserStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_admin_update_human_user_success(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+    analyst_user_factory,
+) -> None:
+    """Admin can update editable fields for a human user."""
+    admin = admin_user_factory()
+    analyst = analyst_user_factory(
+        username="analyst.original",
+        email="analyst.original@example.com",
+    )
+    analyst.description = "Original description"
+
+    async with session_maker() as session:
+        session.add(admin)
+        session.add(analyst)
+        await session.commit()
+        analyst_id = analyst.id
+
+    session_cookie = await _login_and_get_cookie(client, admin.username)
+
+    response = await client.patch(
+        f"/api/v1/admin/auth/users/{analyst_id}",
+        json={
+            "username": "analyst.updated",
+            "email": "analyst.updated@example.com",
+            "role": "AUDITOR",
+            "description": "Updated description",
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 204
+
+    async with session_maker() as session:
+        updated_user = await session.get(UserAccount, analyst_id)
+        assert updated_user is not None
+        assert updated_user.username == "analyst.updated"
+        assert updated_user.email == "analyst.updated@example.com"
+        assert updated_user.role == UserRole.AUDITOR
+        assert updated_user.description == "Updated description"
+
+    list_response = await client.get(
+        "/api/v1/admin/auth/users",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert list_response.status_code == 200
+    listed_user = next(
+        item for item in list_response.json() if item["id"] == str(analyst_id)
+    )
+    assert listed_user["description"] == "Updated description"
+
+
+@pytest.mark.asyncio
+async def test_admin_update_nhi_user_success(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    """Admin can update editable fields for an NHI user without email fields."""
+    admin = admin_user_factory()
+    now = datetime.now(timezone.utc)
+    nhi_user = UserAccount(
+        username="svc.original",
+        account_type=AccountType.NHI,
+        role=UserRole.ANALYST,
+        description="Original service account",
+        email=None,
+        password_hash=None,
+        status=UserStatus.ACTIVE,
+        must_change_password=False,
+        failed_login_attempts=0,
+        created_at=now,
+        updated_at=now,
+        created_by_admin_id=admin.id,
+    )
+
+    async with session_maker() as session:
+        session.add(admin)
+        session.add(nhi_user)
+        await session.commit()
+        nhi_user_id = nhi_user.id
+
+    session_cookie = await _login_and_get_cookie(client, admin.username)
+
+    response = await client.patch(
+        f"/api/v1/admin/auth/users/{nhi_user_id}",
+        json={
+            "username": "svc.updated",
+            "role": "ADMIN",
+            "description": "Updated service account",
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 204
+
+    async with session_maker() as session:
+        updated_user = await session.get(UserAccount, nhi_user_id)
+        assert updated_user is not None
+        assert updated_user.username == "svc.updated"
+        assert updated_user.role == UserRole.ADMIN
+        assert updated_user.description == "Updated service account"
+        assert updated_user.email is None
 
 
 @pytest.mark.asyncio

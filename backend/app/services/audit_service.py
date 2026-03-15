@@ -374,6 +374,18 @@ class AuditService:
             context=kwargs.get("context"),
         )
 
+    async def user_updated(self, **kwargs: Any) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.admin.user_updated",
+            entity_type="user",
+            entity_id=str(kwargs["target_user_id"]),
+            description="Admin updated user",
+            old_value=kwargs["old_value"],
+            new_value=kwargs["new_value"],
+            performed_by=str(kwargs["admin_user_id"]),
+            context=kwargs.get("context"),
+        )
+
     async def password_reset_issued(self, **kwargs: Any) -> AuditLog:
         return await self.log_event(
             event_type="auth.admin.password_reset_issued",

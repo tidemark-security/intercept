@@ -6,7 +6,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.route_utils import read_session_cookie
@@ -67,6 +67,36 @@ class AdminUpdateStatusRequest(BaseModel):
     """Request to update user account status."""
 
     status: UserStatus = Field(description="New status (ACTIVE, DISABLED, LOCKED)")
+
+
+class AdminUpdateUserRequest(BaseModel):
+    """Request to update editable user account fields."""
+
+    username: Optional[str] = Field(
+        default=None,
+        min_length=3,
+        max_length=64,
+        description="Updated unique username",
+    )
+    email: Optional[EmailStr] = Field(
+        default=None,
+        description="Updated email for human accounts",
+    )
+    role: Optional[UserRole] = Field(
+        default=None,
+        description="Updated user role",
+    )
+    description: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="Updated user title or service account description",
+    )
+
+    @model_validator(mode="after")
+    def validate_has_updates(self) -> "AdminUpdateUserRequest":
+        if not self.model_fields_set.intersection({"username", "email", "role", "description"}):
+            raise ValueError("At least one editable field must be provided")
+        return self
 
 
 class AdminResetPasswordRequest(BaseModel):
@@ -485,6 +515,61 @@ async def update_user_status(
         )
 
 
+@router.patch(
+    "/users/{user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Update editable user account fields",
+    description="Admin endpoint to edit a user's username, role, email, or description",
+    response_model=None,
+)
+async def update_user(
+    user_id: UUID,
+    request: Request,
+    payload: AdminUpdateUserRequest,
+    db: AsyncSession = Depends(get_db),
+    admin_user: UserAccount = Depends(require_admin_user),
+) -> None:
+    from app.services.admin_auth_service import admin_auth_service
+
+    try:
+        metadata = _extract_request_metadata(request)
+        await admin_auth_service.update_user(
+            admin_user_id=admin_user.id,
+            target_user_id=user_id,
+            username=payload.username,
+            email=payload.email,
+            role=payload.role,
+            description=payload.description,
+            request_metadata=metadata,
+            db=db,
+        )
+
+    except ValueError as e:
+        if "not found" in str(e).lower():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=ValidationErrorResponse(
+                    message=str(e),
+                    fields=[],
+                ).model_dump(),
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ValidationErrorResponse(
+                message=str(e),
+                fields=[],
+            ).model_dump(),
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ValidationErrorResponse(
+                message="Internal server error",
+                fields=[],
+            ).model_dump(),
+        )
+
+
 @router.get(
     "/users/{user_id}/passkeys",
     response_model=List[AdminPasskeyRead],
@@ -695,6 +780,7 @@ async def list_users(
             "id": str(user.id),
             "username": user.username,
             "email": user.email,
+            "description": user.description,
             "oidcIssuer": user.oidc_issuer,
             "oidcSubject": user.oidc_subject,
             "accountType": user.account_type.value,

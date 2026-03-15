@@ -11,6 +11,7 @@ import type { AdminPasskeyRead } from '../models/AdminPasskeyRead';
 import type { AdminResetPasswordRequest } from '../models/AdminResetPasswordRequest';
 import type { AdminResetPasswordResponse } from '../models/AdminResetPasswordResponse';
 import type { AdminUpdateStatusRequest } from '../models/AdminUpdateStatusRequest';
+import type { AdminUpdateUserRequest } from '../models/AdminUpdateUserRequest';
 import type { app__api__routes__admin_auth__UserSummary } from '../models/app__api__routes__admin_auth__UserSummary';
 import type { AppSettingCreate } from '../models/AppSettingCreate';
 import type { AppSettingRead } from '../models/AppSettingRead';
@@ -105,6 +106,32 @@ export class AdminService {
         return __request(OpenAPI, {
             method: 'PATCH',
             url: '/api/v1/admin/auth/users/{user_id}/status',
+            path: {
+                'user_id': userId,
+            },
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Update editable user account fields
+     * Admin endpoint to edit a user's username, role, email, or description
+     * @returns void
+     * @throws ApiError
+     */
+    public static updateUserApiV1AdminAuthUsersUserIdPatch({
+        userId,
+        requestBody,
+    }: {
+        userId: string,
+        requestBody: AdminUpdateUserRequest,
+    }): CancelablePromise<void> {
+        return __request(OpenAPI, {
+            method: 'PATCH',
+            url: '/api/v1/admin/auth/users/{user_id}',
             path: {
                 'user_id': userId,
             },

@@ -34,7 +34,7 @@ from app.models.enums import (
 )
 
 
-USERNAME_REGEX = re.compile(r"^[a-z0-9._@-]{3,64}$")
+USERNAME_REGEX = re.compile(r"^[a-z0-9._@-]{3,1024}$")
 PASSWORD_POLICY_REGEX = re.compile(
     r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{12,}$"
 )
@@ -1078,7 +1078,7 @@ class UserAccountBase(SQLModel):
     """Base fields shared by all user account types (human and NHI)."""
     username: str = Field(
         regex=USERNAME_REGEX.pattern,
-        sa_column=Column(String(64), unique=True, index=True),
+        sa_column=Column(String(1024), unique=True, index=True),
         description="Canonical username (lowercase, unique)",
     )
     role: UserRole = Field(default=UserRole.ANALYST)
@@ -1094,7 +1094,7 @@ class UserAccountBase(SQLModel):
         normalized = str(value).strip().lower()
         if not USERNAME_REGEX.match(normalized):
             raise ValueError(
-                "username must be 3-64 chars and contain lowercase letters, numbers, '.', '_', '@', or '-'"
+                "username must be 3-1024 chars and contain lowercase letters, numbers, '.', '_', '@', or '-'"
             )
         return normalized
 
