@@ -106,6 +106,8 @@ services:
       LANGFLOW_DATABASE_URL: postgresql://langflow_user:langflow_password@postgres:5432/langflow
       LANGFLOW_CONFIG_DIR: /app/langflow
       DO_NOT_TRACK: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "7860:7860"
     volumes:

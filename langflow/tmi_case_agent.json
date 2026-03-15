@@ -5004,7 +5004,7 @@
                 "value": {
                   "config": {
                     "headers": {},
-                    "url": "http://backend:8000/mcp/sse",
+                    "url": "http://host.docker.internal:8000/mcp/sse",
                     "verify_ssl": true
                   },
                   "name": "intercept"
