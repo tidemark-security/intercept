@@ -62,7 +62,6 @@ export function AddAttachmentForm({ initialData }: AddAttachmentFormProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const updateAttachmentMutation = useUpdateTimelineItem(entityId, entityType, {
     onSuccess: () => {
-      showToast("Attachment Updated", "Attachment details saved", "success");
       onSuccess?.(initialData?.id);
     },
     onError: (error) => {
@@ -91,7 +90,6 @@ export function AddAttachmentForm({ initialData }: AddAttachmentFormProps) {
         } else {
           // All files uploaded! Pass the last uploaded file's itemId for scroll-to
           setCurrentUploadIndex(null);
-          showToast("Upload Complete", `Successfully uploaded ${files.length} file(s)`, "success");
           setFiles([]);
           onSuccess?.(itemId);  // Pass last itemId for scroll-to
         }

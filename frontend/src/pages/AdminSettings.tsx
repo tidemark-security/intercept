@@ -341,9 +341,6 @@ function AdminSettings() {
   ) => {
     try {
       await updateMutation.mutateAsync({ key, value });
-      if (notify) {
-        showToast("Setting updated", key, "success");
-      }
       return true;
     } catch (err) {
       if (notify) {
@@ -375,9 +372,6 @@ function AdminSettings() {
         category: derivedCategory,
         description: "",
       });
-      if (notify) {
-        showToast("Setting created", key, "success");
-      }
       return true;
     } catch (err) {
       if (notify) {

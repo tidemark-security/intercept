@@ -114,7 +114,6 @@ function CasesListPage() {
     onSuccess: (createdCase) => {
       setCreateCaseError(null);
       setIsCreateCaseModalOpen(false);
-      showToast('Case created', `${createdCase.human_id} is ready`, 'success');
       navigate(`/cases/${createdCase.human_id}`);
     },
     onError: (error) => {

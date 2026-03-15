@@ -325,20 +325,29 @@ export function TimelineItemRenderer({
       linkTemplates,
     });
 
+    const { children: cardChildren, ...baseCardProps } = cardConfig;
+
     if (isGrouped) {
-      cardConfig.className = `${cardConfig.className || ''} flex-1${isCurrentItemLinked ? ' min-w-40' : ''}`;
+      baseCardProps.className = `${baseCardProps.className || ''} flex-1${isCurrentItemLinked ? ' min-w-40' : ''}`;
     }
 
     const description = timelineCurrentItem.description;
     const descriptionNode = hasText(description) ? <MarkdownContent content={description} /> : null;
 
-    let children: React.ReactNode = withEnrichmentBlocks(timelineCurrentItem, descriptionNode);
+    const inlineChildren = descriptionNode || cardChildren ? (
+      <div className="flex w-full flex-col gap-3">
+        {descriptionNode}
+        {cardChildren}
+      </div>
+    ) : null;
+
+    let children: React.ReactNode = withEnrichmentBlocks(timelineCurrentItem, inlineChildren);
 
     if (isAlertItem(timelineCurrentItem)) {
-      cardConfig.size = 'x-large';
+      baseCardProps.size = 'x-large';
       const alertId = timelineCurrentItem.alert_id ? convertNumericToAlertId(timelineCurrentItem.alert_id) : 'Alert';
-      cardConfig.title = buildEntityTitle(alertId, timelineCurrentItem.title, isDarkTheme);
-      clearCardLines(cardConfig);
+      baseCardProps.title = buildEntityTitle(alertId, timelineCurrentItem.title, isDarkTheme);
+      clearCardLines(baseCardProps);
 
       const alertData: Partial<AlertRead> & { title: string } = {
         id: timelineCurrentItem.alert_id || 0,
@@ -366,10 +375,10 @@ export function TimelineItemRenderer({
         </div>
       ));
     } else if (isTaskItem(timelineCurrentItem)) {
-      cardConfig.size = 'x-large';
+      baseCardProps.size = 'x-large';
       const taskId = timelineCurrentItem.task_human_id || 'Task';
-      cardConfig.title = buildEntityTitle(taskId, timelineCurrentItem.title, isDarkTheme);
-      clearCardLines(cardConfig, { clearCharacterFlags: true });
+      baseCardProps.title = buildEntityTitle(taskId, timelineCurrentItem.title, isDarkTheme);
+      clearCardLines(baseCardProps, { clearCharacterFlags: true });
 
       const taskData: Partial<TaskRead> & { title: string } = {
         id: timelineCurrentItem.task_id || 0,
@@ -396,10 +405,10 @@ export function TimelineItemRenderer({
         </div>
       ));
     } else if (isCaseItem(timelineCurrentItem)) {
-      cardConfig.size = 'x-large';
+      baseCardProps.size = 'x-large';
       const caseHumanId = convertNumericToHumanId(timelineCurrentItem.case_id);
-      cardConfig.title = buildEntityTitle(caseHumanId, timelineCurrentItem.title, isDarkTheme);
-      clearCardLines(cardConfig);
+      baseCardProps.title = buildEntityTitle(caseHumanId, timelineCurrentItem.title, isDarkTheme);
+      clearCardLines(baseCardProps);
 
       const caseData: Partial<CaseRead> & { title: string } = {
         id: timelineCurrentItem.case_id,
@@ -426,7 +435,7 @@ export function TimelineItemRenderer({
     }
 
     const baseCardElement = (
-      <BaseCard key={itemKey} {...cardConfig}>
+      <BaseCard key={itemKey} {...baseCardProps}>
         {children}
       </BaseCard>
     );

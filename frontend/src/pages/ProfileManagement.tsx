@@ -179,7 +179,6 @@ function ProfileManagement() {
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
-      showToast("Success", "Password updated", "success");
     } catch (error) {
       if (error instanceof ApiError) {
         showToast("Error", error.body?.message || "Password update failed", "error");
@@ -244,7 +243,6 @@ function ProfileManagement() {
       setShowCreatedApiKeyValue(true);
       closeCreateApiKeyModal();
       await loadApiKeys();
-      showToast("Success", "API key created", "success");
     } catch (error) {
       if (error instanceof ApiError) {
         showToast("Error", error.body?.message || "Failed to create API key", "error");
@@ -260,7 +258,6 @@ function ProfileManagement() {
     try {
       await ApiKeysService.revokeApiKeyApiV1ApiKeysApiKeyIdDelete({ apiKeyId });
       await loadApiKeys();
-      showToast("Success", "API key revoked", "success");
     } catch (error) {
       if (error instanceof ApiError) {
         showToast("Error", error.body?.message || "Failed to revoke API key", "error");
@@ -323,7 +320,6 @@ function ProfileManagement() {
         });
         await loadPasskeys();
         closePasskeyModal();
-        showToast("Success", "Passkey renamed", "success");
       } catch (error) {
         if (error instanceof ApiError) {
           showToast("Error", error.body?.message || "Failed to rename passkey", "error");
@@ -351,7 +347,6 @@ function ProfileManagement() {
       });
       await loadPasskeys();
       closePasskeyModal();
-      showToast("Success", "Passkey registered", "success");
     } catch (error) {
       if (error instanceof ApiError) {
         showToast("Error", error.body?.message || "Passkey registration failed", "error");
@@ -428,7 +423,6 @@ function ProfileManagement() {
         passkeyId: passkey.id,
       });
       await loadPasskeys();
-      showToast("Success", "Passkey removed", "success");
     } catch (error) {
       if (error instanceof ApiError) {
         showToast("Error", error.body?.message || "Failed to remove passkey", "error");

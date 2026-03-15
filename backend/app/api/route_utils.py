@@ -17,6 +17,21 @@ from fastapi.responses import RedirectResponse
 from app.core.settings_registry import get_local
 
 
+def normalize_upload_status(status: Any, default: str = "COMPLETE") -> str:
+    """Normalize stored attachment upload status values for route checks."""
+    if status is None:
+        return default
+
+    if hasattr(status, "value"):
+        status = status.value
+
+    normalized = str(status).strip()
+    if not normalized:
+        return default
+
+    return normalized.upper()
+
+
 def get_timeline_item_types(union_type):
     """
     Dynamically extract timeline item types from a Union type.

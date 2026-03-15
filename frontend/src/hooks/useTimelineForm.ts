@@ -35,9 +35,6 @@ interface UseTimelineFormOptions<TFormState, TInitialData> {
   /** Validate form state before submission (optional) */
   validate?: (state: TFormState) => ValidationResult;
   
-  /** Custom success message (optional, defaults to type-based message) */
-  successMessage?: string;
-  
   /** Custom error message (optional, defaults to type-based message) */
   errorMessage?: string;
 }
@@ -93,7 +90,6 @@ export function useTimelineForm<TFormState extends Record<string, any>, TInitial
   transformInitialData,
   buildPayload,
   validate,
-  successMessage,
   errorMessage,
 }: UseTimelineFormOptions<TFormState, TInitialData>) {
   const {
@@ -136,11 +132,6 @@ export function useTimelineForm<TFormState extends Record<string, any>, TInitial
     onSuccess: (data, itemId) => {
       clearDraft();
       handleClear();
-      showToast(
-        "Success",
-        successMessage || `${itemType.charAt(0).toUpperCase() + itemType.slice(1)} created successfully`,
-        "success"
-      );
       onSuccess?.(itemId);
     },
     onError: (error) => {
@@ -156,11 +147,6 @@ export function useTimelineForm<TFormState extends Record<string, any>, TInitial
   // Update mutation
   const updateMutation = useUpdateTimelineItem(entityId, context, {
     onSuccess: () => {
-      showToast(
-        "Success",
-        successMessage || `${itemType.charAt(0).toUpperCase() + itemType.slice(1)} updated successfully`,
-        "success"
-      );
       onSuccess?.(initialData?.id || undefined);
     },
     onError: (error) => {

@@ -18,7 +18,12 @@ from app.models.models import (
     AttachmentItem
 )
 from app.models.enums import CaseStatus, UploadStatus
-from app.api.route_utils import get_timeline_item_types, create_timeline_converter, create_human_id_decorator
+from app.api.route_utils import (
+    get_timeline_item_types,
+    create_timeline_converter,
+    create_human_id_decorator,
+    normalize_upload_status,
+)
 from app.api.routes.admin_auth import require_authenticated_user
 
 logger = logging.getLogger(__name__)
@@ -374,8 +379,8 @@ async def update_attachment_status(
             )
         
         # Verify state transition is valid
-        current_status = timeline_item.get("upload_status", "complete")
-        if current_status in ["complete", "failed"]:
+        current_status = normalize_upload_status(timeline_item.get("upload_status"))
+        if current_status in [UploadStatus.COMPLETE.value, UploadStatus.FAILED.value]:
             raise HTTPException(
                 status_code=400,
                 detail=f"Cannot transition from {current_status} to {update_data.status}"
@@ -434,6 +439,7 @@ async def update_attachment_status(
 async def generate_download_url(
     case_id: int,
     item_id: str,
+    download: bool = Query(False, description="Generate a forced-download URL"),
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_authenticated_user)
 ):
@@ -466,8 +472,8 @@ async def generate_download_url(
             )
         
         # Verify upload is complete
-        upload_status = timeline_item.get("upload_status", "complete")
-        if upload_status != "complete":
+        upload_status = normalize_upload_status(timeline_item.get("upload_status"))
+        if upload_status != UploadStatus.COMPLETE.value:
             raise HTTPException(
                 status_code=400,
                 detail=f"Attachment upload still in progress (status: {upload_status})"
@@ -492,7 +498,9 @@ async def generate_download_url(
         # Generate presigned download URL
         download_url = await storage_service.generate_presigned_download_url(
             storage_key,
-            expires_minutes=storage_config.download_timeout_minutes
+            expires_minutes=storage_config.download_timeout_minutes,
+            filename=timeline_item.get("file_name"),
+            as_attachment=download,
         )
         
         # Calculate expiration timestamp
@@ -510,9 +518,9 @@ async def generate_download_url(
         
         return PresignedDownloadResponse(
             download_url=download_url,
-            filename=timeline_item.get("file_name", "attachment"),
-            mime_type=timeline_item.get("mime_type", "application/octet-stream"),
-            file_size=timeline_item.get("file_size", 0),
+            filename=timeline_item.get("file_name") or "attachment",
+            mime_type=timeline_item.get("mime_type") or "application/octet-stream",
+            file_size=timeline_item.get("file_size") or 0,
             expires_at=expires_at
         )
         

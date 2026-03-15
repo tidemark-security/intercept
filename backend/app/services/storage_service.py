@@ -4,6 +4,7 @@ import hashlib
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 from typing import Optional, BinaryIO
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -92,7 +93,9 @@ class StorageService:
     async def generate_presigned_download_url(
         self,
         storage_key: str,
-        expires_minutes: Optional[int] = None
+        expires_minutes: Optional[int] = None,
+        filename: Optional[str] = None,
+        as_attachment: bool = False,
     ) -> str:
         """
         Generate a presigned GET URL for direct download from storage.
@@ -108,6 +111,17 @@ class StorageService:
             expires_minutes = storage_config.download_timeout_minutes
         
         expiry = timedelta(minutes=expires_minutes)
+        response_headers = None
+
+        if as_attachment:
+            safe_filename = self.sanitize_filename(filename or storage_key.rsplit('/', 1)[-1] or 'download')
+            encoded_filename = quote(safe_filename)
+            response_headers = {
+                'response-content-disposition': (
+                    f'attachment; filename="{safe_filename}"; '
+                    f"filename*=UTF-8''{encoded_filename}"
+                )
+            }
         
         # Run blocking MinIO call in thread pool
         loop = asyncio.get_running_loop()
@@ -116,7 +130,8 @@ class StorageService:
             lambda: self.client.presigned_get_object(
                 self.bucket_name,
                 storage_key,
-                expires=expiry
+                expires=expiry,
+                response_headers=response_headers,
             )
         )
         

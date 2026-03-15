@@ -17,7 +17,7 @@ describe('TimelineItemRenderer enrichments', () => {
       tags: [],
       flagged: false,
       highlighted: false,
-      replies: [],
+      replies: null,
       name: 'Glenn Bolton',
       title: 'Principal Consultant',
       org: 'Tidemark',
@@ -60,7 +60,7 @@ describe('TimelineItemRenderer enrichments', () => {
       tags: [],
       flagged: false,
       highlighted: false,
-      replies: [],
+      replies: null,
       observable_type: 'IP',
       observable_value: '1.1.1.1',
       enrichments: {

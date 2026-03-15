@@ -11,6 +11,7 @@ import { getTimelineIcon } from '@/utils/timelineIcons';
 
 import type { CardConfig, CardFactoryOptions } from '../TimelineCardFactory';
 import { DownloadButton } from './AttachmentDownloadButton';
+import { AttachmentImagePreview } from './AttachmentImagePreview';
 
 import { FileText, HardDrive, Link } from 'lucide-react';
 /**
@@ -33,6 +34,10 @@ function formatFileSize(bytes: number | undefined | null): string | undefined {
   const size = bytes / Math.pow(1024, i);
   
   return `${size.toFixed(2)} ${sizes[i]}`;
+}
+
+function isImageAttachment(item: AttachmentItem): boolean {
+  return Boolean(item.mime_type?.startsWith('image/'));
 }
 
 /**
@@ -70,6 +75,14 @@ export function handleAttachmentItem(
     ) : downloadButton;
   }
 
+  const children =
+    item.upload_status === 'COMPLETE' &&
+    options.alertId &&
+    options.entityType &&
+    isImageAttachment(item) ? (
+      <AttachmentImagePreview item={item} entityId={options.alertId} entityType={options.entityType} />
+    ) : undefined;
+
   return {
     title: item.file_name ? `${item.file_name}` : 'Attachment',
     line1: item.file_name || 'Untitled File',
@@ -84,6 +97,7 @@ export function handleAttachmentItem(
     system: 'default',
     size: options.size || 'large',
     actionButtons,
+    children,
     _item: item,
   };
 }

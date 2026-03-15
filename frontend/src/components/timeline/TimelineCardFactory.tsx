@@ -209,6 +209,7 @@ export interface CardConfig {
   line4Icon?: React.ReactNode;
   size?: CardSize;
   className?: string;
+  children?: React.ReactNode;
   /** Original timeline item for reference */
   _item?: TimelineItem;
 }

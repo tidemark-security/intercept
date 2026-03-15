@@ -1,11 +1,11 @@
 import React from 'react';
-import { Bot, Check, Copy, Download, Expand, Image as ImageIcon, Paintbrush, RefreshCcw, Sparkles, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { Bot, Check, Copy, Download, Expand, Image as ImageIcon, Paintbrush, Sparkles } from 'lucide-react';
 
 import { Button } from '@/components/buttons/Button';
 import { IconButton } from '@/components/buttons/IconButton';
-import { Dialog } from '@/components/overlays/Dialog';
 import { useTheme } from '@/contexts/ThemeContext';
-import { cn } from '@/utils/cn';
+import { useFullscreenViewer } from '@/hooks/useFullscreenViewer';
+import { FullscreenViewer } from '@/components/overlays/FullscreenViewer';
 
 interface MermaidRendererProps {
   code: string;
@@ -117,27 +117,6 @@ const MermaidStreamingPlaceholder = () => {
   );
 };
 
-const MIN_ZOOM = 0.2;
-const MAX_ZOOM = 10;
-const ZOOM_STEP = 0.2;
-
-interface PanState {
-  x: number;
-  y: number;
-}
-
-interface DragState {
-  pointerId: number;
-  startX: number;
-  startY: number;
-  originX: number;
-  originY: number;
-}
-
-const clamp = (value: number, min: number, max: number): number => {
-  return Math.min(max, Math.max(min, value));
-};
-
 const getSvgElementFromMarkup = (markup: string): SVGSVGElement | null => {
   if (!markup) {
     return null;
@@ -226,19 +205,12 @@ const getFullscreenSvgMarkup = (markup: string): string => {
 
 const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, isStreaming = false }) => {
   const { resolvedTheme } = useTheme();
-  const dragStateRef = React.useRef<DragState | null>(null);
-  const viewportRef = React.useRef<HTMLDivElement | null>(null);
-  const diagramRef = React.useRef<HTMLDivElement | null>(null);
+  const viewer = useFullscreenViewer();
   const mermaidCopyTimeoutRef = React.useRef<number | null>(null);
   const imageCopyTimeoutRef = React.useRef<number | null>(null);
 
   const [svgMarkup, setSvgMarkup] = React.useState('');
   const [error, setError] = React.useState<string | null>(null);
-  const [isModalOpen, setIsModalOpen] = React.useState(false);
-  const [zoom, setZoom] = React.useState(1);
-  const [pan, setPan] = React.useState<PanState>({ x: 0, y: 0 });
-  const [isDragging, setIsDragging] = React.useState(false);
-  const [fitScale, setFitScale] = React.useState(1);
   const [isMermaidCopied, setIsMermaidCopied] = React.useState(false);
   const [isImageCopied, setIsImageCopied] = React.useState(false);
 
@@ -271,70 +243,11 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, isStreaming = f
     };
   }, [clearCopyTimeout]);
 
-  const resetViewport = React.useCallback(() => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
-  }, []);
-
-  const updateFitScale = React.useCallback(() => {
-    if (!isModalOpen || !viewportRef.current || !diagramRef.current) {
-      return;
-    }
-
-    const svgElement = diagramRef.current.querySelector('svg');
-    if (!svgElement) {
-      return;
-    }
-
-    const viewBox = svgElement.viewBox.baseVal;
-    const diagramWidth = viewBox && viewBox.width > 0 ? viewBox.width : svgElement.getBBox().width;
-    const diagramHeight = viewBox && viewBox.height > 0 ? viewBox.height : svgElement.getBBox().height;
-    const { clientWidth, clientHeight } = viewportRef.current;
-    if (clientWidth <= 0 || clientHeight <= 0 || diagramWidth <= 0 || diagramHeight <= 0) {
-      return;
-    }
-
-    setFitScale(Math.min(clientWidth / diagramWidth, clientHeight / diagramHeight));
-  }, [isModalOpen]);
-
-  React.useEffect(() => {
-    if (!svgMarkup) {
-      setFitScale(1);
-      return;
-    }
-
-    if (!isModalOpen) {
-      return;
-    }
-
-    const frameId = window.requestAnimationFrame(() => {
-      updateFitScale();
-    });
-
-    return () => {
-      window.cancelAnimationFrame(frameId);
-    };
-  }, [isModalOpen, svgMarkup, updateFitScale]);
-
-  React.useEffect(() => {
-    if (!isModalOpen || !viewportRef.current) {
-      return;
-    }
-
-    const viewport = viewportRef.current;
-    const resizeObserver = new ResizeObserver(() => {
-      updateFitScale();
-    });
-
-    resizeObserver.observe(viewport);
-
-    return () => {
-      resizeObserver.disconnect();
-    };
-  }, [isModalOpen, updateFitScale]);
-
-  const effectiveZoom = fitScale * zoom;
   const fullscreenSvgMarkup = React.useMemo(() => getFullscreenSvgMarkup(svgMarkup), [svgMarkup]);
+  const fullscreenSvgDimensions = React.useMemo(() => {
+    const svgElement = getSvgElementFromMarkup(fullscreenSvgMarkup);
+    return svgElement ? getSvgDimensions(svgElement) : null;
+  }, [fullscreenSvgMarkup]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -386,7 +299,6 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, isStreaming = f
         setSvgMarkup(svg);
         setCachedSvg(cacheKey, svg);
         setError(null);
-        resetViewport();
       } catch (renderError) {
         if (cancelled) {
           return;
@@ -405,7 +317,7 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, isStreaming = f
     return () => {
       cancelled = true;
     };
-  }, [code, isStreaming, resetViewport, resolvedTheme]);
+  }, [code, isStreaming, resolvedTheme]);
 
   const handleDownload = React.useCallback(() => {
     if (!svgMarkup) {
@@ -413,7 +325,6 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, isStreaming = f
     }
 
     const svgElement = getSvgElementFromMarkup(svgMarkup);
-
     if (!svgElement) {
       return;
     }
@@ -503,66 +414,6 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, isStreaming = f
     }
   }, [fullscreenSvgMarkup, markCopied]);
 
-  const handleZoomIn = React.useCallback(() => {
-    setZoom((prev) => clamp(prev + ZOOM_STEP, MIN_ZOOM, MAX_ZOOM));
-  }, []);
-
-  const handleZoomOut = React.useCallback(() => {
-    setZoom((prev) => clamp(prev - ZOOM_STEP, MIN_ZOOM, MAX_ZOOM));
-  }, []);
-
-  const handleWheel = React.useCallback((event: React.WheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
-
-    const factor = event.deltaY < 0 ? 1 + ZOOM_STEP : 1 - ZOOM_STEP;
-    setZoom((prev) => clamp(prev * factor, MIN_ZOOM, MAX_ZOOM));
-  }, []);
-
-  const handlePointerDown = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) {
-      return;
-    }
-
-    event.preventDefault();
-
-    dragStateRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      originX: pan.x,
-      originY: pan.y,
-    };
-
-    setIsDragging(true);
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }, [pan.x, pan.y]);
-
-  const handlePointerMove = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const dragState = dragStateRef.current;
-    if (!dragState || dragState.pointerId !== event.pointerId) {
-      return;
-    }
-
-    const deltaX = event.clientX - dragState.startX;
-    const deltaY = event.clientY - dragState.startY;
-
-    setPan({
-      x: dragState.originX + deltaX,
-      y: dragState.originY + deltaY,
-    });
-  }, []);
-
-  const handlePointerUp = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const dragState = dragStateRef.current;
-    if (!dragState || dragState.pointerId !== event.pointerId) {
-      return;
-    }
-
-    dragStateRef.current = null;
-    setIsDragging(false);
-    event.currentTarget.releasePointerCapture(event.pointerId);
-  }, []);
-
   if (error) {
     return (
       <div className="my-3 rounded-sm border border-warning-500 bg-warning-100 p-3 text-sm text-default-font">
@@ -592,7 +443,7 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, isStreaming = f
             icon={isMermaidCopied ? <Check /> : <Copy />}
             aria-label="Copy Mermaid source"
             title={isMermaidCopied ? 'Copied Mermaid source' : 'Copy Mermaid source'}
-            onClick={handleCopyMermaid}
+            onClick={() => void handleCopyMermaid()}
           />
           <IconButton
             size="small"
@@ -600,7 +451,7 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, isStreaming = f
             icon={isImageCopied ? <Check /> : <ImageIcon />}
             aria-label="Copy Mermaid diagram as image"
             title={isImageCopied ? 'Copied Mermaid image' : 'Copy Mermaid diagram as image'}
-            onClick={handleCopyImage}
+            onClick={() => void handleCopyImage()}
           />
           <IconButton
             size="small"
@@ -616,7 +467,7 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, isStreaming = f
             icon={<Expand />}
             aria-label="Maximize Mermaid diagram"
             title="Maximize diagram"
-            onClick={() => setIsModalOpen(true)}
+            onClick={viewer.open}
           />
         </div>
 
@@ -628,108 +479,37 @@ const MermaidRenderer: React.FC<MermaidRendererProps> = ({ code, isStreaming = f
         </div>
       </div>
 
-      <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
-        <Dialog.Content className="h-[calc(100vh-1.5rem)] w-[calc(100vw-1.5rem)] max-h-[calc(100vh-1.5rem)] max-w-[calc(100vw-1.5rem)] overflow-hidden p-0">
-          <Dialog.Title className="sr-only">Mermaid diagram viewer</Dialog.Title>
-          <Dialog.Description className="sr-only">
-            Enlarged Mermaid diagram with pan, zoom, and SVG download controls.
-          </Dialog.Description>
-          <div className="flex h-full w-full flex-col">
-            <div className="flex w-full items-center justify-between border-b border-neutral-border px-3 py-2">
-              <div className="flex items-center gap-1">
-                <IconButton
-                  size="small"
-                  variant="neutral-tertiary"
-                  icon={<ZoomOut />}
-                  aria-label="Zoom out"
-                  title="Zoom out"
-                  onClick={handleZoomOut}
-                />
-                <IconButton
-                  size="small"
-                  variant="neutral-tertiary"
-                  icon={<ZoomIn />}
-                  aria-label="Zoom in"
-                  title="Zoom in"
-                  onClick={handleZoomIn}
-                />
-                <IconButton
-                  size="small"
-                  variant="neutral-tertiary"
-                  icon={<RefreshCcw />}
-                  aria-label="Reset zoom and pan"
-                  title="Reset view"
-                  onClick={resetViewport}
-                />
-                <span className="ml-2 text-xs text-subtext-color">{Math.round(zoom * 100)}%</span>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Button
-                  size="small"
-                  variant="neutral-secondary"
-                  icon={isMermaidCopied ? <Check /> : <Copy />}
-                  onClick={handleCopyMermaid}
-                >
-                  Copy Mermaid
-                </Button>
-                <Button
-                  size="small"
-                  variant="neutral-secondary"
-                  icon={isImageCopied ? <Check /> : <ImageIcon />}
-                  onClick={handleCopyImage}
-                >
-                  Copy Image
-                </Button>
-                <Button
-                  size="small"
-                  variant="neutral-secondary"
-                  icon={<Download />}
-                  onClick={handleDownload}
-                >
-                  Download SVG
-                </Button>
-                <IconButton
-                  size="small"
-                  variant="neutral-tertiary"
-                  icon={<X />}
-                  aria-label="Close diagram modal"
-                  title="Close"
-                  onClick={() => setIsModalOpen(false)}
-                />
-              </div>
-            </div>
-
-            <div
-              ref={viewportRef}
-              className={cn(
-                'relative min-h-0 flex-1 overflow-hidden bg-neutral-50 select-none',
-                isDragging ? 'cursor-grabbing' : 'cursor-grab'
-              )}
-              style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
-              onWheel={handleWheel}
-              onPointerDown={handlePointerDown}
-              onPointerMove={handlePointerMove}
-              onPointerUp={handlePointerUp}
-              onPointerCancel={handlePointerUp}
-            >
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div
-                  ref={diagramRef}
-                  style={{
-                    transform: `translate(${pan.x}px, ${pan.y}px) scale(${effectiveZoom})`,
-                    transformOrigin: 'center center',
-                    userSelect: 'none',
-                    WebkitUserSelect: 'none',
-                  }}
-                  className="[&_svg]:h-auto [&_svg]:max-w-none [&_svg]:w-auto"
-                  dangerouslySetInnerHTML={{ __html: fullscreenSvgMarkup }}
-                />
-              </div>
-            </div>
-          </div>
-        </Dialog.Content>
-      </Dialog>
+      <FullscreenViewer
+        open={viewer.isOpen}
+        onOpenChange={viewer.setIsOpen}
+        title="Mermaid diagram viewer"
+        description="Expanded Mermaid diagram with pan, zoom, copy, and download controls."
+        contentDimensions={fullscreenSvgDimensions}
+        extraActions={
+          <Button
+            size="small"
+            variant="neutral-secondary"
+            icon={isMermaidCopied ? <Check /> : <Copy />}
+            onClick={() => void handleCopyMermaid()}
+          >
+            Copy Mermaid
+          </Button>
+        }
+        copyAction={{
+          label: 'Copy Image',
+          icon: isImageCopied ? <Check /> : <ImageIcon />,
+          copied: isImageCopied,
+          onAction: handleCopyImage,
+        }}
+        downloadAction={{
+          label: 'Download SVG',
+          icon: <Download />,
+          onAction: handleDownload,
+        }}
+        contentClassName="[&_svg]:h-auto [&_svg]:max-w-none [&_svg]:w-auto"
+      >
+        <div dangerouslySetInnerHTML={{ __html: fullscreenSvgMarkup }} />
+      </FullscreenViewer>
     </>
   );
 };
