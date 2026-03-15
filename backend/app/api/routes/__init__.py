@@ -1,4 +1,4 @@
 # API routes package
-from . import alerts, auth, cases, dummy_data, enrichments
+from . import alerts, audit, auth, cases, dummy_data, enrichments
 
-__all__ = ["alerts", "auth", "cases", "dummy_data", "enrichments"]
+__all__ = ["alerts", "audit", "auth", "cases", "dummy_data", "enrichments"]

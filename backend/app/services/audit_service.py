@@ -9,7 +9,11 @@ import logging
 from typing import Any, Optional
 from uuid import UUID
 
+from fastapi_pagination import Page
+from fastapi_pagination.ext.sqlalchemy import apaginate
+from sqlalchemy import String, and_, cast, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col
 
 from app.models.models import AuditLog, AuditLogRead
 
@@ -66,6 +70,64 @@ class AuditService:
     @staticmethod
     def compute_changes(old_value: Optional[str], new_value: Optional[str]) -> list[dict[str, Any]]:
         return AuditLogRead.compute_changes(old_value, new_value)
+
+    async def get_audit_logs(
+        self,
+        *,
+        event_type: Optional[list[str]] = None,
+        entity_type: Optional[str] = None,
+        entity_id: Optional[str] = None,
+        performed_by: Optional[str] = None,
+        search: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> Page[AuditLog]:
+        """Return persisted audit logs with optional filtering and pagination."""
+
+        query = select(AuditLog).order_by(col(AuditLog.performed_at).desc())
+        filters = []
+
+        if event_type:
+            filters.append(col(AuditLog.event_type).in_(event_type))
+
+        if entity_type:
+            filters.append(col(AuditLog.entity_type) == entity_type)
+
+        if entity_id:
+            filters.append(col(AuditLog.entity_id) == entity_id)
+
+        if performed_by:
+            filters.append(col(AuditLog.performed_by) == performed_by)
+
+        if start_date:
+            try:
+                start_dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+                filters.append(col(AuditLog.performed_at) >= start_dt)
+            except ValueError:
+                logger.warning("Invalid audit log start_date format: %s", start_date)
+
+        if end_date:
+            try:
+                end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+                filters.append(col(AuditLog.performed_at) <= end_dt)
+            except ValueError:
+                logger.warning("Invalid audit log end_date format: %s", end_date)
+
+        if search:
+            search_pattern = f"%{search}%"
+            filters.append(
+                or_(
+                    col(AuditLog.event_type).ilike(search_pattern),
+                    cast(AuditLog.description, String).ilike(search_pattern),  # type: ignore[arg-type]
+                    cast(AuditLog.entity_id, String).ilike(search_pattern),  # type: ignore[arg-type]
+                    cast(AuditLog.performed_by, String).ilike(search_pattern),  # type: ignore[arg-type]
+                )
+            )
+
+        if filters:
+            query = query.where(and_(*filters))
+
+        return await apaginate(self._db, query)
 
     async def log_event(
         self,

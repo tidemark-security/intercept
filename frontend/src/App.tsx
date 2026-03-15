@@ -5,6 +5,7 @@ import { BreakpointProvider } from './contexts/BreakpointContext'
 import { ProtectedRoute } from './components/auth/ProtectedRoute'
 import Alerts from "./pages/Alerts"
 import Admin from "./pages/Admin"
+import AdminAuditTrail from "./pages/AdminAuditTrail"
 import AdminUsers from "./pages/AdminUsers"
 import AdminLinkTemplates from "./pages/AdminLinkTemplates"
 import AdminSettings from "./pages/AdminSettings"
@@ -123,6 +124,14 @@ export default function App() {
             element={
               <ProtectedRoute requiredRole="ADMIN">
                 <AdminUsers />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/audit"
+            element={
+              <ProtectedRoute requiredRole="ADMIN">
+                <AdminAuditTrail />
               </ProtectedRoute>
             }
           />

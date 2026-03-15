@@ -4,7 +4,7 @@ import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { useSession } from "../contexts/sessionContext";
 import { DashboardCard } from "@/components/cards/DashboardCard";
 
-import { AlertCircle, Link2, Settings, Users } from 'lucide-react';
+import { AlertCircle, Link2, ScrollText, Settings, Users } from 'lucide-react';
 interface AdminCard {
   title: string;
   description: string;
@@ -30,6 +30,12 @@ const adminCards: AdminCard[] = [
     description: "Configure advanced system settings and preferences",
     icon: <Settings />,
     link: "/admin/settings",
+  },
+  {
+    title: "Audit Trail",
+    description: "Review system activity, security events, and admin actions",
+    icon: <ScrollText />,
+    link: "/admin/audit",
   },
 ];
 
@@ -69,7 +75,7 @@ function Admin() {
         </div>
 
         {/* Admin Cards Grid */}
-        <div className="grid w-full grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid w-full grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {adminCards.map((card) => (
             <DashboardCard
               key={card.link}

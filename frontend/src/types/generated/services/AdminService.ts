@@ -23,6 +23,7 @@ import type { EnrichmentProviderStatusRead } from '../models/EnrichmentProviderS
 import type { MaxMindConfigureRequest } from '../models/MaxMindConfigureRequest';
 import type { MaxMindConfigureResponse } from '../models/MaxMindConfigureResponse';
 import type { MaxMindDatabaseStatus } from '../models/MaxMindDatabaseStatus';
+import type { Page_AuditLogRead_ } from '../models/Page_AuditLogRead_';
 import type { UserRole } from '../models/UserRole';
 import type { UserStatus } from '../models/UserStatus';
 import type { CancelablePromise } from '../core/CancelablePromise';
@@ -227,6 +228,91 @@ export class AdminService {
             errors: {
                 422: `Validation Error`,
             },
+        });
+    }
+    /**
+     * Get Audit Logs
+     * Get paginated audit logs for admin users.
+     * @returns Page_AuditLogRead_ Successful Response
+     * @throws ApiError
+     */
+    public static getAuditLogsApiV1AdminAuditGet({
+        eventType,
+        entityType,
+        entityId,
+        performedBy,
+        search,
+        startDate,
+        endDate,
+        page = 1,
+        size = 50,
+    }: {
+        /**
+         * Filter by one or more audit event types
+         */
+        eventType?: (Array<string> | null),
+        /**
+         * Filter by entity type
+         */
+        entityType?: (string | null),
+        /**
+         * Filter by entity ID
+         */
+        entityId?: (string | null),
+        /**
+         * Filter by actor username or identifier
+         */
+        performedBy?: (string | null),
+        /**
+         * Search event type, description, entity ID, or actor
+         */
+        search?: (string | null),
+        /**
+         * Filter events performed after this UTC datetime
+         */
+        startDate?: (string | null),
+        /**
+         * Filter events performed before this UTC datetime
+         */
+        endDate?: (string | null),
+        /**
+         * Page number
+         */
+        page?: number,
+        /**
+         * Page size
+         */
+        size?: number,
+    }): CancelablePromise<Page_AuditLogRead_> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/admin/audit',
+            query: {
+                'event_type': eventType,
+                'entity_type': entityType,
+                'entity_id': entityId,
+                'performed_by': performedBy,
+                'search': search,
+                'start_date': startDate,
+                'end_date': endDate,
+                'page': page,
+                'size': size,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * List Audit Event Types
+     * List supported audit event types for filter UIs.
+     * @returns string Successful Response
+     * @throws ApiError
+     */
+    public static listAuditEventTypesApiV1AdminAuditEventTypesGet(): CancelablePromise<Array<string>> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/admin/audit/event-types',
         });
     }
     /**
