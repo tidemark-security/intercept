@@ -98,7 +98,10 @@ class SystemType(str, Enum):
     IOT_MEDICAL = "IOT_MEDICAL"  # Patient monitors, insulin pumps
     IOT_APPLIANCE = "IOT_APPLIANCE"  # Smart fridges, washing machines
     IOT_GATEWAY = "IOT_GATEWAY"  # IoT hubs, edge gateways
-
+    IOT_OTHER = "IOT_OTHER"
+    
+    # General/Other
+    OTHER = "OTHER"
 
 class RealtimeEventType(str, Enum):
     """Event types for WebSocket real-time notifications."""
