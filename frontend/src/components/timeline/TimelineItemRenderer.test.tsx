@@ -88,4 +88,56 @@ describe('TimelineItemRenderer enrichments', () => {
     expect(screen.getByText('MaxMind Enrichment')).toBeInTheDocument();
     expect(screen.getByText('Cloudflare, Inc.')).toBeInTheDocument();
   });
+
+  it('does not force grouped observable cards to h-full', () => {
+    const groupedItems = [
+      {
+        id: 'observable-1',
+        type: 'observable',
+        created_by: 'admin',
+        created_at: '2026-03-14T12:40:11.293811Z',
+        timestamp: '2026-03-14T12:40:11.284000Z',
+        tags: [],
+        flagged: false,
+        highlighted: false,
+        replies: null,
+        observable_type: 'IP',
+        observable_value: '1.1.1.1',
+        description: 'First grouped observable',
+      },
+      {
+        id: 'observable-2',
+        type: 'observable',
+        created_by: 'admin',
+        created_at: '2026-03-14T12:40:11.293811Z',
+        timestamp: '2026-03-14T12:40:11.284000Z',
+        tags: [],
+        flagged: false,
+        highlighted: false,
+        replies: null,
+        observable_type: 'DOMAIN',
+        observable_value: 'example.com',
+        description: 'Second grouped observable',
+      },
+    ] as TimelineItem[];
+
+    const { container } = renderWithProviders(
+      <TimelineItemRenderer
+        item={groupedItems[0]}
+        items={groupedItems}
+        index={0}
+        total={2}
+        entityId={38}
+        entityType="alert"
+      />
+    );
+
+    const groupedCards = container.querySelectorAll('.group\\/3e384f9c');
+
+    expect(groupedCards.length).toBe(2);
+    groupedCards.forEach((card) => {
+      expect(card.className).toContain('self-stretch');
+      expect(card.className).not.toContain('h-full');
+    });
+  });
 });

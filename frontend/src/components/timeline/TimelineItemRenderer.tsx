@@ -355,7 +355,7 @@ export function TimelineItemRenderer({
     const { children: cardChildren, ...baseCardProps } = cardConfig;
 
     if (isGrouped) {
-      baseCardProps.className = `${baseCardProps.className || ''} flex-1 h-full${isCurrentItemLinked ? ' min-w-40' : ''}`;
+      baseCardProps.className = `${baseCardProps.className || ''} flex-1 self-stretch${isCurrentItemLinked ? ' min-w-40' : ''}`;
     }
 
     const description = timelineCurrentItem.description;
@@ -473,7 +473,7 @@ export function TimelineItemRenderer({
     }
 
     return (
-      <Link key={itemKey} to={itemHref} className={`block no-underline flex-1${isGrouped ? ' h-full' : ''}${isGrouped && isCurrentItemLinked ? ' min-w-[512px]' : ''}`}>
+      <Link key={itemKey} to={itemHref} className={`block no-underline${isGrouped ? ' flex-1 self-stretch' : ''}${isGrouped && isCurrentItemLinked ? ' min-w-[512px]' : ''}`}>
         {baseCardElement}
       </Link>
     );
