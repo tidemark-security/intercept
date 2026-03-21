@@ -10,21 +10,46 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.admin_auth import require_admin_user
+from app.api.routes.admin_auth import require_authenticated_user
 from app.core.database import get_db
 from app.models.models import (
+    AttachmentLimitsRead,
     AppSettingCreate,
     AppSettingUpdate,
     AppSettingRead,
     UserAccount,
 )
 from app.services.audit_service import AuditContext
+from app.services.attachment_settings_service import get_attachment_limits
 from app.services.settings_service import SettingsService
+
+authenticated_router = APIRouter(
+    prefix="/settings",
+    tags=["settings"],
+    dependencies=[Depends(require_authenticated_user)],
+)
 
 router = APIRouter(
     prefix="/admin/settings",
     tags=["admin"],
     dependencies=[Depends(require_admin_user)],
 )
+
+
+@authenticated_router.get("/attachment-limits", response_model=AttachmentLimitsRead)
+async def get_attachment_limits_settings(
+    db: AsyncSession = Depends(get_db),
+):
+    """Get effective attachment upload and preview limits for authenticated users."""
+    limits = await get_attachment_limits(db)  # type: ignore[arg-type]
+    return AttachmentLimitsRead(
+        max_upload_size_mb=limits.max_upload_size_mb,
+        max_upload_size_bytes=limits.max_upload_size_bytes,
+        max_image_preview_size_mb=limits.max_image_preview_size_mb,
+        max_image_preview_size_bytes=limits.max_image_preview_size_bytes,
+        max_text_preview_size_mb=limits.max_text_preview_size_mb,
+        max_text_preview_size_bytes=limits.max_text_preview_size_bytes,
+    )
 
 
 @router.get("", response_model=List[AppSettingRead])

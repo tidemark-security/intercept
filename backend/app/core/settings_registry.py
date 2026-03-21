@@ -433,6 +433,34 @@ _register(
 )
 
 # ---------------------------------------------------------------------------
+# Attachment storage and preview limits  (hot-swappable)
+# ---------------------------------------------------------------------------
+_register(
+    _def(
+        "storage.max_upload_size_mb",
+        env_var="MAX_UPLOAD_SIZE_MB",
+        value_type=SettingType.NUMBER,
+        category="storage",
+        description="Maximum attachment upload size in megabytes",
+        default=50,
+    ),
+    _def(
+        "storage.max_image_preview_size_mb",
+        value_type=SettingType.NUMBER,
+        category="storage",
+        description="Maximum image attachment size in megabytes that will render an inline preview",
+        default=5,
+    ),
+    _def(
+        "storage.max_text_preview_size_mb",
+        value_type=SettingType.NUMBER,
+        category="storage",
+        description="Maximum text attachment size in megabytes that will render an inline preview",
+        default=1,
+    ),
+)
+
+# ---------------------------------------------------------------------------
 # Login protection  (hot-swappable)
 # ---------------------------------------------------------------------------
 _register(

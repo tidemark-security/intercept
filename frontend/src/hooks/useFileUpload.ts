@@ -22,6 +22,7 @@ import type { PresignedUploadRequest, PresignedUploadResponse, UploadStatus } fr
 import type { AlertRead } from '@/types/generated/models/AlertRead';
 import type { CaseRead } from '@/types/generated/models/CaseRead';
 import { queryKeys } from './queryKeys';
+import { useAttachmentLimits } from './useAttachmentLimits';
 
 export interface FileUploadProgress {
   /** Upload progress percentage (0-100) */
@@ -72,6 +73,7 @@ export function useFileUpload({
   allowedTypes,
 }: UseFileUploadOptions) {
   const queryClient = useQueryClient();
+  const { data: attachmentLimits, limits } = useAttachmentLimits();
   const [uploadState, setUploadState] = useState<FileUploadState>({
     progress: null,
     isUploading: false,
@@ -127,9 +129,17 @@ export function useFileUpload({
    */
   const validateFile = useCallback((file: File): string | null => {
     // Check file size
-    const maxSizeBytes = maxSizeMB * 1024 * 1024;
-    if (file.size > maxSizeBytes) {
-      return `File size ${(file.size / 1024 / 1024).toFixed(1)}MB exceeds limit of ${maxSizeMB}MB`;
+    if (attachmentLimits) {
+      const maxSizeBytes = limits.max_upload_size_bytes;
+      const maxSizeLabel = limits.max_upload_size_mb;
+      if (file.size > maxSizeBytes) {
+        return `File size ${(file.size / 1024 / 1024).toFixed(1)}MB exceeds limit of ${maxSizeLabel}MB`;
+      }
+    } else if (maxSizeMB > 0) {
+      const fallbackMaxSizeBytes = maxSizeMB * 1024 * 1024;
+      if (file.size > fallbackMaxSizeBytes) {
+        return `File size ${(file.size / 1024 / 1024).toFixed(1)}MB exceeds limit of ${maxSizeMB}MB`;
+      }
     }
 
     // Check file type if allowedTypes is specified
@@ -140,7 +150,7 @@ export function useFileUpload({
     }
 
     return null;
-  }, [maxSizeMB, allowedTypes]);
+  }, [allowedTypes, attachmentLimits, limits.max_upload_size_bytes, limits.max_upload_size_mb, maxSizeMB]);
 
   /**
    * Calculate SHA256 hash of file

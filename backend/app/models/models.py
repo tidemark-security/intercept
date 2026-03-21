@@ -1557,6 +1557,17 @@ class PresignedUploadResponse(SQLModel):
     max_file_size: int = Field(description="Maximum allowed file size in bytes")
 
 
+class AttachmentLimitsRead(SQLModel):
+    """Effective attachment upload and preview limits."""
+
+    max_upload_size_mb: int = Field(description="Maximum attachment upload size in megabytes")
+    max_upload_size_bytes: int = Field(description="Maximum attachment upload size in bytes")
+    max_image_preview_size_mb: int = Field(description="Maximum image attachment preview size in megabytes")
+    max_image_preview_size_bytes: int = Field(description="Maximum image attachment preview size in bytes")
+    max_text_preview_size_mb: int = Field(description="Maximum text attachment preview size in megabytes")
+    max_text_preview_size_bytes: int = Field(description="Maximum text attachment preview size in bytes")
+
+
 class AttachmentStatusUpdate(SQLModel):
     """Update attachment upload status."""
     

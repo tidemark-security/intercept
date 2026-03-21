@@ -24,6 +24,27 @@ import { renameClipboardFiles, extractClipboardFiles } from "@/utils/clipboardFi
 import type { AttachmentItem } from "@/types/generated/models/AttachmentItem";
 
 import { AlertTriangle, CheckCircle, Paperclip, Upload, X } from 'lucide-react';
+
+function ImagePreview({ file }: { file: File }) {
+  const [src, setSrc] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    const url = URL.createObjectURL(file);
+    setSrc(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
+  if (!src) return null;
+
+  return (
+    <img
+      src={src}
+      alt={file.name}
+      className="max-h-24 rounded-md border border-solid border-neutral-border object-contain"
+    />
+  );
+}
+
 export interface AddAttachmentFormProps {
   initialData?: AttachmentItem;
   /** Files injected from an external source (e.g. clipboard paste in the quick terminal) */
@@ -327,61 +348,65 @@ export function AddAttachmentForm({ initialData, pendingFiles, onPendingFilesCon
               </span>
               <div className="flex w-full flex-col items-start gap-2 rounded-md border border-solid border-neutral-border bg-default-background p-3">
                 {files.map((fileWithStatus, index) => (
-                  <div 
-                    key={index}
-                    className="flex w-full flex-col gap-1"
-                  >
-                    <div className="flex w-full items-center justify-between gap-2 rounded px-2 py-1 hover:bg-neutral-50">
-                      <div className="flex items-center gap-2 flex-1 min-w-0">
-                        {fileWithStatus.status === 'complete' && (
-                          <CheckCircle className="text-success-600 flex-shrink-0" />
-                        )}
-                        {fileWithStatus.status === 'error' && (
-                          <AlertTriangle className="text-error-600 flex-shrink-0" />
-                        )}
-                        {(fileWithStatus.status === 'pending' || fileWithStatus.status === 'uploading') && (
-                          <Paperclip className="text-neutral-500 flex-shrink-0" />
-                        )}
-                        <span className="text-body font-body text-default-font truncate">
-                          {fileWithStatus.file.name}
-                        </span>
-                        <span className="text-caption font-caption text-subtext-color flex-shrink-0">
-                          ({(fileWithStatus.file.size / 1024).toFixed(1)} KB)
-                        </span>
-                        {fileWithStatus.status === 'uploading' && fileWithStatus.progress !== undefined && (
-                          <span className="text-caption font-caption text-brand-600 flex-shrink-0">
-                            {fileWithStatus.progress}%
+                    <div 
+                      key={index}
+                      className="flex w-full flex-col gap-1 rounded px-2 py-1 hover:bg-neutral-50"
+                    >
+                      <div className="flex w-full items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          {fileWithStatus.status === 'complete' && (
+                            <CheckCircle className="text-success-600 flex-shrink-0" />
+                          )}
+                          {fileWithStatus.status === 'error' && (
+                            <AlertTriangle className="text-error-600 flex-shrink-0" />
+                          )}
+                          {(fileWithStatus.status === 'pending' || fileWithStatus.status === 'uploading') && (
+                            <Paperclip className="text-neutral-500 flex-shrink-0" />
+                          )}
+                          <span className="text-body font-body text-default-font truncate">
+                            {fileWithStatus.file.name}
                           </span>
+                          <span className="text-caption font-caption text-subtext-color flex-shrink-0">
+                            ({(fileWithStatus.file.size / 1024).toFixed(1)} KB)
+                          </span>
+                          {fileWithStatus.status === 'uploading' && fileWithStatus.progress !== undefined && (
+                            <span className="text-caption font-caption text-brand-600 flex-shrink-0">
+                              {fileWithStatus.progress}%
+                            </span>
+                          )}
+                        </div>
+                        {fileWithStatus.status === 'pending' && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRemoveFile(index);
+                            }}
+                            className="flex-shrink-0 p-1 hover:bg-neutral-100 rounded"
+                          >
+                            <X className="text-neutral-500 w-4 h-4" />
+                          </button>
                         )}
                       </div>
-                      {fileWithStatus.status === 'pending' && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleRemoveFile(index);
-                          }}
-                          className="flex-shrink-0 p-1 hover:bg-neutral-100 rounded"
-                        >
-                          <X className="text-neutral-500 w-4 h-4" />
-                        </button>
+                      {/* Progress bar for uploading file */}
+                      {fileWithStatus.status === 'uploading' && fileWithStatus.progress !== undefined && (
+                        <div className="w-full bg-neutral-100 rounded-full h-1.5">
+                          <div 
+                            className="bg-brand-600 h-1.5 rounded-full transition-all duration-300"
+                            style={{ width: `${fileWithStatus.progress}%` }}
+                          />
+                        </div>
+                      )}
+                      {/* Error message */}
+                      {fileWithStatus.status === 'error' && fileWithStatus.error && (
+                        <span className="text-caption font-caption text-error-600">
+                          Error: {fileWithStatus.error}
+                        </span>
+                      )}
+                      {/* Image preview */}
+                      {fileWithStatus.file.type.startsWith('image/') && (
+                        <ImagePreview file={fileWithStatus.file} />
                       )}
                     </div>
-                    {/* Progress bar for uploading file */}
-                    {fileWithStatus.status === 'uploading' && fileWithStatus.progress !== undefined && (
-                      <div className="w-full bg-neutral-100 rounded-full h-1.5 mx-2">
-                        <div 
-                          className="bg-brand-600 h-1.5 rounded-full transition-all duration-300"
-                          style={{ width: `${fileWithStatus.progress}%` }}
-                        />
-                      </div>
-                    )}
-                    {/* Error message */}
-                    {fileWithStatus.status === 'error' && fileWithStatus.error && (
-                      <span className="text-caption font-caption text-error-600 mx-2">
-                        Error: {fileWithStatus.error}
-                      </span>
-                    )}
-                  </div>
                 ))}
               </div>
             </div>

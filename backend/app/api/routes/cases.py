@@ -8,6 +8,7 @@ import logging
 
 from app.core.database import get_db
 from app.services.case_service import case_service
+from app.services.attachment_settings_service import get_attachment_limits
 from app.services.storage_service import storage_service
 from app.core.storage_config import storage_config
 from app.models.models import (
@@ -252,10 +253,12 @@ async def generate_upload_url(
         case = await case_service.get_case(db, case_id)
         if not case:
             raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
+
+        attachment_limits = await get_attachment_limits(db)
         
         # Validate file size
-        if not storage_service.validate_file_size(request_data.file_size):
-            max_size_mb = storage_config.max_upload_size_mb
+        if request_data.file_size > attachment_limits.max_upload_size_bytes:
+            max_size_mb = attachment_limits.max_upload_size_mb
             raise HTTPException(
                 status_code=413,
                 detail=f"File size {request_data.file_size} exceeds limit {max_size_mb}MB"
@@ -321,7 +324,7 @@ async def generate_upload_url(
             upload_url=upload_url,
             storage_key=storage_key,
             expires_at=expires_at,
-            max_file_size=storage_config.max_upload_size_mb * 1024 * 1024
+            max_file_size=attachment_limits.max_upload_size_bytes
         )
         
     except HTTPException:

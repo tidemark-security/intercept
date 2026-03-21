@@ -31,6 +31,8 @@ interface FullscreenViewerProps {
   extraActions?: React.ReactNode;
   viewportClassName?: string;
   contentClassName?: string;
+  /** When true, viewport scrolls normally, zoom controls font-size, no pan/drag. */
+  textMode?: boolean;
 }
 
 interface PanState {
@@ -50,6 +52,11 @@ const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 10;
 const ZOOM_STEP = 0.2;
 
+const TEXT_MIN_ZOOM = 0.5;
+const TEXT_MAX_ZOOM = 3;
+const TEXT_ZOOM_STEP = 0.1;
+const TEXT_BASE_FONT_SIZE = 14; // px
+
 const clamp = (value: number, min: number, max: number): number => {
   return Math.min(max, Math.max(min, value));
 };
@@ -66,6 +73,7 @@ export function FullscreenViewer({
   extraActions,
   viewportClassName,
   contentClassName,
+  textMode = false,
 }: FullscreenViewerProps) {
   const dragStateRef = React.useRef<DragState | null>(null);
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
@@ -144,15 +152,23 @@ export function FullscreenViewer({
     };
   }, [children, contentDimensions, open, updateFitScale]);
 
-  const effectiveZoom = fitScale * zoom;
+  const effectiveZoom = textMode ? zoom : fitScale * zoom;
 
   const handleZoomIn = React.useCallback(() => {
-    setZoom((prev) => clamp(prev + ZOOM_STEP, MIN_ZOOM, MAX_ZOOM));
-  }, []);
+    if (textMode) {
+      setZoom((prev) => clamp(prev + TEXT_ZOOM_STEP, TEXT_MIN_ZOOM, TEXT_MAX_ZOOM));
+    } else {
+      setZoom((prev) => clamp(prev + ZOOM_STEP, MIN_ZOOM, MAX_ZOOM));
+    }
+  }, [textMode]);
 
   const handleZoomOut = React.useCallback(() => {
-    setZoom((prev) => clamp(prev - ZOOM_STEP, MIN_ZOOM, MAX_ZOOM));
-  }, []);
+    if (textMode) {
+      setZoom((prev) => clamp(prev - TEXT_ZOOM_STEP, TEXT_MIN_ZOOM, TEXT_MAX_ZOOM));
+    } else {
+      setZoom((prev) => clamp(prev - ZOOM_STEP, MIN_ZOOM, MAX_ZOOM));
+    }
+  }, [textMode]);
 
   const handleWheel = React.useCallback((event: React.WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -241,7 +257,7 @@ export function FullscreenViewer({
                 title="Reset view"
                 onClick={resetViewport}
               />
-              <span className="ml-2 text-xs text-subtext-color">{Math.round(effectiveZoom * 100)}%</span>
+              <span className="ml-2 text-xs text-subtext-color">{Math.round((textMode ? zoom : effectiveZoom) * 100)}%</span>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -283,35 +299,53 @@ export function FullscreenViewer({
             </div>
           </div>
 
-          <div
-            ref={viewportRef}
-            className={cn(
-              'relative min-h-0 flex-1 overflow-hidden bg-neutral-50 select-none',
-              isDragging ? 'cursor-grabbing' : 'cursor-grab',
-              viewportClassName
-            )}
-            style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
-            onWheel={handleWheel}
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={handlePointerUp}
-            onPointerCancel={handlePointerUp}
-          >
-            <div className="absolute inset-0 flex items-center justify-center">
+          {textMode ? (
+            <div
+              ref={viewportRef}
+              className={cn(
+                'min-h-0 flex-1 overflow-auto bg-neutral-50',
+                viewportClassName
+              )}
+            >
               <div
                 ref={contentRef}
-                className={contentClassName}
-                style={{
-                  transform: `translate(${pan.x}px, ${pan.y}px) scale(${effectiveZoom})`,
-                  transformOrigin: 'center center',
-                  userSelect: 'none',
-                  WebkitUserSelect: 'none',
-                }}
+                className={cn('w-full p-6', contentClassName)}
+                style={{ fontSize: `${TEXT_BASE_FONT_SIZE * zoom}px` }}
               >
                 {children}
               </div>
             </div>
-          </div>
+          ) : (
+            <div
+              ref={viewportRef}
+              className={cn(
+                'relative min-h-0 flex-1 overflow-hidden bg-neutral-50 select-none',
+                isDragging ? 'cursor-grabbing' : 'cursor-grab',
+                viewportClassName
+              )}
+              style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
+              onWheel={handleWheel}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              onPointerCancel={handlePointerUp}
+            >
+              <div className="absolute inset-0 flex items-center justify-center">
+                <div
+                  ref={contentRef}
+                  className={contentClassName}
+                  style={{
+                    transform: `translate(${pan.x}px, ${pan.y}px) scale(${effectiveZoom})`,
+                    transformOrigin: 'center center',
+                    userSelect: 'none',
+                    WebkitUserSelect: 'none',
+                  }}
+                >
+                  {children}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </Dialog.Content>
     </Dialog>

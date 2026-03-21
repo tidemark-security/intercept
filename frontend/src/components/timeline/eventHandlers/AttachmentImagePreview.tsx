@@ -5,10 +5,13 @@ import { Check, Copy, Download } from 'lucide-react';
 import { FullscreenViewer } from '@/components/overlays/FullscreenViewer';
 import { useToast } from '@/contexts/ToastContext';
 import { QUERY_STALE_TIMES } from '@/config/queryConfig';
+import { useAttachmentLimits } from '../../../hooks/useAttachmentLimits';
 import { useFullscreenViewer } from '@/hooks/useFullscreenViewer';
 import type { AttachmentItem } from '@/types/generated/models/AttachmentItem';
+import { isImageAttachment } from '@/utils/fileLanguage';
 
 import { getAttachmentDownloadDetails, triggerBrowserDownload, type AttachmentEntityType } from './attachmentDownload';
+import { AttachmentPreviewLimitNotice } from './AttachmentPreviewLimitNotice';
 
 interface AttachmentImagePreviewProps {
   item: AttachmentItem;
@@ -16,13 +19,10 @@ interface AttachmentImagePreviewProps {
   entityType: AttachmentEntityType;
 }
 
-const isImageAttachment = (item: AttachmentItem): boolean => {
-  return Boolean(item.mime_type?.startsWith('image/'));
-};
-
 export function AttachmentImagePreview({ item, entityId, entityType }: AttachmentImagePreviewProps) {
   const { showToast } = useToast();
   const viewer = useFullscreenViewer();
+  const { limits } = useAttachmentLimits();
   const copyTimeoutRef = React.useRef<number | null>(null);
   const hasRetriedImageLoadRef = React.useRef(false);
 
@@ -32,13 +32,14 @@ export function AttachmentImagePreview({ item, entityId, entityType }: Attachmen
 
   const itemId = item.id;
   const filename = item.file_name || 'attachment';
+  const tooLarge = (item.file_size ?? 0) > limits.max_image_preview_size_bytes;
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['attachment-download', entityType, entityId, itemId],
     queryFn: async () => {
       return getAttachmentDownloadDetails(entityType, entityId, itemId as string);
     },
-    enabled: isImageAttachment(item) && item.upload_status === 'COMPLETE' && Boolean(itemId),
+    enabled: isImageAttachment(item) && item.upload_status === 'COMPLETE' && Boolean(itemId) && !tooLarge,
     staleTime: QUERY_STALE_TIMES.REALTIME,
     refetchOnWindowFocus: false,
     retry: false,
@@ -54,6 +55,16 @@ export function AttachmentImagePreview({ item, entityId, entityType }: Attachmen
 
   if (!isImageAttachment(item) || item.upload_status !== 'COMPLETE' || !itemId) {
     return null;
+  }
+
+  if (tooLarge) {
+    return (
+      <AttachmentPreviewLimitNotice
+        fileSizeBytes={item.file_size}
+        limitBytes={limits.max_image_preview_size_bytes}
+        attachmentTypeLabel="image attachment"
+      />
+    );
   }
 
   const markCopied = () => {

@@ -1,96 +1,108 @@
-import React, { useState } from 'react';
+import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneLight, vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { Check, Copy } from 'lucide-react';
 
 import { cn } from '@/utils/cn';
 import { useTheme } from '@/contexts/ThemeContext';
+import { CodeBlock } from '@/components/data-display/CodeBlock';
 import MermaidRenderer from '@/components/data-display/MermaidRenderer';
-
-import { Check, Copy } from 'lucide-react';
+import { FullscreenViewer } from '@/components/overlays/FullscreenViewer';
+import { useFullscreenViewer } from '@/hooks/useFullscreenViewer';
 import { LinkBadge } from '@/components/data-display/LinkBadge';
+const CODE_SNIPPET_LINES = 15;
+
+interface ExpandableCodeBlockProps {
+  language: string;
+  code: string;
+  resolvedTheme: 'dark' | 'light';
+}
+
+function ExpandableCodeBlock({ language, code, resolvedTheme }: ExpandableCodeBlockProps) {
+  const viewer = useFullscreenViewer();
+  const [isCopied, setIsCopied] = React.useState(false);
+  const copyTimeoutRef = React.useRef<number | null>(null);
+
+  React.useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current !== null) {
+        window.clearTimeout(copyTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const totalLines = code.split('\n').length;
+  const isTruncated = totalLines > CODE_SNIPPET_LINES;
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      if (copyTimeoutRef.current !== null) {
+        window.clearTimeout(copyTimeoutRef.current);
+      }
+      setIsCopied(true);
+      copyTimeoutRef.current = window.setTimeout(() => {
+        setIsCopied(false);
+        copyTimeoutRef.current = null;
+      }, 2000);
+    } catch {
+      console.error('Failed to copy code');
+    }
+  };
+
+  if (!isTruncated) {
+    return <CodeBlock language={language} code={code} resolvedTheme={resolvedTheme} />;
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        className="w-full overflow-hidden border border-neutral-border text-left transition hover:border-neutral-400"
+        onClick={viewer.open}
+      >
+        <CodeBlock
+          language={language}
+          code={code}
+          resolvedTheme={resolvedTheme}
+          maxLines={CODE_SNIPPET_LINES}
+          showLineNumbers
+          className="pointer-events-none [&_button]:hidden [&_pre]:border-0 [&_pre]:!mb-0"
+        />
+        <div className="border-t border-neutral-border bg-neutral-100 px-3 py-1 text-center text-xs text-subtext-color">
+          …{totalLines - CODE_SNIPPET_LINES} more lines — click to expand
+        </div>
+      </button>
+
+      <FullscreenViewer
+        open={viewer.isOpen}
+        onOpenChange={viewer.setIsOpen}
+        title={`Code — ${language}`}
+        textMode
+        copyAction={{
+          label: 'Copy Code',
+          icon: isCopied ? <Check /> : <Copy />,
+          copied: isCopied,
+          onAction: handleCopy,
+        }}
+      >
+        <CodeBlock
+          language={language}
+          code={code}
+          resolvedTheme={resolvedTheme}
+          showLineNumbers
+        />
+      </FullscreenViewer>
+    </>
+  );
+}
+
 interface MarkdownContentProps {
   content: string;
   className?: string;
   isStreamingFromAi?: boolean;
 }
-
-/**
- * CodeBlock component with syntax highlighting and copy-to-clipboard functionality
- */
-interface CodeBlockProps {
-  language: string;
-  code: string;
-}
-
-interface CodeBlockThemeProps extends CodeBlockProps {
-  resolvedTheme: "dark" | "light";
-}
-
-const CodeBlock: React.FC<CodeBlockThemeProps> = ({ language, code, resolvedTheme }) => {
-  const [isHovered, setIsHovered] = useState(false);
-  const [isCopied, setIsCopied] = useState(false);
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(code)
-      .then(() => {
-        setIsCopied(true);
-        setTimeout(() => setIsCopied(false), 2000);
-      })
-      .catch(err => {
-        console.error('Failed to copy code:', err);
-      });
-  };
-
-  return (
-    <div
-      className="relative"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-    >
-      {/* Copy button */}
-      <button
-        onClick={handleCopy}
-        className={cn(
-          "absolute top-2 right-2 p-1.5 rounded bg-neutral-100 hover:bg-neutral-200 transition-all z-10",
-          { "opacity-0": !isHovered && !isCopied, "opacity-100": isHovered || isCopied }
-        )}
-        title="Copy to clipboard"
-      >
-        {isCopied ? (
-          <Check className="h-4 w-4 text-success-600" />
-        ) : (
-          <Copy className="h-4 w-4 text-neutral-400" />
-        )}
-      </button>
-      
-      <SyntaxHighlighter
-        language={language}
-        style={resolvedTheme === "dark" ? vscDarkPlus : oneLight}
-        className="w-full min-w-0 max-w-full rounded-sm overflow-x-auto border border-neutral-border !mt-0"
-        showLineNumbers
-        wrapLongLines
-        lineProps={{
-          style: {
-            display: 'flex',
-            flexWrap: 'wrap',
-          }
-        }}
-        codeTagProps={{
-          style: {
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            overflowWrap: 'anywhere',
-          }
-        }}
-      >
-        {code}
-      </SyntaxHighlighter>
-    </div>
-  );
-};
 
 const MarkdownContent: React.FC<MarkdownContentProps> = ({
   content,
@@ -225,7 +237,7 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
               return <MermaidRenderer code={codeString} isStreaming={isStreamingFromAi} />;
             }
 
-            return <CodeBlock language={language} code={codeString} resolvedTheme={resolvedTheme} />;
+            return <ExpandableCodeBlock language={language} code={codeString} resolvedTheme={resolvedTheme} />;
           },
           a: ({ href, children }) => (
             <LinkBadge href={href || '#'}>

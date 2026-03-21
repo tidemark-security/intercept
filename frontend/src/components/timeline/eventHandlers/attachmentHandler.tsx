@@ -12,6 +12,8 @@ import { getTimelineIcon } from '@/utils/timelineIcons';
 import type { CardConfig, CardFactoryOptions } from '../TimelineCardFactory';
 import { DownloadButton } from './AttachmentDownloadButton';
 import { AttachmentImagePreview } from './AttachmentImagePreview';
+import { AttachmentTextPreview } from './AttachmentTextPreview';
+import { isTextAttachment, isImageAttachment } from '@/utils/fileLanguage';
 
 import { FileText, HardDrive, Link } from 'lucide-react';
 /**
@@ -34,10 +36,6 @@ function formatFileSize(bytes: number | undefined | null): string | undefined {
   const size = bytes / Math.pow(1024, i);
   
   return `${size.toFixed(2)} ${sizes[i]}`;
-}
-
-function isImageAttachment(item: AttachmentItem): boolean {
-  return Boolean(item.mime_type?.startsWith('image/'));
 }
 
 /**
@@ -75,13 +73,14 @@ export function handleAttachmentItem(
     ) : downloadButton;
   }
 
-  const children =
-    item.upload_status === 'COMPLETE' &&
-    options.alertId &&
-    options.entityType &&
-    isImageAttachment(item) ? (
-      <AttachmentImagePreview item={item} entityId={options.alertId} entityType={options.entityType} />
-    ) : undefined;
+  let children: React.ReactNode | undefined;
+  if (item.upload_status === 'COMPLETE' && options.alertId && options.entityType) {
+    if (isImageAttachment(item)) {
+      children = <AttachmentImagePreview item={item} entityId={options.alertId} entityType={options.entityType} />;
+    } else if (isTextAttachment(item)) {
+      children = <AttachmentTextPreview item={item} entityId={options.alertId} entityType={options.entityType} />;
+    }
+  }
 
   return {
     title: item.file_name ? `${item.file_name}` : 'Attachment',

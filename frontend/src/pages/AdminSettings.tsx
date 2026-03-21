@@ -62,6 +62,9 @@ interface SettingsSectionNavItem {
 }
 
 const CUSTOM_KEYS = new Set([
+  "storage.max_upload_size_mb",
+  "storage.max_image_preview_size_mb",
+  "storage.max_text_preview_size_mb",
   "langflow.base_url",
   "langflow.api_key",
   "langflow.default_flow_id",
@@ -741,6 +744,11 @@ function AdminSettings() {
         group: "General",
       },
       {
+        id: "attachment-limits-settings",
+        label: "Attachment Limits",
+        group: "System",
+      },
+      {
         id: "oidc-settings",
         label: "OIDC / Single Sign-On",
         group: "Identity Providers",
@@ -960,6 +968,77 @@ function AdminSettings() {
                   )
                 }
               />
+              </section>
+            </div>
+
+            <div
+              id="attachment-limits-settings"
+              className="scroll-mt-24 flex flex-col gap-6"
+            >
+              <h2 className="text-heading-2 font-heading-2 text-default-font">
+                System
+              </h2>
+              <section className="flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6">
+                <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
+                  <Upload className="text-[20px] text-subtext-color" />
+                  <h3 className="text-heading-3 font-heading-3 text-default-font">
+                    Attachment Limits
+                  </h3>
+                </div>
+
+                <SettingField
+                  label="Maximum Upload Size (MB)"
+                  {...settingMeta("storage.max_upload_size_mb")}
+                  onSave={(value) =>
+                    handleSaveSetting(
+                      "storage.max_upload_size_mb",
+                      value,
+                      false,
+                      "NUMBER",
+                    )
+                  }
+                  placeholder="50"
+                  inputType="number"
+                  inputMode="numeric"
+                  min={1}
+                  step={1}
+                />
+
+                <SettingField
+                  label="Maximum Image Preview Size (MB)"
+                  {...settingMeta("storage.max_image_preview_size_mb")}
+                  onSave={(value) =>
+                    handleSaveSetting(
+                      "storage.max_image_preview_size_mb",
+                      value,
+                      false,
+                      "NUMBER",
+                    )
+                  }
+                  placeholder="5"
+                  inputType="number"
+                  inputMode="numeric"
+                  min={1}
+                  step={1}
+                />
+
+                <SettingField
+                  label="Maximum Text Preview Size (MB)"
+                  {...settingMeta("storage.max_text_preview_size_mb")}
+                  onSave={(value) =>
+                    handleSaveSetting(
+                      "storage.max_text_preview_size_mb",
+                      value,
+                      false,
+                      "NUMBER",
+                    )
+                  }
+                  placeholder="1"
+                  inputType="number"
+                  inputMode="numeric"
+                  min={1}
+                  step={1}
+                />
               </section>
             </div>
 
@@ -2379,6 +2458,10 @@ interface SettingFieldProps {
   onSave: (value: string) => void;
   placeholder?: string;
   isSecret?: boolean;
+  inputType?: React.HTMLInputTypeAttribute;
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
+  min?: number;
+  step?: number;
   source?: string;
   localOnly?: boolean;
   envOverride?: boolean;
@@ -2477,6 +2560,10 @@ function SettingField({
   onSave,
   placeholder,
   isSecret = false,
+  inputType = "text",
+  inputMode,
+  min,
+  step,
   source,
   localOnly = false,
   envOverride = false,
@@ -2527,7 +2614,10 @@ function SettingField({
               setIsEditing(true);
             }}
             placeholder={placeholder}
-            type={isSecret && !isEditing ? "password" : "text"}
+            type={isSecret && !isEditing ? "password" : inputType}
+            inputMode={inputMode}
+            min={min}
+            step={step}
             disabled={readOnly}
           />
         </TextField>
