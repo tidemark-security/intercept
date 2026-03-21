@@ -355,7 +355,7 @@ export function TimelineItemRenderer({
     const { children: cardChildren, ...baseCardProps } = cardConfig;
 
     if (isGrouped) {
-      baseCardProps.className = `${baseCardProps.className || ''} flex-1${isCurrentItemLinked ? ' min-w-40' : ''}`;
+      baseCardProps.className = `${baseCardProps.className || ''} flex-1 h-full${isCurrentItemLinked ? ' min-w-40' : ''}`;
     }
 
     const description = timelineCurrentItem.description;
@@ -473,7 +473,7 @@ export function TimelineItemRenderer({
     }
 
     return (
-      <Link key={itemKey} to={itemHref} className={`block no-underline flex-1${isGrouped && isCurrentItemLinked ? ' min-w-[512px]' : ''}`}>
+      <Link key={itemKey} to={itemHref} className={`block no-underline flex-1${isGrouped ? ' h-full' : ''}${isGrouped && isCurrentItemLinked ? ' min-w-[512px]' : ''}`}>
         {baseCardElement}
       </Link>
     );
@@ -574,7 +574,7 @@ export function TimelineItemRenderer({
         )}
         
         {/* Render cards below description for non-note items */}
-        <div className="flex w-full flex-wrap items-start gap-3">
+        <div className="flex w-full flex-wrap items-stretch gap-3">
           {itemsToRender.map((currentItem, cardIndex) => renderTopLevelCard(currentItem, cardIndex))}
         </div>
       </div>

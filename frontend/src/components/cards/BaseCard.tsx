@@ -240,7 +240,7 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
             {children}
           </div>
         ) : null}
-        <div className="flex w-full flex-col items-start">
+        <div className="mt-auto flex w-full flex-col items-start">
           {actionButtons ? (
             <div className="flex w-full flex-col items-start">
               {actionButtons}
