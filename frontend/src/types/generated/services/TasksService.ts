@@ -2,8 +2,11 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { AttachmentStatusUpdate } from '../models/AttachmentStatusUpdate';
 import type { Page_TaskRead_ } from '../models/Page_TaskRead_';
 import type { PresignedDownloadResponse } from '../models/PresignedDownloadResponse';
+import type { PresignedUploadRequest } from '../models/PresignedUploadRequest';
+import type { PresignedUploadResponse } from '../models/PresignedUploadResponse';
 import type { TaskCreate } from '../models/TaskCreate';
 import type { TaskRead } from '../models/TaskRead';
 import type { TaskStatus } from '../models/TaskStatus';
@@ -269,6 +272,73 @@ export class TasksService {
                 'task_id': taskId,
                 'item_id': itemId,
             },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Generate Upload Url
+     * Generate presigned upload URL and create timeline attachment item.
+     *
+     * This endpoint:
+     * 1. Validates file size and type
+     * 2. Creates an AttachmentItem with 'uploading' status
+     * 3. Generates a presigned PUT URL for direct upload to storage
+     * 4. Returns the URL and item metadata
+     * @returns PresignedUploadResponse Successful Response
+     * @throws ApiError
+     */
+    public static generateUploadUrlApiV1TasksTaskIdTimelineAttachmentsUploadUrlPost({
+        taskId,
+        requestBody,
+    }: {
+        taskId: number,
+        requestBody: PresignedUploadRequest,
+    }): CancelablePromise<PresignedUploadResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/tasks/{task_id}/timeline/attachments/upload-url',
+            path: {
+                'task_id': taskId,
+            },
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Update Attachment Status
+     * Update attachment upload status.
+     *
+     * This endpoint:
+     * 1. Verifies the timeline item exists and is an attachment
+     * 2. If status is 'complete', verifies file exists in storage
+     * 3. Updates the upload_status field
+     * 4. Returns the updated task
+     * @returns TaskRead Successful Response
+     * @throws ApiError
+     */
+    public static updateAttachmentStatusApiV1TasksTaskIdTimelineItemsItemIdStatusPatch({
+        taskId,
+        itemId,
+        requestBody,
+    }: {
+        taskId: number,
+        itemId: string,
+        requestBody: AttachmentStatusUpdate,
+    }): CancelablePromise<TaskRead> {
+        return __request(OpenAPI, {
+            method: 'PATCH',
+            url: '/api/v1/tasks/{task_id}/timeline/items/{item_id}/status',
+            path: {
+                'task_id': taskId,
+                'item_id': itemId,
+            },
+            body: requestBody,
+            mediaType: 'application/json',
             errors: {
                 422: `Validation Error`,
             },

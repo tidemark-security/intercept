@@ -11,27 +11,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from fastapi_pagination import Page
 import logging
-import uuid
-from datetime import datetime, timezone, timedelta
 
 from app.core.database import get_db
 from app.services.alert_service import alert_service
-from app.services.attachment_settings_service import get_attachment_limits
-from app.services.storage_service import storage_service
-from app.core.storage_config import storage_config
 from app.models.models import (
     AlertCreate, AlertUpdate, AlertTriageRequest,
     AlertRead, AlertReadWithCase, AlertTimelineItem, UserAccount,
     PresignedUploadRequest, PresignedUploadResponse,
     AttachmentStatusUpdate, PresignedDownloadResponse,
-    AttachmentItem
 )
-from app.models.enums import AlertStatus, Priority, UploadStatus
+from app.models.enums import AlertStatus, Priority
 from app.api.route_utils import (
     get_timeline_item_types,
     create_timeline_converter,
     create_human_id_decorator,
-    normalize_upload_status,
+    handle_generate_upload_url,
+    handle_update_attachment_status,
+    handle_generate_download_url,
 )
 from app.api.routes.admin_auth import require_authenticated_user, require_non_auditor_user
 
@@ -307,102 +303,14 @@ async def generate_upload_url(
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user)
 ):
-    """
-    Generate presigned upload URL and create timeline attachment item.
-    
-    This endpoint:
-    1. Validates file size and type
-    2. Creates an AttachmentItem with 'uploading' status
-    3. Generates a presigned PUT URL for direct upload to storage
-    4. Returns the URL and item metadata
-    """
-    try:
-        # Verify alert exists and user has access
-        alert = await alert_service.get_alert(db, alert_id)
-        if not alert:
-            raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
-
-        attachment_limits = await get_attachment_limits(db)
-        
-        # Validate file size
-        if request_data.file_size > attachment_limits.max_upload_size_bytes:
-            max_size_mb = attachment_limits.max_upload_size_mb
-            raise HTTPException(
-                status_code=413,
-                detail=f"File size {request_data.file_size} exceeds limit {max_size_mb}MB"
-            )
-        
-        # Validate file type (if provided by client)
-        if request_data.mime_type and not storage_service.validate_file_type(request_data.mime_type):
-            raise HTTPException(
-                status_code=415,
-                detail=f"File type {request_data.mime_type} not allowed"
-            )
-        
-        # Sanitize filename
-        sanitized_filename = storage_service.sanitize_filename(request_data.filename)
-        
-        # Generate unique item ID and storage key
-        item_id = str(uuid.uuid4())
-        storage_key = storage_service.generate_storage_key(
-            alert_id, item_id, sanitized_filename
-        )
-        
-        # Create attachment timeline item with "uploading" status
-        attachment_item = AttachmentItem(
-            id=item_id,
-            type="attachment",
-            file_name=sanitized_filename,
-            mime_type=request_data.mime_type,
-            file_size=request_data.file_size,
-            storage_key=storage_key,
-            upload_status=UploadStatus.UPLOADING,
-            uploaded_by=current_user.username,
-            created_by=current_user.username,
-            timestamp=datetime.now(timezone.utc)
-        )
-        
-        # Add to alert timeline
-        alert = await alert_service.add_timeline_item(
-            db, alert_id, attachment_item, current_user.username
-        )
-        
-        # Generate presigned upload URL
-        upload_url = await storage_service.generate_presigned_upload_url(
-            storage_key,
-            expires_minutes=storage_config.upload_timeout_minutes
-        )
-        
-        # Calculate expiration timestamp
-        expires_at = datetime.now(timezone.utc) + timedelta(
-            minutes=storage_config.upload_timeout_minutes
-        )
-        
-        # Log upload URL generation
-        logger.info(
-            f"Generated presigned upload URL for alert {alert_id}, "
-            f"item {item_id}, file {sanitized_filename}, "
-            f"size {request_data.file_size} bytes, "
-            f"user {current_user.username}, "
-            f"expires {expires_at}"
-        )
-        
-        return PresignedUploadResponse(
-            item_id=item_id,
-            upload_url=upload_url,
-            storage_key=storage_key,
-            expires_at=expires_at,
-            max_file_size=attachment_limits.max_upload_size_bytes
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error generating upload URL for alert {alert_id}: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to generate upload URL: {str(e)}"
-        )
+    """Generate presigned upload URL and create timeline attachment item."""
+    alert = await alert_service.get_alert(db, alert_id)
+    if not alert:
+        raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
+    return await handle_generate_upload_url(
+        entity_type="alert", parent_id=alert_id, request_data=request_data,
+        current_user=current_user, db=db, service=alert_service,
+    )
 
 
 @router.patch("/{alert_id}/timeline/items/{item_id}/status", response_model=AlertRead)
@@ -414,95 +322,15 @@ async def update_attachment_status(
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user)
 ):
-    """
-    Update attachment upload status.
-    
-    This endpoint:
-    1. Verifies the timeline item exists and is an attachment
-    2. If status is 'complete', verifies file exists in storage
-    3. Updates the upload_status field
-    4. Returns the updated alert
-    """
-    try:
-        # Get alert
-        alert = await alert_service.get_alert(db, alert_id)
-        if not alert:
-            raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
-        
-        # Find timeline item
-        timeline_item = None
-        for item in alert.timeline_items if alert.timeline_items else []:
-            if item.get("id") == item_id and item.get("type") == "attachment":
-                timeline_item = item
-                break
-        
-        if not timeline_item:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Attachment item {item_id} not found"
-            )
-        
-        # Verify user owns the upload (only uploader can update status)
-        if timeline_item.get("uploaded_by") != current_user.username:
-            raise HTTPException(
-                status_code=403,
-                detail="Only upload owner can update status"
-            )
-        
-        # Verify state transition is valid
-        current_status = normalize_upload_status(timeline_item.get("upload_status"))
-        if current_status in [UploadStatus.COMPLETE.value, UploadStatus.FAILED.value]:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot transition from {current_status} to {update_data.status}"
-            )
-        
-        # If marking as complete, verify file exists in storage
-        if update_data.status == UploadStatus.COMPLETE:
-            storage_key = timeline_item.get("storage_key")
-            if not storage_key:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Attachment has no storage key"
-                )
-            
-            file_exists = await storage_service.verify_file_exists(storage_key)
-            if not file_exists:
-                raise HTTPException(
-                    status_code=409,
-                    detail="File not found in storage"
-                )
-        
-        # Update timeline item
-        timeline_item["upload_status"] = update_data.status.value
-        if update_data.file_hash:
-            timeline_item["file_hash"] = update_data.file_hash
-        
-        # Convert dict to AttachmentItem model for service
-        attachment_item = AttachmentItem(**timeline_item)
-        
-        # Save updated alert
-        alert = await alert_service.update_timeline_item(
-            db, alert_id, item_id, attachment_item, current_user.username
-        )
-        
-        # Log status update
-        logger.info(
-            f"Updated attachment status for alert {alert_id}, "
-            f"item {item_id}, status {update_data.status}, "
-            f"user {current_user.username}"
-        )
-        
-        return alert
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating attachment status for alert {alert_id}, item {item_id}: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to update attachment status: {str(e)}"
-        )
+    """Update attachment upload status."""
+    alert = await alert_service.get_alert(db, alert_id)
+    if not alert:
+        raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
+    return await handle_update_attachment_status(
+        entity=alert, entity_type="alert", parent_id=alert_id,
+        item_id=item_id, update_data=update_data,
+        current_user=current_user, db=db, service=alert_service,
+    )
 
 
 @router.get("/{alert_id}/timeline/items/{item_id}/download-url", response_model=PresignedDownloadResponse)
@@ -514,92 +342,11 @@ async def generate_download_url(
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_authenticated_user)
 ):
-    """
-    Generate presigned download URL for an attachment.
-    
-    This endpoint:
-    1. Verifies the timeline item exists and is an attachment
-    2. Verifies upload is complete
-    3. Generates a presigned GET URL for download
-    4. Returns the URL and file metadata
-    """
-    try:
-        # Get alert
-        alert = await alert_service.get_alert(db, alert_id)
-        if not alert:
-            raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
-        
-        # Find timeline item
-        timeline_item = None
-        for item in alert.timeline_items if alert.timeline_items else []:
-            if item.get("id") == item_id and item.get("type") == "attachment":
-                timeline_item = item
-                break
-        
-        if not timeline_item:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Attachment item {item_id} not found"
-            )
-        
-        # Verify upload is complete
-        upload_status = normalize_upload_status(timeline_item.get("upload_status"))
-        if upload_status != UploadStatus.COMPLETE.value:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Attachment upload still in progress (status: {upload_status})"
-            )
-        
-        # Get storage key
-        storage_key = timeline_item.get("storage_key")
-        if not storage_key:
-            raise HTTPException(
-                status_code=400,
-                detail="Attachment has no storage key"
-            )
-        
-        # Verify file exists
-        file_exists = await storage_service.verify_file_exists(storage_key)
-        if not file_exists:
-            raise HTTPException(
-                status_code=410,
-                detail="File no longer available in storage"
-            )
-        
-        # Generate presigned download URL
-        download_url = await storage_service.generate_presigned_download_url(
-            storage_key,
-            expires_minutes=storage_config.download_timeout_minutes,
-            filename=timeline_item.get("file_name"),
-            as_attachment=download,
-        )
-        
-        # Calculate expiration timestamp
-        expires_at = datetime.now(timezone.utc) + timedelta(
-            minutes=storage_config.download_timeout_minutes
-        )
-        
-        # Log download URL generation
-        logger.info(
-            f"Generated presigned download URL for alert {alert_id}, "
-            f"item {item_id}, file {timeline_item.get('file_name')}, "
-            f"user {current_user.username}, "
-            f"expires {expires_at}"
-        )
-        
-        return PresignedDownloadResponse(
-            download_url=download_url,
-            filename=timeline_item.get("file_name") or "attachment",
-            mime_type=timeline_item.get("mime_type") or "application/octet-stream",
-            file_size=timeline_item.get("file_size") or 0,
-            expires_at=expires_at
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error generating download URL for alert {alert_id}, item {item_id}: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to generate download URL: {str(e)}"
-        )
+    """Generate presigned download URL for an attachment."""
+    alert = await alert_service.get_alert(db, alert_id)
+    if not alert:
+        raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
+    return await handle_generate_download_url(
+        entity=alert, entity_type="alert", parent_id=alert_id,
+        item_id=item_id, as_download=download, current_user=current_user,
+    )

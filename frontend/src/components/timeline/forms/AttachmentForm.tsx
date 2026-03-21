@@ -100,6 +100,7 @@ export function AddAttachmentForm({ initialData, pendingFiles, onPendingFilesCon
   const { uploadFile, progress } = useFileUpload({
     alertId,
     caseId,
+    taskId,
     onSuccess: (itemId) => {
       // Mark current file as complete
       if (currentUploadIndex !== null) {

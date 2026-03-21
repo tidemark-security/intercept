@@ -18,9 +18,8 @@ import { useState, useCallback } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { AlertsService } from '@/types/generated/services/AlertsService';
 import { CasesService } from '@/types/generated/services/CasesService';
+import { TasksService } from '@/types/generated/services/TasksService';
 import type { PresignedUploadRequest, PresignedUploadResponse, UploadStatus } from '@/types/generated';
-import type { AlertRead } from '@/types/generated/models/AlertRead';
-import type { CaseRead } from '@/types/generated/models/CaseRead';
 import { queryKeys } from './queryKeys';
 import { useAttachmentLimits } from './useAttachmentLimits';
 
@@ -51,6 +50,8 @@ interface UseFileUploadOptions {
   alertId?: number;
   /** Case ID to upload to (optional if alertId is provided) */
   caseId?: number;
+  /** Task ID to upload to (optional if alertId or caseId is provided) */
+  taskId?: number;
   /** Callback when upload succeeds */
   onSuccess?: (itemId: string) => void;
   /** Callback when upload fails */
@@ -62,11 +63,12 @@ interface UseFileUploadOptions {
 }
 
 /**
- * Hook for uploading files to alert or case timeline
+ * Hook for uploading files to alert, case, or task timeline
  */
 export function useFileUpload({
   alertId,
   caseId,
+  taskId,
   onSuccess,
   onError,
   maxSizeMB = 50,
@@ -94,8 +96,13 @@ export function useFileUpload({
           caseId,
           requestBody: request,
         });
+      } else if (taskId) {
+        return TasksService.generateUploadUrlApiV1TasksTaskIdTimelineAttachmentsUploadUrlPost({
+          taskId,
+          requestBody: request,
+        });
       }
-      throw new Error('Either alertId or caseId must be provided');
+      throw new Error('One of alertId, caseId, or taskId must be provided');
     },
   });
 
@@ -118,8 +125,14 @@ export function useFileUpload({
           itemId,
           requestBody: { status, file_hash: fileHash },
         });
+      } else if (taskId) {
+        return TasksService.updateAttachmentStatusApiV1TasksTaskIdTimelineItemsItemIdStatusPatch({
+          taskId,
+          itemId,
+          requestBody: { status, file_hash: fileHash },
+        });
       }
-      throw new Error('Either alertId or caseId must be provided');
+      throw new Error('One of alertId, caseId, or taskId must be provided');
     },
     // Cache update is handled manually in the upload flow to ensure synchronous update
   });
@@ -272,7 +285,7 @@ export function useFileUpload({
       }
 
       // Step 4: Confirm upload completion
-      const updatedAlert = await updateStatusMutation.mutateAsync({
+      const updatedEntity = await updateStatusMutation.mutateAsync({
         itemId: uploadResponse.item_id,
         status: 'COMPLETE' as UploadStatus,
         fileHash,
@@ -280,10 +293,12 @@ export function useFileUpload({
 
       // Ensure cache is updated immediately with the correct query key
       if (alertId) {
-        queryClient.setQueryData(queryKeys.alert.detailBase(alertId), updatedAlert);
+        queryClient.setQueryData(queryKeys.alert.detailBase(alertId), updatedEntity);
       } else if (caseId) {
         // Use partial key matching for cases (they may have options like includeLinkedTimelines)
-        queryClient.setQueriesData({ queryKey: queryKeys.case.detailBase(caseId), exact: false }, updatedAlert);
+        queryClient.setQueriesData({ queryKey: queryKeys.case.detailBase(caseId), exact: false }, updatedEntity);
+      } else if (taskId) {
+        queryClient.setQueriesData({ queryKey: queryKeys.task.detailBase(taskId), exact: false }, updatedEntity);
       }
 
       // Success!
@@ -322,6 +337,7 @@ export function useFileUpload({
   }, [
     alertId,
     caseId,
+    taskId,
     validateFile,
     getUploadUrlMutation,
     updateStatusMutation,

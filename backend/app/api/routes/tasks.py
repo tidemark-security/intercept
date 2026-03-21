@@ -2,20 +2,29 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from fastapi_pagination import Page
-from datetime import datetime, timezone, timedelta
 import logging
 
 from app.core.database import get_db
 from app.services.task_service import task_service
-from app.services.storage_service import storage_service
-from app.core.storage_config import storage_config
-from app.models.models import TaskCreate, TaskUpdate, TaskRead, TaskTimelineItem, UserAccount, PresignedDownloadResponse
+from app.models.models import (
+    TaskCreate,
+    TaskUpdate,
+    TaskRead,
+    TaskTimelineItem,
+    UserAccount,
+    PresignedUploadRequest,
+    PresignedUploadResponse,
+    AttachmentStatusUpdate,
+    PresignedDownloadResponse,
+)
 from app.models.enums import TaskStatus
 from app.api.route_utils import (
     get_timeline_item_types,
     create_timeline_converter,
     create_human_id_decorator,
-    normalize_upload_status,
+    handle_generate_upload_url,
+    handle_update_attachment_status,
+    handle_generate_download_url,
 )
 from app.api.routes.admin_auth import require_authenticated_user, require_non_auditor_user
 
@@ -240,8 +249,48 @@ async def remove_timeline_item(
 
 
 # ---------------------------------------------------------------------------
-# Attachment Download Endpoints
+# Attachment Endpoints
 # ---------------------------------------------------------------------------
+
+
+@router.post("/{task_id}/timeline/attachments/upload-url", response_model=PresignedUploadResponse)
+@handle_human_id()
+async def generate_upload_url(
+    task_id: int,
+    request: Request,  # pylint: disable=unused-argument
+    request_data: PresignedUploadRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_non_auditor_user)
+):
+    """Generate presigned upload URL and create timeline attachment item."""
+    task = await task_service.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    return await handle_generate_upload_url(
+        entity_type="task", parent_id=task_id, request_data=request_data,
+        current_user=current_user, db=db, service=task_service,
+    )
+
+
+@router.patch("/{task_id}/timeline/items/{item_id}/status", response_model=TaskRead)
+@handle_human_id()
+async def update_attachment_status(
+    task_id: int,
+    item_id: str,
+    request: Request,  # pylint: disable=unused-argument
+    update_data: AttachmentStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_non_auditor_user)
+):
+    """Update attachment upload status."""
+    task = await task_service.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    return await handle_update_attachment_status(
+        entity=task, entity_type="task", parent_id=task_id,
+        item_id=item_id, update_data=update_data,
+        current_user=current_user, db=db, service=task_service,
+    )
 
 
 @router.get("/{task_id}/timeline/items/{item_id}/download-url", response_model=PresignedDownloadResponse)
@@ -254,92 +303,11 @@ async def generate_download_url(
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_authenticated_user)
 ):
-    """
-    Generate presigned download URL for an attachment.
-    
-    This endpoint:
-    1. Verifies the timeline item exists and is an attachment
-    2. Verifies upload is complete
-    3. Generates a presigned GET URL for download
-    4. Returns the URL and file metadata
-    """
-    try:
-        # Get task
-        task = await task_service.get_task(db, task_id)
-        if not task:
-            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        
-        # Find timeline item
-        timeline_item = None
-        for item in task.timeline_items if task.timeline_items else []:
-            if item.get("id") == item_id and item.get("type") == "attachment":
-                timeline_item = item
-                break
-        
-        if not timeline_item:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Attachment item {item_id} not found"
-            )
-        
-        # Verify upload is complete
-        upload_status = normalize_upload_status(timeline_item.get("upload_status"))
-        if upload_status != "COMPLETE":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Attachment upload still in progress (status: {upload_status})"
-            )
-        
-        # Get storage key
-        storage_key = timeline_item.get("storage_key")
-        if not storage_key:
-            raise HTTPException(
-                status_code=400,
-                detail="Attachment has no storage key"
-            )
-        
-        # Verify file exists
-        file_exists = await storage_service.verify_file_exists(storage_key)
-        if not file_exists:
-            raise HTTPException(
-                status_code=410,
-                detail="File no longer available in storage"
-            )
-        
-        # Generate presigned download URL
-        download_url = await storage_service.generate_presigned_download_url(
-            storage_key,
-            expires_minutes=storage_config.download_timeout_minutes,
-            filename=timeline_item.get("file_name"),
-            as_attachment=download,
-        )
-        
-        # Calculate expiration timestamp
-        expires_at = datetime.now(timezone.utc) + timedelta(
-            minutes=storage_config.download_timeout_minutes
-        )
-        
-        # Log download URL generation
-        logger.info(
-            f"Generated presigned download URL for task {task_id}, "
-            f"item {item_id}, file {timeline_item.get('file_name')}, "
-            f"user {current_user.username}, "
-            f"expires {expires_at}"
-        )
-        
-        return PresignedDownloadResponse(
-            download_url=download_url,
-            filename=timeline_item.get("file_name") or "attachment",
-            mime_type=timeline_item.get("mime_type") or "application/octet-stream",
-            file_size=timeline_item.get("file_size") or 0,
-            expires_at=expires_at
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error generating download URL for task {task_id}, item {item_id}: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to generate download URL: {str(e)}"
-        )
+    """Generate presigned download URL for an attachment."""
+    task = await task_service.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    return await handle_generate_download_url(
+        entity=task, entity_type="task", parent_id=task_id,
+        item_id=item_id, as_download=download, current_user=current_user,
+    )
