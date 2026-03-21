@@ -26,12 +26,10 @@ export function handleRegistryChangeItem(
 
   return {
     title: item.registry_key ? `${item.registry_key}` : 'Registry Change',
-    line1: item.registry_key || 'Registry Change',
-    line1Icon: <Database />,
-    line2: item.registry_value ? `Value: ${item.registry_value}` : undefined,
-    line2Icon: item.registry_value ? <Edit /> : undefined,
-    line3: `Operation: ${operation}`,
-    line3Icon: <Edit />,
+    line1: item.registry_value ? `Value: ${item.registry_value}` : undefined,
+    line1Icon: item.registry_value ? <Edit /> : undefined,
+    line2: `Operation: ${operation}`,
+    line2Icon: <Edit />,
     baseIcon: Icon ? <Icon /> : undefined,
     system: 'default',
     size: options.size || 'large',

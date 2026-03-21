@@ -11,7 +11,7 @@ import { getTimelineIcon } from '@/utils/timelineIcons';
 
 import type { CardConfig, CardFactoryOptions } from '../TimelineCardFactory';
 
-import { FileText, Fingerprint } from 'lucide-react';
+import { Tag } from 'lucide-react';
 /**
  * Check if item is an ObservableItem
  */
@@ -31,9 +31,9 @@ function formatObservableType(type: string | undefined | null): string {
  * Handle ObservableItem timeline items.
  * 
  * Field mapping:
- * - Line1: Observable value (most important - the actual IOC)
- * - Line2: Observable type (IP, Domain, Hash, etc.)
- * - Line3: Description (if present)
+ * - Title: Observable value (most important - the actual IOC)
+ * - Line1: Observable type (IP, Domain, Hash, etc.)
+ * - Line2: Description (if present)
  * - Icon: Fingerprint
  * - Color: default (observables are neutral evidence)
  */
@@ -51,12 +51,8 @@ export function handleObservableItem(
 
   return {
     title: item.observable_value ? `${item.observable_value}` : 'Observable',
-    line1: item.observable_value || 'No value provided',
-    line1Icon: <Fingerprint />,
-    line2: typeDisplay,
-    line2Icon: <FileText />,
-    line3: item.description || undefined,
-    line3Icon: item.description ? <FileText /> : undefined,
+    line1: typeDisplay,
+    line1Icon: <Tag />,
     baseIcon: IconComponent,
     system: 'default',
     size: options.size || 'large',

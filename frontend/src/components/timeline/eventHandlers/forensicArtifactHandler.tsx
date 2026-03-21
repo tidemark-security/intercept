@@ -22,12 +22,10 @@ export function handleForensicArtifactItem(
 
   return {
     title: item.hash ? `${item.hash}` : 'Forensic Artifact',
-    line1: item.hash ? `${item.hash.substring(0, 32)}...` : 'Forensic Artifact',
-    line1Icon: <Fingerprint />,
-    line2: item.url || undefined,
-    line2Icon: item.url ? <Link /> : undefined,
-    line3: item.description || undefined,
-    line3Icon: item.description ? <FileText /> : undefined,
+    line1: item.url || undefined,
+    line1Icon: item.url ? <Link /> : undefined,
+    line2: item.description || undefined,
+    line2Icon: item.description ? <FileText /> : undefined,
     baseIcon: Icon ? <Icon /> : undefined,
     system: 'default',
     size: options.size || 'large',

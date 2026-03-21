@@ -7,6 +7,7 @@ import { AlertCard } from '@/components/timeline/AlertCard';
 import { AlertCardContent } from '@/components/timeline/AlertCardContent';
 import { TaskCardContent } from '@/components/timeline/TaskCardContent';
 import { CaseCardContent } from '@/components/timeline/CaseCardContent';
+import { TimelineDescriptionBlock } from '@/components/timeline/TimelineDescriptionBlock';
 import { GoogleWorkspaceEnrichmentBlock } from '@/components/timeline/GoogleWorkspaceEnrichmentBlock';
 import { MaxMindEnrichmentBlock } from '@/components/timeline/MaxMindEnrichmentBlock';
 import MarkdownContent from '@/components/data-display/MarkdownContent';
@@ -68,7 +69,7 @@ function withEnrichmentBlocks(
   baseChildren: React.ReactNode
 ): React.ReactNode {
   return (
-    <div className="flex w-full flex-col gap-3">
+    <div className="flex w-full flex-1 flex-col gap-3">
       {baseChildren}
       <GoogleWorkspaceEnrichmentBlock item={item} />
       <MaxMindEnrichmentBlock item={item} />
@@ -352,19 +353,32 @@ export function TimelineItemRenderer({
       linkTemplates,
     });
 
-    const { children: cardChildren, ...baseCardProps } = cardConfig;
+    const { children: cardChildren, actionButtons: cardActionButtons, ...baseCardProps } = cardConfig;
+
+    if (isAlertItem(timelineCurrentItem) || isTaskItem(timelineCurrentItem) || isCaseItem(timelineCurrentItem)) {
+      baseCardProps.size = 'x-large';
+    }
 
     if (isGrouped) {
       baseCardProps.className = `${baseCardProps.className || ''} flex-1 self-stretch${isCurrentItemLinked ? ' min-w-40' : ''}`;
     }
 
-    const description = timelineCurrentItem.description;
-    const descriptionNode = hasText(description) ? <MarkdownContent content={description} /> : null;
+    baseCardProps.enableCopyInteractions = !isAlertItem(timelineCurrentItem) && !isTaskItem(timelineCurrentItem) && !isCaseItem(timelineCurrentItem);
 
-    const inlineChildren = descriptionNode || cardChildren ? (
-      <div className="flex w-full flex-col gap-3">
-        {descriptionNode}
+    const description = timelineCurrentItem.description;
+    const shouldRenderInlineDescription = hasText(description) && timelineCurrentItem.type !== 'ttp';
+    const shouldUseFooter = !isAlertItem(timelineCurrentItem) && !isTaskItem(timelineCurrentItem) && !isCaseItem(timelineCurrentItem) && (shouldRenderInlineDescription || !!cardActionButtons);
+    const descriptionNode = shouldUseFooter ? (
+      <TimelineDescriptionBlock actionButtons={cardActionButtons} className="mt-auto">
+        {shouldRenderInlineDescription ? <MarkdownContent content={description} /> : null}
+      </TimelineDescriptionBlock>
+    ) : null;
+    const renderedActionButtons = descriptionNode ? undefined : cardActionButtons;
+
+    const inlineChildren = cardChildren || descriptionNode ? (
+      <div className="flex w-full flex-1 flex-col gap-3">
         {cardChildren}
+        {descriptionNode}
       </div>
     ) : null;
 
@@ -462,7 +476,7 @@ export function TimelineItemRenderer({
     }
 
     const baseCardElement = (
-      <BaseCard key={itemKey} {...baseCardProps}>
+      <BaseCard key={itemKey} {...baseCardProps} actionButtons={renderedActionButtons}>
         {children}
       </BaseCard>
     );
@@ -473,7 +487,7 @@ export function TimelineItemRenderer({
     }
 
     return (
-      <Link key={itemKey} to={itemHref} className={`block no-underline${isGrouped ? ' flex-1 self-stretch' : ''}${isGrouped && isCurrentItemLinked ? ' min-w-[512px]' : ''}`}>
+      <Link key={itemKey} to={itemHref} className={`block w-full no-underline${isGrouped ? ' flex-1 self-stretch' : ''}${isGrouped && isCurrentItemLinked ? ' min-w-[512px]' : ''}`}>
         {baseCardElement}
       </Link>
     );
@@ -487,7 +501,7 @@ export function TimelineItemRenderer({
     }
 
     const replyDescription = timelineReply.description;
-    const descriptionNode = hasText(replyDescription) ? <MarkdownContent content={replyDescription} /> : null;
+    const shouldRenderInlineDescription = hasText(replyDescription) && timelineReply.type !== 'ttp';
     const replyCardConfig = createTimelineCard(timelineReply, {
       size: 'x-large',
       alertId: entityId,
@@ -495,11 +509,34 @@ export function TimelineItemRenderer({
       linkTemplates,
     });
 
-    let children: React.ReactNode = withEnrichmentBlocks(timelineReply, descriptionNode);
+    const { children: replyCardChildren, actionButtons: replyCardActionButtons, ...baseReplyCardProps } = replyCardConfig;
+
+    if (isAlertItem(timelineReply) || isTaskItem(timelineReply) || isCaseItem(timelineReply)) {
+      baseReplyCardProps.size = 'x-large';
+    }
+
+    baseReplyCardProps.enableCopyInteractions = !isAlertItem(timelineReply) && !isTaskItem(timelineReply) && !isCaseItem(timelineReply);
+
+    const shouldUseFooter = !isAlertItem(timelineReply) && !isTaskItem(timelineReply) && !isCaseItem(timelineReply) && (shouldRenderInlineDescription || !!replyCardActionButtons);
+    const descriptionNode = shouldUseFooter ? (
+      <TimelineDescriptionBlock actionButtons={replyCardActionButtons} className="mt-auto">
+        {shouldRenderInlineDescription ? <MarkdownContent content={replyDescription} /> : null}
+      </TimelineDescriptionBlock>
+    ) : null;
+    const renderedReplyActionButtons = descriptionNode ? undefined : replyCardActionButtons;
+
+    const replyBaseChildren = replyCardChildren || descriptionNode ? (
+      <div className="flex w-full flex-1 flex-col gap-3">
+        {replyCardChildren}
+        {descriptionNode}
+      </div>
+    ) : null;
+
+    let children: React.ReactNode = withEnrichmentBlocks(timelineReply, replyBaseChildren);
 
     if (isAlertItem(timelineReply)) {
-      replyCardConfig.size = 'x-large';
-      clearCardLines(replyCardConfig);
+      baseReplyCardProps.size = 'x-large';
+      clearCardLines(baseReplyCardProps);
 
       const replyAlertData: Partial<AlertRead> & { title: string } = {
         id: timelineReply.alert_id || 0,
@@ -529,7 +566,7 @@ export function TimelineItemRenderer({
       ));
     }
 
-    const baseCardElement = <BaseCard {...replyCardConfig}>{children}</BaseCard>;
+    const baseCardElement = <BaseCard {...baseReplyCardProps} actionButtons={renderedReplyActionButtons}>{children}</BaseCard>;
     const replyHref = getItemDetailHref(timelineReply);
 
     return (

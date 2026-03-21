@@ -42,10 +42,10 @@ function formatFileSize(bytes: number | undefined | null): string | undefined {
  * Handle AttachmentItem timeline items.
  * 
  * Field mapping:
- * - Line1: File name (most important identifier)
- * - Line2: MIME type
- * - Line3: File size
- * - Line4: URL (if present)
+ * - Title: File name (most important identifier)
+ * - Line1: MIME type
+ * - Line2: File size
+ * - Line3: URL (if present)
  * - Icon: FeatherPaperclip
  * - Color: default (attachments are neutral evidence)
  */
@@ -84,14 +84,12 @@ export function handleAttachmentItem(
 
   return {
     title: item.file_name ? `${item.file_name}` : 'Attachment',
-    line1: item.file_name || 'Untitled File',
-    line1Icon: <FileText />,
-    line2: item.mime_type || undefined,
-    line2Icon: item.mime_type ? <FileText /> : undefined,
-    line3: sizeDisplay || undefined,
-    line3Icon: sizeDisplay ? <HardDrive /> : undefined,
-    line4: item.url || undefined,
-    line4Icon: item.url ? <Link /> : undefined,
+    line1: item.mime_type || undefined,
+    line1Icon: item.mime_type ? <FileText /> : undefined,
+    line2: sizeDisplay || undefined,
+    line2Icon: sizeDisplay ? <HardDrive /> : undefined,
+    line3: item.url || undefined,
+    line3Icon: item.url ? <Link /> : undefined,
     baseIcon: IconComponent,
     system: 'default',
     size: options.size || 'large',

@@ -4,7 +4,7 @@ import { getTimelineIcon } from '@/utils/timelineIcons';
 
 import type { CardConfig, CardFactoryOptions } from '../TimelineCardFactory';
 
-import { FileText, Link } from 'lucide-react';
+import { ExternalLink } from 'lucide-react';
 
 export function isLinkItem(item: TimelineItem): item is TimelineItem & LinkItem {
   return item.type === 'link';
@@ -25,11 +25,19 @@ export function handleLinkItem(
     : item.url;
 
   return {
-    title: item.url ? `${item.url}` : 'Link',
-    line1: urlDisplay || 'No URL provided',
-    line1Icon: <Link />,
-    line2: item.description || undefined,
-    line2Icon: item.description ? <FileText /> : undefined,
+    title: urlDisplay || 'Link',
+    line1: item.url ? (
+      <a
+        href={item.url}
+        target="_blank"
+        rel="noreferrer"
+        className="hover:underline"
+      >
+        Open in new tab
+      </a>
+    ) : undefined,
+    line1Icon: item.url ? <ExternalLink /> : undefined,
+    disableCopyTargets: ['line1'],
     baseIcon: Icon ? <Icon /> : undefined,
     system: 'default',
     size: options.size || 'large',

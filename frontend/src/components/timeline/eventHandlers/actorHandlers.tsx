@@ -100,10 +100,10 @@ const INTERNAL_ACTOR_CHARACTERISTICS: Record<string, ActorCharacteristic> = {
  * Handle InternalActorItem timeline items.
  * 
  * Field mapping:
- * - Line1: User name (most important identifier)
- * - Line2: User ID
- * - Line3: Job title (if present)
- * - Line4: Organization/Department (if present)
+ * - Title: User name (most important identifier)
+ * - Line1: User ID
+ * - Line2: Job title (if present)
+ * - Line3: Organization/Department (if present)
  * - characterFlags: User characteristics as chips (VIP, Privileged, etc.)
  * - accentText/accentIcon: Highest priority risk indicator
  * - actionButtons: Automatically generated based on available fields (email, phone, Teams chat, etc.)
@@ -128,14 +128,12 @@ export function handleInternalActorItem(
 
   return {
     title: item.name ? `${item.name}` : 'Internal Actor',
-    line1: item.name || 'Unknown User',
-    line1Icon: <User />,
-    line2: item.user_id || undefined,
-    line2Icon: item.user_id ? <User /> : undefined,
-    line3: item.title || undefined,
-    line3Icon: item.title ? <Briefcase /> : undefined,
-    line4: item.org || undefined,
-    line4Icon: item.org ? <Building /> : undefined,
+    line1: item.user_id || undefined,
+    line1Icon: item.user_id ? <User /> : undefined,
+    line2: item.title || undefined,
+    line2Icon: item.title ? <Briefcase /> : undefined,
+    line3: item.org || undefined,
+    line3Icon: item.org ? <Building /> : undefined,
     characterFlags,
     accentText,
     accentIcon,
@@ -151,9 +149,9 @@ export function handleInternalActorItem(
  * Handle ExternalActorItem timeline items.
  * 
  * Field mapping:
- * - Line1: Actor name (most important identifier)
- * - Line2: Organization (if present)
- * - Line3: Contact email (if present)
+ * - Title: Actor name (most important identifier)
+ * - Line1: Organization (if present)
+ * - Line2: Contact email (if present)
  * - actionButtons: Automatically generated based on available fields (email, phone, etc.)
  * - Icon: User
  * - Color: default (external actors are neutral unless known malicious)
@@ -171,12 +169,10 @@ export function handleExternalActorItem(
 
   return {
     title: item.name ? `${item.name}` : 'External Actor',
-    line1: item.name || 'Unknown External Actor',
-    line1Icon: <User />,
-    line2: item.org || undefined,
-    line2Icon: item.org ? <Building /> : undefined,
-    line3: item.contact_email || undefined,
-    line3Icon: item.contact_email ? <Mail /> : undefined,
+    line1: item.org || undefined,
+    line1Icon: item.org ? <Building /> : undefined,
+    line2: item.contact_email || undefined,
+    line2Icon: item.contact_email ? <Mail /> : undefined,
     baseIcon: IconComponent,
     system: 'default',
     size: options.size || 'large',
@@ -189,9 +185,9 @@ export function handleExternalActorItem(
  * Handle ThreatActorItem timeline items.
  * 
  * Field mapping:
- * - Line1: Threat actor name (most important identifier)
- * - Line2: Tag ID (if present)
- * - Line3: Confidence level (if present)
+ * - Title: Threat actor name (most important identifier)
+ * - Line1: Tag ID (if present)
+ * - Line2: Confidence level (if present)
  * - Icon: User
  * - Color: default (color should only come from characteristics)
  */
@@ -208,12 +204,10 @@ export function handleThreatActorItem(
 
   return {
     title: item.name ? `${item.name}` : 'Threat Actor',
-    line1: item.name || 'Unknown Threat Actor',
-    line1Icon: <Shield />,
-    line2: item.tag_id || undefined,
-    line2Icon: item.tag_id ? <Tag /> : undefined,
-    line3: item.confidence ? `Confidence: ${item.confidence}%` : undefined,
-    line3Icon: item.confidence ? <Percent /> : undefined,
+    line1: item.tag_id || undefined,
+    line1Icon: item.tag_id ? <Tag /> : undefined,
+    line2: item.confidence ? `Confidence: ${item.confidence}%` : undefined,
+    line2Icon: item.confidence ? <Percent /> : undefined,
     baseIcon: IconComponent,
     system: 'default',
     size: options.size || 'large',

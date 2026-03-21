@@ -124,17 +124,17 @@ export const TIMELINE_ITEM_TYPE_CONFIG: Record<TimelineItemType, TimelineItemCon
   process: {
     icon: TIMELINE_ICONS.process,
     label: 'Process',
-    action: 'recorded',
+    action: 'noted',
   },
   network_traffic: {
     icon: TIMELINE_ICONS.network_traffic,
     label: 'Network Traffic',
-    action: 'captured',
+    action: 'noted',
   },
   registry_change: {
     icon: TIMELINE_ICONS.registry_change,
     label: 'Registry Change',
-    action: 'detected',
+    action: 'noted',
   },
   forensic_artifact: {
     icon: TIMELINE_ICONS.forensic_artifact,

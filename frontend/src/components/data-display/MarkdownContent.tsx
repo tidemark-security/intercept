@@ -102,12 +102,14 @@ interface MarkdownContentProps {
   content: string;
   className?: string;
   isStreamingFromAi?: boolean;
+  linkStyle?: 'badge' | 'inline';
 }
 
 const MarkdownContent: React.FC<MarkdownContentProps> = ({
   content,
   className,
   isStreamingFromAi = false,
+  linkStyle = 'badge',
 }) => {
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === 'dark';
@@ -239,11 +241,29 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
 
             return <ExpandableCodeBlock language={language} code={codeString} resolvedTheme={resolvedTheme} />;
           },
-          a: ({ href, children }) => (
-            <LinkBadge href={href || '#'}>
-              {children}
-            </LinkBadge>
-          ),
+          a: ({ href, children }) => {
+            if (linkStyle === 'inline') {
+              return (
+                <a
+                  href={href || '#'}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={cn(
+                    'underline underline-offset-2',
+                    isDarkTheme ? 'text-brand-primary hover:text-brand-400' : 'text-brand-700 hover:text-brand-800'
+                  )}
+                >
+                  {children}
+                </a>
+              );
+            }
+
+            return (
+              <LinkBadge href={href || '#'}>
+                {children}
+              </LinkBadge>
+            );
+          },
           hr: () => <hr className="border-neutral-300 my-4" />,
           strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
           em: ({ children }) => <em className="italic">{children}</em>,

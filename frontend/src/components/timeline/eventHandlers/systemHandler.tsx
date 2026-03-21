@@ -97,20 +97,12 @@ export function handleSystemItem(
     characteristics: SYSTEM_CHARACTERISTICS,
   });
 
-  const cardTitle = item.system_type
-    ? `${item.hostname} (${getSystemTypeLabel(item.system_type)})`
-    : item.hostname
-      ? `${item.hostname}`
-      : 'System';
-
   return {
-    title: cardTitle,
-    line1: item.hostname || 'Unknown System',
-    line1Icon: <Cpu />,
-    line2: item.ip_address || undefined,
-    line2Icon: item.ip_address ? <Globe /> : undefined,
-    line3: item.system_type || undefined,
-    line3Icon: item.system_type ? <Icon /> : undefined,
+    title: item.hostname || 'Unknown System',
+    line2: getSystemTypeLabel(item.system_type),
+    line2Icon: <Icon />,
+    line1: item.ip_address || undefined,
+    line1Icon: item.ip_address ? <Globe /> : undefined,
     characterFlags,
     accentText,
     accentIcon,
@@ -121,3 +113,5 @@ export function handleSystemItem(
     _item: item,
   };
 }
+
+

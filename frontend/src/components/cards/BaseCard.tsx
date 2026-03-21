@@ -1,13 +1,40 @@
 "use client";
 
-import React from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 
 import { useTheme } from "@/contexts/ThemeContext";
 
 import { cn } from "@/utils/cn";
 import { IconWrapper } from "@/utils/IconWrapper";
 
-import { Cpu, Crown } from 'lucide-react';
+import { Check, Copy, Cpu } from "lucide-react";
+
+export type CopyTarget = "title" | "line1" | "line2" | "line3" | "line4";
+
+function extractTextFromNode(node: React.ReactNode): string {
+  if (node == null || typeof node === "boolean") {
+    return "";
+  }
+
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(extractTextFromNode).join(" ");
+  }
+
+  if (React.isValidElement<{ children?: React.ReactNode }>(node)) {
+    return extractTextFromNode(node.props.children);
+  }
+
+  return "";
+}
+
+function normalizeClipboardText(node: React.ReactNode): string {
+  return extractTextFromNode(node).replace(/\s+/g, " ").trim();
+}
+
 interface BaseCardRootProps
   extends Omit<React.HTMLAttributes<HTMLDivElement>, "title"> {
   title?: React.ReactNode;
@@ -26,6 +53,8 @@ interface BaseCardRootProps
   line3Icon?: React.ReactNode;
   line4Icon?: React.ReactNode;
   size?: "x-large" | "large" | "medium" | "small";
+  enableCopyInteractions?: boolean;
+  disableCopyTargets?: CopyTarget[];
   className?: string;
   children?: React.ReactNode;
 }
@@ -49,6 +78,8 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
       line3Icon,
       line4Icon,
       size = "large",
+      enableCopyInteractions = false,
+      disableCopyTargets = [],
       className,
       children,
       ...otherProps
@@ -57,6 +88,138 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
   ) {
     const { resolvedTheme } = useTheme();
     const isDarkTheme = resolvedTheme === "dark";
+    const [hoveredTarget, setHoveredTarget] = useState<CopyTarget | null>(null);
+    const [copiedTarget, setCopiedTarget] = useState<CopyTarget | null>(null);
+    const resetCopyTimeoutRef = useRef<number | null>(null);
+
+    const titleText = normalizeClipboardText(title);
+    const line1Text = normalizeClipboardText(line1);
+    const line2Text = normalizeClipboardText(line2);
+    const line3Text = normalizeClipboardText(line3);
+    const line4Text = normalizeClipboardText(line4);
+
+    const isCopyEnabled = useCallback(
+      (target: CopyTarget, text: string) =>
+        enableCopyInteractions && Boolean(text) && !disableCopyTargets.includes(target),
+      [disableCopyTargets, enableCopyInteractions]
+    );
+
+    useEffect(() => {
+      return () => {
+        if (resetCopyTimeoutRef.current !== null) {
+          window.clearTimeout(resetCopyTimeoutRef.current);
+        }
+      };
+    }, []);
+
+    const scheduleCopyReset = useCallback(() => {
+      if (resetCopyTimeoutRef.current !== null) {
+        window.clearTimeout(resetCopyTimeoutRef.current);
+      }
+
+      resetCopyTimeoutRef.current = window.setTimeout(() => {
+        setCopiedTarget(null);
+      }, 2000);
+    }, []);
+
+    const handleCopy = useCallback(
+      (target: CopyTarget, text: string) =>
+        (event: React.MouseEvent) => {
+          event.preventDefault();
+          event.stopPropagation();
+
+          if (!enableCopyInteractions || !text || !navigator.clipboard?.writeText) {
+            return;
+          }
+
+          navigator.clipboard.writeText(text)
+            .then(() => {
+              setCopiedTarget(target);
+              scheduleCopyReset();
+            })
+            .catch(error => {
+              console.error("Failed to copy card text:", error);
+            });
+        },
+      [enableCopyInteractions, scheduleCopyReset]
+    );
+
+    const renderInteractiveIcon = useCallback(
+      (
+        target: CopyTarget,
+        defaultIcon: React.ReactNode,
+        className: string,
+        hasText: boolean,
+        reserveSpace = false
+      ) => {
+        const copyEnabled = isCopyEnabled(target, hasText ? "content" : "");
+
+        if (!defaultIcon && !copyEnabled) {
+          return null;
+        }
+
+        const isHovered = hoveredTarget === target;
+        const isCopied = copiedTarget === target;
+        const iconNode = copyEnabled && isCopied ? <Check /> : copyEnabled && isHovered ? <Copy /> : defaultIcon ?? <Copy />;
+
+        return (
+          <IconWrapper
+            className={cn(
+              className,
+              reserveSpace && "min-w-[1em] justify-center",
+              copyEnabled && hasText && !defaultIcon && !isHovered && !isCopied && "opacity-0"
+            )}
+            aria-hidden="true"
+          >
+            {iconNode}
+          </IconWrapper>
+        );
+      },
+      [copiedTarget, hoveredTarget, isCopyEnabled]
+    );
+
+    const renderCopyableLine = useCallback(
+      (
+        target: Extract<CopyTarget, "line1" | "line2" | "line3" | "line4">,
+        lineValue: React.ReactNode,
+        lineIcon: React.ReactNode,
+        lineText: string,
+        rowClassName: string,
+        iconClassName: string,
+        textClassName: string,
+        hideOnSmall = false
+      ) => {
+        if (!lineValue && !lineIcon) {
+          return null;
+        }
+
+        const interactive = isCopyEnabled(target, lineText);
+
+        return (
+          <div
+            className={cn(rowClassName, interactive && "cursor-pointer")}
+            onMouseEnter={interactive ? () => setHoveredTarget(target) : undefined}
+            onMouseLeave={interactive ? () => setHoveredTarget(current => (current === target ? null : current)) : undefined}
+            onClick={interactive ? handleCopy(target, lineText) : undefined}
+            title={interactive ? `Click to copy: ${lineText}` : undefined}
+          >
+            {(lineIcon || interactive) ? renderInteractiveIcon(
+              target,
+              lineIcon,
+              cn(iconClassName, hideOnSmall && "hidden"),
+              Boolean(lineText),
+              interactive
+            ) : null}
+            {lineValue ? (
+              <span className={textClassName}>
+                {lineValue}
+              </span>
+            ) : null}
+          </div>
+        );
+      },
+      [handleCopy, isCopyEnabled, renderInteractiveIcon]
+    );
 
     return (
       <div
@@ -90,6 +253,10 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
                   "line-clamp-1 grow shrink-0 basis-0 break-words text-heading-3 font-heading-3 text-default-font",
                   { "text-default-font": system === "warning" }
                 )}
+                onMouseEnter={isCopyEnabled("title", titleText) ? () => setHoveredTarget("title") : undefined}
+                onMouseLeave={isCopyEnabled("title", titleText) ? () => setHoveredTarget(current => (current === "title" ? null : current)) : undefined}
+                onClick={isCopyEnabled("title", titleText) ? handleCopy("title", titleText) : undefined}
+                title={isCopyEnabled("title", titleText) ? `Click to copy: ${titleText}` : undefined}
               >
                 {title}
               </span>
@@ -126,8 +293,10 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
             </IconWrapper>
           ) : null}
           {baseIcon ? (
-            <IconWrapper
-              className={cn(
+            renderInteractiveIcon(
+              "title",
+              baseIcon,
+              cn(
                 "text-heading-2 font-heading-2 text-default-font",
                 {
                   "text-error-600": system === "error",
@@ -135,95 +304,61 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
                   "text-success-600": system === "success" && isDarkTheme,
                   "text-success-900": system === "success" && !isDarkTheme,
                 }
-              )}
-            >
-              {baseIcon}
-            </IconWrapper>
+              ),
+              Boolean(titleText),
+              isCopyEnabled("title", titleText)
+            )
           ) : null}
         </div>
         <div className="flex w-full flex-col items-start gap-1">
-          {(line1 || line1Icon) ? (
-            <div className="flex w-full items-center gap-2 overflow-hidden">
-              {line1Icon ? (
-                <IconWrapper
-                  className={cn(
-                    "text-body font-body text-subtext-color",
-                    { hidden: size === "small" }
-                  )}
-                >
-                  {line1Icon}
-                </IconWrapper>
-              ) : null}
-              {line1 ? (
-                <span
-                  className={cn(
-                    "line-clamp-2 break-words text-body-bold font-body-bold text-default-font",
-                    {
-                      "text-caption-bold font-caption-bold": size === "small",
-                      "text-default-font": system === "warning",
-                    }
-                  )}
-                >
-                  {line1}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-          {(line2 || line2Icon) ? (
-            <div className="flex w-full items-center gap-2 overflow-hidden">
-              {line2Icon ? (
-                <IconWrapper
-                  className={cn(
-                    "text-body font-body text-subtext-color",
-                    { hidden: size === "small" }
-                  )}
-                >
-                  {line2Icon}
-                </IconWrapper>
-              ) : null}
-              {line2 ? (
-                <span className="line-clamp-2 break-words text-caption font-caption text-subtext-color">
-                  {line2}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-          {(line3 || line3Icon) ? (
-            <div
-              className={cn("flex w-full items-center gap-2 overflow-hidden", {
-                hidden: size === "small",
-              })}
-            >
-              {line3Icon ? (
-                <IconWrapper className="text-body font-body text-subtext-color">
-                  {line3Icon}
-                </IconWrapper>
-              ) : null}
-              {line3 ? (
-                <span className="line-clamp-1 break-words text-caption font-caption text-subtext-color">
-                  {line3}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-          {(line4 || line4Icon) ? (
-            <div
-              className={cn("flex w-full items-center gap-2 overflow-hidden", {
-                hidden: size === "small",
-              })}
-            >
-              {line4Icon ? (
-                <IconWrapper className="text-body font-body text-subtext-color">
-                  {line4Icon}
-                </IconWrapper>
-              ) : null}
-              {line4 ? (
-                <span className="line-clamp-1 break-words text-caption font-caption text-subtext-color">
-                  {line4}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
+          {renderCopyableLine(
+            "line1",
+            line1,
+            line1Icon,
+            line1Text,
+            "flex w-full items-center gap-2 overflow-hidden",
+            cn("text-body font-body text-subtext-color", { hidden: size === "small" }),
+            cn(
+              "line-clamp-2 break-words text-body-bold font-body-bold text-default-font",
+              {
+                "text-caption-bold font-caption-bold": size === "small",
+                "text-default-font": system === "warning",
+              }
+            ),
+            size === "small"
+          )}
+          {renderCopyableLine(
+            "line2",
+            line2,
+            line2Icon,
+            line2Text,
+            "flex w-full items-center gap-2 overflow-hidden",
+            cn("text-body font-body text-subtext-color", { hidden: size === "small" }),
+            "line-clamp-2 break-words text-caption font-caption text-subtext-color",
+            size === "small"
+          )}
+          {renderCopyableLine(
+            "line3",
+            line3,
+            line3Icon,
+            line3Text,
+            cn("flex w-full items-center gap-2 overflow-hidden", {
+              hidden: size === "small",
+            }),
+            "text-body font-body text-subtext-color",
+            "line-clamp-1 break-words text-caption font-caption text-subtext-color"
+          )}
+          {renderCopyableLine(
+            "line4",
+            line4,
+            line4Icon,
+            line4Text,
+            cn("flex w-full items-center gap-2 overflow-hidden", {
+              hidden: size === "small",
+            }),
+            "text-body font-body text-subtext-color",
+            "line-clamp-1 break-words text-caption font-caption text-subtext-color"
+          )}
         </div>
         {characterFlags ? (
           <div
@@ -236,17 +371,17 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
           </div>
         ) : null}
         {children ? (
-          <div className="flex w-full flex-col items-start gap-4">
+          <div className="flex w-full flex-1 flex-col items-start gap-4">
             {children}
           </div>
         ) : null}
-        <div className="mt-auto flex w-full flex-col items-start">
-          {actionButtons ? (
+        {actionButtons ? (
+          <div className="mt-auto flex w-full flex-col items-start">
             <div className="flex w-full flex-col items-start">
               {actionButtons}
             </div>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
       </div>
     );
   }

@@ -17,6 +17,7 @@ import {
   Bot,
   Camera,
   Car,
+  CircuitBoard,
   Cpu,
   Database,
   Folder,
@@ -29,7 +30,6 @@ import {
   Lock,
   Mail,
   Monitor,
-  MoreHorizontal,
   Navigation,
   Package,
   Printer,
@@ -99,7 +99,7 @@ export const SYSTEM_TYPE_ICONS: Record<SystemType, LucideIcon> = {
   IOT_MEDICAL: Heart,
   IOT_APPLIANCE: Refrigerator,
   IOT_GATEWAY: GitBranch,
-  IOT_OTHER: MoreHorizontal,
+  IOT_OTHER: CircuitBoard,
   
   // General
   OTHER: Cpu,
@@ -154,10 +154,10 @@ export const SYSTEM_TYPE_LABELS: Record<SystemType, string> = {
   IOT_SMART_HOME: 'Smart Home',
   IOT_WEARABLE: 'Wearable',
   IOT_VEHICLE: 'Vehicle',
-  IOT_MEDICAL: 'Medical',
+  IOT_MEDICAL: 'Medical Device',
   IOT_APPLIANCE: 'Appliance',
   IOT_GATEWAY: 'Gateway',
-  IOT_OTHER: 'Other',
+  IOT_OTHER: 'Other IoT',
   
   // General
   OTHER: 'Other/Unknown',

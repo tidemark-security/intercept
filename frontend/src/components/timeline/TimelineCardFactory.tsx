@@ -18,6 +18,7 @@ import React from 'react';
 import type { TimelineItem } from '@/types/timeline';
 import { getTimelineIcon } from '@/utils/timelineIcons';
 import { Badge } from '@/components/data-display/Badge';
+import type { CopyTarget } from '@/components/cards/BaseCard';
 import { combineWithAutoLinks } from './linkUtils';
 import type { LinkTemplate } from '@/utils/linkTemplates';
 import { CardActionsMenu } from './CardActionsMenu';
@@ -208,6 +209,8 @@ export interface CardConfig {
   line3Icon?: React.ReactNode;
   line4Icon?: React.ReactNode;
   size?: CardSize;
+  enableCopyInteractions?: boolean;
+  disableCopyTargets?: CopyTarget[];
   className?: string;
   children?: React.ReactNode;
   /** Original timeline item for reference */
