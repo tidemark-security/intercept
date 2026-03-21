@@ -74,7 +74,10 @@ class CaseService:
             await db.refresh(db_case)
             
             logger.info(f"Case created by {created_by}")
-            return db_case
+            loaded_case = await self.get_case(db, db_case.id)  # type: ignore[arg-type]
+            if loaded_case is None:
+                raise RuntimeError(f"Created case {db_case.id} could not be reloaded")
+            return loaded_case
             
         except Exception as e:
             await db.rollback()
@@ -330,10 +333,9 @@ class CaseService:
             )
 
             await db.commit()
-            await db.refresh(db_case)
             
             logger.info(f"Case updated by {updated_by}")
-            return db_case
+            return await self.get_case(db, case_id)
             
         except Exception as e:
             await db.rollback()

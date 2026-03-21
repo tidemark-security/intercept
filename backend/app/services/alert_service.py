@@ -60,8 +60,12 @@ class AlertService:
             
             # Auto-enqueue for AI triage if enabled
             await self._auto_enqueue_triage(db, db_alert.id)  # type: ignore[arg-type]
-            
-            return db_alert
+
+            loaded_alert = await self.get_alert(db, db_alert.id)  # type: ignore[arg-type]
+            if loaded_alert is None:
+                raise RuntimeError(f"Created alert {db_alert.id} could not be reloaded")
+
+            return loaded_alert
             
         except Exception as e:
             await db.rollback()
@@ -408,16 +412,9 @@ class AlertService:
             )
 
             await db.commit()
-            await db.refresh(db_alert)
             
             logger.info(f"Alert updated")
-            db_alert = await timeline_service.denormalize_entity_timeline(db, db_alert, human_prefix="ALT")
-            return await timeline_service.coalesce_timeline_audit(
-                db,
-                entity_type="alert",
-                entity_id=alert_id,
-                entity=db_alert,
-            )
+            return await self.get_alert(db, alert_id)
             
         except Exception as e:
             await db.rollback()
@@ -469,16 +466,9 @@ class AlertService:
                 logger.info(f"Alert escalated to case {new_case.id}")
             
             await db.commit()
-            await db.refresh(db_alert)
             
             logger.info(f"Alert triaged by {triaged_by}")
-            db_alert = await timeline_service.denormalize_entity_timeline(db, db_alert, human_prefix="ALT")
-            return await timeline_service.coalesce_timeline_audit(
-                db,
-                entity_type="alert",
-                entity_id=alert_id,
-                entity=db_alert,
-            )
+            return await self.get_alert(db, alert_id)
             
         except Exception as e:
             await db.rollback()
@@ -515,16 +505,9 @@ class AlertService:
             )
             
             await db.commit()
-            await db.refresh(db_alert)
             
             logger.info(f"Alert linked to case CAS-{db_case.id:07d} by {linked_by}")
-            db_alert = await timeline_service.denormalize_entity_timeline(db, db_alert, human_prefix="ALT")
-            return await timeline_service.coalesce_timeline_audit(
-                db,
-                entity_type="alert",
-                entity_id=alert_id,
-                entity=db_alert,
-            )
+            return await self.get_alert(db, alert_id)
             
         except Exception as e:
             await db.rollback()
@@ -572,16 +555,9 @@ class AlertService:
             db_alert.status = AlertStatus.IN_PROGRESS
             
             await db.commit()
-            await db.refresh(db_alert)
             
             logger.info(f"Alert ALT-{db_alert.id:07d} unlinked from case CAS-{old_case_id:07d} by {unlinked_by}")
-            db_alert = await timeline_service.denormalize_entity_timeline(db, db_alert, human_prefix="ALT")
-            return await timeline_service.coalesce_timeline_audit(
-                db,
-                entity_type="alert",
-                entity_id=alert_id,
-                entity=db_alert,
-            )
+            return await self.get_alert(db, alert_id)
             
         except Exception as e:
             await db.rollback()
@@ -621,7 +597,6 @@ class AlertService:
             )
 
             await db.commit()
-            await db.refresh(db_alert)
             
             await get_audit_service(db).log_timeline_item_added(
                 entity_type="alert",
@@ -632,13 +607,7 @@ class AlertService:
                 new_value=item_dict,
             )
             logger.info(f"Timeline item added to alert by {added_by}")
-            db_alert = await timeline_service.denormalize_entity_timeline(db, db_alert, human_prefix="ALT")
-            return await timeline_service.coalesce_timeline_audit(
-                db,
-                entity_type="alert",
-                entity_id=alert_id,
-                entity=db_alert,
-            )
+            return await self.get_alert(db, alert_id)
             
         except ValueError as e:
             # Raised when trying to add unsupported item types (e.g., tasks on alerts)
@@ -703,18 +672,11 @@ class AlertService:
             )
 
             await db.commit()
-            await db.refresh(db_alert)
             
             logger.info(
                 f"Timeline item {item_id} (type: {updated_dict.get('type')}) updated in alert {alert_id} by {updated_by}"
             )
-            db_alert = await timeline_service.denormalize_entity_timeline(db, db_alert, human_prefix="ALT")
-            return await timeline_service.coalesce_timeline_audit(
-                db,
-                entity_type="alert",
-                entity_id=alert_id,
-                entity=db_alert,
-            )
+            return await self.get_alert(db, alert_id)
             
         except HTTPException:
             await db.rollback()
@@ -758,7 +720,6 @@ class AlertService:
             )
 
             await db.commit()
-            await db.refresh(db_alert)
             
             await get_audit_service(db).log_timeline_item_deleted(
                 entity_type="alert",
@@ -769,13 +730,7 @@ class AlertService:
                 old_value=item_to_remove,
             )
             logger.info(f"Timeline item {item_id} removed from alert by {removed_by}")
-            db_alert = await timeline_service.denormalize_entity_timeline(db, db_alert, human_prefix="ALT")
-            return await timeline_service.coalesce_timeline_audit(
-                db,
-                entity_type="alert",
-                entity_id=alert_id,
-                entity=db_alert,
-            )
+            return await self.get_alert(db, alert_id)
             
         except Exception as e:
             await db.rollback()

@@ -24,6 +24,13 @@ VALID_PRIORITIES = {e.value for e in Priority}
 
 
 class TaskService:
+
+    async def _reload_task_response(self, db: AsyncSession, task_id: int) -> Task:
+        """Reload a task through the canonical read path before returning it."""
+        loaded_task = await self.get_task(db, task_id)
+        if loaded_task is None:
+            raise RuntimeError(f"Task {task_id} could not be reloaded")
+        return loaded_task
     
     async def create_task(
         self, 
@@ -77,7 +84,7 @@ class TaskService:
             await db.refresh(db_task)
             
             logger.info(f"Task {db_task.id} created by {created_by}, assigned to {assignee}")
-            return db_task
+            return await self._reload_task_response(db, db_task.id)  # type: ignore[arg-type]
             
         except Exception as e:
             await db.rollback()
@@ -355,13 +362,7 @@ class TaskService:
                 )
 
             logger.info(f"Task {task_id} updated by {updated_by}")
-            db_task = await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK")
-            return await timeline_service.coalesce_timeline_audit(
-                db,
-                entity_type="task",
-                entity_id=task_id,
-                entity=db_task,
-            )
+            return await self._reload_task_response(db, task_id)
             
         except Exception as e:
             await db.rollback()
@@ -459,13 +460,7 @@ class TaskService:
                 new_value=item_dict,
             )
             logger.info(f"Timeline item added to task by {added_by}")
-            db_task = await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK")
-            return await timeline_service.coalesce_timeline_audit(
-                db,
-                entity_type="task",
-                entity_id=task_id,
-                entity=db_task,
-            )
+            return await self._reload_task_response(db, task_id)
             
         except ValueError as e:
             await db.rollback()
@@ -534,13 +529,7 @@ class TaskService:
             logger.info(
                 f"Timeline item {item_id} (type: {updated_dict.get('type')}) updated in task {task_id} by {updated_by}"
             )
-            db_task = await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK")
-            return await timeline_service.coalesce_timeline_audit(
-                db,
-                entity_type="task",
-                entity_id=task_id,
-                entity=db_task,
-            )
+            return await self._reload_task_response(db, task_id)
             
         except HTTPException:
             await db.rollback()
@@ -595,13 +584,7 @@ class TaskService:
                 old_value=item_to_remove,
             )
             logger.info(f"Timeline item {item_id} removed from task by {removed_by}")
-            db_task = await timeline_service.denormalize_entity_timeline(db, db_task, human_prefix="TSK")
-            return await timeline_service.coalesce_timeline_audit(
-                db,
-                entity_type="task",
-                entity_id=task_id,
-                entity=db_task,
-            )
+            return await self._reload_task_response(db, task_id)
             
         except Exception as e:
             await db.rollback()
