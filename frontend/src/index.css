@@ -299,3 +299,114 @@ body {
 	corner-top-right-shape: bevel;
   border-top-right-radius: 9999px;
 }
+
+.bevel-tl-none {
+	corner-top-left-shape: bevel;
+  border-top-left-radius: 0px;
+}
+.bevel-tl-sm {
+	corner-top-left-shape: bevel;
+  border-top-left-radius: 0.125rem; /* 2px */
+}
+.bevel-tl {
+	corner-top-left-shape: bevel;
+  border-top-left-radius: 0.25rem; /* 4px */
+}
+.bevel-tl-md {
+	corner-top-left-shape: bevel;
+  border-top-left-radius: 0.375rem; /* 6px */
+}
+.bevel-tl-lg {
+	corner-top-left-shape: bevel;
+  border-top-left-radius: 0.5rem; /* 8px */
+}
+.bevel-tl-xl {
+	corner-top-left-shape: bevel;
+  border-top-left-radius: 0.75rem; /* 12px */
+}
+.bevel-tl-2xl {
+	corner-top-left-shape: bevel;
+  border-top-left-radius: 1rem; /* 16px */
+}
+.bevel-tl-3xl {
+	corner-top-left-shape: bevel;
+  border-top-left-radius: 1.5rem; /* 24px */
+}
+.bevel-tl-full {
+	corner-top-left-shape: bevel;
+  border-top-left-radius: 9999px;
+}
+
+.bevel-br-none {
+	corner-bottom-right-shape: bevel;
+  border-bottom-right-radius: 0px;
+}
+.bevel-br-sm {
+	corner-bottom-right-shape: bevel;
+  border-bottom-right-radius: 0.125rem; /* 2px */
+}
+.bevel-br {
+	corner-bottom-right-shape: bevel;
+  border-bottom-right-radius: 0.25rem; /* 4px */
+}
+.bevel-br-md {
+	corner-bottom-right-shape: bevel;
+  border-bottom-right-radius: 0.375rem; /* 6px */
+}
+.bevel-br-lg {
+	corner-bottom-right-shape: bevel;
+  border-bottom-right-radius: 0.5rem; /* 8px */
+}
+.bevel-br-xl {
+	corner-bottom-right-shape: bevel;
+  border-bottom-right-radius: 0.75rem; /* 12px */
+}
+.bevel-br-2xl {
+	corner-bottom-right-shape: bevel;
+  border-bottom-right-radius: 1rem; /* 16px */
+}
+.bevel-br-3xl {
+	corner-bottom-right-shape: bevel;
+  border-bottom-right-radius: 1.5rem; /* 24px */
+}
+.bevel-br-full {
+	corner-bottom-right-shape: bevel;
+  border-bottom-right-radius: 9999px;
+}
+
+.bevel-bl-none {
+	corner-bottom-left-shape: bevel;
+  border-bottom-left-radius: 0px;
+}
+.bevel-bl-sm {
+	corner-bottom-left-shape: bevel;
+  border-bottom-left-radius: 0.125rem; /* 2px */
+}
+.bevel-bl {
+	corner-bottom-left-shape: bevel;
+  border-bottom-left-radius: 0.25rem; /* 4px */
+}
+.bevel-bl-md {
+	corner-bottom-left-shape: bevel;
+  border-bottom-left-radius: 0.375rem; /* 6px */
+}
+.bevel-bl-lg {
+	corner-bottom-left-shape: bevel;
+  border-bottom-left-radius: 0.5rem; /* 8px */
+}
+.bevel-bl-xl {
+	corner-bottom-left-shape: bevel;
+  border-bottom-left-radius: 0.75rem; /* 12px */
+}
+.bevel-bl-2xl {
+	corner-bottom-left-shape: bevel;
+  border-bottom-left-radius: 1rem; /* 16px */
+}
+.bevel-bl-3xl {
+	corner-bottom-left-shape: bevel;
+  border-bottom-left-radius: 1.5rem; /* 24px */
+}
+.bevel-bl-full {
+	corner-bottom-left-shape: bevel;
+  border-bottom-left-radius: 9999px;
+}

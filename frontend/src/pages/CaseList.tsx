@@ -242,7 +242,7 @@ function CasesListPage() {
               description: caseItem.description || '',
               timestamp: caseItem.created_at,
               assignee: caseItem.assignee || 'Unassigned',
-              tags: caseItem.tags || '',
+              tags: caseItem.tags || [],
               state: caseStatusToUIState(caseItem.status),
               priority: priorityToUIPriority(caseItem.priority),
             })}

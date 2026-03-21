@@ -2,11 +2,11 @@
 
 import React from "react";
 
-import * as HoverCard from "@radix-ui/react-hover-card";
 import { cn } from "@/utils/cn";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useTimezonePreference } from "@/contexts/TimezoneContext";
 import { Badge } from "@/components/data-display/Badge";
+import { Tag } from "@/components/data-display/Tag";
 import { Priority } from "@/components/misc/Priority";
 import { State } from "@/components/misc/State";
 import { parseISO8601 } from "@/utils/dateFilters";
@@ -17,14 +17,14 @@ import {
   MenuCardBase,
 } from "@/components/cards/MenuCardBase";
 
-import { Tag, User2 } from 'lucide-react';
+import { User2 } from 'lucide-react';
 interface MenuCardRootProps
   extends Omit<React.HTMLAttributes<HTMLDivElement>, "id" | "title"> {
   id?: React.ReactNode;
   title?: React.ReactNode;
   timestamp?: React.ReactNode;
   assignee?: React.ReactNode;
-  tags?: React.ReactNode;
+  tags?: string | string[] | null;
   state?:
     | "closed"
     | "new"
@@ -73,6 +73,17 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
     const { resolvedTheme } = useTheme();
     const { timezonePreference } = useTimezonePreference();
     const isDarkTheme = resolvedTheme === "dark";
+
+    const tagList = React.useMemo(() => {
+      if (!tags) return [];
+      const list = Array.isArray(tags)
+        ? tags
+        : typeof tags === 'string'
+        ? tags.split(';').map((t) => t.trim()).filter(Boolean)
+        : [];
+      return list;
+    }, [tags]);
+
     const formattedTimestamp = React.useMemo(() => {
       if (typeof timestamp !== "string") {
         return timestamp;
@@ -143,42 +154,10 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
               >
                 {assignee}
               </Badge>
-              <HoverCard.Root>
-                <HoverCard.Trigger asChild={true}>
-                  <Badge
-                    variant="neutral"
-                    icon={<Tag />}
-                    iconRight={null}
-                  />
-                </HoverCard.Trigger>
-                <HoverCard.Portal>
-                  <HoverCard.Content
-                    side="bottom"
-                    align="center"
-                    sideOffset={4}
-                    asChild={true}
-                  >
-                    <div className="flex max-w-[288px] flex-col items-start gap-1 rounded-md border border-solid border-neutral-border bg-default-background px-3 py-3 shadow-lg">
-                      <div className="flex w-full flex-col items-start gap-2">
-                        <div className="flex w-full items-center gap-2">
-                          <span className="text-body-bold font-body-bold text-default-font">
-                            Tags
-                          </span>
-                        </div>
-                        <div className="flex w-full flex-wrap items-center gap-1 rounded-md bg-neutral-100 px-1 py-1">
-                          {tags ? (
-                            <span className="line-clamp-4 break-words text-caption-bold font-caption-bold text-default-font">
-                              {tags}
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-                    </div>
-                  </HoverCard.Content>
-                </HoverCard.Portal>
-              </HoverCard.Root>
+
               <State
                 state={state}
+                variant="mini"
               />
               <Priority
                 priority={
@@ -200,6 +179,21 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
             </div>
           </div>
         </div>
+        {tagList.length > 0 && (
+          <div className="-mx-4 -mb-3 mt-2 w-[calc(100%+2rem)] border-t border-solid border-neutral-border bg-neutral-500/10 px-4 py-2">
+            <div className="flex w-full items-center gap-1 overflow-hidden flex-nowrap">
+              {tagList.map((tag, index) => (
+                <Tag
+                  key={`${tag}-${index}`}
+                  tagText={tag}
+                  showDelete={false}
+                  p="0"
+                  className="shrink-0"
+                />
+              ))}
+            </div>
+          </div>
+        )}
         <div
           className={cn(
             "hidden w-full flex-wrap items-center justify-between group-hover/6c3f1f95:hidden",

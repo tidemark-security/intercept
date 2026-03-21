@@ -138,6 +138,7 @@ export function renderTags(tags: string | string[] | undefined | null): React.Re
           key={`${tag}-${index}`}
           tagText={tag}
           showDelete={false}
+          p="0"
         />
       ))}
     </div>

@@ -618,7 +618,7 @@ function Alerts() {
               description: alert.description || '',
               timestamp: alert.created_at,
               assignee: alert.assignee || 'Unassigned',
-              tags: alert.tags || '',
+              tags: alert.tags || [],
               state: alertStatusToUIState(alert.status),
               priority: priorityToUIPriority(alert.priority),
             })}

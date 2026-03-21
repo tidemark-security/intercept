@@ -58,7 +58,7 @@ const TagRoot = React.forwardRef<HTMLDivElement, TagRootProps>(function TagRoot(
   return (
     <div
       className={cn(
-        "group/02c10a66 flex h-6 items-center justify-center gap-1 rounded-br-custom5 border border-solid border-neutral-border bg-brand-100 px-2",
+        "group/02c10a66 flex h-6 items-center justify-center gap-1 border bevel-br-md border-solid border-neutral-border bg-brand-100 px-2",
         {
           "bg-p5": p === "5",
           "bg-p4": p === "4",
