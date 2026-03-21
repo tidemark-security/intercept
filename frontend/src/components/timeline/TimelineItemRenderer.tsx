@@ -304,11 +304,11 @@ export function TimelineItemRenderer({
 
   if (isDeletedItem(item)) {
     const DeletedIcon = getTimelineItemIcon(item.original_type || 'note');
-    const deletedContents = (
-      <div className="rounded-md border border-dashed border-neutral-border bg-neutral-50/40 px-3 py-3 text-body text-subtext-color">
-        {`${item.original_type} deleted by ${item.deleted_by}`}
-      </div>
-    );
+    // const deletedContents = (
+    //   <div className="rounded-md border border-dashed border-neutral-border bg-neutral-50/40 px-3 py-3 text-body text-subtext-color">
+    //     {`${item.original_type} deleted by ${item.deleted_by}`}
+    //   </div>
+    // );
 
     return (
       <ActivityItem
@@ -324,7 +324,7 @@ export function TimelineItemRenderer({
         sortBy={sortBy}
         readOnly={true}
         end={index === total - 1}
-        contents={deletedContents}
+        contents={null}
       />
     );
   }
