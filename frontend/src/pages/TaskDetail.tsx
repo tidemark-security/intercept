@@ -83,8 +83,11 @@ function TaskDetailPage() {
     itemType: dockItemType,
     editMode: dockEditMode,
     itemData: dockItemData,
+    pendingFiles,
     openDock,
     openDockForEdit,
+    openDockWithFiles,
+    clearPendingFiles,
     closeDock,
   } = useDockState(selectedTaskId);
 
@@ -280,6 +283,11 @@ function TaskDetailPage() {
     switchToColumnOnMobile('right');
   };
 
+  const handlePasteFiles = (files: File[]) => {
+    openDockWithFiles(files);
+    switchToColumnOnMobile('right');
+  };
+
   const handleDockClose = () => {
     closeDock();
     switchToColumnOnMobile('center');
@@ -385,6 +393,7 @@ function TaskDetailPage() {
               onSlashCommand={handleSlashCommand}
               onAddNote={handleAddNote}
               onMenuItemSelect={handleMenuItemSelect}
+              onPasteFiles={handlePasteFiles}
               isSubmittingNote={quickTerminalMutation.isPending}
               showAiChatButton={aiPaneCollapsed}
               onAiChatClick={handleToggleAiPane}
@@ -405,6 +414,8 @@ function TaskDetailPage() {
               editMode={dockEditMode}
               itemData={dockItemData}
               parentItemId={replyParentId}
+              pendingFiles={pendingFiles}
+              onPendingFilesConsumed={clearPendingFiles}
             />
           ) : (
             <div />

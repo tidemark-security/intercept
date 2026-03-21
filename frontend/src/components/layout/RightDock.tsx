@@ -57,6 +57,10 @@ export interface RightDockProps {
   itemData?: TimelineItem | CaseRead | TaskRead;
   /** Optional parent item ID for creating replies in a thread */
   parentItemId?: string | null;
+  /** Files waiting to be injected into the attachment form (e.g. from clipboard paste) */
+  pendingFiles?: File[];
+  /** Callback to clear pending files after the attachment form has consumed them */
+  onPendingFilesConsumed?: () => void;
 }
 
 /**
@@ -70,7 +74,9 @@ function renderFormContent(
   onCreated?: (itemId?: string) => void,
   editMode?: boolean,
   itemData?: TimelineItem | CaseRead | TaskRead,
-  parentItemId?: string | null
+  parentItemId?: string | null,
+  pendingFiles?: File[],
+  onPendingFilesConsumed?: () => void,
 ): React.ReactNode {
   // All forms now only receive initialData prop
   // Common props (alertId, editMode, onCreated, onCancel, parentItemId) come from TimelineFormProvider context
@@ -132,6 +138,8 @@ function renderFormContent(
     case "attachment":
       return <AddAttachmentForm 
         initialData={editMode && itemData && isAttachmentItem(itemData as TimelineItem) ? (itemData as any) : undefined}
+        pendingFiles={pendingFiles}
+        onPendingFilesConsumed={onPendingFilesConsumed}
       />;
     
     case "network_traffic":
@@ -175,6 +183,8 @@ export function RightDock({
   editMode = false,
   itemData,
   parentItemId,
+  pendingFiles,
+  onPendingFilesConsumed,
 }: RightDockProps) {
   // Determine which entity ID to use
   const entityId = alertId || caseId || taskId;
@@ -213,7 +223,7 @@ export function RightDock({
           onSuccess={onItemCreated || (() => {})}
           onCancel={onClose}
         >
-          {renderFormContent(itemType, entityId, onClose, onItemCreated, editMode, itemData, parentItemId)}
+          {renderFormContent(itemType, entityId, onClose, onItemCreated, editMode, itemData, parentItemId, pendingFiles, onPendingFilesConsumed)}
         </TimelineFormProvider>
       </div>
     </div>

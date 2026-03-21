@@ -85,8 +85,11 @@ function CaseDetailPage() {
     itemType: dockItemType,
     editMode: dockEditMode,
     itemData: dockItemData,
+    pendingFiles,
     openDock,
     openDockForEdit,
+    openDockWithFiles,
+    clearPendingFiles,
     closeDock,
   } = useDockState(selectedCaseId);
 
@@ -326,6 +329,11 @@ function CaseDetailPage() {
     switchToColumnOnMobile('right');
   };
 
+  const handlePasteFiles = (files: File[]) => {
+    openDockWithFiles(files);
+    switchToColumnOnMobile('right');
+  };
+
   const handleDockClose = () => {
     closeDock();
     switchToColumnOnMobile('center');
@@ -460,6 +468,7 @@ function CaseDetailPage() {
               onSlashCommand={handleSlashCommand}
               onAddNote={handleAddNote}
               onMenuItemSelect={handleMenuItemSelect}
+              onPasteFiles={handlePasteFiles}
               isSubmittingNote={quickTerminalMutation.isPending}
               showAiChatButton={aiPaneCollapsed}
               onAiChatClick={handleToggleAiPane}
@@ -480,6 +489,8 @@ function CaseDetailPage() {
               editMode={dockEditMode}
               itemData={dockItemData}
               parentItemId={replyParentId}
+              pendingFiles={pendingFiles}
+              onPendingFilesConsumed={clearPendingFiles}
             />
           ) : (
             <div />

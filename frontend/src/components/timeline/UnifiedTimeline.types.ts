@@ -122,6 +122,9 @@ export interface UnifiedTimelineProps {
   
   /** Handler for menu item selection (opens dock) */
   onMenuItemSelect?: (itemType: TimelineItemType) => void;
+
+  /** Handler for files pasted from clipboard in the quick terminal */
+  onPasteFiles?: (files: File[]) => void;
   
   /** Optional callback to get the current reply parent ID for RightDock */
   onReplyParentIdChange?: (parentId: string | null) => void;

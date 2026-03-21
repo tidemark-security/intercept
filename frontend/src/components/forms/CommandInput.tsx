@@ -5,6 +5,7 @@ import type { TimelineItemType } from "@/types/drafts";
 import { useSlashCommands } from "@/hooks/useSlashCommands";
 import { SlashCommandAutocomplete } from "./SlashCommandAutocomplete";
 import { isSlashCommandInput, parseSlashCommand } from "@/utils/slashCommands";
+import { extractClipboardFiles } from "@/utils/clipboardFiles";
 
 export interface CommandInputProps {
   /** Current value */
@@ -61,6 +62,8 @@ export interface CommandInputProps {
   enableGlobalSlashFocus?: boolean;
   /** Suppress global slash focus shortcut (default: false) */
   suppressGlobalSlashFocus?: boolean;
+  /** Callback when files are pasted from clipboard (e.g. screenshots) */
+  onPasteFiles?: (files: File[]) => void;
 }
 
 export interface CommandInputRef {
@@ -139,6 +142,7 @@ export const CommandInput = forwardRef<CommandInputRef, CommandInputProps>(
       autoFocus = false,
       enableGlobalSlashFocus = false,
       suppressGlobalSlashFocus = false,
+      onPasteFiles,
     },
     ref
   ) => {
@@ -301,6 +305,21 @@ export const CommandInput = forwardRef<CommandInputRef, CommandInputProps>(
       ]
     );
 
+    // Handle paste events - intercept file pastes and forward to callback
+    const handlePaste = useCallback(
+      (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+        if (!onPasteFiles) return;
+
+        const files = extractClipboardFiles(event.nativeEvent);
+        if (files.length > 0) {
+          event.preventDefault();
+          onPasteFiles(files);
+        }
+        // If no files, let normal text paste proceed
+      },
+      [onPasteFiles]
+    );
+
     const shouldFloat = floatOnExpand && textareaHeight > minLines;
 
     return (
@@ -342,6 +361,7 @@ export const CommandInput = forwardRef<CommandInputRef, CommandInputProps>(
               value={value}
               onChange={(e) => onChange(e.target.value || "")}
               onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
               disabled={disabled || isLoading}
               placeholder={placeholder}
               autoFocus={autoFocus}

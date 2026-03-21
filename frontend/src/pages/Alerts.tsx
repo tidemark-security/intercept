@@ -96,8 +96,11 @@ function Alerts() {
     itemType: dockItemType,
     editMode: dockEditMode,
     itemData: dockItemData,
+    pendingFiles,
     openDock,
     openDockForEdit,
+    openDockWithFiles,
+    clearPendingFiles,
     closeDock,
   } = useDockState(selectedAlertId);
 
@@ -526,6 +529,11 @@ function Alerts() {
     switchToColumnOnMobile('right');
   };
 
+  const handlePasteFiles = (files: File[]) => {
+    openDockWithFiles(files);
+    switchToColumnOnMobile('right');
+  };
+
   const handleDockClose = () => {
     closeDock();
     switchToColumnOnMobile('center');
@@ -647,6 +655,7 @@ function Alerts() {
             onSlashCommand={handleSlashCommand}
             onAddNote={handleAddNote}
             onMenuItemSelect={handleMenuItemSelect}
+            onPasteFiles={handlePasteFiles}
             isSubmittingNote={quickTerminalMutation.isPending}
             onBackToList={handleBackToList}
             scrollToItemId={scrollToItemId}
@@ -675,6 +684,8 @@ function Alerts() {
               editMode={dockEditMode}
               itemData={dockItemData}
               parentItemId={replyParentId}
+              pendingFiles={pendingFiles}
+              onPendingFilesConsumed={clearPendingFiles}
             />
           ) : (
             <div />

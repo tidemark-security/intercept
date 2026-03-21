@@ -116,6 +116,7 @@ function UnifiedTimelineInner({
   onSlashCommand,
   onAddNote,
   onMenuItemSelect,
+  onPasteFiles,
   isSubmittingNote,
   showAiChatButton,
   onAiChatClick,
@@ -702,6 +703,7 @@ function UnifiedTimelineInner({
             onAiChatClick={onAiChatClick}
             enableGlobalSlashFocus={true}
             suppressGlobalSlashFocus={suppressGlobalSlashFocus}
+            onPasteFiles={onPasteFiles}
           />
         </div>
       )}

@@ -106,6 +106,8 @@ export interface QuickTerminalProps {
   enableGlobalSlashFocus?: boolean;
   /** Optional: Suppress global slash focus shortcut for this terminal */
   suppressGlobalSlashFocus?: boolean;
+  /** Callback when files are pasted from clipboard (e.g. screenshots) */
+  onPasteFiles?: (files: File[]) => void;
 }
 
 export function QuickTerminal({
@@ -123,6 +125,7 @@ export function QuickTerminal({
   onAiChatClick,
   enableGlobalSlashFocus = false,
   suppressGlobalSlashFocus = false,
+  onPasteFiles,
 }: QuickTerminalProps) {
   const [inputValue, setInputValue] = useState("");
 
@@ -165,6 +168,7 @@ export function QuickTerminal({
       onSlashCommand={onSlashCommand}
       enableGlobalSlashFocus={enableGlobalSlashFocus}
       suppressGlobalSlashFocus={suppressGlobalSlashFocus}
+      onPasteFiles={onPasteFiles}
       leftIcon={<Terminal className="text-subtext-color" />}
       rightActions={
         <>

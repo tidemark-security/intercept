@@ -9,7 +9,7 @@
  * File contents must still be replaced by deleting the timeline item and re-uploading.
  */
 
-import React, { useRef, DragEvent, useState } from "react";
+import React, { useRef, useEffect, DragEvent, useState } from "react";
 
 import { cn } from "@/utils/cn";
 import { TextArea } from "@/components/forms/TextArea";
@@ -20,11 +20,16 @@ import { useTimelineFormContext } from "@/contexts/TimelineFormContext";
 import { useUpdateTimelineItem } from "@/hooks/useUpdateTimelineItem";
 import { useToast } from "@/contexts/ToastContext";
 import { TimelineFormLayout } from "@/components/timeline/TimelineFormLayout";
+import { renameClipboardFiles, extractClipboardFiles } from "@/utils/clipboardFiles";
 import type { AttachmentItem } from "@/types/generated/models/AttachmentItem";
 
 import { AlertTriangle, CheckCircle, Paperclip, Upload, X } from 'lucide-react';
 export interface AddAttachmentFormProps {
   initialData?: AttachmentItem;
+  /** Files injected from an external source (e.g. clipboard paste in the quick terminal) */
+  pendingFiles?: File[];
+  /** Callback to clear pending files after they have been consumed */
+  onPendingFilesConsumed?: () => void;
 }
 
 interface FileWithStatus {
@@ -35,7 +40,7 @@ interface FileWithStatus {
   error?: string;
 }
 
-export function AddAttachmentForm({ initialData }: AddAttachmentFormProps) {
+export function AddAttachmentForm({ initialData, pendingFiles, onPendingFilesConsumed }: AddAttachmentFormProps) {
   const { alertId, caseId, taskId, editMode, onSuccess, onCancel } = useTimelineFormContext();
   const { showToast } = useToast();
   
@@ -135,6 +140,54 @@ export function AddAttachmentForm({ initialData }: AddAttachmentFormProps) {
       }
     }
   }, [currentUploadIndex, files, uploadFile]);
+
+  // Track the last pendingFiles reference we consumed to prevent double-processing
+  // (React strict mode re-runs mount effects before the parent's clearPendingFiles propagates)
+  const consumedPendingRef = useRef<File[] | null>(null);
+
+  // Consume pending files injected from the outside (e.g. paste in QuickTerminal)
+  useEffect(() => {
+    if (pendingFiles && pendingFiles.length > 0 && consumedPendingRef.current !== pendingFiles) {
+      consumedPendingRef.current = pendingFiles;
+      setFiles(prev => {
+        const renamed = renameClipboardFiles(pendingFiles, prev.length + 1);
+        return [...prev, ...renamed.map(file => ({
+          file,
+          status: 'pending' as const,
+        }))];
+      });
+      onPendingFilesConsumed?.();
+    }
+  }, [pendingFiles, onPendingFilesConsumed]);
+
+  // Listen for clipboard paste events on the document while this form is mounted
+  useEffect(() => {
+    if (editMode) return; // Don't handle paste in edit mode
+
+    const handlePaste = (e: ClipboardEvent) => {
+      // Skip if another handler (e.g. CommandInput) already processed this paste
+      if (e.defaultPrevented) return;
+      // Don't intercept if currently uploading
+      if (currentUploadIndex !== null) return;
+
+      const pastedFiles = extractClipboardFiles(e);
+      if (pastedFiles.length === 0) return;
+
+      e.preventDefault();
+
+      // Use functional updater to get accurate file count for numbering
+      setFiles(prev => {
+        const renamed = renameClipboardFiles(pastedFiles, prev.length + 1);
+        return [...prev, ...renamed.map(file => ({
+          file,
+          status: 'pending' as const,
+        }))];
+      });
+    };
+
+    document.addEventListener('paste', handlePaste);
+    return () => document.removeEventListener('paste', handlePaste);
+  }, [editMode, currentUploadIndex]);
 
   const handleClear = () => {
     setFormState(initialFormState);

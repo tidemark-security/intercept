@@ -45,11 +45,27 @@ class StorageConfig(BaseSettings):
     # File validation settings
     allowed_file_types: List[str] = Field(
         default=[
+            # Images
             "image/png", "image/jpeg", "image/gif", "image/webp",
+            "image/svg+xml", "image/bmp", "image/tiff",
+            # Documents
             "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            # Text / data
             "text/plain", "application/json", "text/csv",
+            "text/html", "text/markdown", "application/xml",
+            # Archives
             "application/zip", "application/x-7z-compressed",
-            "application/gzip", "application/vnd.tcpdump.pcap"
+            "application/gzip", "application/x-tar",
+            # Forensics / network captures
+            "application/vnd.tcpdump.pcap",
+            # Generic binary (e.g. memory dumps, firmware)
+            "application/octet-stream",
         ],
         description="Comma-separated list of allowed MIME types"
     )

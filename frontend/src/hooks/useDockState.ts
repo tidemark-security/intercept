@@ -24,10 +24,16 @@ export interface UseDockStateReturn {
   editMode: boolean;
   /** Item data for edit mode */
   itemData: TimelineItem | CaseRead | TaskRead | undefined;
+  /** Files waiting to be consumed by the attachment form (set via paste) */
+  pendingFiles: File[];
   /** Open the dock with specified item type for creating a new item */
   openDock: (itemType: TimelineItemType) => void;
   /** Open the dock in edit mode with existing item data */
   openDockForEdit: (itemType: TimelineItemType, itemData: TimelineItem | CaseRead | TaskRead) => void;
+  /** Open the attachment dock with pre-staged files (e.g. from clipboard paste) */
+  openDockWithFiles: (files: File[]) => void;
+  /** Clear pending files after the attachment form has consumed them */
+  clearPendingFiles: () => void;
   /** Close the dock */
   closeDock: () => void;
   /** Update item type (without opening/closing) */
@@ -44,6 +50,7 @@ export function useDockState(alertId: number | null): UseDockStateReturn {
   const [itemType, setItemType] = useState<TimelineItemType>("note");
   const [editMode, setEditMode] = useState(false);
   const [itemData, setItemData] = useState<TimelineItem | CaseRead | TaskRead | undefined>(undefined);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
 
   // Load dock state when alert changes
   useEffect(() => {
@@ -103,6 +110,18 @@ export function useDockState(alertId: number | null): UseDockStateReturn {
     setIsOpen(true);
   }, []);
 
+  const openDockWithFiles = useCallback((files: File[]) => {
+    setItemType("attachment");
+    setEditMode(false);
+    setItemData(undefined);
+    setPendingFiles(files);
+    setIsOpen(true);
+  }, []);
+
+  const clearPendingFiles = useCallback(() => {
+    setPendingFiles([]);
+  }, []);
+
   const closeDock = useCallback(() => {
     setIsOpen(false);
     // Clear edit mode state when closing
@@ -119,8 +138,11 @@ export function useDockState(alertId: number | null): UseDockStateReturn {
     itemType,
     editMode,
     itemData,
+    pendingFiles,
     openDock,
     openDockForEdit,
+    openDockWithFiles,
+    clearPendingFiles,
     closeDock,
     setItemType: updateItemType,
   };
