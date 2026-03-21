@@ -51,8 +51,8 @@ class InetType(TypeDecorator):
         if dialect.name == "postgresql":
             from sqlalchemy.dialects.postgresql import INET  # type: ignore
 
-            return dialect.type_descriptor(INET())
-        return dialect.type_descriptor(String(45))
+            return dialect.type_descriptor(INET())  # type: ignore[arg-type]
+        return dialect.type_descriptor(String(45))  # type: ignore[arg-type]
 
 
 class UTCDateTime(TypeDecorator):
@@ -63,8 +63,8 @@ class UTCDateTime(TypeDecorator):
 
     def load_dialect_impl(self, dialect):  # type: ignore[override]
         if dialect.name == "sqlite":
-            return dialect.type_descriptor(String(64))
-        return dialect.type_descriptor(DateTime(timezone=True))
+            return dialect.type_descriptor(String(64))  # type: ignore[arg-type]
+        return dialect.type_descriptor(DateTime(timezone=True))  # type: ignore[arg-type]
 
     def process_bind_param(self, value, dialect):  # type: ignore[override]
         if value is None:
@@ -393,7 +393,7 @@ class ForensicArtifactItem(ItemBase):
     type: Literal["forensic_artifact"] = "forensic_artifact"  # type: ignore
     # Forensic artifact-specific fields
     hash: Optional[str] = None  # File hash
-    hash_typoe: Optional[str] = None  # e.g. 'md5', 'sha256'
+    hash_type: Optional[str] = None  # e.g. 'md5', 'sha256'
     url: Optional[str] = None  # Evidence location
 
 
@@ -1686,7 +1686,7 @@ class AppSettingBase(SQLModel):
 class AppSetting(AppSettingBase, table=True):
     """Application settings table."""
     
-    __tablename__ = "app_settings"
+    __tablename__ = "app_settings"  # type: ignore[assignment]
     
     id: Optional[int] = Field(default=None, primary_key=True)
     created_at: datetime = Field(
@@ -1867,7 +1867,7 @@ class LangFlowSessionBase(SQLModel):
 class LangFlowSession(LangFlowSessionBase, table=True):
     """LangFlow session table."""
     
-    __tablename__ = "langflow_sessions"
+    __tablename__ = "langflow_sessions"  # type: ignore[assignment]
     
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     user_id: UUID = Field(foreign_key="user_accounts.id", index=True)
@@ -1947,7 +1947,7 @@ class LangFlowMessageBase(SQLModel):
 class LangFlowMessage(LangFlowMessageBase, table=True):
     """LangFlow message table."""
     
-    __tablename__ = "langflow_messages"
+    __tablename__ = "langflow_messages"  # type: ignore[assignment]
     
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     session_id: UUID = Field(foreign_key="langflow_sessions.id", index=True)

@@ -58,7 +58,7 @@ export type ForensicArtifactItem = {
      */
     audit?: (TimelineItemAudit | null);
     hash?: (string | null);
-    hash_typoe?: (string | null);
+    hash_type?: (string | null);
     url?: (string | null);
 };
 

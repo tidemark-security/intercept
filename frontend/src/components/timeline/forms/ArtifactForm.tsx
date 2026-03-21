@@ -55,7 +55,7 @@ export function AddArtifactForm({ initialData }: AddArtifactFormProps) {
     transformInitialData: (data) => ({
       artifactType: '',  // Not stored in backend model, always empty
       hash: data.hash || '',
-      hashType: data.hash_typoe || '',
+      hashType: data.hash_type || '',
       url: data.url || '',
       description: data.description || '',
       timestamp: data.timestamp || '',
@@ -63,7 +63,7 @@ export function AddArtifactForm({ initialData }: AddArtifactFormProps) {
     }),
     buildPayload: (state) => ({
       hash: state.hash || undefined,
-      hash_typoe: state.hashType || undefined,
+      hash_type: state.hashType || undefined,
       url: state.url || undefined,
       description: state.description || undefined,
       timestamp: state.timestamp || undefined,
