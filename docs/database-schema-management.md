@@ -278,6 +278,8 @@ python scripts/seed_test_users.py
 
 The init SQL scripts run automatically on the fresh postgres volume, and Alembic migrations run automatically via the container entrypoint.
 
+For the current container-based seed workflow, including link templates, see [development-seeding.md](./development-seeding.md).
+
 ## AWS RDS / Aurora Setup
 
 On managed PostgreSQL services, Docker init scripts don't apply. The pg_cron prerequisites must be set up manually once by a user with the `rds_superuser` role:
