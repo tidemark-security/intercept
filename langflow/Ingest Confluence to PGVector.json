@@ -1,0 +1,1992 @@
+{
+    "name": "Ingest Confluence to PGVector",
+    "description": "Load your data from Confluence for chat context with Retrieval Augmented Generation.",
+    "icon": null,
+    "icon_bg_color": null,
+    "gradient": null,
+    "data": {
+        "nodes": [
+            {
+                "data": {
+                    "description": "Generate embeddings using OpenAI models.",
+                    "display_name": "OpenAI Embeddings",
+                    "id": "OpenAIEmbeddings-PxUoB",
+                    "node": {
+                        "base_classes": [
+                            "Embeddings"
+                        ],
+                        "beta": false,
+                        "conditional_paths": [],
+                        "custom_fields": {},
+                        "description": "Generate embeddings using OpenAI models.",
+                        "display_name": "OpenAI Embeddings",
+                        "documentation": "",
+                        "edited": false,
+                        "field_order": [
+                            "default_headers",
+                            "default_query",
+                            "chunk_size",
+                            "client",
+                            "deployment",
+                            "embedding_ctx_length",
+                            "max_retries",
+                            "model",
+                            "model_kwargs",
+                            "openai_api_key",
+                            "openai_api_base",
+                            "openai_api_type",
+                            "openai_api_version",
+                            "openai_organization",
+                            "openai_proxy",
+                            "request_timeout",
+                            "show_progress_bar",
+                            "skip_empty",
+                            "tiktoken_model_name",
+                            "tiktoken_enable",
+                            "dimensions"
+                        ],
+                        "frozen": false,
+                        "icon": "OpenAI",
+                        "legacy": false,
+                        "lf_version": "1.7.1",
+                        "metadata": {
+                            "code_hash": "8a658ed6d4c9",
+                            "dependencies": {
+                                "dependencies": [
+                                    {
+                                        "name": "langchain_openai",
+                                        "version": "0.3.23"
+                                    },
+                                    {
+                                        "name": "lfx",
+                                        "version": "0.2.1"
+                                    }
+                                ],
+                                "total_dependencies": 2
+                            },
+                            "module": "custom_components.openai_embeddings"
+                        },
+                        "minimized": false,
+                        "output_types": [],
+                        "outputs": [
+                            {
+                                "allows_loop": false,
+                                "cache": true,
+                                "display_name": "Embedding Model",
+                                "group_outputs": false,
+                                "loop_types": null,
+                                "method": "build_embeddings",
+                                "name": "embeddings",
+                                "options": null,
+                                "required_inputs": null,
+                                "selected": "Embeddings",
+                                "tool_mode": true,
+                                "types": [
+                                    "Embeddings"
+                                ],
+                                "value": "__UNDEFINED__"
+                            }
+                        ],
+                        "pinned": false,
+                        "template": {
+                            "_type": "Component",
+                            "chunk_size": {
+                                "_input_type": "IntInput",
+                                "advanced": true,
+                                "display_name": "Chunk Size",
+                                "dynamic": false,
+                                "info": "",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "chunk_size",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "int",
+                                "value": 1000
+                            },
+                            "client": {
+                                "_input_type": "MessageTextInput",
+                                "advanced": true,
+                                "display_name": "Client",
+                                "dynamic": false,
+                                "info": "",
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "client",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": ""
+                            },
+                            "code": {
+                                "advanced": true,
+                                "dynamic": true,
+                                "fileTypes": [],
+                                "file_path": "",
+                                "info": "",
+                                "list": false,
+                                "load_from_db": false,
+                                "multiline": true,
+                                "name": "code",
+                                "password": false,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "type": "code",
+                                "value": "from langchain_openai import OpenAIEmbeddings\n\nfrom lfx.base.embeddings.model import LCEmbeddingsModel\nfrom lfx.base.models.openai_constants import OPENAI_EMBEDDING_MODEL_NAMES\nfrom lfx.field_typing import Embeddings\nfrom lfx.io import BoolInput, DictInput, DropdownInput, FloatInput, IntInput, MessageTextInput, SecretStrInput\n\n\nclass OpenAIEmbeddingsComponent(LCEmbeddingsModel):\n    display_name = \"OpenAI Embeddings\"\n    description = \"Generate embeddings using OpenAI models.\"\n    icon = \"OpenAI\"\n    name = \"OpenAIEmbeddings\"\n\n    inputs = [\n        DictInput(\n            name=\"default_headers\",\n            display_name=\"Default Headers\",\n            advanced=True,\n            info=\"Default headers to use for the API request.\",\n        ),\n        DictInput(\n            name=\"default_query\",\n            display_name=\"Default Query\",\n            advanced=True,\n            info=\"Default query parameters to use for the API request.\",\n        ),\n        IntInput(name=\"chunk_size\", display_name=\"Chunk Size\", advanced=True, value=1000),\n        MessageTextInput(name=\"client\", display_name=\"Client\", advanced=True),\n        MessageTextInput(name=\"deployment\", display_name=\"Deployment\", advanced=True),\n        IntInput(name=\"embedding_ctx_length\", display_name=\"Embedding Context Length\", advanced=True, value=1536),\n        IntInput(name=\"max_retries\", display_name=\"Max Retries\", value=3, advanced=True),\n        DropdownInput(\n            name=\"model\",\n            display_name=\"Model\",\n            advanced=False,\n            options=OPENAI_EMBEDDING_MODEL_NAMES,\n            value=\"text-embedding-3-small\",\n        ),\n        DictInput(name=\"model_kwargs\", display_name=\"Model Kwargs\", advanced=True),\n        SecretStrInput(name=\"openai_api_key\", display_name=\"OpenAI API Key\", value=\"OPENAI_API_KEY\", required=True),\n        MessageTextInput(name=\"openai_api_base\", display_name=\"OpenAI API Base\", advanced=True),\n        MessageTextInput(name=\"openai_api_type\", display_name=\"OpenAI API Type\", advanced=True),\n        MessageTextInput(name=\"openai_api_version\", display_name=\"OpenAI API Version\", advanced=True),\n        MessageTextInput(\n            name=\"openai_organization\",\n            display_name=\"OpenAI Organization\",\n            advanced=True,\n        ),\n        MessageTextInput(name=\"openai_proxy\", display_name=\"OpenAI Proxy\", advanced=True),\n        FloatInput(name=\"request_timeout\", display_name=\"Request Timeout\", advanced=True),\n        BoolInput(name=\"show_progress_bar\", display_name=\"Show Progress Bar\", advanced=True),\n        BoolInput(name=\"skip_empty\", display_name=\"Skip Empty\", advanced=True),\n        MessageTextInput(\n            name=\"tiktoken_model_name\",\n            display_name=\"TikToken Model Name\",\n            advanced=True,\n        ),\n        BoolInput(\n            name=\"tiktoken_enable\",\n            display_name=\"TikToken Enable\",\n            advanced=True,\n            value=True,\n            info=\"If False, you must have transformers installed.\",\n        ),\n        IntInput(\n            name=\"dimensions\",\n            display_name=\"Dimensions\",\n            info=\"The number of dimensions the resulting output embeddings should have. \"\n            \"Only supported by certain models.\",\n            advanced=True,\n        ),\n    ]\n\n    def build_embeddings(self) -> Embeddings:\n        return OpenAIEmbeddings(\n            client=self.client or None,\n            model=self.model,\n            dimensions=self.dimensions or None,\n            deployment=self.deployment or None,\n            api_version=self.openai_api_version or None,\n            base_url=self.openai_api_base or None,\n            openai_api_type=self.openai_api_type or None,\n            openai_proxy=self.openai_proxy or None,\n            embedding_ctx_length=self.embedding_ctx_length,\n            api_key=self.openai_api_key or None,\n            organization=self.openai_organization or None,\n            allowed_special=\"all\",\n            disallowed_special=\"all\",\n            chunk_size=self.chunk_size,\n            max_retries=self.max_retries,\n            timeout=self.request_timeout or None,\n            tiktoken_enabled=self.tiktoken_enable,\n            tiktoken_model_name=self.tiktoken_model_name or None,\n            show_progress_bar=self.show_progress_bar,\n            model_kwargs=self.model_kwargs,\n            skip_empty=self.skip_empty,\n            default_headers=self.default_headers or None,\n            default_query=self.default_query or None,\n        )\n"
+                            },
+                            "default_headers": {
+                                "_input_type": "DictInput",
+                                "advanced": true,
+                                "display_name": "Default Headers",
+                                "dynamic": false,
+                                "info": "Default headers to use for the API request.",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "default_headers",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "track_in_telemetry": false,
+                                "type": "dict",
+                                "value": {}
+                            },
+                            "default_query": {
+                                "_input_type": "DictInput",
+                                "advanced": true,
+                                "display_name": "Default Query",
+                                "dynamic": false,
+                                "info": "Default query parameters to use for the API request.",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "default_query",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "track_in_telemetry": false,
+                                "type": "dict",
+                                "value": {}
+                            },
+                            "deployment": {
+                                "_input_type": "MessageTextInput",
+                                "advanced": true,
+                                "display_name": "Deployment",
+                                "dynamic": false,
+                                "info": "",
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "deployment",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": ""
+                            },
+                            "dimensions": {
+                                "_input_type": "IntInput",
+                                "advanced": true,
+                                "display_name": "Dimensions",
+                                "dynamic": false,
+                                "info": "The number of dimensions the resulting output embeddings should have. Only supported by certain models.",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "dimensions",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "int",
+                                "value": ""
+                            },
+                            "embedding_ctx_length": {
+                                "_input_type": "IntInput",
+                                "advanced": true,
+                                "display_name": "Embedding Context Length",
+                                "dynamic": false,
+                                "info": "",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "embedding_ctx_length",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "int",
+                                "value": 1536
+                            },
+                            "max_retries": {
+                                "_input_type": "IntInput",
+                                "advanced": true,
+                                "display_name": "Max Retries",
+                                "dynamic": false,
+                                "info": "",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "max_retries",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "int",
+                                "value": 3
+                            },
+                            "model": {
+                                "_input_type": "DropdownInput",
+                                "advanced": false,
+                                "combobox": false,
+                                "dialog_inputs": {},
+                                "display_name": "Model",
+                                "dynamic": false,
+                                "external_options": {},
+                                "info": "",
+                                "name": "model",
+                                "options": [
+                                    "text-embedding-3-small",
+                                    "text-embedding-3-large",
+                                    "text-embedding-ada-002"
+                                ],
+                                "options_metadata": [],
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "toggle": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "str",
+                                "value": "text-embedding-3-small"
+                            },
+                            "model_kwargs": {
+                                "_input_type": "DictInput",
+                                "advanced": true,
+                                "display_name": "Model Kwargs",
+                                "dynamic": false,
+                                "info": "",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "model_kwargs",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "track_in_telemetry": false,
+                                "type": "dict",
+                                "value": {}
+                            },
+                            "openai_api_base": {
+                                "_input_type": "MessageTextInput",
+                                "advanced": true,
+                                "display_name": "OpenAI API Base",
+                                "dynamic": false,
+                                "info": "",
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "openai_api_base",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": ""
+                            },
+                            "openai_api_key": {
+                                "_input_type": "SecretStrInput",
+                                "advanced": false,
+                                "display_name": "OpenAI API Key",
+                                "dynamic": false,
+                                "info": "",
+                                "input_types": [],
+                                "load_from_db": true,
+                                "name": "openai_api_key",
+                                "override_skip": false,
+                                "password": true,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": null
+                            },
+                            "openai_api_type": {
+                                "_input_type": "MessageTextInput",
+                                "advanced": true,
+                                "display_name": "OpenAI API Type",
+                                "dynamic": false,
+                                "info": "",
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "openai_api_type",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": ""
+                            },
+                            "openai_api_version": {
+                                "_input_type": "MessageTextInput",
+                                "advanced": true,
+                                "display_name": "OpenAI API Version",
+                                "dynamic": false,
+                                "info": "",
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "openai_api_version",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": ""
+                            },
+                            "openai_organization": {
+                                "_input_type": "MessageTextInput",
+                                "advanced": true,
+                                "display_name": "OpenAI Organization",
+                                "dynamic": false,
+                                "info": "",
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "openai_organization",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": ""
+                            },
+                            "openai_proxy": {
+                                "_input_type": "MessageTextInput",
+                                "advanced": true,
+                                "display_name": "OpenAI Proxy",
+                                "dynamic": false,
+                                "info": "",
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "openai_proxy",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": ""
+                            },
+                            "request_timeout": {
+                                "_input_type": "FloatInput",
+                                "advanced": true,
+                                "display_name": "Request Timeout",
+                                "dynamic": false,
+                                "info": "",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "request_timeout",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "float",
+                                "value": ""
+                            },
+                            "show_progress_bar": {
+                                "_input_type": "BoolInput",
+                                "advanced": true,
+                                "display_name": "Show Progress Bar",
+                                "dynamic": false,
+                                "info": "",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "show_progress_bar",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "bool",
+                                "value": false
+                            },
+                            "skip_empty": {
+                                "_input_type": "BoolInput",
+                                "advanced": true,
+                                "display_name": "Skip Empty",
+                                "dynamic": false,
+                                "info": "",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "skip_empty",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "bool",
+                                "value": false
+                            },
+                            "tiktoken_enable": {
+                                "_input_type": "BoolInput",
+                                "advanced": true,
+                                "display_name": "TikToken Enable",
+                                "dynamic": false,
+                                "info": "If False, you must have transformers installed.",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "tiktoken_enable",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "bool",
+                                "value": true
+                            },
+                            "tiktoken_model_name": {
+                                "_input_type": "MessageTextInput",
+                                "advanced": true,
+                                "display_name": "TikToken Model Name",
+                                "dynamic": false,
+                                "info": "",
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "tiktoken_model_name",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": ""
+                            }
+                        },
+                        "tool_mode": false
+                    },
+                    "selected_output": "embeddings",
+                    "type": "OpenAIEmbeddings"
+                },
+                "dragging": false,
+                "height": 320,
+                "id": "OpenAIEmbeddings-PxUoB",
+                "measured": {
+                    "height": 320,
+                    "width": 320
+                },
+                "position": {
+                    "x": 464.038893182377,
+                    "y": 1541.153354038245
+                },
+                "positionAbsolute": {
+                    "x": 1690.9220896443658,
+                    "y": 1866.483269483266
+                },
+                "selected": false,
+                "type": "genericNode",
+                "width": 320
+            },
+            {
+                "data": {
+                    "description": "Confluence wiki collaboration platform",
+                    "display_name": "Confluence",
+                    "id": "Confluence-8311j",
+                    "node": {
+                        "base_classes": [
+                            "Data"
+                        ],
+                        "beta": false,
+                        "conditional_paths": [],
+                        "custom_fields": {},
+                        "description": "Confluence wiki collaboration platform",
+                        "display_name": "Confluence",
+                        "documentation": "https://python.langchain.com/v0.2/docs/integrations/document_loaders/confluence/",
+                        "edited": false,
+                        "field_order": [
+                            "url",
+                            "username",
+                            "api_key",
+                            "space_key",
+                            "cloud",
+                            "content_format",
+                            "max_pages"
+                        ],
+                        "frozen": false,
+                        "icon": "Confluence",
+                        "legacy": false,
+                        "lf_version": "1.7.1",
+                        "metadata": {
+                            "code_hash": "8a7ef34b66e4",
+                            "dependencies": {
+                                "dependencies": [
+                                    {
+                                        "name": "langchain_community",
+                                        "version": "0.3.21"
+                                    },
+                                    {
+                                        "name": "lfx",
+                                        "version": "0.2.1"
+                                    }
+                                ],
+                                "total_dependencies": 2
+                            },
+                            "module": "custom_components.confluence"
+                        },
+                        "minimized": false,
+                        "output_types": [],
+                        "outputs": [
+                            {
+                                "allows_loop": false,
+                                "cache": true,
+                                "display_name": "Data",
+                                "group_outputs": false,
+                                "loop_types": null,
+                                "method": "load_documents",
+                                "name": "data",
+                                "options": null,
+                                "required_inputs": null,
+                                "selected": "Data",
+                                "tool_mode": true,
+                                "types": [
+                                    "Data"
+                                ],
+                                "value": "__UNDEFINED__"
+                            }
+                        ],
+                        "pinned": false,
+                        "template": {
+                            "_type": "Component",
+                            "api_key": {
+                                "_input_type": "SecretStrInput",
+                                "advanced": false,
+                                "display_name": "Confluence API Key",
+                                "dynamic": false,
+                                "info": "Atlassian Key. Create at: https://id.atlassian.com/manage-profile/security/api-tokens",
+                                "input_types": [],
+                                "load_from_db": false,
+                                "name": "api_key",
+                                "override_skip": false,
+                                "password": true,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": null
+                            },
+                            "cloud": {
+                                "_input_type": "BoolInput",
+                                "advanced": true,
+                                "display_name": "Use Cloud?",
+                                "dynamic": false,
+                                "info": "",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "cloud",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "bool",
+                                "value": true
+                            },
+                            "code": {
+                                "advanced": true,
+                                "dynamic": true,
+                                "fileTypes": [],
+                                "file_path": "",
+                                "info": "",
+                                "list": false,
+                                "load_from_db": false,
+                                "multiline": true,
+                                "name": "code",
+                                "password": false,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "type": "code",
+                                "value": "from langchain_community.document_loaders import ConfluenceLoader\nfrom langchain_community.document_loaders.confluence import ContentFormat\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import BoolInput, DropdownInput, IntInput, Output, SecretStrInput, StrInput\nfrom lfx.schema.data import Data\n\n\nclass ConfluenceComponent(Component):\n    display_name = \"Confluence\"\n    description = \"Confluence wiki collaboration platform\"\n    documentation = \"https://python.langchain.com/v0.2/docs/integrations/document_loaders/confluence/\"\n    trace_type = \"tool\"\n    icon = \"Confluence\"\n    name = \"Confluence\"\n\n    inputs = [\n        StrInput(\n            name=\"url\",\n            display_name=\"Site URL\",\n            required=True,\n            info=\"The base URL of the Confluence Space. Example: https://<company>.atlassian.net/wiki.\",\n        ),\n        StrInput(\n            name=\"username\",\n            display_name=\"Username\",\n            required=True,\n            info=\"Atlassian User E-mail. Example: email@example.com\",\n        ),\n        SecretStrInput(\n            name=\"api_key\",\n            display_name=\"Confluence API Key\",\n            required=True,\n            info=\"Atlassian Key. Create at: https://id.atlassian.com/manage-profile/security/api-tokens\",\n        ),\n        StrInput(name=\"space_key\", display_name=\"Space Key\", required=True),\n        BoolInput(name=\"cloud\", display_name=\"Use Cloud?\", required=True, value=True, advanced=True),\n        DropdownInput(\n            name=\"content_format\",\n            display_name=\"Content Format\",\n            options=[\n                ContentFormat.EDITOR.value,\n                ContentFormat.EXPORT_VIEW.value,\n                ContentFormat.ANONYMOUS_EXPORT_VIEW.value,\n                ContentFormat.STORAGE.value,\n                ContentFormat.VIEW.value,\n            ],\n            value=ContentFormat.STORAGE.value,\n            required=True,\n            advanced=True,\n            info=\"Specify content format, defaults to ContentFormat.STORAGE\",\n        ),\n        IntInput(\n            name=\"max_pages\",\n            display_name=\"Max Pages\",\n            required=False,\n            value=1000,\n            advanced=True,\n            info=\"Maximum number of pages to retrieve in total, defaults 1000\",\n        ),\n    ]\n\n    outputs = [\n        Output(name=\"data\", display_name=\"Data\", method=\"load_documents\"),\n    ]\n\n    def build_confluence(self) -> ConfluenceLoader:\n        content_format = ContentFormat(self.content_format)\n        return ConfluenceLoader(\n            url=self.url,\n            username=self.username,\n            api_key=self.api_key,\n            cloud=self.cloud,\n            space_key=self.space_key,\n            content_format=content_format,\n            max_pages=self.max_pages,\n        )\n\n    def load_documents(self) -> list[Data]:\n        confluence = self.build_confluence()\n        documents = confluence.load()\n        data = [Data.from_document(doc) for doc in documents]  # Using the from_document method of Data\n        self.status = data\n        return data\n"
+                            },
+                            "content_format": {
+                                "_input_type": "DropdownInput",
+                                "advanced": true,
+                                "combobox": false,
+                                "dialog_inputs": {},
+                                "display_name": "Content Format",
+                                "dynamic": false,
+                                "external_options": {},
+                                "info": "Specify content format, defaults to ContentFormat.STORAGE",
+                                "name": "content_format",
+                                "options": [
+                                    "body.editor",
+                                    "body.export_view",
+                                    "body.anonymous_export_view",
+                                    "body.storage",
+                                    "body.view"
+                                ],
+                                "options_metadata": [],
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "toggle": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "str",
+                                "value": "body.storage"
+                            },
+                            "max_pages": {
+                                "_input_type": "IntInput",
+                                "advanced": true,
+                                "display_name": "Max Pages",
+                                "dynamic": false,
+                                "info": "Maximum number of pages to retrieve in total, defaults 1000",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "max_pages",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "int",
+                                "value": 1000
+                            },
+                            "space_key": {
+                                "_input_type": "StrInput",
+                                "advanced": false,
+                                "display_name": "Space Key",
+                                "dynamic": false,
+                                "info": "",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "space_key",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": ""
+                            },
+                            "url": {
+                                "_input_type": "StrInput",
+                                "advanced": false,
+                                "display_name": "Site URL",
+                                "dynamic": false,
+                                "info": "The base URL of the Confluence Space. Example: https://<company>.atlassian.net/wiki.",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "url",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": ""
+                            },
+                            "username": {
+                                "_input_type": "StrInput",
+                                "advanced": false,
+                                "display_name": "Username",
+                                "dynamic": false,
+                                "info": "Atlassian User E-mail. Example: email@example.com",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "username",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": ""
+                            }
+                        },
+                        "tool_mode": false
+                    },
+                    "showNode": true,
+                    "type": "Confluence"
+                },
+                "dragging": false,
+                "id": "Confluence-8311j",
+                "measured": {
+                    "width": 320,
+                    "height": 453
+                },
+                "position": {
+                    "x": -358.4691686524703,
+                    "y": 1049.1695926206132
+                },
+                "selected": false,
+                "type": "genericNode"
+            },
+            {
+                "data": {
+                    "description": "PGVector Vector Store with search capabilities",
+                    "display_name": "PGVector",
+                    "id": "pgvector-nhQtj",
+                    "node": {
+                        "base_classes": [
+                            "Data",
+                            "DataFrame"
+                        ],
+                        "beta": false,
+                        "conditional_paths": [],
+                        "custom_fields": {},
+                        "description": "PGVector Vector Store with search capabilities",
+                        "display_name": "PGVector",
+                        "documentation": "",
+                        "edited": false,
+                        "field_order": [
+                            "pg_server_url",
+                            "collection_name",
+                            "ingest_data",
+                            "search_query",
+                            "should_cache_vector_store",
+                            "embedding",
+                            "number_of_results"
+                        ],
+                        "frozen": false,
+                        "icon": "cpu",
+                        "legacy": false,
+                        "lf_version": "1.7.1",
+                        "metadata": {
+                            "code_hash": "50117607bf5e",
+                            "dependencies": {
+                                "dependencies": [
+                                    {
+                                        "name": "langchain_community",
+                                        "version": "0.3.21"
+                                    },
+                                    {
+                                        "name": "lfx",
+                                        "version": "0.2.1"
+                                    }
+                                ],
+                                "total_dependencies": 2
+                            },
+                            "module": "custom_components.pgvector"
+                        },
+                        "minimized": false,
+                        "output_types": [],
+                        "outputs": [
+                            {
+                                "allows_loop": false,
+                                "cache": true,
+                                "display_name": "Search Results",
+                                "group_outputs": false,
+                                "loop_types": null,
+                                "method": "search_documents",
+                                "name": "search_results",
+                                "options": null,
+                                "required_inputs": null,
+                                "selected": "Data",
+                                "tool_mode": true,
+                                "types": [
+                                    "Data"
+                                ],
+                                "value": "__UNDEFINED__"
+                            },
+                            {
+                                "allows_loop": false,
+                                "cache": true,
+                                "display_name": "DataFrame",
+                                "group_outputs": false,
+                                "loop_types": null,
+                                "method": "as_dataframe",
+                                "name": "dataframe",
+                                "options": null,
+                                "required_inputs": null,
+                                "selected": "DataFrame",
+                                "tool_mode": true,
+                                "types": [
+                                    "DataFrame"
+                                ],
+                                "value": "__UNDEFINED__"
+                            }
+                        ],
+                        "pinned": false,
+                        "template": {
+                            "_type": "Component",
+                            "code": {
+                                "advanced": true,
+                                "dynamic": true,
+                                "fileTypes": [],
+                                "file_path": "",
+                                "info": "",
+                                "list": false,
+                                "load_from_db": false,
+                                "multiline": true,
+                                "name": "code",
+                                "password": false,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "type": "code",
+                                "value": "from langchain_community.vectorstores import PGVector\n\nfrom lfx.base.vectorstores.model import LCVectorStoreComponent, check_cached_vector_store\nfrom lfx.helpers.data import docs_to_data\nfrom lfx.io import HandleInput, IntInput, SecretStrInput, StrInput\nfrom lfx.schema.data import Data\nfrom lfx.utils.connection_string_parser import transform_connection_string\n\n\nclass PGVectorStoreComponent(LCVectorStoreComponent):\n    display_name = \"PGVector\"\n    description = \"PGVector Vector Store with search capabilities\"\n    name = \"pgvector\"\n    icon = \"cpu\"\n\n    inputs = [\n        SecretStrInput(name=\"pg_server_url\", display_name=\"PostgreSQL Server Connection String\", required=True),\n        StrInput(name=\"collection_name\", display_name=\"Table\", required=True),\n        *LCVectorStoreComponent.inputs,\n        HandleInput(name=\"embedding\", display_name=\"Embedding\", input_types=[\"Embeddings\"], required=True),\n        IntInput(\n            name=\"number_of_results\",\n            display_name=\"Number of Results\",\n            info=\"Number of results to return.\",\n            value=4,\n            advanced=True,\n        ),\n    ]\n\n    @check_cached_vector_store\n    def build_vector_store(self) -> PGVector:\n        # Convert DataFrame to Data if needed using parent's method\n        self.ingest_data = self._prepare_ingest_data()\n\n        documents = []\n        for _input in self.ingest_data or []:\n            if isinstance(_input, Data):\n                documents.append(_input.to_lc_document())\n            else:\n                documents.append(_input)\n\n        connection_string_parsed = transform_connection_string(self.pg_server_url)\n\n        if documents:\n            pgvector = PGVector.from_documents(\n                embedding=self.embedding,\n                documents=documents,\n                collection_name=self.collection_name,\n                connection_string=connection_string_parsed,\n            )\n        else:\n            pgvector = PGVector.from_existing_index(\n                embedding=self.embedding,\n                collection_name=self.collection_name,\n                connection_string=connection_string_parsed,\n            )\n\n        return pgvector\n\n    def search_documents(self) -> list[Data]:\n        vector_store = self.build_vector_store()\n\n        if self.search_query and isinstance(self.search_query, str) and self.search_query.strip():\n            docs = vector_store.similarity_search(\n                query=self.search_query,\n                k=self.number_of_results,\n            )\n\n            data = docs_to_data(docs)\n            self.status = data\n            return data\n        return []\n"
+                            },
+                            "collection_name": {
+                                "_input_type": "StrInput",
+                                "advanced": false,
+                                "display_name": "Table",
+                                "dynamic": false,
+                                "info": "",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "collection_name",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": "confluence"
+                            },
+                            "embedding": {
+                                "_input_type": "HandleInput",
+                                "advanced": false,
+                                "display_name": "Embedding",
+                                "dynamic": false,
+                                "info": "",
+                                "input_types": [
+                                    "Embeddings"
+                                ],
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "embedding",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "other",
+                                "value": ""
+                            },
+                            "ingest_data": {
+                                "_input_type": "HandleInput",
+                                "advanced": false,
+                                "display_name": "Ingest Data",
+                                "dynamic": false,
+                                "info": "",
+                                "input_types": [
+                                    "Data",
+                                    "DataFrame"
+                                ],
+                                "list": true,
+                                "list_add_label": "Add More",
+                                "name": "ingest_data",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "other",
+                                "value": ""
+                            },
+                            "number_of_results": {
+                                "_input_type": "IntInput",
+                                "advanced": true,
+                                "display_name": "Number of Results",
+                                "dynamic": false,
+                                "info": "Number of results to return.",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "number_of_results",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "int",
+                                "value": 4
+                            },
+                            "pg_server_url": {
+                                "_input_type": "SecretStrInput",
+                                "advanced": false,
+                                "display_name": "PostgreSQL Server Connection String",
+                                "dynamic": false,
+                                "info": "",
+                                "input_types": [],
+                                "load_from_db": true,
+                                "name": "pg_server_url",
+                                "override_skip": false,
+                                "password": true,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": "RAG_DB"
+                            },
+                            "search_query": {
+                                "_input_type": "QueryInput",
+                                "advanced": false,
+                                "display_name": "Search Query",
+                                "dynamic": false,
+                                "info": "Enter a query to run a similarity search.",
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "search_query",
+                                "override_skip": false,
+                                "placeholder": "Enter a query...",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": true,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "query",
+                                "value": ""
+                            },
+                            "should_cache_vector_store": {
+                                "_input_type": "BoolInput",
+                                "advanced": true,
+                                "display_name": "Cache Vector Store",
+                                "dynamic": false,
+                                "info": "If True, the vector store will be cached for the current build of the component. This is useful for components that have multiple output methods and want to share the same vector store.",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "should_cache_vector_store",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "bool",
+                                "value": true
+                            }
+                        },
+                        "tool_mode": false
+                    },
+                    "selected_output": "search_results",
+                    "showNode": true,
+                    "type": "pgvector"
+                },
+                "dragging": false,
+                "id": "pgvector-nhQtj",
+                "measured": {
+                    "width": 320,
+                    "height": 459
+                },
+                "position": {
+                    "x": 873.5325223613022,
+                    "y": 1047.2953427915406
+                },
+                "selected": false,
+                "type": "genericNode"
+            },
+            {
+                "data": {
+                    "description": "Split text into chunks based on specified criteria.",
+                    "display_name": "Split Text",
+                    "id": "SplitText-SNCkn",
+                    "node": {
+                        "template": {
+                            "_type": "Component",
+                            "data_inputs": {
+                                "trace_as_metadata": true,
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "override_skip": false,
+                                "required": true,
+                                "placeholder": "",
+                                "show": true,
+                                "name": "data_inputs",
+                                "value": "",
+                                "display_name": "Input",
+                                "advanced": false,
+                                "input_types": [
+                                    "Data",
+                                    "DataFrame",
+                                    "Message"
+                                ],
+                                "dynamic": false,
+                                "info": "The data with texts to split in chunks.",
+                                "title_case": false,
+                                "track_in_telemetry": false,
+                                "type": "other",
+                                "_input_type": "HandleInput"
+                            },
+                            "chunk_overlap": {
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "override_skip": false,
+                                "required": false,
+                                "placeholder": "",
+                                "show": true,
+                                "name": "chunk_overlap",
+                                "value": 200,
+                                "display_name": "Chunk Overlap",
+                                "advanced": false,
+                                "dynamic": false,
+                                "info": "Number of characters to overlap between chunks.",
+                                "title_case": false,
+                                "track_in_telemetry": true,
+                                "type": "int",
+                                "_input_type": "IntInput"
+                            },
+                            "chunk_size": {
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "override_skip": false,
+                                "required": false,
+                                "placeholder": "",
+                                "show": true,
+                                "name": "chunk_size",
+                                "value": 1000,
+                                "display_name": "Chunk Size",
+                                "advanced": false,
+                                "dynamic": false,
+                                "info": "The maximum length of each chunk. Text is first split by separator, then chunks are merged up to this size. Individual splits larger than this won't be further divided.",
+                                "title_case": false,
+                                "track_in_telemetry": true,
+                                "type": "int",
+                                "_input_type": "IntInput"
+                            },
+                            "clean_output": {
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "override_skip": false,
+                                "required": false,
+                                "placeholder": "",
+                                "show": true,
+                                "name": "clean_output",
+                                "value": false,
+                                "display_name": "Clean Output",
+                                "advanced": true,
+                                "dynamic": false,
+                                "info": "When enabled, only the text column is included in the output. Metadata columns are removed.",
+                                "title_case": false,
+                                "track_in_telemetry": true,
+                                "type": "bool",
+                                "_input_type": "BoolInput"
+                            },
+                            "code": {
+                                "type": "code",
+                                "required": true,
+                                "placeholder": "",
+                                "list": false,
+                                "show": true,
+                                "multiline": true,
+                                "value": "from langchain_text_splitters import CharacterTextSplitter\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import BoolInput, DropdownInput, HandleInput, IntInput, MessageTextInput, Output\nfrom lfx.schema.data import Data\nfrom lfx.schema.dataframe import DataFrame\nfrom lfx.schema.message import Message\nfrom lfx.utils.util import unescape_string\n\n\nclass SplitTextComponent(Component):\n    display_name: str = \"Split Text\"\n    description: str = \"Split text into chunks based on specified criteria.\"\n    documentation: str = \"https://docs.langflow.org/split-text\"\n    icon = \"scissors-line-dashed\"\n    name = \"SplitText\"\n\n    inputs = [\n        HandleInput(\n            name=\"data_inputs\",\n            display_name=\"Input\",\n            info=\"The data with texts to split in chunks.\",\n            input_types=[\"Data\", \"DataFrame\", \"Message\"],\n            required=True,\n        ),\n        IntInput(\n            name=\"chunk_overlap\",\n            display_name=\"Chunk Overlap\",\n            info=\"Number of characters to overlap between chunks.\",\n            value=200,\n        ),\n        IntInput(\n            name=\"chunk_size\",\n            display_name=\"Chunk Size\",\n            info=(\n                \"The maximum length of each chunk. Text is first split by separator, \"\n                \"then chunks are merged up to this size. \"\n                \"Individual splits larger than this won't be further divided.\"\n            ),\n            value=1000,\n        ),\n        MessageTextInput(\n            name=\"separator\",\n            display_name=\"Separator\",\n            info=(\n                \"The character to split on. Use \\\\n for newline. \"\n                \"Examples: \\\\n\\\\n for paragraphs, \\\\n for lines, . for sentences\"\n            ),\n            value=\"\\n\",\n        ),\n        MessageTextInput(\n            name=\"text_key\",\n            display_name=\"Text Key\",\n            info=\"The key to use for the text column.\",\n            value=\"text\",\n            advanced=True,\n        ),\n        DropdownInput(\n            name=\"keep_separator\",\n            display_name=\"Keep Separator\",\n            info=\"Whether to keep the separator in the output chunks and where to place it.\",\n            options=[\"False\", \"True\", \"Start\", \"End\"],\n            value=\"False\",\n            advanced=True,\n        ),\n        BoolInput(\n            name=\"clean_output\",\n            display_name=\"Clean Output\",\n            info=\"When enabled, only the text column is included in the output. Metadata columns are removed.\",\n            value=False,\n            advanced=True,\n        ),\n    ]\n\n    outputs = [\n        Output(display_name=\"Chunks\", name=\"dataframe\", method=\"split_text\"),\n    ]\n\n    def _docs_to_data(self, docs, *, clean: bool = False) -> list[Data]:\n        return [\n            Data(text=doc.page_content) if clean else Data(text=doc.page_content, data=doc.metadata) for doc in docs\n        ]\n\n    def _fix_separator(self, separator: str) -> str:\n        \"\"\"Fix common separator issues and convert to proper format.\"\"\"\n        if separator == \"/n\":\n            return \"\\n\"\n        if separator == \"/t\":\n            return \"\\t\"\n        return separator\n\n    def split_text_base(self):\n        separator = self._fix_separator(self.separator)\n        separator = unescape_string(separator)\n\n        if isinstance(self.data_inputs, DataFrame):\n            if not len(self.data_inputs):\n                msg = \"DataFrame is empty\"\n                raise TypeError(msg)\n\n            self.data_inputs.text_key = self.text_key\n            try:\n                documents = self.data_inputs.to_lc_documents()\n            except Exception as e:\n                msg = f\"Error converting DataFrame to documents: {e}\"\n                raise TypeError(msg) from e\n        elif isinstance(self.data_inputs, Message):\n            self.data_inputs = [self.data_inputs.to_data()]\n            return self.split_text_base()\n        else:\n            if not self.data_inputs:\n                msg = \"No data inputs provided\"\n                raise TypeError(msg)\n\n            documents = []\n            if isinstance(self.data_inputs, Data):\n                self.data_inputs.text_key = self.text_key\n                documents = [self.data_inputs.to_lc_document()]\n            else:\n                try:\n                    documents = [input_.to_lc_document() for input_ in self.data_inputs if isinstance(input_, Data)]\n                    if not documents:\n                        msg = f\"No valid Data inputs found in {type(self.data_inputs)}\"\n                        raise TypeError(msg)\n                except AttributeError as e:\n                    msg = f\"Invalid input type in collection: {e}\"\n                    raise TypeError(msg) from e\n        try:\n            # Convert string 'False'/'True' to boolean\n            keep_sep = self.keep_separator\n            if isinstance(keep_sep, str):\n                if keep_sep.lower() == \"false\":\n                    keep_sep = False\n                elif keep_sep.lower() == \"true\":\n                    keep_sep = True\n                # 'start' and 'end' are kept as strings\n\n            splitter = CharacterTextSplitter(\n                chunk_overlap=self.chunk_overlap,\n                chunk_size=self.chunk_size,\n                separator=separator,\n                keep_separator=keep_sep,\n            )\n            return splitter.split_documents(documents)\n        except Exception as e:\n            msg = f\"Error splitting text: {e}\"\n            raise TypeError(msg) from e\n\n    def split_text(self) -> DataFrame:\n        docs = self.split_text_base()\n        df = DataFrame(self._docs_to_data(docs, clean=self.clean_output))\n        return df if self.clean_output else df.smart_column_order()\n",
+                                "fileTypes": [],
+                                "file_path": "",
+                                "password": false,
+                                "name": "code",
+                                "advanced": true,
+                                "dynamic": true,
+                                "info": "",
+                                "load_from_db": false,
+                                "title_case": false
+                            },
+                            "keep_separator": {
+                                "tool_mode": false,
+                                "trace_as_metadata": true,
+                                "options": [
+                                    "False",
+                                    "True",
+                                    "Start",
+                                    "End"
+                                ],
+                                "options_metadata": [],
+                                "combobox": false,
+                                "dialog_inputs": {},
+                                "toggle": false,
+                                "override_skip": false,
+                                "required": false,
+                                "placeholder": "",
+                                "show": true,
+                                "name": "keep_separator",
+                                "value": "False",
+                                "display_name": "Keep Separator",
+                                "advanced": true,
+                                "dynamic": false,
+                                "info": "Whether to keep the separator in the output chunks and where to place it.",
+                                "title_case": false,
+                                "track_in_telemetry": true,
+                                "external_options": {},
+                                "type": "str",
+                                "_input_type": "DropdownInput"
+                            },
+                            "separator": {
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "load_from_db": false,
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "override_skip": false,
+                                "required": false,
+                                "placeholder": "",
+                                "show": true,
+                                "name": "separator",
+                                "value": ".",
+                                "display_name": "Separator",
+                                "advanced": false,
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "dynamic": false,
+                                "info": "The character to split on. Use \\n for newline. Examples: \\n\\n for paragraphs, \\n for lines, . for sentences",
+                                "title_case": false,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "_input_type": "MessageTextInput"
+                            },
+                            "text_key": {
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "load_from_db": false,
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "override_skip": false,
+                                "required": false,
+                                "placeholder": "",
+                                "show": true,
+                                "name": "text_key",
+                                "value": "text",
+                                "display_name": "Text Key",
+                                "advanced": true,
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "dynamic": false,
+                                "info": "The key to use for the text column.",
+                                "title_case": false,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "_input_type": "MessageTextInput"
+                            }
+                        },
+                        "description": "Split text into chunks based on specified criteria.",
+                        "icon": "scissors-line-dashed",
+                        "base_classes": [
+                            "DataFrame"
+                        ],
+                        "display_name": "Split Text",
+                        "documentation": "https://docs.langflow.org/split-text",
+                        "minimized": false,
+                        "custom_fields": {},
+                        "output_types": [],
+                        "pinned": false,
+                        "conditional_paths": [],
+                        "frozen": false,
+                        "outputs": [
+                            {
+                                "types": [
+                                    "DataFrame"
+                                ],
+                                "selected": "DataFrame",
+                                "name": "dataframe",
+                                "display_name": "Chunks",
+                                "method": "split_text",
+                                "value": "__UNDEFINED__",
+                                "cache": true,
+                                "required_inputs": null,
+                                "allows_loop": false,
+                                "loop_types": null,
+                                "group_outputs": false,
+                                "options": null,
+                                "tool_mode": true
+                            }
+                        ],
+                        "field_order": [
+                            "data_inputs",
+                            "chunk_overlap",
+                            "chunk_size",
+                            "separator",
+                            "text_key",
+                            "keep_separator",
+                            "clean_output"
+                        ],
+                        "beta": false,
+                        "legacy": false,
+                        "edited": false,
+                        "metadata": {
+                            "module": "custom_components.split_text",
+                            "code_hash": "29ae597d2d86",
+                            "dependencies": {
+                                "total_dependencies": 2,
+                                "dependencies": [
+                                    {
+                                        "name": "langchain_text_splitters",
+                                        "version": "0.3.11"
+                                    },
+                                    {
+                                        "name": "lfx",
+                                        "version": "0.3.0"
+                                    }
+                                ]
+                            }
+                        },
+                        "tool_mode": false
+                    },
+                    "showNode": true,
+                    "type": "SplitText"
+                },
+                "dragging": false,
+                "id": "SplitText-SNCkn",
+                "measured": {
+                    "width": 320,
+                    "height": 415
+                },
+                "position": {
+                    "x": 461.5476374537617,
+                    "y": 1046.4340966651416
+                },
+                "selected": false,
+                "type": "genericNode"
+            },
+            {
+                "data": {
+                    "id": "FindReplace-Yz1mW",
+                    "node": {
+                        "base_classes": [
+                            "Data"
+                        ],
+                        "beta": false,
+                        "conditional_paths": [],
+                        "custom_fields": {},
+                        "description": "Find and replace text in a specific column of Data objects.",
+                        "display_name": "Find & Replace",
+                        "documentation": "",
+                        "edited": true,
+                        "field_order": [
+                            "data",
+                            "column_name",
+                            "find_text",
+                            "replace_text"
+                        ],
+                        "frozen": false,
+                        "icon": "search-replace",
+                        "legacy": false,
+                        "lf_version": "1.7.1",
+                        "metadata": {},
+                        "minimized": false,
+                        "output_types": [],
+                        "outputs": [
+                            {
+                                "allows_loop": false,
+                                "cache": true,
+                                "display_name": "Data",
+                                "group_outputs": false,
+                                "hidden": null,
+                                "method": "find_replace",
+                                "name": "data_output",
+                                "options": null,
+                                "required_inputs": null,
+                                "selected": "Data",
+                                "tool_mode": true,
+                                "types": [
+                                    "Data"
+                                ],
+                                "value": "__UNDEFINED__"
+                            }
+                        ],
+                        "pinned": false,
+                        "template": {
+                            "_type": "Component",
+                            "code": {
+                                "advanced": true,
+                                "dynamic": true,
+                                "fileTypes": [],
+                                "file_path": "",
+                                "info": "",
+                                "list": false,
+                                "load_from_db": false,
+                                "multiline": true,
+                                "name": "code",
+                                "password": false,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "type": "code",
+                                "value": "from typing import TYPE_CHECKING\r\n\r\nfrom langflow.custom import Component\r\nfrom langflow.inputs import MessageTextInput\r\nfrom langflow.io import DataInput, Output\r\nfrom langflow.schema import Data\r\n\r\nif TYPE_CHECKING: \r\n    pass\r\n\r\n\r\nclass FindReplaceComponent(Component):\r\n    display_name = \"Find & Replace\"\r\n    description = \"Find and replace text in a specific column of Data objects.\"\r\n    icon = \"search-replace\"\r\n    name = \"FindReplace\"\r\n\r\n    inputs = [\r\n        DataInput(\r\n            name=\"data\",\r\n            display_name=\"Data\",\r\n            info=\"Data object(s) to process.\",\r\n            required=True,\r\n            is_list=True\r\n        ),\r\n        MessageTextInput(\r\n            name=\"column_name\",\r\n            display_name=\"Column Name\",\r\n            info=\"Name of the column/key to search in.\",\r\n            required=True,\r\n        ),\r\n        MessageTextInput(\r\n            name=\"find_text\",\r\n            display_name=\"Find\",\r\n            info=\"Text to find (e.g., '/spaces/').\",\r\n            required=True,\r\n        ),\r\n        MessageTextInput(\r\n            name=\"replace_text\",\r\n            display_name=\"Replace\",\r\n            info=\"Text to replace with (e.g., '/wiki/spaces/').\",\r\n            required=True,\r\n        ),\r\n    ]\r\n\r\n    outputs = [\r\n        Output(display_name=\"Data\", name=\"data_output\", method=\"find_replace\"),\r\n    ]\r\n\r\n    def find_replace(self) -> list[Data]:\r\n        \"\"\"Perform find/replace on the specified column in all data objects.\"\"\"\r\n        if not self.data:\r\n            return []\r\n\r\n        result = []\r\n        \r\n        for data_obj in self.data:\r\n            # Get the data dictionary\r\n            data_dict = data_obj.model_dump()\r\n            \r\n            # Get the actual data (handle nested 'data' key if present)\r\n            actual_data = data_dict.get(\"data\", data_dict)\r\n            \r\n            # Perform find/replace if the column exists\r\n            if self.column_name in actual_data:\r\n                value = actual_data[self.column_name]\r\n                if isinstance(value, str):\r\n                    actual_data[self.column_name] = value.replace(\r\n                        self.find_text, \r\n                        self.replace_text\r\n                    )\r\n            \r\n            # Create new Data object with updated values\r\n            result.append(Data(**actual_data))\r\n        \r\n        return result"
+                            },
+                            "column_name": {
+                                "_input_type": "MessageTextInput",
+                                "advanced": false,
+                                "display_name": "Column Name",
+                                "dynamic": false,
+                                "info": "Name of the column/key to search in.",
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "column_name",
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "type": "str",
+                                "value": "source"
+                            },
+                            "data": {
+                                "_input_type": "DataInput",
+                                "advanced": false,
+                                "display_name": "Data",
+                                "dynamic": false,
+                                "info": "Data object(s) to process.",
+                                "input_types": [
+                                    "Data"
+                                ],
+                                "list": true,
+                                "list_add_label": "Add More",
+                                "name": "data",
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "type": "other",
+                                "value": ""
+                            },
+                            "find_text": {
+                                "_input_type": "MessageTextInput",
+                                "advanced": false,
+                                "display_name": "Find",
+                                "dynamic": false,
+                                "info": "Text to find (e.g., '/spaces/').",
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "find_text",
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "type": "str",
+                                "value": "/spaces/"
+                            },
+                            "replace_text": {
+                                "_input_type": "MessageTextInput",
+                                "advanced": false,
+                                "display_name": "Replace",
+                                "dynamic": false,
+                                "info": "Text to replace with (e.g., '/wiki/spaces/').",
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "name": "replace_text",
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "type": "str",
+                                "value": "/wiki/spaces/"
+                            }
+                        },
+                        "tool_mode": false
+                    },
+                    "showNode": true,
+                    "type": "FindReplace"
+                },
+                "dragging": false,
+                "id": "FindReplace-Yz1mW",
+                "measured": {
+                    "width": 320,
+                    "height": 431
+                },
+                "position": {
+                    "x": 59.62163361456683,
+                    "y": 1046.5182587468282
+                },
+                "selected": false,
+                "type": "genericNode"
+            },
+            {
+                "data": {
+                    "description": "Executes SQL queries on SQLAlchemy-compatible databases.",
+                    "display_name": "SQL Database",
+                    "id": "SQLComponent-Qvau6",
+                    "node": {
+                        "base_classes": [
+                            "DataFrame"
+                        ],
+                        "beta": false,
+                        "conditional_paths": [],
+                        "custom_fields": {},
+                        "description": "Executes SQL queries on SQLAlchemy-compatible databases.",
+                        "display_name": "SQL Database",
+                        "documentation": "https://docs.langflow.org/sql-database",
+                        "edited": false,
+                        "field_order": [
+                            "database_url",
+                            "query",
+                            "include_columns",
+                            "add_error"
+                        ],
+                        "frozen": false,
+                        "icon": "database",
+                        "legacy": false,
+                        "lf_version": "1.7.1",
+                        "metadata": {
+                            "code_hash": "a8dd79af50b8",
+                            "dependencies": {
+                                "dependencies": [
+                                    {
+                                        "name": "langchain_community",
+                                        "version": "0.3.21"
+                                    },
+                                    {
+                                        "name": "sqlalchemy",
+                                        "version": "2.0.44"
+                                    },
+                                    {
+                                        "name": "lfx",
+                                        "version": "0.2.1"
+                                    }
+                                ],
+                                "total_dependencies": 3
+                            },
+                            "keywords": [
+                                "sql",
+                                "database",
+                                "query",
+                                "db",
+                                "fetch"
+                            ],
+                            "module": "custom_components.sql_database"
+                        },
+                        "minimized": false,
+                        "output_types": [],
+                        "outputs": [
+                            {
+                                "allows_loop": false,
+                                "cache": true,
+                                "display_name": "Result Table",
+                                "group_outputs": false,
+                                "loop_types": null,
+                                "method": "run_sql_query",
+                                "name": "run_sql_query",
+                                "options": null,
+                                "required_inputs": null,
+                                "selected": "DataFrame",
+                                "tool_mode": true,
+                                "types": [
+                                    "DataFrame"
+                                ],
+                                "value": "__UNDEFINED__"
+                            }
+                        ],
+                        "pinned": false,
+                        "template": {
+                            "_type": "Component",
+                            "add_error": {
+                                "_input_type": "BoolInput",
+                                "advanced": true,
+                                "display_name": "Add Error",
+                                "dynamic": false,
+                                "info": "If True, the error will be added to the result",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "add_error",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": true,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "bool",
+                                "value": false
+                            },
+                            "code": {
+                                "advanced": true,
+                                "dynamic": true,
+                                "fileTypes": [],
+                                "file_path": "",
+                                "info": "",
+                                "list": false,
+                                "load_from_db": false,
+                                "multiline": true,
+                                "name": "code",
+                                "password": false,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "type": "code",
+                                "value": "from typing import TYPE_CHECKING, Any\n\nfrom langchain_community.utilities import SQLDatabase\nfrom sqlalchemy.exc import SQLAlchemyError\n\nfrom lfx.custom.custom_component.component_with_cache import ComponentWithCache\nfrom lfx.io import BoolInput, MessageTextInput, MultilineInput, Output\nfrom lfx.schema.dataframe import DataFrame\nfrom lfx.schema.message import Message\nfrom lfx.services.cache.utils import CacheMiss\n\nif TYPE_CHECKING:\n    from sqlalchemy.engine import Result\n\n\nclass SQLComponent(ComponentWithCache):\n    \"\"\"A sql component.\"\"\"\n\n    display_name = \"SQL Database\"\n    description = \"Executes SQL queries on SQLAlchemy-compatible databases.\"\n    documentation: str = \"https://docs.langflow.org/sql-database\"\n    icon = \"database\"\n    name = \"SQLComponent\"\n    metadata = {\"keywords\": [\"sql\", \"database\", \"query\", \"db\", \"fetch\"]}\n\n    def __init__(self, **kwargs) -> None:\n        super().__init__(**kwargs)\n        self.db: SQLDatabase = None\n\n    def maybe_create_db(self):\n        if self.database_url != \"\":\n            if self._shared_component_cache:\n                cached_db = self._shared_component_cache.get(self.database_url)\n                if not isinstance(cached_db, CacheMiss):\n                    self.db = cached_db\n                    return\n                self.log(\"Connecting to database\")\n            try:\n                self.db = SQLDatabase.from_uri(self.database_url)\n            except Exception as e:\n                msg = f\"An error occurred while connecting to the database: {e}\"\n                raise ValueError(msg) from e\n            if self._shared_component_cache:\n                self._shared_component_cache.set(self.database_url, self.db)\n\n    inputs = [\n        MessageTextInput(name=\"database_url\", display_name=\"Database URL\", required=True),\n        MultilineInput(name=\"query\", display_name=\"SQL Query\", tool_mode=True, required=True),\n        BoolInput(name=\"include_columns\", display_name=\"Include Columns\", value=True, tool_mode=True, advanced=True),\n        BoolInput(\n            name=\"add_error\",\n            display_name=\"Add Error\",\n            value=False,\n            tool_mode=True,\n            info=\"If True, the error will be added to the result\",\n            advanced=True,\n        ),\n    ]\n\n    outputs = [\n        Output(display_name=\"Result Table\", name=\"run_sql_query\", method=\"run_sql_query\"),\n    ]\n\n    def build_component(\n        self,\n    ) -> Message:\n        error = None\n        self.maybe_create_db()\n        try:\n            result = self.db.run(self.query, include_columns=self.include_columns)\n            self.status = result\n        except SQLAlchemyError as e:\n            msg = f\"An error occurred while running the SQL Query: {e}\"\n            self.log(msg)\n            result = str(e)\n            self.status = result\n            error = repr(e)\n\n        if self.add_error and error is not None:\n            result = f\"{result}\\n\\nError: {error}\\n\\nQuery: {self.query}\"\n        elif error is not None:\n            # Then we won't add the error to the result\n            result = self.query\n\n        return Message(text=result)\n\n    def __execute_query(self) -> list[dict[str, Any]]:\n        self.maybe_create_db()\n        try:\n            cursor: Result[Any] = self.db.run(self.query, fetch=\"cursor\")\n            return [x._asdict() for x in cursor.fetchall()]\n        except SQLAlchemyError as e:\n            msg = f\"An error occurred while running the SQL Query: {e}\"\n            self.log(msg)\n            raise ValueError(msg) from e\n\n    def run_sql_query(self) -> DataFrame:\n        result = self.__execute_query()\n        df_result = DataFrame(result)\n        self.status = df_result\n        return df_result\n"
+                            },
+                            "database_url": {
+                                "_input_type": "MessageTextInput",
+                                "advanced": false,
+                                "display_name": "Database URL",
+                                "dynamic": false,
+                                "info": "",
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": true,
+                                "name": "database_url",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": false,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": "RAG_DB"
+                            },
+                            "include_columns": {
+                                "_input_type": "BoolInput",
+                                "advanced": true,
+                                "display_name": "Include Columns",
+                                "dynamic": false,
+                                "info": "",
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "name": "include_columns",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": false,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": true,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": true,
+                                "type": "bool",
+                                "value": true
+                            },
+                            "query": {
+                                "_input_type": "MultilineInput",
+                                "advanced": false,
+                                "ai_enabled": false,
+                                "copy_field": false,
+                                "display_name": "SQL Query",
+                                "dynamic": false,
+                                "info": "",
+                                "input_types": [
+                                    "Message"
+                                ],
+                                "list": false,
+                                "list_add_label": "Add More",
+                                "load_from_db": false,
+                                "multiline": true,
+                                "name": "query",
+                                "override_skip": false,
+                                "placeholder": "",
+                                "required": true,
+                                "show": true,
+                                "title_case": false,
+                                "tool_mode": true,
+                                "trace_as_input": true,
+                                "trace_as_metadata": true,
+                                "track_in_telemetry": false,
+                                "type": "str",
+                                "value": "-- Delete and return a dummy confirmation row\nWITH deleted AS (\n    DELETE FROM langchain_pg_embedding\n    WHERE collection_id IN (\n        SELECT uuid \n        FROM langchain_pg_collection \n        WHERE name = 'confluence'\n    )\n    RETURNING uuid\n)\nSELECT \n    'Embeddings deleted' as message,\n    'success' as status;"
+                            }
+                        },
+                        "tool_mode": false
+                    },
+                    "showNode": true,
+                    "type": "SQLComponent"
+                },
+                "dragging": false,
+                "id": "SQLComponent-Qvau6",
+                "measured": {
+                    "width": 320,
+                    "height": 305
+                },
+                "position": {
+                    "x": 876.0342873413307,
+                    "y": 648.9976055218107
+                },
+                "selected": false,
+                "type": "genericNode"
+            },
+            {
+                "data": {
+                    "id": "note-mXEhq",
+                    "node": {
+                        "description": "# Run this first\n\nThis removes existing vectors for the `confluence` collection to avoid stale/duplicate data.\n\n**Skip this step for first run**",
+                        "display_name": "",
+                        "documentation": "",
+                        "template": {
+                            "backgroundColor": "amber"
+                        }
+                    },
+                    "type": "note"
+                },
+                "dragging": false,
+                "height": 324,
+                "id": "note-mXEhq",
+                "measured": {
+                    "height": 324,
+                    "width": 324
+                },
+                "position": {
+                    "x": 1210.4627675988045,
+                    "y": 627.3251163897053
+                },
+                "resizing": false,
+                "selected": false,
+                "type": "noteNode",
+                "width": 324
+            },
+            {
+                "data": {
+                    "id": "note-LROlB",
+                    "node": {
+                        "description": "# Run this second\n\nThis will ingest ALL confluence pages within the specified space.",
+                        "display_name": "",
+                        "documentation": "",
+                        "template": {
+                            "backgroundColor": "neutral"
+                        }
+                    },
+                    "type": "note"
+                },
+                "dragging": false,
+                "height": 447,
+                "id": "note-LROlB",
+                "measured": {
+                    "height": 447,
+                    "width": 324
+                },
+                "position": {
+                    "x": 1213.674277867381,
+                    "y": 1049.4957888792383
+                },
+                "resizing": false,
+                "selected": false,
+                "type": "noteNode",
+                "width": 324
+            }
+        ],
+        "edges": [
+            {
+                "animated": false,
+                "className": "",
+                "data": {
+                    "sourceHandle": {
+                        "dataType": "OpenAIEmbeddings",
+                        "id": "OpenAIEmbeddings-PxUoB",
+                        "name": "embeddings",
+                        "output_types": [
+                            "Embeddings"
+                        ]
+                    },
+                    "targetHandle": {
+                        "fieldName": "embedding",
+                        "id": "pgvector-nhQtj",
+                        "inputTypes": [
+                            "Embeddings"
+                        ],
+                        "type": "other"
+                    }
+                },
+                "id": "reactflow__edge-OpenAIEmbeddings-PxUoB{\u0153dataType\u0153:\u0153OpenAIEmbeddings\u0153,\u0153id\u0153:\u0153OpenAIEmbeddings-PxUoB\u0153,\u0153name\u0153:\u0153embeddings\u0153,\u0153output_types\u0153:[\u0153Embeddings\u0153]}-pgvector-nhQtj{\u0153fieldName\u0153:\u0153embedding\u0153,\u0153id\u0153:\u0153pgvector-nhQtj\u0153,\u0153inputTypes\u0153:[\u0153Embeddings\u0153],\u0153type\u0153:\u0153other\u0153}",
+                "selected": false,
+                "source": "OpenAIEmbeddings-PxUoB",
+                "sourceHandle": "{\u0153dataType\u0153:\u0153OpenAIEmbeddings\u0153,\u0153id\u0153:\u0153OpenAIEmbeddings-PxUoB\u0153,\u0153name\u0153:\u0153embeddings\u0153,\u0153output_types\u0153:[\u0153Embeddings\u0153]}",
+                "target": "pgvector-nhQtj",
+                "targetHandle": "{\u0153fieldName\u0153:\u0153embedding\u0153,\u0153id\u0153:\u0153pgvector-nhQtj\u0153,\u0153inputTypes\u0153:[\u0153Embeddings\u0153],\u0153type\u0153:\u0153other\u0153}"
+            },
+            {
+                "animated": false,
+                "className": "",
+                "data": {
+                    "sourceHandle": {
+                        "dataType": "Confluence",
+                        "id": "Confluence-8311j",
+                        "name": "data",
+                        "output_types": [
+                            "Data"
+                        ]
+                    },
+                    "targetHandle": {
+                        "fieldName": "data",
+                        "id": "FindReplace-Yz1mW",
+                        "inputTypes": [
+                            "Data"
+                        ],
+                        "type": "other"
+                    }
+                },
+                "id": "reactflow__edge-Confluence-8311j{\u0153dataType\u0153:\u0153Confluence\u0153,\u0153id\u0153:\u0153Confluence-8311j\u0153,\u0153name\u0153:\u0153data\u0153,\u0153output_types\u0153:[\u0153Data\u0153]}-FindReplace-Yz1mW{\u0153fieldName\u0153:\u0153data\u0153,\u0153id\u0153:\u0153FindReplace-Yz1mW\u0153,\u0153inputTypes\u0153:[\u0153Data\u0153],\u0153type\u0153:\u0153other\u0153}",
+                "selected": false,
+                "source": "Confluence-8311j",
+                "sourceHandle": "{\u0153dataType\u0153:\u0153Confluence\u0153,\u0153id\u0153:\u0153Confluence-8311j\u0153,\u0153name\u0153:\u0153data\u0153,\u0153output_types\u0153:[\u0153Data\u0153]}",
+                "target": "FindReplace-Yz1mW",
+                "targetHandle": "{\u0153fieldName\u0153:\u0153data\u0153,\u0153id\u0153:\u0153FindReplace-Yz1mW\u0153,\u0153inputTypes\u0153:[\u0153Data\u0153],\u0153type\u0153:\u0153other\u0153}"
+            },
+            {
+                "animated": false,
+                "className": "",
+                "data": {
+                    "sourceHandle": {
+                        "dataType": "FindReplace",
+                        "id": "FindReplace-Yz1mW",
+                        "name": "data_output",
+                        "output_types": [
+                            "Data"
+                        ]
+                    },
+                    "targetHandle": {
+                        "fieldName": "data_inputs",
+                        "id": "SplitText-SNCkn",
+                        "inputTypes": [
+                            "Data",
+                            "DataFrame",
+                            "Message"
+                        ],
+                        "type": "other"
+                    }
+                },
+                "id": "reactflow__edge-FindReplace-Yz1mW{\u0153dataType\u0153:\u0153FindReplace\u0153,\u0153id\u0153:\u0153FindReplace-Yz1mW\u0153,\u0153name\u0153:\u0153data_output\u0153,\u0153output_types\u0153:[\u0153Data\u0153]}-SplitText-SNCkn{\u0153fieldName\u0153:\u0153data_inputs\u0153,\u0153id\u0153:\u0153SplitText-SNCkn\u0153,\u0153inputTypes\u0153:[\u0153Data\u0153,\u0153DataFrame\u0153,\u0153Message\u0153],\u0153type\u0153:\u0153other\u0153}",
+                "selected": false,
+                "source": "FindReplace-Yz1mW",
+                "sourceHandle": "{\u0153dataType\u0153:\u0153FindReplace\u0153,\u0153id\u0153:\u0153FindReplace-Yz1mW\u0153,\u0153name\u0153:\u0153data_output\u0153,\u0153output_types\u0153:[\u0153Data\u0153]}",
+                "target": "SplitText-SNCkn",
+                "targetHandle": "{\u0153fieldName\u0153:\u0153data_inputs\u0153,\u0153id\u0153:\u0153SplitText-SNCkn\u0153,\u0153inputTypes\u0153:[\u0153Data\u0153,\u0153DataFrame\u0153,\u0153Message\u0153],\u0153type\u0153:\u0153other\u0153}"
+            },
+            {
+                "animated": false,
+                "className": "",
+                "data": {
+                    "sourceHandle": {
+                        "dataType": "SplitText",
+                        "id": "SplitText-SNCkn",
+                        "name": "dataframe",
+                        "output_types": [
+                            "DataFrame"
+                        ]
+                    },
+                    "targetHandle": {
+                        "fieldName": "ingest_data",
+                        "id": "pgvector-nhQtj",
+                        "inputTypes": [
+                            "Data",
+                            "DataFrame"
+                        ],
+                        "type": "other"
+                    }
+                },
+                "id": "reactflow__edge-SplitText-SNCkn{\u0153dataType\u0153:\u0153SplitText\u0153,\u0153id\u0153:\u0153SplitText-SNCkn\u0153,\u0153name\u0153:\u0153dataframe\u0153,\u0153output_types\u0153:[\u0153DataFrame\u0153]}-pgvector-nhQtj{\u0153fieldName\u0153:\u0153ingest_data\u0153,\u0153id\u0153:\u0153pgvector-nhQtj\u0153,\u0153inputTypes\u0153:[\u0153Data\u0153,\u0153DataFrame\u0153],\u0153type\u0153:\u0153other\u0153}",
+                "selected": false,
+                "source": "SplitText-SNCkn",
+                "sourceHandle": "{\u0153dataType\u0153:\u0153SplitText\u0153,\u0153id\u0153:\u0153SplitText-SNCkn\u0153,\u0153name\u0153:\u0153dataframe\u0153,\u0153output_types\u0153:[\u0153DataFrame\u0153]}",
+                "target": "pgvector-nhQtj",
+                "targetHandle": "{\u0153fieldName\u0153:\u0153ingest_data\u0153,\u0153id\u0153:\u0153pgvector-nhQtj\u0153,\u0153inputTypes\u0153:[\u0153Data\u0153,\u0153DataFrame\u0153],\u0153type\u0153:\u0153other\u0153}"
+            }
+        ],
+        "viewport": {
+            "x": 318.5730899730673,
+            "y": -247.17608761184897,
+            "zoom": 0.7045880428783334
+        }
+    },
+    "is_component": false,
+    "updated_at": "2026-03-22T12:30:01+00:00",
+    "webhook": false,
+    "endpoint_name": "tmi_rag_confluence",
+    "tags": [
+        "openai",
+        "astradb",
+        "rag",
+        "q-a"
+    ],
+    "locked": false,
+    "mcp_enabled": true,
+    "action_name": null,
+    "action_description": null,
+    "access_type": "PRIVATE",
+    "id": "b5a9b2f6-07c6-40ab-a9b5-3585568f4a98",
+    "user_id": "f4a05118-6e92-4c6c-ae09-92bf3501fd9a",
+    "folder_id": "c369e8d7-9fe9-43f0-9f73-0d995d602e6f"
+}
