@@ -314,10 +314,6 @@ class UserStatus(str, Enum):
     LOCKED = "LOCKED"
 
 
-class ResetDeliveryChannel(str, Enum):
-    SECURE_EMAIL = "SECURE_EMAIL"
-
-
 class SessionRevokedReason(str, Enum):
     USER_LOGOUT = "USER_LOGOUT"
     ADMIN_FORCE = "ADMIN_FORCE"

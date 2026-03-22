@@ -2,4 +2,8 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-export type ResetDeliveryChannel = 'SECURE_EMAIL';
+export type PasswordResetTokenRequest = {
+    token: string;
+    newPassword: string;
+};
+

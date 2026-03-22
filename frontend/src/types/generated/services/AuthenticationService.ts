@@ -14,6 +14,7 @@ import type { PasskeyFinishRegistrationRequest } from '../models/PasskeyFinishRe
 import type { PasskeyRead } from '../models/PasskeyRead';
 import type { PasskeyRenameRequest } from '../models/PasskeyRenameRequest';
 import type { PasswordChangeRequest } from '../models/PasswordChangeRequest';
+import type { PasswordResetTokenRequest } from '../models/PasswordResetTokenRequest';
 import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
 import { request as __request } from '../core/request';
@@ -260,6 +261,27 @@ export class AuthenticationService {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/auth/password/change',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Reset Password With Token
+     * Set a new password using an admin-issued one-time reset token.
+     * @returns void
+     * @throws ApiError
+     */
+    public static resetPasswordWithTokenApiV1AuthResetPasswordPost({
+        requestBody,
+    }: {
+        requestBody: PasswordResetTokenRequest,
+    }): CancelablePromise<void> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/auth/reset-password',
             body: requestBody,
             mediaType: 'application/json',
             errors: {

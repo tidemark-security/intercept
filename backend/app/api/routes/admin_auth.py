@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.route_utils import read_session_cookie
 from app.core.database import get_db
-from app.models.enums import AccountType, ResetDeliveryChannel, UserRole, UserStatus
+from app.models.enums import AccountType, UserRole, UserStatus
 from app.models.models import UserAccount, ApiKeyCreateResponse
 from app.services.auth_service import (
     RequestMetadata,
@@ -39,10 +39,10 @@ from app.services.passkey_service import (
 
 
 class AdminCreateUserRequest(BaseModel):
-    """Request to create a new user account with temporary credentials."""
+    """Request to create a new user account with a password setup link."""
 
     username: str = Field(min_length=3, max_length=64, description="Unique username")
-    email: EmailStr = Field(description="User email for notifications")
+    email: Optional[EmailStr] = Field(default=None, description="Optional user email")
     role: UserRole = Field(description="User role (ANALYST, ADMIN, AUDITOR)")
     description: Optional[str] = Field(
         default=None,
@@ -55,12 +55,8 @@ class AdminCreateUserResponse(BaseModel):
     """Response after successful user creation."""
 
     userId: UUID = Field(description="ID of the created user")
-    temporaryCredentialExpiresAt: datetime = Field(
-        description="Expiration timestamp for temporary credential"
-    )
-    deliveryChannel: ResetDeliveryChannel = Field(
-        description="Channel used to deliver temporary credential"
-    )
+    expiresAt: datetime = Field(description="Expiration timestamp for password setup token")
+    resetToken: str = Field(description="One-time password setup token")
 
 
 class AdminUpdateStatusRequest(BaseModel):
@@ -103,17 +99,14 @@ class AdminResetPasswordRequest(BaseModel):
     """Request to issue an admin-initiated password reset."""
 
     userId: UUID = Field(description="Target user ID")
-    deliveryChannel: ResetDeliveryChannel = Field(
-        default=ResetDeliveryChannel.SECURE_EMAIL,
-        description="Delivery channel for temporary credential",
-    )
 
 
 class AdminResetPasswordResponse(BaseModel):
     """Response after successful password reset issuance."""
 
     resetRequestId: UUID = Field(description="ID of the reset request")
-    expiresAt: datetime = Field(description="Expiration timestamp for temporary credential")
+    expiresAt: datetime = Field(description="Expiration timestamp for password reset token")
+    resetToken: str = Field(description="One-time password reset token")
 
 
 class UserSummary(BaseModel):
@@ -412,10 +405,7 @@ async def create_user(
     admin_user: UserAccount = Depends(require_admin_user),
 ) -> AdminCreateUserResponse:
     """
-    Create a new user account with a temporary password.
-    
-    The temporary credential is sent via the specified delivery channel,
-    and the user must change their password on first login.
+    Create a new user account with a one-time password setup link.
     """
     # Import here to avoid circular dependency
     from app.services.admin_auth_service import admin_auth_service
@@ -428,15 +418,14 @@ async def create_user(
             email=payload.email,
             role=payload.role,
             description=payload.description,
-            delivery_channel=ResetDeliveryChannel.SECURE_EMAIL,
             request_metadata=metadata,
             db=db,
         )
 
         return AdminCreateUserResponse(
             userId=result.user_id,
-            temporaryCredentialExpiresAt=result.temporary_credential_expires_at,
-            deliveryChannel=result.delivery_channel,
+            expiresAt=result.expires_at,
+            resetToken=result.reset_token,
         )
 
     except ValueError as e:
@@ -538,6 +527,7 @@ async def update_user(
             target_user_id=user_id,
             username=payload.username,
             email=payload.email,
+            email_provided="email" in payload.model_fields_set,
             role=payload.role,
             description=payload.description,
             request_metadata=metadata,
@@ -650,12 +640,6 @@ async def issue_password_reset(
 ) -> AdminResetPasswordResponse:
     """
     Issue an admin-initiated password reset for a user.
-    
-    This will:
-    - Generate a temporary credential
-    - Revoke all active sessions for the target user
-    - Set must_change_password flag
-    - Send credentials via specified delivery channel
     """
     # Import here to avoid circular dependency
     from app.services.admin_auth_service import admin_auth_service
@@ -665,7 +649,6 @@ async def issue_password_reset(
         result = await admin_auth_service.issue_password_reset(
             admin_user_id=admin_user.id,
             target_user_id=payload.userId,
-            delivery_channel=payload.deliveryChannel,
             request_metadata=metadata,
             db=db,
         )
@@ -673,6 +656,7 @@ async def issue_password_reset(
         return AdminResetPasswordResponse(
             resetRequestId=result.reset_request_id,
             expiresAt=result.expires_at,
+            resetToken=result.reset_token,
         )
 
     except ValueError as e:

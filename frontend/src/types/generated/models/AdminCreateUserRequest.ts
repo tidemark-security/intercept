@@ -4,7 +4,7 @@
 /* eslint-disable */
 import type { UserRole } from './UserRole';
 /**
- * Request to create a new user account with temporary credentials.
+ * Request to create a new user account with a password setup link.
  */
 export type AdminCreateUserRequest = {
     /**
@@ -12,9 +12,9 @@ export type AdminCreateUserRequest = {
      */
     username: string;
     /**
-     * User email for notifications
+     * Optional user email
      */
-    email: string;
+    email?: (string | null);
     /**
      * User role (ANALYST, ADMIN, AUDITOR)
      */

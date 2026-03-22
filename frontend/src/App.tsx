@@ -13,6 +13,7 @@ import AdminSettings from "./pages/AdminSettings"
 import { AIChat } from "./pages/AIChat"
 import Home from "./pages/Home"
 import Login from "./pages/Login"
+import SetPasswordPage from './pages/SetPasswordPage'
 import CasesListPage from './pages/CaseList'
 import CaseDetailPage from './pages/CaseDetail'
 import Logout from './pages/Logout'
@@ -33,6 +34,7 @@ export default function App() {
           <Router>
           <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/reset-password" element={<SetPasswordPage />} />
           <Route
             path="/"
             element={

@@ -280,12 +280,6 @@ export class TasksService {
     /**
      * Generate Upload Url
      * Generate presigned upload URL and create timeline attachment item.
-     *
-     * This endpoint:
-     * 1. Validates file size and type
-     * 2. Creates an AttachmentItem with 'uploading' status
-     * 3. Generates a presigned PUT URL for direct upload to storage
-     * 4. Returns the URL and item metadata
      * @returns PresignedUploadResponse Successful Response
      * @throws ApiError
      */
@@ -312,12 +306,6 @@ export class TasksService {
     /**
      * Update Attachment Status
      * Update attachment upload status.
-     *
-     * This endpoint:
-     * 1. Verifies the timeline item exists and is an attachment
-     * 2. If status is 'complete', verifies file exists in storage
-     * 3. Updates the upload_status field
-     * 4. Returns the updated task
      * @returns TaskRead Successful Response
      * @throws ApiError
      */
@@ -347,12 +335,6 @@ export class TasksService {
     /**
      * Generate Download Url
      * Generate presigned download URL for an attachment.
-     *
-     * This endpoint:
-     * 1. Verifies the timeline item exists and is an attachment
-     * 2. Verifies upload is complete
-     * 3. Generates a presigned GET URL for download
-     * 4. Returns the URL and file metadata
      * @returns PresignedDownloadResponse Successful Response
      * @throws ApiError
      */

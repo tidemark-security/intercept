@@ -32,7 +32,7 @@ async def test_admin_create_user_success(
     session_maker: async_sessionmaker[AsyncSession],
     admin_user_factory,
 ) -> None:
-    """Admin can successfully create a new analyst account with temporary credentials."""
+    """Admin can successfully create a new analyst account with a password setup token."""
     admin = admin_user_factory()
     
     async with session_maker() as session:
@@ -65,8 +65,8 @@ async def test_admin_create_user_success(
     data = response.json()
     
     assert "userId" in data
-    assert "temporaryCredentialExpiresAt" in data
-    assert data["deliveryChannel"] == "SECURE_EMAIL"
+    assert "expiresAt" in data
+    assert data["resetToken"]
     
     # Verify user was created in database
     async with session_maker() as session:
@@ -79,9 +79,16 @@ async def test_admin_create_user_success(
         assert created_user.email == new_user_data["email"]
         assert created_user.role == UserRole.ANALYST
         assert created_user.status == UserStatus.ACTIVE
-        assert created_user.must_change_password is True
+        assert created_user.must_change_password is False
         assert created_user.created_by_admin_id == admin.id
-        assert created_user.password_hash  # Has a temporary password
+        assert created_user.password_hash is None
+
+        reset_result = await session.execute(
+            select(AdminResetRequest).where(AdminResetRequest.target_user_id == created_user.id)
+        )
+        reset_request = reset_result.scalar_one_or_none()
+        assert reset_request is not None
+        assert reset_request.token_hash
 
 
 @pytest.mark.asyncio

@@ -84,6 +84,11 @@ class PasswordChangeRequest(BaseModel):
     newPassword: str = Field(min_length=12)
 
 
+class PasswordResetTokenRequest(BaseModel):
+    token: str = Field(min_length=1)
+    newPassword: str = Field(min_length=12)
+
+
 class PasskeyBeginRegistrationRequest(BaseModel):
     displayName: Optional[str] = None
 
@@ -629,6 +634,38 @@ async def change_password(
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
     except PasswordPolicyViolation as exc:
+        return _validation_error(
+            message=str(exc),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT)
+async def reset_password_with_token(
+    request: Request,
+    body: PasswordResetTokenRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Set a new password using an admin-issued one-time reset token."""
+    from app.services.admin_auth_service import admin_auth_service
+
+    metadata = _build_metadata(request)
+
+    try:
+        await admin_auth_service.consume_reset_token(
+            token=body.token,
+            new_password=body.newPassword,
+            request_metadata=metadata,
+            db=db,
+        )
+    except PasswordPolicyViolation as exc:
+        return _validation_error(
+            message=str(exc),
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    except ValueError as exc:
         return _validation_error(
             message=str(exc),
             status_code=status.HTTP_400_BAD_REQUEST,

@@ -1,8 +1,3 @@
-"""Notification services for email and other channels."""
+"""Notification service package."""
 
-from app.services.notifications.email_service import EmailService, email_service
-
-__all__ = [
-    "EmailService",
-    "email_service",
-]
+__all__: list[str] = []

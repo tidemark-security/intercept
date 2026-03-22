@@ -11,8 +11,12 @@ export type AdminResetPasswordResponse = {
      */
     resetRequestId: string;
     /**
-     * Expiration timestamp for temporary credential
+     * Expiration timestamp for password reset token
      */
     expiresAt: string;
+    /**
+     * One-time password reset token
+     */
+    resetToken: string;
 };
 
