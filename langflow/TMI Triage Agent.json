@@ -335,7 +335,7 @@
                         ],
                         "frozen": false,
                         "icon": "cpu",
-                        "last_updated": "2026-03-22T12:27:11.792Z",
+                        "last_updated": "2026-03-22T12:35:33.962Z",
                         "legacy": false,
                         "lf_version": "1.7.1",
                         "metadata": {
@@ -383,7 +383,7 @@
                                 "value": "97948aa2-a3bd-42d5-a504-38c6d268839f"
                             },
                             "_frontend_node_folder_id": {
-                                "value": "cc371fff-5150-4739-be03-8136b6f5b800"
+                                "value": "c369e8d7-9fe9-43f0-9f73-0d995d602e6f"
                             },
                             "_type": "Component",
                             "code": {
@@ -1841,7 +1841,7 @@
                                 "advanced": true,
                                 "input_types": [],
                                 "dynamic": false,
-                                "info": "Model Provider API key",
+                                "info": "Falls back to ANTHROPIC_API_KEY environment variable",
                                 "real_time_refresh": true,
                                 "title_case": false,
                                 "track_in_telemetry": false,
@@ -2567,10 +2567,10 @@
                                 "input_types": []
                             },
                             "_frontend_node_folder_id": {
-                                "value": "cc371fff-5150-4739-be03-8136b6f5b800",
+                                "value": "c369e8d7-9fe9-43f0-9f73-0d995d602e6f",
                                 "input_types": []
                             },
-                            "is_refresh": false
+                            "is_refresh": true
                         },
                         "description": "Define the agent's instructions, then enter a task to complete using tools.",
                         "icon": "bot",
@@ -2592,6 +2592,7 @@
                                 ],
                                 "selected": "Message",
                                 "name": "response",
+                                "hidden": null,
                                 "display_name": "Response",
                                 "method": "message_response",
                                 "value": "__UNDEFINED__",
@@ -2746,7 +2747,7 @@
                         "base_classes": [
                             "Message"
                         ],
-                        "display_name": "Text Input",
+                        "display_name": "entity_id",
                         "documentation": "https://docs.langflow.org/text-input-and-output",
                         "minimized": false,
                         "custom_fields": {},
@@ -3906,7 +3907,7 @@
                         "frozen": false,
                         "icon": "Mcp",
                         "key": "mcp_intercept",
-                        "last_updated": "2026-03-22T12:27:11.827Z",
+                        "last_updated": "2026-03-22T12:35:33.964Z",
                         "legacy": false,
                         "lf_version": "1.7.1",
                         "metadata": {
@@ -3957,7 +3958,7 @@
                                 "value": "97948aa2-a3bd-42d5-a504-38c6d268839f"
                             },
                             "_frontend_node_folder_id": {
-                                "value": "cc371fff-5150-4739-be03-8136b6f5b800"
+                                "value": "c369e8d7-9fe9-43f0-9f73-0d995d602e6f"
                             },
                             "_type": "Component",
                             "code": {
@@ -5461,7 +5462,7 @@
                                 "value": "97948aa2-a3bd-42d5-a504-38c6d268839f"
                             },
                             "_frontend_node_folder_id": {
-                                "value": "cc371fff-5150-4739-be03-8136b6f5b800"
+                                "value": "c369e8d7-9fe9-43f0-9f73-0d995d602e6f"
                             },
                             "is_refresh": false
                         },
@@ -5469,13 +5470,13 @@
                         "category": "MCP",
                         "key": "intercept",
                         "score": 0.0002942304249208255,
-                        "last_updated": "2026-03-22T12:28:06.902Z"
+                        "last_updated": "2026-03-22T12:35:33.967Z"
                     },
                     "showNode": true,
                     "type": "MCP",
                     "id": "MCP-lyX23"
                 },
-                "selected": true,
+                "selected": false,
                 "measured": {
                     "width": 320,
                     "height": 315
@@ -5823,7 +5824,8 @@
                 },
                 "id": "xy-edge__OpenAIModel-mAiVl{\u0153dataType\u0153:\u0153OpenAIModel\u0153,\u0153id\u0153:\u0153OpenAIModel-mAiVl\u0153,\u0153name\u0153:\u0153model_output\u0153,\u0153output_types\u0153:[\u0153LanguageModel\u0153]}-Agent-O8Wri{\u0153fieldName\u0153:\u0153model\u0153,\u0153id\u0153:\u0153Agent-O8Wri\u0153,\u0153inputTypes\u0153:[\u0153LanguageModel\u0153],\u0153type\u0153:\u0153model\u0153}",
                 "selected": false,
-                "animated": false
+                "animated": false,
+                "className": ""
             },
             {
                 "source": "MCP-lyX23",
@@ -5848,17 +5850,20 @@
                         ]
                     }
                 },
-                "id": "xy-edge__MCP-lyX23{\u0153dataType\u0153:\u0153MCP\u0153,\u0153id\u0153:\u0153MCP-lyX23\u0153,\u0153name\u0153:\u0153component_as_tool\u0153,\u0153output_types\u0153:[\u0153Tool\u0153]}-Agent-O8Wri{\u0153fieldName\u0153:\u0153tools\u0153,\u0153id\u0153:\u0153Agent-O8Wri\u0153,\u0153inputTypes\u0153:[\u0153Tool\u0153],\u0153type\u0153:\u0153other\u0153}"
+                "id": "xy-edge__MCP-lyX23{\u0153dataType\u0153:\u0153MCP\u0153,\u0153id\u0153:\u0153MCP-lyX23\u0153,\u0153name\u0153:\u0153component_as_tool\u0153,\u0153output_types\u0153:[\u0153Tool\u0153]}-Agent-O8Wri{\u0153fieldName\u0153:\u0153tools\u0153,\u0153id\u0153:\u0153Agent-O8Wri\u0153,\u0153inputTypes\u0153:[\u0153Tool\u0153],\u0153type\u0153:\u0153other\u0153}",
+                "className": "",
+                "selected": false,
+                "animated": false
             }
         ],
         "viewport": {
-            "x": -138.08220839830756,
-            "y": 460.80118341425214,
+            "x": 209.91779160169233,
+            "y": 645.788165971642,
             "zoom": 0.5065087213051002
         }
     },
     "is_component": false,
-    "updated_at": "2026-03-22T12:30:05+00:00",
+    "updated_at": "2026-03-22T12:35:35+00:00",
     "webhook": false,
     "endpoint_name": "tmi_alert_triage",
     "tags": [
