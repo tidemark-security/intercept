@@ -9,7 +9,7 @@ echo "🔍 Checking for Lucide icons without size prop..."
 # Find files that import from lucide-react and use IconWrapper
 # This is a simple heuristic check, not a full AST analysis
 
-FRONTEND_SRC="/home/gb/projects/intercept/frontend/src"
+FRONTEND_SRC="./intercept/frontend/src"
 
 # Look for patterns like <SomeIcon /> or <SomeIcon className= without size=
 # inside files that use IconWrapper
