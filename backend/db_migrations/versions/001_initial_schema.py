@@ -12,22 +12,25 @@ Consolidated migration that creates the complete schema:
 4. Full-text search infrastructure:
    - search_vector columns on alerts/cases/tasks
    - extract_timeline_text() function with nested reply support
-   - Trigger functions for search_vector updates
+    - Trigger functions for search_vector updates, including top-level entity tags
    - GIN indexes on search_vector columns
    - GIN indexes on timeline_items JSONB columns
 5. Trigram indexes for fuzzy search on title/description
 6. Materialized views (soc_metrics_15m, analyst_metrics_15m, alert_metrics_15m)
+7. pg_cron maintenance, materialized view refresh, and audit retention jobs
 
 Prerequisites (handled by init.sql before Alembic runs):
 - Extensions: uuid-ossp, pg_trgm, vector
 
-Note: pg_cron scheduled jobs are managed by migration 002_pgcron_jobs.py
-which opens a separate connection to the postgres database.
+Note: pg_cron job scheduling opens a separate connection to the postgres
+database via db_migrations.cron_utils.
 """
 from typing import Sequence, Union
 
 from alembic import op
 from sqlmodel import SQLModel
+
+from db_migrations.cron_utils import schedule_cron_job, unschedule_cron_job
 
 # Import all models to register them with SQLModel metadata
 from app.models import models  # noqa: F401
@@ -38,6 +41,75 @@ revision: str = '001_initial'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
+
+
+CRON_JOBS = [
+    {
+        "name": "cleanup-expired-sessions",
+        "schedule": "0 3 * * *",
+        "command": "DELETE FROM sessions WHERE expires_at < NOW() - INTERVAL '90 days';",
+    },
+    {
+        "name": "vacuum-sessions-table",
+        "schedule": "30 3 * * *",
+        "command": "VACUUM ANALYZE sessions;",
+    },
+    {
+        "name": "cleanup-deactivated-users",
+        "schedule": "0 4 * * 0",
+        "command": (
+            "UPDATE user_accounts SET password_hash = NULL "
+            "WHERE status = 'DISABLED' "
+            "AND updated_at < NOW() - INTERVAL '30 days' "
+            "AND password_hash IS NOT NULL;"
+        ),
+    },
+    {
+        "name": "refresh-soc-metrics-15m",
+        "schedule": "1,16,31,46 * * * *",
+        "command": "REFRESH MATERIALIZED VIEW CONCURRENTLY soc_metrics_15m;",
+    },
+    {
+        "name": "refresh-analyst-metrics-15m",
+        "schedule": "2,17,32,47 * * * *",
+        "command": "REFRESH MATERIALIZED VIEW CONCURRENTLY analyst_metrics_15m;",
+    },
+    {
+        "name": "refresh-alert-metrics-15m",
+        "schedule": "3,18,33,48 * * * *",
+        "command": "REFRESH MATERIALIZED VIEW CONCURRENTLY alert_metrics_15m;",
+    },
+]
+
+
+RETENTION_JOBS = [
+    {
+        "name": "audit-retention-auth",
+        "schedule": "0 2 * * *",
+        "command": (
+            "DELETE FROM audit_logs "
+            "WHERE event_type LIKE 'auth.%' "
+            "AND performed_at < NOW() - INTERVAL '90 days';"
+        ),
+    },
+    {
+        "name": "audit-retention-settings",
+        "schedule": "5 2 * * *",
+        "command": (
+            "DELETE FROM audit_logs "
+            "WHERE event_type LIKE 'settings.%' "
+            "AND performed_at < NOW() - INTERVAL '180 days';"
+        ),
+    },
+    {
+        "name": "vacuum-audit-logs",
+        "schedule": "15 2 * * *",
+        "command": "VACUUM ANALYZE audit_logs;",
+    },
+]
+
+
+ALL_CRON_JOBS = CRON_JOBS + RETENTION_JOBS
 
 
 def upgrade() -> None:
@@ -235,7 +307,7 @@ def upgrade() -> None:
     
     # =========================================================================
     # STEP 6: Create trigger functions for search vector updates
-    # Each table gets weighted zones: A=title, B=description, C=source/assignee, D=timeline
+    # Each table gets weighted zones: A=title, B=description/tags, C=source/assignee, D=timeline
     # =========================================================================
     
     op.execute("""
@@ -245,6 +317,24 @@ def upgrade() -> None:
             NEW.search_vector :=
                 setweight(to_tsvector('english', COALESCE(NEW.title, '')), 'A') ||
                 setweight(to_tsvector('english', COALESCE(NEW.description, '')), 'B') ||
+                setweight(
+                    to_tsvector(
+                        'english',
+                        COALESCE(
+                            (
+                                SELECT string_agg(tag, ' ')
+                                FROM jsonb_array_elements_text(
+                                    CASE
+                                        WHEN jsonb_typeof(NEW.tags) = 'array' THEN NEW.tags
+                                        ELSE '[]'::jsonb
+                                    END
+                                ) AS tag
+                            ),
+                            ''
+                        )
+                    ),
+                    'B'
+                ) ||
                 setweight(to_tsvector('english', COALESCE(NEW.source, '')), 'C') ||
                 setweight(to_tsvector('english', extract_timeline_text(NEW.timeline_items)), 'D');
             RETURN NEW;
@@ -259,6 +349,24 @@ def upgrade() -> None:
             NEW.search_vector :=
                 setweight(to_tsvector('english', COALESCE(NEW.title, '')), 'A') ||
                 setweight(to_tsvector('english', COALESCE(NEW.description, '')), 'B') ||
+                setweight(
+                    to_tsvector(
+                        'english',
+                        COALESCE(
+                            (
+                                SELECT string_agg(tag, ' ')
+                                FROM jsonb_array_elements_text(
+                                    CASE
+                                        WHEN jsonb_typeof(NEW.tags) = 'array' THEN NEW.tags
+                                        ELSE '[]'::jsonb
+                                    END
+                                ) AS tag
+                            ),
+                            ''
+                        )
+                    ),
+                    'B'
+                ) ||
                 setweight(to_tsvector('english', COALESCE(NEW.assignee, '')), 'C') ||
                 setweight(to_tsvector('english', extract_timeline_text(NEW.timeline_items)), 'D');
             RETURN NEW;
@@ -273,6 +381,24 @@ def upgrade() -> None:
             NEW.search_vector :=
                 setweight(to_tsvector('english', COALESCE(NEW.title, '')), 'A') ||
                 setweight(to_tsvector('english', COALESCE(NEW.description, '')), 'B') ||
+                setweight(
+                    to_tsvector(
+                        'english',
+                        COALESCE(
+                            (
+                                SELECT string_agg(tag, ' ')
+                                FROM jsonb_array_elements_text(
+                                    CASE
+                                        WHEN jsonb_typeof(NEW.tags) = 'array' THEN NEW.tags
+                                        ELSE '[]'::jsonb
+                                    END
+                                ) AS tag
+                            ),
+                            ''
+                        )
+                    ),
+                    'B'
+                ) ||
                 setweight(to_tsvector('english', COALESCE(NEW.assignee, '')), 'C') ||
                 setweight(to_tsvector('english', extract_timeline_text(NEW.timeline_items)), 'D');
             RETURN NEW;
@@ -557,10 +683,28 @@ def upgrade() -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS alert_metrics_15m_idx 
         ON alert_metrics_15m (time_window, source, priority, hour_of_day, day_of_week);
     """)
+
+    # =========================================================================
+    # STEP 12: Backfill search vectors and schedule pg_cron jobs
+    # =========================================================================
+
+    op.execute("UPDATE alerts SET updated_at = updated_at;")
+    op.execute("UPDATE cases SET updated_at = updated_at;")
+    op.execute("UPDATE tasks SET updated_at = updated_at;")
+
+    for job in ALL_CRON_JOBS:
+        schedule_cron_job(
+            name=job["name"],
+            schedule=job["schedule"],
+            command=job["command"],
+        )
     
 
 
 def downgrade() -> None:
+    for job in ALL_CRON_JOBS:
+        unschedule_cron_job(name=job["name"])
+
     # Drop materialized views
     op.execute("DROP MATERIALIZED VIEW IF EXISTS alert_metrics_15m CASCADE;")
     op.execute("DROP MATERIALIZED VIEW IF EXISTS analyst_metrics_15m CASCADE;")
