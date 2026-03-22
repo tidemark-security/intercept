@@ -1,0 +1,40 @@
+/* generated using openapi-typescript-codegen -- do not edit */
+/* istanbul ignore file */
+/* tslint:disable */
+/* eslint-disable */
+import type { SettingType } from './SettingType';
+/**
+ * Schema for reading a setting.
+ */
+export type AppSettingRead = {
+    /**
+     * Setting key (lowercase, alphanumeric, dots, underscores, hyphens)
+     */
+    key: string;
+    /**
+     * Setting value (encrypted if is_secret=true)
+     */
+    value?: (string | null);
+    /**
+     * Type hint for value
+     */
+    value_type?: SettingType;
+    /**
+     * Whether value should be encrypted
+     */
+    is_secret?: boolean;
+    /**
+     * Human-readable description
+     */
+    description?: (string | null);
+    /**
+     * Grouping category
+     */
+    category: string;
+    id: number;
+    created_at: string;
+    updated_at: string;
+    local_only?: boolean;
+    source?: string;
+};
+

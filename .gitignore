@@ -1,0 +1,128 @@
+# =============================================================================
+# Python / FastAPI Backend
+# =============================================================================
+
+# Byte-compiled / optimized files
+__pycache__/
+backend/tests/fixtures/maxmind/*.mmdb
+backend/tests/fixtures/maxmind/*.json
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+.conda/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Type checking
+.mypy_cache/
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# =============================================================================
+# Node.js / React / Vite Frontend
+# =============================================================================
+
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Vite build output
+dist/
+dist-ssr/
+
+# TypeScript
+*.tsbuildinfo
+
+# Testing
+coverage/
+*.lcov
+
+# Playwright
+test-results/
+playwright-report/
+
+# =============================================================================
+# Environment & Configuration
+# =============================================================================
+
+# Environment files (keep .env.example)
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+
+# Local config overrides
+config.local.py
+settings.local.py
+
+# =============================================================================
+# IDE & Editors
+# =============================================================================
+
+# VS Code (keep shared settings)
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# JetBrains
+.idea/
+
+# Vim
+*.swp
+*.swo
+*~
+
+# =============================================================================
+# OS Generated
+# =============================================================================
+
+.DS_Store
+Thumbs.db
+
+# =============================================================================
+# Logs & Temporary Files
+# =============================================================================
+
+*.log
+logs/
+tmp/
+temp/
+
+# =============================================================================
+# Security & Secrets
+# =============================================================================
+
+*.pem
+*.key
+*.crt
+*.secret
+secrets/
+keys/
+
+# =============================================================================
+# Project Specific
+# =============================================================================
+
+# GitHub Speckit files
+.specify
+
+# Playwright MCP
+.playwright-mcp
+
+# GitHub Copilot prompts (local only)
+.github/prompts/

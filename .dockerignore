@@ -1,0 +1,22 @@
+# Docker build context exclusions
+.git
+.gitignore
+.vscode/
+.specify/
+.playwright-mcp/
+.pytest_cache/
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+dist/
+build/
+frontend/dist/
+backend/dist/
+*.pyc
+__pycache__/
+*.log
+coverage/
+.env
+.env.*
+tmp/
+tmp-mockups/

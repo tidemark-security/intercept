@@ -1,0 +1,157 @@
+services:
+  postgres:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.postgres
+    environment:
+      POSTGRES_DB: intercept_case_db
+      POSTGRES_USER: intercept_user
+      POSTGRES_PASSWORD: intercept_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./backend/init-pgcron.sql:/docker-entrypoint-initdb.d/02-init-pgcron.sql
+      - ./backend/init-pgvector.sql:/docker-entrypoint-initdb.d/03-init-pgvector.sql
+    command: 
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pg_cron"
+      - "-c"
+      - "cron.database_name=postgres"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U intercept_user -d intercept_case_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    network_mode: host
+    environment:
+      DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db
+      STORAGE_ENDPOINT: localhost:9000
+      STORAGE_ACCESS_KEY: minioadmin
+      STORAGE_SECRET_KEY: minioadmin
+      STORAGE_BUCKET: intercept-attachments
+      STORAGE_USE_SSL: "false"
+      LANGFLOW__BASE_URL: http://localhost:7860/api/v1
+      LANGFLOW__DEFAULT_FLOW_ID: "tmi_general_purpose"
+      LANGFLOW__CASE_DETAIL_FLOW_ID: "tmi_case_agent"
+      LANGFLOW__TASK_DETAIL_FLOW_ID: "tmi_task_agent"
+      LANGFLOW__ALERT_TRIAGE_FLOW_ID: "tmi_alert_triage"
+      SECRET_KEY: dev-secret-key-change-in-production
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    environment:
+      VITE_API_URL: http://localhost:8000
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"  # API
+      - "9001:9001"  # Console
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set minio http://minio:9000 minioadmin minioadmin;
+      mc mb minio/intercept-attachments --ignore-existing;
+      mc anonymous set none minio/intercept-attachments;
+      echo 'MinIO bucket initialized successfully';
+      exit 0;
+      "
+
+  langflow:
+    image: langflowai/langflow:latest
+    user: root
+    environment:
+      LANGFLOW_DATABASE_URL: postgresql://langflow_user:langflow_password@postgres:5432/langflow
+      LANGFLOW_CONFIG_DIR: /app/langflow
+      DO_NOT_TRACK: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "7860:7860"
+    volumes:
+      - langflow_data:/app/langflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    network_mode: host
+    environment:
+      DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db
+      STORAGE_ENDPOINT: localhost:9000
+      STORAGE_ACCESS_KEY: minioadmin
+      STORAGE_SECRET_KEY: minioadmin
+      STORAGE_BUCKET: intercept-attachments
+      STORAGE_USE_SSL: "false"
+      SECRET_KEY: dev-secret-key-change-in-production
+      LANGFLOW__BASE_URL: http://localhost:7860/api/v1
+      LANGFLOW__DEFAULT_FLOW_ID: "tmi_general_purpose"
+      LANGFLOW__CASE_DETAIL_FLOW_ID: "tmi_case_agent"
+      LANGFLOW__TASK_DETAIL_FLOW_ID: "tmi_task_agent"
+      LANGFLOW__ALERT_TRIAGE_FLOW_ID: "tmi_alert_triage"
+      WORKER_CONCURRENCY: "20"
+      HEALTH_PORT: "8001"
+      LOG_LEVEL: "INFO"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["python", "worker.py"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  minio_data:
+  langflow_data:

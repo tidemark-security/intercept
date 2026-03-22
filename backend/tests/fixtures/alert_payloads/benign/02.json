@@ -1,0 +1,64 @@
+{
+  "header": {
+    "alert_id": "ALT-000123",
+    "title": "Suspicious network scan detected",
+    "description": "High-volume TCP SYN connections from 10.0.5.10 to multiple internal servers",
+    "status": "OPEN",
+    "priority": "MEDIUM",
+    "assignee": null,
+    "tags": ["network", "ids", "anomaly"]
+  },
+  "timeline": [
+    {
+      "id": "e1f6b5a4-1234-4bcd-9876-abcdef012345",
+      "time": "2026-01-26T02:14:00Z",
+      "type": "detection_event",
+      "details": {
+        "rule_name": "IDS: Potential Port Scan",
+        "source_ip": "10.0.5.10",
+        "dest_ips": ["10.0.10.11", "10.0.10.12", "10.0.10.13"],
+        "dest_ports_sample": [22, 80, 443, 3389],
+        "proto": "TCP",
+        "conn_count": 1500,
+        "time_window_sec": 60
+      }
+    },
+    {
+      "id": "aa9c70b2-5678-4cde-8abc-0123fedcba98",
+      "time": "2026-01-26T02:15:10Z",
+      "type": "asset_enrichment",
+      "details": {
+        "ip": "10.0.5.10",
+        "hostname": "sec-scan-01",
+        "asset_owner": "Security Operations",
+        "asset_tags": ["scanner", "security_tooling", "scheduled_job"],
+        "description": "Internal vulnerability scanner (Nessus/Qualys-style), scheduled nightly scans"
+      }
+    },
+    {
+      "id": "c3d4e5f6-9abc-4def-8012-34567890abcd",
+      "time": "2026-01-26T02:16:30Z",
+      "type": "change_calendar",
+      "details": {
+        "source": "CMDB",
+        "entry_type": "recurring_task",
+        "summary": "Nightly internal vulnerability scan",
+        "window_start": "02:00:00Z",
+        "window_end": "04:00:00Z",
+        "system": "sec-scan-01",
+        "status": "approved"
+      }
+    }
+  ],
+  "observables": {
+    "ips": [
+      {"value": "10.0.5.10", "role": "source"},
+      {"value": "10.0.10.11", "role": "destination"},
+      {"value": "10.0.10.12", "role": "destination"},
+      {"value": "10.0.10.13", "role": "destination"}
+    ],
+    "domains": [],
+    "hashes": [],
+    "urls": []
+  }
+}

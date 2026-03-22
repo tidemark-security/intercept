@@ -1,0 +1,74 @@
+{
+  "header": {
+    "alert_id": "ALT-000300",
+    "title": "Lateral movement tooling detected from admin workstation",
+    "description": "PsExec and PowerShell Remoting used from ADM-JUMP01 to multiple servers.",
+    "status": "OPEN",
+    "priority": "MEDIUM",
+    "assignee": null,
+    "tags": ["endpoint", "identity", "lateral_movement"]
+  },
+  "timeline": [
+    {
+      "id": "b1-proc-ps-aaaa-bbbb-cccc-111111111111",
+      "time": "2026-01-26T08:05:00Z",
+      "type": "process_event",
+      "details": {
+        "host": "ADM-JUMP01",
+        "user": "corp\\jsmith-admin",
+        "process_name": "powershell.exe",
+        "command_line": "powershell.exe -File .\\DeployPatch.ps1 -Targets server01,server02,server03",
+        "parent_process": "explorer.exe"
+      }
+    },
+    {
+      "id": "b2-proc-psexec-dddd-eeee-ffff-222222222222",
+      "time": "2026-01-26T08:06:15Z",
+      "type": "process_event",
+      "details": {
+        "host": "ADM-JUMP01",
+        "user": "corp\\jsmith-admin",
+        "process_name": "psexec.exe",
+        "command_line": "psexec.exe \\\\server01 -u corp\\jsmith-admin -c C:\\Tools\\InstallAgent.cmd",
+        "parent_process": "powershell.exe"
+      }
+    },
+    {
+      "id": "b3-identity-enrich-3333-4444-5555-666666666666",
+      "time": "2026-01-26T08:07:00Z",
+      "type": "identity_enrichment",
+      "details": {
+        "user": "corp\\jsmith-admin",
+        "display_name": "John Smith (Admin)",
+        "job_title": "Windows Systems Administrator",
+        "groups": ["Domain Admins", "ServerOps"],
+        "account_type": "privileged_admin",
+        "mfa_enabled": true
+      }
+    },
+    {
+      "id": "b4-change-ticket-7777-8888-9999-aaaaaaaaaaaa",
+      "time": "2026-01-25T23:00:00Z",
+      "type": "change_calendar",
+      "details": {
+        "ticket_id": "CHG-4521",
+        "summary": "Patch deployment to Windows servers (server01, server02, server03)",
+        "window_start": "2026-01-26T08:00:00Z",
+        "window_end": "2026-01-26T10:00:00Z",
+        "owner": "ServerOps",
+        "status": "approved"
+      }
+    }
+  ],
+  "observables": {
+    "hosts": [
+      { "value": "ADM-JUMP01", "role": "source" },
+      { "value": "server01", "role": "target" },
+      { "value": "server02", "role": "target" },
+      { "value": "server03", "role": "target" }
+    ],
+    "users": [
+      { "value": "corp\\jsmith-admin", "role": "actor" }
+    ]
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "header": {
+    "alert_id": "ALT-000200",
+    "title": "Exploit attempt: CVE-2023-XXXX against web server",
+    "description": "IDS detected payload matching known exploit signature targeting 443/tcp on web-frontend-01.",
+    "status": "OPEN",
+    "priority": "HIGH",
+    "assignee": null,
+    "tags": ["network", "ids", "exploit_attempt"]
+  },
+  "timeline": [
+    {
+      "id": "t1-ids-hit-1111-2222-3333-444444444444",
+      "time": "2026-01-26T01:00:05Z",
+      "type": "detection_event",
+      "details": {
+        "rule_name": "EXPLOIT: CVE-2023-XXXX HTTP Payload",
+        "source_ip": "203.0.113.50",
+        "dest_ip": "198.51.100.10",
+        "dest_port": 443,
+        "proto": "TCP",
+        "payload_sample": "…truncated…",
+        "signature_version": "v1.2.3"
+      }
+    },
+    {
+      "id": "t2-fw-log-5555-6666-7777-888888888888",
+      "time": "2026-01-26T01:00:05Z",
+      "type": "network_event",
+      "details": {
+        "source_ip": "203.0.113.50",
+        "dest_ip": "198.51.100.10",
+        "dest_port": 443,
+        "action": "DROP",
+        "reason": "Invalid TCP checksum / malformed packet",
+        "device": "edge-fw-01"
+      }
+    },
+    {
+      "id": "t3-web-log-9999-aaaa-bbbb-cccccccccccc",
+      "time": "2026-01-26T01:10:00Z",
+      "type": "endpoint_log",
+      "details": {
+        "system": "web-frontend-01",
+        "log_source": "nginx_access",
+        "lookback_minutes": 30,
+        "matching_requests": 0,
+        "note": "No HTTP requests logged from 203.0.113.50"
+      }
+    },
+    {
+      "id": "t4-vendor-note-dddd-eeee-ffff-000000000000",
+      "time": "2026-01-23T12:00:00Z",
+      "type": "threat_intel",
+      "details": {
+        "source": "IDS_vendor",
+        "reference": "KB-2026-01-IDS-123",
+        "summary": "Signature 'EXPLOIT: CVE-2023-XXXX HTTP Payload' in version v1.2.3 may trigger on malformed packets that are dropped before reaching the application.",
+        "recommendation": "Treat isolated hits with DROP action and no matching app logs as likely false positives."
+      }
+    }
+  ],
+  "observables": {
+    "ips": [
+      { "value": "203.0.113.50", "role": "source" },
+      { "value": "198.51.100.10", "role": "destination" }
+    ],
+    "domains": [],
+    "hashes": [],
+    "urls": []
+  }
+}

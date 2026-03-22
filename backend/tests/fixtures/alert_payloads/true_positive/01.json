@@ -1,0 +1,84 @@
+{
+  "header": {
+    "alert_id": "ALT-000301",
+    "title": "Suspicious lateral movement tools from user workstation",
+    "description": "PsExec and PowerShell Remoting used from WKST-JDOE01 to multiple high-value servers.",
+    "status": "OPEN",
+    "priority": "HIGH",
+    "assignee": null,
+    "tags": ["endpoint", "identity", "lateral_movement", "privileged_target"]
+  },
+  "timeline": [
+    {
+      "id": "c1-proc-ps-aaaa-bbbb-cccc-dddddddddddd",
+      "time": "2026-01-26T02:15:20Z",
+      "type": "process_event",
+      "details": {
+        "host": "WKST-JDOE01",
+        "user": "corp\\jdoe",
+        "process_name": "powershell.exe",
+        "command_line": "powershell.exe -nop -w hidden -EncodedCommand <redacted>",
+        "parent_process": "winword.exe"
+      }
+    },
+    {
+      "id": "c2-proc-psexec-1111-2222-3333-eeeeeeeeeeee",
+      "time": "2026-01-26T02:16:10Z",
+      "type": "process_event",
+      "details": {
+        "host": "WKST-JDOE01",
+        "user": "corp\\jdoe",
+        "process_name": "psexec.exe",
+        "command_line": "psexec.exe \\\\DC01 -u corp\\svc_backup -p ******** cmd.exe /c whoami && ipconfig",
+        "parent_process": "powershell.exe"
+      }
+    },
+    {
+      "id": "c3-identity-enrich-4444-5555-6666-ffffffffffff",
+      "time": "2026-01-26T02:17:00Z",
+      "type": "identity_enrichment",
+      "details": {
+        "user": "corp\\jdoe",
+        "display_name": "Jane Doe",
+        "job_title": "Sales Representative",
+        "department": "Sales",
+        "groups": ["Sales", "VPN-Users"],
+        "account_type": "standard_user",
+        "mfa_enabled": true
+      }
+    },
+    {
+      "id": "c4-asset-enrich-7777-8888-9999-000000000000",
+      "time": "2026-01-26T02:17:10Z",
+      "type": "asset_enrichment",
+      "details": {
+        "host": "DC01",
+        "asset_role": "Domain Controller",
+        "criticality": "high",
+        "tags": ["critical_system", "identity_provider"]
+      }
+    },
+    {
+      "id": "c5-change-check-aaaa-1111-2222-bbbbbbbbbbbb",
+      "time": "2026-01-26T02:18:00Z",
+      "type": "change_calendar",
+      "details": {
+        "lookup_scope": "DC01",
+        "window_start": null,
+        "window_end": null,
+        "status": "no_matching_change",
+        "note": "No approved maintenance or deployment window for DC01 at this time."
+      }
+    }
+  ],
+  "observables": {
+    "hosts": [
+      { "value": "WKST-JDOE01", "role": "source" },
+      { "value": "DC01", "role": "target" }
+    ],
+    "users": [
+      { "value": "corp\\jdoe", "role": "actor" },
+      { "value": "corp\\svc_backup", "role": "target_account" }
+    ]
+  }
+}

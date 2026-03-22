@@ -1,0 +1,67 @@
+/* generated using openapi-typescript-codegen -- do not edit */
+/* istanbul ignore file */
+/* tslint:disable */
+/* eslint-disable */
+import type { TimelineItemAudit } from './TimelineItemAudit';
+/**
+ * Timeline item for Windows registry modifications.
+ */
+export type RegistryChangeItem = {
+    /**
+     * Unique identifier for timeline item
+     */
+    id?: string;
+    type?: string;
+    /**
+     * Free text description of the timeline item
+     */
+    description?: (string | null);
+    /**
+     * Timestamp when item was created
+     */
+    created_at?: string;
+    /**
+     * Timestamp when event occurred
+     */
+    timestamp?: string;
+    /**
+     * User who created this timeline item
+     */
+    created_by?: string;
+    tags?: (Array<string> | null);
+    /**
+     * Whether this item is flagged as significant
+     */
+    flagged?: boolean;
+    /**
+     * Whether this item is highlighted for attention
+     */
+    highlighted?: boolean;
+    /**
+     * Background enrichment status
+     */
+    enrichment_status?: (string | null);
+    /**
+     * Provider enrichment payloads keyed by provider identifier
+     */
+    enrichments?: (Record<string, any> | null);
+    /**
+     * ID of parent timeline item for replies (null for top-level items)
+     */
+    parent_id?: (string | null);
+    /**
+     * Optional nested timeline items as replies (typed in Union definitions)
+     */
+    replies?: null;
+    /**
+     * Response-only audit metadata dynamically coalesced from audit logs
+     */
+    audit?: (TimelineItemAudit | null);
+    registry_key?: (string | null);
+    registry_value?: (string | null);
+    old_data?: (string | null);
+    new_data?: (string | null);
+    operation?: (string | null);
+    user_account?: (string | null);
+};
+

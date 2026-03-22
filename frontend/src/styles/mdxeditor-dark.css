@@ -1,0 +1,265 @@
+/* MDXEditor Dark Theme Customization */
+.mdx-editor-timeline.dark-theme {
+  /* Dark theme colors using brand palette */
+  --accentBase: rgb(18, 25, 0);        /* brand-1100 */
+  --accentBgSubtle: rgb(36, 52, 0);    /* brand-1000 */
+  --accentBg: rgb(71, 92, 11);         /* brand-900 */
+  --accentBgHover: rgb(84, 109, 7);    /* brand-800 */
+  --accentBgActive: rgb(106, 139, 0);  /* brand-700 */
+  --accentLine: rgb(141, 184, 0);      /* brand-600 */
+  --accentBorder: rgb(182, 230, 0);    /* brand-500 */
+  --accentBorderHover: rgb(208, 255, 0); /* brand-primary */
+  --accentSolid: rgb(208, 255, 0);     /* brand-primary */
+  --accentSolidHover: rgb(229, 255, 80); /* brand-300 */
+  --accentText: rgb(229, 255, 80);     /* brand-300 */
+  --accentTextContrast: rgb(243, 255, 144); /* brand-200 */
+
+  --accent1Base: #00FFD9; /* accent-1-primary */
+
+  --basePageBg: rgb(5, 7, 5);      /* default-page-background */
+  --baseBase: rgb(10, 15, 13);         /* default-background */
+  --baseBgSubtle: rgb(23, 23, 23);     /* neutral-50 */
+  --baseBg: transparent;          /* transparent to allow page background to show through */
+  --baseBgHover: rgb(64, 64, 64);      /* neutral-200 */
+  --baseBgActive: rgb(82, 82, 82);     /* neutral-300 */
+  --baseLine: rgb(82, 82, 82);         /* neutral-300 */
+  --baseBorder: rgb(115, 115, 115);    /* neutral-400 */
+  --baseBorderHover: rgb(163, 163, 163); /* neutral-500 */
+  --baseSolid: rgb(163, 163, 163);     /* neutral-500 / subtext-color */
+  --baseSolidHover: rgb(212, 212, 212); /* neutral-600 */
+  --baseText: rgb(250, 250, 250);      /* neutral-900 / default-font */
+  --baseTextContrast: rgb(255, 255, 255); /* neutral-1000 / white */
+
+  background: var(--baseBg);
+  color: var(--baseText);
+}
+
+.mdx-editor-timeline.light-theme {
+  --accentBase: rgb(18, 25, 0);
+  --accentBgSubtle: rgb(253, 255, 228);
+  --accentBg: rgb(249, 255, 196);
+  --accentBgHover: rgb(243, 255, 144);
+  --accentBgActive: rgb(229, 255, 80);
+  --accentLine: rgb(182, 230, 0);
+  --accentBorder: rgb(182, 230, 0);
+  --accentBorderHover: rgb(141, 184, 0);
+  --accentSolid: rgb(182, 230, 0);
+  --accentSolidHover: rgb(141, 184, 0);
+  --accentText: rgb(106, 139, 0);
+  --accentTextContrast: rgb(36, 52, 0);
+
+  --accent1Base: #00FFD9;
+
+  --basePageBg: rgb(255, 255, 255);
+  --baseBase: rgb(255, 255, 255);
+  --baseBgSubtle: rgb(250, 250, 250);
+  --baseBg: transparent;
+  --baseBgHover: rgb(245, 245, 245);
+  --baseBgActive: rgb(229, 229, 229);
+  --baseLine: rgb(229, 229, 229);
+  --baseBorder: rgb(212, 212, 212);
+  --baseBorderHover: rgb(163, 163, 163);
+  --baseSolid: rgb(115, 115, 115);
+  --baseSolidHover: rgb(82, 82, 82);
+  --baseText: rgb(23, 23, 23);
+  --baseTextContrast: rgb(10, 10, 10);
+
+  background: var(--baseBg);
+  color: var(--baseText);
+}
+
+.mdx-editor-timeline {
+  height: 100%;
+  font-family: "Saira", sans-serif;
+}
+
+
+.mdx-editor-timeline p {
+  margin-top: 12px;
+  margin-bottom: 12px;
+  font-family: "Saira", sans-serif;
+}
+
+.mdx-editor-timeline li {
+  font-family: "Saira", sans-serif;
+}
+
+.mdx-editor-timeline code {
+  font-size: 14px;
+}
+
+/* Scoped selection styling for MDXEditor only */
+.mdx-editor-timeline ::selection {
+  background-color: var(--accent1Base); /* Sets the highlight color to brand primary */
+  color: #000000 !important;      /* Sets the text color to dark */
+}
+
+/* For older Firefox versions, use the vendor prefix */
+.mdx-editor-timeline ::-moz-selection {
+  background-color: var(--accent1Base);
+  color: #000000 !important;
+}
+
+
+/* List Items */
+.mdx-editor-timeline .mdxeditor-root-contenteditable li::marker {
+  color: var(--baseText) !important;
+}
+.mdx-editor-timeline .mdxeditor-root-contenteditable li {
+  margin-top: 0px;
+  margin-bottom: 0px;
+}
+
+/* Placeholder styling - Target the actual placeholder class used by MDXEditor */
+.mdx-editor-timeline [class*="_placeholder_"] p {
+  opacity: 0.5;
+}
+
+/* Select component */
+.mdx-editor-timeline .mdxeditor-select-content {
+  background: var(--baseBgHover);
+  color: var(--baseText);
+  border: 1px solid var(--baseBorder);
+  border-radius: 0px;
+  padding: 4px 4px;
+}
+
+/* Code blocks */
+.mdx-editor-timeline .mdxeditor-root-contenteditable pre {
+  background: var(--baseBgHover);
+  border: 1px solid var(--baseBorder);
+  border-radius: 0px;
+  padding: 12px;
+  overflow-x: auto;
+  font-size: 14px;
+  line-height: 20px;
+  margin-top: 12px;
+  margin-bottom: 12px;
+}
+
+.mdx-editor-timeline .mdxeditor-root-contenteditable code {
+  background: var(--baseBgHover);
+  color: var(--accentText);
+  padding: 2px 6px;
+  border-radius: 0px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 14px;
+}
+
+/* Hide backticks in WYSIWYG mode for inline code */
+.mdx-editor-timeline .mdxeditor-root-contenteditable code::before,
+.mdx-editor-timeline .mdxeditor-root-contenteditable code::after {
+  content: none !important;
+}
+
+/* Ensure inline code doesn't have backticks rendered */
+.mdx-editor-timeline .mdxeditor-root-contenteditable code[data-lexical-text="true"]::before,
+.mdx-editor-timeline .mdxeditor-root-contenteditable code[data-lexical-text="true"]::after {
+  display: none !important;
+}
+
+/* Links */
+.mdx-editor-timeline .mdxeditor-root-contenteditable a {
+  color: var(--accentText);
+  text-decoration: underline;
+}
+
+.mdx-editor-timeline .mdxeditor-root-contenteditable a:hover {
+  color: var(--accentTextContrast);
+}
+
+/* Blockquotes */
+.mdx-editor-timeline .mdxeditor-root-contenteditable blockquote {
+  border-left: 3px solid var(--accentBorder);
+  padding-left: 16px;
+  color: var(--baseText);
+  margin: 16px 0;
+}
+
+/* Lists */
+.mdx-editor-timeline .mdxeditor-root-contenteditable ul,
+.mdx-editor-timeline .mdxeditor-root-contenteditable ol {
+  padding-left: 24px;
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+
+.mdx-editor-timeline .mdxeditor-root-contenteditable ul > li[role="checkbox"] {
+  padding-inline-start: 24px;
+}
+
+/* Headings */
+.mdx-editor-timeline .mdxeditor-root-contenteditable h1,
+.mdx-editor-timeline .mdxeditor-root-contenteditable h2,
+.mdx-editor-timeline .mdxeditor-root-contenteditable h3,
+.mdx-editor-timeline .mdxeditor-root-contenteditable h4,
+.mdx-editor-timeline .mdxeditor-root-contenteditable h5,
+.mdx-editor-timeline .mdxeditor-root-contenteditable h6 {
+  color: var(--baseTextContrast);
+  font-weight: 600;
+  font-family: "Saira Condensed", sans-serif;
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+
+.mdx-editor-timeline .mdxeditor-root-contenteditable h1 {
+  font-size: 30px;
+  line-height: 36px;
+}
+
+.mdx-editor-timeline .mdxeditor-root-contenteditable h2 {
+  font-size: 20px;
+  line-height: 24px;
+}
+
+.mdx-editor-timeline .mdxeditor-root-contenteditable h3 {
+  font-size: 16px;
+  line-height: 20px;
+}
+
+.mdx-editor-timeline .mdxeditor-root-contenteditable h4 {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+/* Toolbar buttons */
+.mdx-editor-timeline button[data-toolbar-item="true"] {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--baseText);
+  padding: 6px 8px;
+  border-radius: 0px;
+  cursor: pointer;
+}
+
+.mdx-editor-timeline button[data-toolbar-item="true"]:hover {
+  background: var(--baseBgHover);
+  border-color: var(--baseBorder);
+}
+
+.mdx-editor-timeline button[data-toolbar-item="true"][data-active="true"] {
+  background: var(--accentBg);
+  border-color: var(--accentBorder);
+  color: var(--accentText);
+}
+
+/* Dialogs */
+.mdx-editor-timeline .mdxeditor-popup-container {
+  background: var(--baseBg);
+  border: 1px solid var(--baseBorder);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* Select dropdowns */
+.mdx-editor-timeline select {
+  background: var(--baseBgHover);
+  color: var(--baseText);
+  border: 1px solid var(--baseBorder);
+  border-radius: 0px;
+  padding: 4px 8px;
+}
+
+/* Hide the CodeMirror language selector dropdown - it's non-functional in our custom toolbar setup */
+.mdx-editor-timeline div[class*="_codeMirrorToolbar_"] {
+  display: none !important;
+}

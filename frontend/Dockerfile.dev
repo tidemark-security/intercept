@@ -1,0 +1,14 @@
+FROM node:24-slim
+
+WORKDIR /app
+
+# Copy package files first for better layer caching
+COPY package.json package-lock.json* ./
+
+# Install dependencies
+RUN npm install
+
+EXPOSE 5173
+
+# Run development server
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

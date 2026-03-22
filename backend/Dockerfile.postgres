@@ -1,0 +1,25 @@
+FROM docker.io/library/postgres:18
+
+ARG PGVECTOR_VERSION=0.8.1
+
+# Install pg_cron extension and build dependencies to compile/install pgvector
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    postgresql-18-cron \
+    git \
+    build-essential \
+    ca-certificates \
+    postgresql-server-dev-18 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build and install pgvector
+RUN set -eux; \
+    git clone --depth 1 --branch v${PGVECTOR_VERSION} https://github.com/pgvector/pgvector.git /tmp/pgvector; \
+    cd /tmp/pgvector; \
+    make; \
+    make install; \
+    rm -rf /tmp/pgvector
+
+# Remove build dependencies to keep the image small
+RUN apt-get purge -y --auto-remove git build-essential ca-certificates || true
+
+# Note: extension initialization is performed by ./backend/init.sql mounted by docker-compose

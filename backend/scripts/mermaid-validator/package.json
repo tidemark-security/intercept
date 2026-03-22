@@ -1,0 +1,9 @@
+{
+  "name": "intercept-mermaid-validator",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "dompurify": "3.3.0",
+    "mermaid": "11.12.0"
+  }
+}

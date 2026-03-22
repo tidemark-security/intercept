@@ -1,0 +1,10 @@
+# Ignore generated and bundled artifacts
+node_modules/
+dist/
+coverage/
+build/
+.vite/
+src/types/generated/
+*.config.js
+*.config.cjs
+*.config.ts
