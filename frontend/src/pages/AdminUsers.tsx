@@ -55,7 +55,9 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  Copy,
   Search,
+  Link2,
   User,
   UserCheck,
   UserPlus,
@@ -94,6 +96,13 @@ interface CreateApiKeyFormData {
 interface UnifiedCreatedKeyData {
   key: ApiKeyCreateResponse;
   onDone: () => void;
+}
+
+interface ResetLinkModalData {
+  title: string;
+  subject: string;
+  url: string;
+  expiresAt: string;
 }
 
 const USER_QUERY_KEY = ["admin-users"] as const;
@@ -210,6 +219,9 @@ function AdminUsers() {
     useState<ApiKeyCreateResponse | null>(null);
   const [showKeyValue, setShowKeyValue] = useState(false);
   const [keyCopied, setKeyCopied] = useState(false);
+  const [resetLinkModalData, setResetLinkModalData] =
+    useState<ResetLinkModalData | null>(null);
+  const [resetLinkCopied, setResetLinkCopied] = useState(false);
 
   // Check if current user is admin
   const isAdmin = currentUser?.role === "ADMIN";
@@ -277,6 +289,12 @@ function AdminUsers() {
     setTimeout(() => setActionSuccess(null), ACTION_SUCCESS_TIMEOUT_MS);
   }, []);
 
+  const buildResetUrl = useCallback((token: string) => {
+    const url = new URL("/reset-password", window.location.origin);
+    url.searchParams.set("token", token);
+    return url.toString();
+  }, []);
+
   const resetCreateForm = () => {
     setCreateFormData(INITIAL_CREATE_FORM_DATA);
   };
@@ -327,36 +345,28 @@ function AdminUsers() {
     }
 
     if (createFormData.accountType === "HUMAN") {
-      if (!createFormData.email) {
-        setError("Email is required for human accounts");
-        return;
-      }
-
       try {
         setCreateLoading(true);
         setError(null);
-        await AdminService.createUserApiV1AdminAuthUsersPost({
+        const response = await AdminService.createUserApiV1AdminAuthUsersPost({
           requestBody: {
             username: createFormData.username,
-            email: createFormData.email,
+            email: createFormData.email.trim() || undefined,
             role: createFormData.role,
             description: createFormData.description || undefined,
           },
         });
 
-        setCreateSuccess(
-          `User created successfully. Temporary credentials sent to ${createFormData.email}`,
-        );
+        setResetLinkModalData({
+          title: "Password Setup Link Created",
+          subject: createFormData.username,
+          url: buildResetUrl(response.resetToken),
+          expiresAt: response.expiresAt,
+        });
         resetCreateForm();
 
         // Reload users list
         await refreshUsers();
-
-        // Close modal after 2 seconds
-        setTimeout(() => {
-          setShowCreateModal(false);
-          setCreateSuccess(null);
-        }, CREATE_SUCCESS_TIMEOUT_MS);
       } catch (err) {
         setError(extractErrorMessage(err, "Failed to create user"));
       } finally {
@@ -436,11 +446,6 @@ function AdminUsers() {
       return;
     }
 
-    if (editingUser.accountType === "HUMAN" && !editFormData.email.trim()) {
-      setError("Email is required for human accounts");
-      return;
-    }
-
     try {
       setEditLoading(true);
       setError(null);
@@ -450,7 +455,7 @@ function AdminUsers() {
           username: editFormData.username,
           email:
             editingUser.accountType === "HUMAN"
-              ? editFormData.email
+              ? editFormData.email.trim() || null
               : undefined,
           role: editFormData.role,
           description: editFormData.description,
@@ -488,14 +493,22 @@ function AdminUsers() {
   };
 
   const handleResetPassword = async (userId: string) => {
+    const targetUser = users.find((user) => user.id === userId);
+
     try {
       setActionLoading(userId);
       setError(null);
-      await AdminService.issuePasswordResetApiV1AdminAuthPasswordResetsPost({
+      const response =
+        await AdminService.issuePasswordResetApiV1AdminAuthPasswordResetsPost({
         requestBody: { userId },
       });
 
-      showActionSuccess("Password reset issued successfully");
+      setResetLinkModalData({
+        title: "Password Reset Link Created",
+        subject: targetUser?.username ?? "user",
+        url: buildResetUrl(response.resetToken),
+        expiresAt: response.expiresAt,
+      });
       await refreshUsers();
     } catch (err) {
       setError(extractErrorMessage(err, "Failed to issue password reset"));
@@ -644,6 +657,16 @@ function AdminUsers() {
     }
   };
 
+  const handleCopyResetLink = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setResetLinkCopied(true);
+      setTimeout(() => setResetLinkCopied(false), 2000);
+    } catch (err) {
+      setError("Failed to copy to clipboard");
+    }
+  };
+
   const closeCreatedKeyModal = () => {
     setCreatedNhiResponse(null);
     setNewlyCreatedKey(null);
@@ -654,6 +677,14 @@ function AdminUsers() {
     setCreateSuccess(null);
     resetCreateForm();
     setCreateApiKeyFormData(EMPTY_API_KEY_FORM_DATA);
+  };
+
+  const closeResetLinkModal = () => {
+    setResetLinkModalData(null);
+    setResetLinkCopied(false);
+    setShowCreateModal(false);
+    setCreateSuccess(null);
+    resetCreateForm();
   };
 
   const renderCreatedKeyModal = ({ key, onDone }: UnifiedCreatedKeyData) => (
@@ -1155,7 +1186,7 @@ function AdminUsers() {
       </AdminPageLayout>
 
       {/* Create User Modal */}
-      {showCreateModal && !createdNhiResponse && (
+      {showCreateModal && !createdNhiResponse && !resetLinkModalData && (
         <ModalShell>
           {/* Modal Header */}
           <div className="flex w-full items-center gap-2">
@@ -1165,7 +1196,7 @@ function AdminUsers() {
               </span>
               <span className="text-body font-body text-subtext-color">
                 {createFormData.accountType === "HUMAN"
-                  ? "User will receive temporary credentials via email"
+                  ? "Create a one-time password setup link for the user"
                   : "Create a service account for programmatic API access"}
               </span>
             </div>
@@ -1231,7 +1262,7 @@ function AdminUsers() {
                   <TextField
                     className="h-auto w-full flex-none"
                     label="Email"
-                    helpText="Used for temporary credential delivery"
+                    helpText="Optional contact email; not used for password delivery"
                   >
                     <TextField.Input
                       type="email"
@@ -1391,7 +1422,7 @@ function AdminUsers() {
                   <TextField
                     className="h-auto w-full flex-none"
                     label="Email"
-                    helpText="Used for temporary credential delivery"
+                    helpText="Optional contact email"
                   >
                     <TextField.Input
                       type="email"
@@ -1489,6 +1520,59 @@ function AdminUsers() {
 
       {/* Unified API Key Created Modal - shown for both NHI and direct key creation */}
       {createdKeyModalData && renderCreatedKeyModal(createdKeyModalData)}
+
+      {resetLinkModalData && (
+        <ModalShell>
+          <div className="flex w-full items-center gap-2">
+            <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
+              <span className="text-heading-2 font-heading-2 text-default-font flex items-center gap-2">
+                <CheckCircle className="text-success-500" />
+                {resetLinkModalData.title}
+              </span>
+              <span className="text-body font-body text-subtext-color">
+                Copy this URL now. It will not be shown again.
+              </span>
+            </div>
+            <Link2 className="text-[24px] text-default-font" />
+          </div>
+
+          <div className="flex w-full flex-col gap-3 rounded-md border border-solid border-warning-300 bg-warning-50 px-4 py-4">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="text-warning-500" />
+              <span className="text-body-bold font-body-bold text-warning-700">
+                Share this link securely with {resetLinkModalData.subject}
+              </span>
+            </div>
+            <div className="flex w-full items-center gap-2">
+              <code className="flex-1 rounded-md bg-default-background px-3 py-2 font-mono text-body break-all">
+                {resetLinkModalData.url}
+              </code>
+              <IconButton
+                icon={resetLinkCopied ? <CheckCircle className="text-success-500" /> : <Copy />}
+                onClick={() => handleCopyResetLink(resetLinkModalData.url)}
+                variant="inverse"
+              />
+            </div>
+          </div>
+
+          <div className="flex w-full flex-col gap-2 text-body text-subtext-color">
+            <div className="flex justify-between gap-4">
+              <span>User:</span>
+              <span className="text-default-font">{resetLinkModalData.subject}</span>
+            </div>
+            <div className="flex justify-between gap-4">
+              <span>Expires:</span>
+              <span className="text-default-font">
+                {formatAbsoluteTime(resetLinkModalData.expiresAt, "MMM d, yyyy h:mm a")}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex w-full items-center justify-end">
+            <Button onClick={closeResetLinkModal}>Done</Button>
+          </div>
+        </ModalShell>
+      )}
 
       {/* Toast Notifications - Fixed positioning at bottom right */}
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">

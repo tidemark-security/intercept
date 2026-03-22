@@ -294,6 +294,20 @@ _register(
 )
 
 # ---------------------------------------------------------------------------
+# Reset token  (hot-swappable)
+# ---------------------------------------------------------------------------
+_register(
+    _def(
+        "reset_token.expiry_minutes",
+        env_var="RESET_TOKEN_EXPIRY_MINUTES",
+        value_type=SettingType.NUMBER,
+        category="security",
+        description="Minutes before an admin-issued password reset token expires",
+        default=30,
+    ),
+)
+
+# ---------------------------------------------------------------------------
 # OIDC  (hot-swappable)
 # ---------------------------------------------------------------------------
 _register(
@@ -378,57 +392,6 @@ _register(
         category="oidc",
         description="JSON array of usernames allowed to use local password login while OIDC is enabled",
         default=[],
-    ),
-)
-
-# ---------------------------------------------------------------------------
-# SMTP  (hot-swappable)
-# ---------------------------------------------------------------------------
-_register(
-    _def(
-        "smtp.host",
-        env_var="SMTP_HOST",
-        category="smtp",
-        description="SMTP server hostname",
-        default="localhost",
-    ),
-    _def(
-        "smtp.port",
-        env_var="SMTP_PORT",
-        value_type=SettingType.NUMBER,
-        category="smtp",
-        description="SMTP server port",
-        default=1025,
-    ),
-    _def(
-        "smtp.username",
-        env_var="SMTP_USERNAME",
-        category="smtp",
-        description="SMTP authentication username",
-        default=None,
-    ),
-    _def(
-        "smtp.password",
-        env_var="SMTP_PASSWORD",
-        is_secret=True,
-        category="smtp",
-        description="SMTP authentication password",
-        default=None,
-    ),
-    _def(
-        "smtp.use_tls",
-        env_var="SMTP_USE_TLS",
-        value_type=SettingType.BOOLEAN,
-        category="smtp",
-        description="Whether to use STARTTLS for SMTP",
-        default=False,
-    ),
-    _def(
-        "smtp.from_address",
-        env_var="SMTP_FROM_ADDRESS",
-        category="smtp",
-        description="Sender email address for outgoing mail",
-        default="security-admin@example.com",
     ),
 )
 

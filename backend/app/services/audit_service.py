@@ -457,7 +457,7 @@ class AuditService:
             new_value={
                 "admin_user_id": str(kwargs["admin_user_id"]),
                 "reset_request_id": str(kwargs["reset_request_id"]),
-                "delivery_channel": kwargs["delivery_channel"],
+                "expires_at": kwargs["expires_at"],
             },
             performed_by=str(kwargs["admin_user_id"]),
             context=kwargs.get("context"),
@@ -473,7 +473,6 @@ class AuditService:
                 "admin_id": str(kwargs["admin_id"]),
                 "admin_username": kwargs["admin_username"],
                 "target_username": kwargs["target_username"],
-                "delivery_channel": getattr(kwargs["delivery_channel"], "value", kwargs["delivery_channel"]),
                 "reset_request_id": str(kwargs["reset_request_id"]),
                 "expires_at": kwargs["expires_at"],
             },

@@ -35,7 +35,7 @@ FastAPI-based backend for the Intercept security case management platform.
    - `SESSION_SECRET_KEY`: Random secret for session signing
    - `SESSION_COOKIE_NAME`: Cookie name (default: `intercept_session`)
    - `SESSION_IDLE_TIMEOUT_HOURS`: Session timeout (1 for admin, 12 for analyst)
-   - `SMTP_*`: Email configuration for password resets
+  - `RESET_TOKEN_EXPIRY_MINUTES`: Minutes before an admin-issued password setup/reset link expires
 
 ## Setup
 
@@ -403,8 +403,7 @@ backend/
 │       ├── audit_service.py    # Audit logging
 │       ├── security/
 │       │   └── password_hasher.py  # Argon2id password hashing
-│       └── notifications/
-│           └── email_service.py    # Email delivery
+│       └── notifications/          # Notification package
 ├── scripts/
 │   └── seed_test_users.py      # Seed initial admin account
 └── tests/
@@ -501,24 +500,16 @@ WHERE username = 'locked_user';
 
 Or wait for lockout to expire (15 minutes by default).
 
-### Email Delivery Issues
+### Admin Reset Links
 
-**Symptom**: Password reset emails not sending
+**Symptom**: User cannot finish an admin-issued password setup or reset
 
-**Solution**: Verify SMTP configuration in `.env`
+**Solution**: Verify the reset link is still valid and the expiry setting is appropriate.
 ```bash
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USERNAME=your_email@gmail.com
-SMTP_PASSWORD=your_app_password
-SMTP_USE_TLS=true
-SMTP_FROM_ADDRESS=noreply@yourdomain.com
+RESET_TOKEN_EXPIRY_MINUTES=30
 ```
 
-Test SMTP connection:
-```python
-python -c "from app.services.notifications.email_service import test_connection; test_connection()"
-```
+Admins can also adjust `reset_token.expiry_minutes` from the settings UI.
 
 ## Security Considerations
 
@@ -556,7 +547,7 @@ Prometheus metrics exposed at `/metrics`:
 - `auth_lockout_total{role}`: Account lockouts
 - `auth_logout_total{reason}`: Session terminations
 - `auth_password_change_total{forced}`: Password changes
-- `auth_admin_reset_total{delivery_channel}`: Admin-issued resets
+- `auth_admin_reset_total`: Admin-issued resets
 
 ### Structured Logging
 

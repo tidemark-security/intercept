@@ -145,7 +145,7 @@ describe("Create User Form", () => {
       return (
         <form>
           <input aria-label="Username" required />
-          <input aria-label="Email" type="email" required />
+          <input aria-label="Email" type="email" />
           <select aria-label="Role" required>
             <option value="">Select role</option>
             <option value="ANALYST">Analyst</option>
@@ -160,15 +160,15 @@ describe("Create User Form", () => {
     renderWithProviders(<MockCreateUserForm />, { sessionValue });
 
     expect(screen.getByLabelText(/username/i)).toBeRequired();
-    expect(screen.getByLabelText(/email/i)).toBeRequired();
+    expect(screen.getByLabelText(/email/i)).not.toBeRequired();
     expect(screen.getByLabelText(/role/i)).toBeRequired();
   });
 
   it("submits valid user creation data", async () => {
     const createUser = vi.fn().mockResolvedValue({
       userId: "new-user-id",
-      temporaryCredentialExpiresAt: new Date().toISOString(),
-      deliveryChannel: "SECURE_EMAIL",
+      expiresAt: new Date().toISOString(),
+      resetToken: "token-value",
     });
 
     const sessionValue = createSessionValue();
@@ -233,7 +233,7 @@ describe("Create User Form", () => {
           </form>
           {success && (
             <div role="alert">
-              User created successfully. Temporary credentials sent via email.
+              User created successfully. Password setup link created.
             </div>
           )}
         </div>
@@ -251,7 +251,7 @@ describe("Create User Form", () => {
         /user created successfully/i
       );
       expect(screen.getByRole("alert")).toHaveTextContent(
-        /temporary credentials sent via email/i
+        /password setup link/i
       );
     });
   });

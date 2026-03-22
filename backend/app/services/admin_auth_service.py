@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import logging
 import secrets
-import string
 from typing import Any, Optional, cast
 from uuid import UUID
 
@@ -17,7 +17,6 @@ from sqlalchemy.orm import selectinload
 from app.core.settings_registry import get_local
 from app.models.enums import (
     AccountType,
-    ResetDeliveryChannel,
     SessionRevokedReason,
     UserRole,
     UserStatus,
@@ -28,8 +27,7 @@ from app.models.models import (
     UserAccount,
 )
 from app.services import AuditContext, PasswordHasher, get_audit_service
-from app.services.auth_service import RequestMetadata
-from app.services.notifications import email_service
+from app.services.auth_service import PasswordPolicyViolation, RequestMetadata
 from app.services.security.password_hasher import Argon2Parameters
 
 logger = logging.getLogger(__name__)
@@ -45,9 +43,8 @@ class CreateUserResult:
     """Result of user creation operation."""
 
     user_id: UUID
-    temporary_credential_expires_at: datetime
-    delivery_channel: ResetDeliveryChannel
-    temporary_password: str  # For email delivery
+    expires_at: datetime
+    reset_token: str
 
 
 @dataclass(slots=True)
@@ -56,7 +53,7 @@ class PasswordResetResult:
 
     reset_request_id: UUID
     expires_at: datetime
-    temporary_password: str  # For email delivery
+    reset_token: str
 
 
 # ---------------------------------------------------------------------------
@@ -87,64 +84,61 @@ class AdminAuthService:
         *,
         admin_user_id: UUID,
         username: str,
-        email: str,
+        email: Optional[str],
         role: UserRole,
         description: Optional[str] = None,
-        delivery_channel: ResetDeliveryChannel,
         request_metadata: RequestMetadata,
         db: AsyncSession,
     ) -> CreateUserResult:
         """
-        Create a new user account with a temporary password.
+        Create a new user account with a one-time password setup token.
 
         Args:
             admin_user_id: ID of the admin creating the user
             username: Username for the new account
-            email: Email address for the new account
+            email: Optional email address for the new account
             role: Role to assign to the user
             description: Optional job title or role description
-            delivery_channel: How to deliver the temporary credential
             request_metadata: Request context for audit logging
             db: Database session
 
         Returns:
-            CreateUserResult with user ID and temporary credential details
+            CreateUserResult with user ID and password setup token details
 
         Raises:
             ValueError: If username or email already exists
         """
+        normalized_username = username.strip().lower()
+        normalized_email = email.strip().lower() if email and email.strip() else None
+
         # Check for duplicate username
         result = await db.execute(
-            select(UserAccount).where(UserAccount.username == username.lower())
+            select(UserAccount).where(UserAccount.username == normalized_username)
         )
         if result.scalar_one_or_none() is not None:
-            raise ValueError(f"Username '{username}' already exists")
+            raise ValueError(f"Username '{normalized_username}' already exists")
 
         # Check for duplicate email
-        result = await db.execute(
-            select(UserAccount).where(UserAccount.email == email.lower())
-        )
-        if result.scalar_one_or_none() is not None:
-            raise ValueError(f"Email '{email}' already exists")
+        if normalized_email:
+            result = await db.execute(
+                select(UserAccount).where(UserAccount.email == normalized_email)
+            )
+            if result.scalar_one_or_none() is not None:
+                raise ValueError(f"Email '{normalized_email}' already exists")
 
-        # Generate temporary password
-        temporary_password = self._generate_temporary_password()
-        loop = asyncio.get_running_loop()
-        password_hash = await loop.run_in_executor(None, self._hasher.hash, temporary_password)
-
-        # Create user account
         now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(minutes=30)
+        expires_at = now + timedelta(minutes=await self._get_reset_token_expiry_minutes(db))
+        reset_token = self._generate_reset_token()
 
         user = UserAccount(
-            username=username.lower(),
-            email=email.lower(),
+            username=normalized_username,
+            email=normalized_email,
             role=role,
             description=description,
             status=UserStatus.ACTIVE,
-            password_hash=password_hash,
-            password_updated_at=now,
-            must_change_password=True,
+            password_hash=None,
+            password_updated_at=None,
+            must_change_password=False,
             failed_login_attempts=0,
             created_at=now,
             updated_at=now,
@@ -152,20 +146,19 @@ class AdminAuthService:
         )
 
         db.add(user)
+        await db.flush()
+
+        reset_request = AdminResetRequest(
+            target_user_id=user.id,
+            issued_by_admin_id=admin_user_id,
+            token_hash=self._hash_reset_token(reset_token),
+            expires_at=expires_at,
+            created_at=now,
+        )
+        db.add(reset_request)
+
         await db.commit()
         await db.refresh(user)
-
-        # Send temporary credential via email
-        try:
-            await email_service.send_temporary_credential(
-                recipient_email=cast(str, user.email),
-                username=user.username,
-                temporary_password=temporary_password,
-                expires_in_minutes=30,
-            )
-        except Exception as e:
-            logger.error(f"Failed to send temporary credential email to {user.email}: {e}")
-            # Continue anyway - the user was created successfully
 
         # Audit log
         await get_audit_service(db).user_created(
@@ -178,14 +171,13 @@ class AdminAuthService:
         )
 
         logger.info(
-            f"Admin {admin_user_id} created user {user.id} ({username}) with role {role.value}"
+            f"Admin {admin_user_id} created user {user.id} ({normalized_username}) with role {role.value}"
         )
 
         return CreateUserResult(
             user_id=user.id,
-            temporary_credential_expires_at=expires_at,
-            delivery_channel=delivery_channel,
-            temporary_password=temporary_password,
+            expires_at=expires_at,
+            reset_token=reset_token,
         )
 
     async def update_user_status(
@@ -267,6 +259,7 @@ class AdminAuthService:
         target_user_id: UUID,
         username: Optional[str] = None,
         email: Optional[str] = None,
+        email_provided: bool = False,
         role: Optional[UserRole] = None,
         description: Optional[str] = None,
         request_metadata: RequestMetadata,
@@ -300,19 +293,22 @@ class AdminAuthService:
                 raise ValueError(f"Username '{normalized_username}' already exists")
             user.username = normalized_username
 
-        if email is not None:
+        if email_provided:
             if user.account_type == AccountType.NHI:
                 raise ValueError("NHI accounts cannot have an email address")
-            normalized_email = email.strip().lower()
-            duplicate_email_result = await db.execute(
-                select(UserAccount).where(
-                    UserAccount.email == normalized_email,
-                    UserAccount.id != target_user_id,
+            if email is None:
+                user.email = None
+            else:
+                normalized_email = email.strip().lower()
+                duplicate_email_result = await db.execute(
+                    select(UserAccount).where(
+                        UserAccount.email == normalized_email,
+                        UserAccount.id != target_user_id,
+                    )
                 )
-            )
-            if duplicate_email_result.scalar_one_or_none() is not None:
-                raise ValueError(f"Email '{normalized_email}' already exists")
-            user.email = normalized_email
+                if duplicate_email_result.scalar_one_or_none() is not None:
+                    raise ValueError(f"Email '{normalized_email}' already exists")
+                user.email = normalized_email
 
         if role is not None:
             user.role = role
@@ -351,7 +347,6 @@ class AdminAuthService:
         *,
         admin_user_id: UUID,
         target_user_id: UUID,
-        delivery_channel: ResetDeliveryChannel,
         request_metadata: RequestMetadata,
         db: AsyncSession,
     ) -> PasswordResetResult:
@@ -359,15 +354,14 @@ class AdminAuthService:
         Issue an admin-initiated password reset.
 
         This will:
-        - Generate a temporary password
-        - Set must_change_password flag
+        - Generate a one-time reset token
+        - Invalidate the current password
         - Revoke all active sessions
         - Create reset request record
 
         Args:
             admin_user_id: ID of the admin issuing the reset
             target_user_id: ID of the user to reset
-            delivery_channel: How to deliver the temporary credential
             request_metadata: Request context for audit logging
             db: Database session
 
@@ -395,18 +389,15 @@ class AdminAuthService:
                 "Cannot issue password reset for NHI accounts; they authenticate via API keys only"
             )
 
-        # Generate temporary password
-        temporary_password = self._generate_temporary_password()
-        loop = asyncio.get_running_loop()
-        password_hash = await loop.run_in_executor(None, self._hasher.hash, temporary_password)
-
-        # Update user
         now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(minutes=30)
+        expires_at = now + timedelta(minutes=await self._get_reset_token_expiry_minutes(db))
+        reset_token = self._generate_reset_token()
 
-        user.password_hash = password_hash
-        user.password_updated_at = now
-        user.must_change_password = True
+        await self._invalidate_active_reset_requests(user_id=target_user_id, now=now, db=db)
+
+        user.password_hash = None
+        user.password_updated_at = None
+        user.must_change_password = False
         user.failed_login_attempts = 0
         user.lockout_expires_at = None
         user.updated_at = now
@@ -415,9 +406,7 @@ class AdminAuthService:
         reset_request = AdminResetRequest(
             target_user_id=target_user_id,
             issued_by_admin_id=admin_user_id,
-            temporary_secret_hash=password_hash,
-            delivery_channel=delivery_channel,
-            delivery_reference=f"email:{user.email}",
+            token_hash=self._hash_reset_token(reset_token),
             expires_at=expires_at,
             created_at=now,
         )
@@ -434,24 +423,12 @@ class AdminAuthService:
         await db.commit()
         await db.refresh(reset_request)
 
-        # Send temporary credential via email
-        try:
-            await email_service.send_temporary_credential(
-                recipient_email=user.email,
-                username=user.username,
-                temporary_password=temporary_password,
-                expires_in_minutes=30,
-            )
-        except Exception as e:
-            logger.error(f"Failed to send password reset email to {user.email}: {e}")
-            # Continue anyway - the reset was created successfully
-
         # Audit log
         await get_audit_service(db).password_reset_issued(
             admin_user_id=admin_user_id,
             target_user_id=target_user_id,
             reset_request_id=reset_request.id,
-            delivery_channel=delivery_channel.value,
+            expires_at=expires_at,
             context=request_metadata.to_audit_context(),
         )
 
@@ -462,7 +439,78 @@ class AdminAuthService:
         return PasswordResetResult(
             reset_request_id=reset_request.id,
             expires_at=expires_at,
-            temporary_password=temporary_password,
+            reset_token=reset_token,
+        )
+
+    async def consume_reset_token(
+        self,
+        *,
+        token: str,
+        new_password: str,
+        request_metadata: RequestMetadata,
+        db: AsyncSession,
+    ) -> None:
+        """Consume a one-time reset token and set a new password."""
+        candidate = new_password.strip()
+        if len(candidate) < 12:
+            raise PasswordPolicyViolation("Password does not meet minimum length requirements")
+
+        from app.models.models import PASSWORD_POLICY_REGEX
+
+        if not PASSWORD_POLICY_REGEX.match(candidate):
+            raise PasswordPolicyViolation(
+                "Password must include upper, lower, number, and special character"
+            )
+
+        now = datetime.now(timezone.utc)
+        token_hash = self._hash_reset_token(token)
+        result = await db.execute(
+            select(AdminResetRequest)
+            .options(selectinload(AdminResetRequest.target_user))
+            .where(AdminResetRequest.token_hash == token_hash)
+        )
+        reset_request = result.scalar_one_or_none()
+
+        if reset_request is None:
+            raise ValueError("Password reset token is invalid")
+        if reset_request.invalidated_at is not None or reset_request.consumed_at is not None:
+            raise ValueError("Password reset token is no longer valid")
+        if reset_request.expires_at <= now:
+            reset_request.invalidated_at = now
+            await db.commit()
+            raise ValueError("Password reset token has expired")
+
+        user = reset_request.target_user
+        if user is None:
+            user = await db.get(UserAccount, reset_request.target_user_id)
+        if user is None:
+            raise ValueError("Password reset token is invalid")
+        if user.account_type == AccountType.NHI:
+            raise ValueError("Password reset token is invalid")
+
+        await self._invalidate_active_reset_requests(user_id=user.id, now=now, db=db, exclude_id=reset_request.id)
+
+        loop = asyncio.get_running_loop()
+        hashed = await loop.run_in_executor(None, self._hasher.hash, candidate)
+
+        user.password_hash = hashed
+        user.password_updated_at = now
+        user.must_change_password = False
+        user.failed_login_attempts = 0
+        user.lockout_expires_at = None
+        user.updated_at = now
+        if user.status != UserStatus.DISABLED:
+            user.status = UserStatus.ACTIVE
+
+        reset_request.consumed_at = now
+
+        await db.commit()
+
+        await get_audit_service(db).password_changed(
+            user_id=user.id,
+            username=user.username,
+            was_forced=False,
+            context=request_metadata.to_audit_context(),
         )
 
     async def _revoke_user_sessions(
@@ -498,34 +546,39 @@ class AdminAuthService:
 
         return len(active_sessions)
 
-    def _generate_temporary_password(self) -> str:
-        """
-        Generate a secure temporary password.
+    async def _invalidate_active_reset_requests(
+        self,
+        *,
+        user_id: UUID,
+        now: datetime,
+        db: AsyncSession,
+        exclude_id: Optional[UUID] = None,
+    ) -> None:
+        result = await db.execute(
+            select(AdminResetRequest).where(
+                AdminResetRequest.target_user_id == user_id,
+                cast(Any, AdminResetRequest.consumed_at).is_(None),
+                cast(Any, AdminResetRequest.invalidated_at).is_(None),
+            )
+        )
+        for reset_request in result.scalars().all():
+            if exclude_id is not None and reset_request.id == exclude_id:
+                continue
+            reset_request.invalidated_at = now
 
-        Returns a 16-character password meeting policy requirements:
-        - At least one uppercase letter
-        - At least one lowercase letter
-        - At least one digit
-        - At least one special character
-        """
-        alphabet = string.ascii_letters + string.digits + "!@#$%^&*()"
-        
-        # Ensure password meets all requirements
-        password_chars = [
-            secrets.choice(string.ascii_uppercase),
-            secrets.choice(string.ascii_lowercase),
-            secrets.choice(string.digits),
-            secrets.choice("!@#$%^&*()"),
-        ]
-        
-        # Fill remaining characters
-        for _ in range(12):
-            password_chars.append(secrets.choice(alphabet))
-        
-        # Shuffle to avoid predictable patterns
-        secrets.SystemRandom().shuffle(password_chars)
-        
-        return ''.join(password_chars)
+    async def _get_reset_token_expiry_minutes(self, db: AsyncSession) -> int:
+        from app.services.settings_service import SettingsService
+
+        svc = SettingsService(db)  # type: ignore[arg-type]
+        return int(await svc.get("reset_token.expiry_minutes", default=30))
+
+    @staticmethod
+    def _generate_reset_token() -> str:
+        return secrets.token_urlsafe(32)
+
+    @staticmethod
+    def _hash_reset_token(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     async def get_users(
         self,

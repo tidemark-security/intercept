@@ -20,7 +20,6 @@ from app.models.enums import (
     Protocol,
     UserRole,
     UserStatus,
-    ResetDeliveryChannel,
     SessionRevokedReason,
     UploadStatus,
     SettingType,
@@ -1115,7 +1114,7 @@ class UserAccount(UserAccountBase, table=True):
     email: Optional[EmailStr] = Field(
         default=None,
         sa_column=Column(String(255), unique=True, index=True, nullable=True),
-        description="Unique email used for notifications/reset (required for HUMAN accounts)",
+        description="Optional unique email used for contact and identity metadata",
     )
     password_hash: Optional[str] = Field(
         default=None,
@@ -1184,10 +1183,6 @@ class UserAccount(UserAccountBase, table=True):
     def _validate_account_type_fields(self) -> "UserAccount":
         """Enforce field requirements based on account type."""
         if self.account_type == AccountType.HUMAN:
-            if not self.email:
-                raise ValueError("email is required for HUMAN accounts")
-            if not self.password_hash and not self.oidc_subject:
-                raise ValueError("password_hash or oidc_subject is required for HUMAN accounts")
             if self.oidc_subject and not self.oidc_issuer:
                 raise ValueError("oidc_issuer is required when oidc_subject is set")
         elif self.account_type == AccountType.NHI:
@@ -1202,13 +1197,16 @@ class UserAccount(UserAccountBase, table=True):
 
 class HumanUserAccountBase(UserAccountBase):
     """Base fields for human user accounts including email."""
-    email: EmailStr = Field(
-        description="Unique email used for notifications/reset",
+    email: Optional[EmailStr] = Field(
+        default=None,
+        description="Optional unique email used for contact metadata",
     )
 
     @field_validator("email", mode="before")
     @classmethod
-    def _normalize_email(cls, value: EmailStr) -> str:
+    def _normalize_email(cls, value: Optional[EmailStr]) -> Optional[str]:
+        if value is None:
+            return None
         return str(value).strip().lower()
 
 
@@ -1384,9 +1382,7 @@ class OIDCAuthRequest(SQLModel, table=True):
 class AdminResetRequestBase(SQLModel):
     target_user_id: UUID = Field(foreign_key="user_accounts.id")
     issued_by_admin_id: UUID = Field(foreign_key="user_accounts.id")
-    temporary_secret_hash: str = Field(max_length=256)
-    delivery_channel: ResetDeliveryChannel = Field(default=ResetDeliveryChannel.SECURE_EMAIL)
-    delivery_reference: Optional[str] = None
+    token_hash: str = Field(sa_column=Column(String(64), index=True, nullable=False))
     expires_at: datetime = Field(sa_column=Column(UTCDateTime(), index=True))
     consumed_at: Optional[datetime] = Field(
         default=None,

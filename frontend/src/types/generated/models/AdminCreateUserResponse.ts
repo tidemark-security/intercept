@@ -2,7 +2,6 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-import type { ResetDeliveryChannel } from './ResetDeliveryChannel';
 /**
  * Response after successful user creation.
  */
@@ -12,12 +11,12 @@ export type AdminCreateUserResponse = {
      */
     userId: string;
     /**
-     * Expiration timestamp for temporary credential
+     * Expiration timestamp for password setup token
      */
-    temporaryCredentialExpiresAt: string;
+    expiresAt: string;
     /**
-     * Channel used to deliver temporary credential
+     * One-time password setup token
      */
-    deliveryChannel: ResetDeliveryChannel;
+    resetToken: string;
 };
 

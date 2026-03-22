@@ -116,6 +116,7 @@ export type { PasskeyFinishRegistrationRequest } from './models/PasskeyFinishReg
 export type { PasskeyRead } from './models/PasskeyRead';
 export type { PasskeyRenameRequest } from './models/PasskeyRenameRequest';
 export type { PasswordChangeRequest } from './models/PasswordChangeRequest';
+export type { PasswordResetTokenRequest } from './models/PasswordResetTokenRequest';
 export type { PresignedDownloadResponse } from './models/PresignedDownloadResponse';
 export type { PresignedUploadRequest } from './models/PresignedUploadRequest';
 export type { PresignedUploadResponse } from './models/PresignedUploadResponse';
@@ -128,7 +129,6 @@ export type { RecommendationStatus } from './models/RecommendationStatus';
 export type { RegistryChangeItem } from './models/RegistryChangeItem';
 export type { RejectionCategory } from './models/RejectionCategory';
 export type { RejectRecommendationRequest } from './models/RejectRecommendationRequest';
-export type { ResetDeliveryChannel } from './models/ResetDeliveryChannel';
 export type { SearchErrorResponse } from './models/SearchErrorResponse';
 export type { SearchResultItem } from './models/SearchResultItem';
 export type { SessionStatus } from './models/SessionStatus';
