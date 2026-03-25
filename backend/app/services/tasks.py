@@ -6,13 +6,17 @@ Defines task handlers for:
 - Batch processing
 - Scheduled tasks
 - Alert triage via LangFlow
+- Terminal failure hooks for retried worker tasks
 """
 import logging
 from typing import Dict, Any
 from uuid import UUID, uuid4
 
+from pgqueuer.errors import MaxRetriesExceeded, MaxTimeExceeded
+
 from app.services.task_queue_service import get_task_queue_service
 from app.services.langflow_service import LangFlowService, LangFlowConfigurationError
+from app.services.realtime_service import emit_event
 from app.services.settings_service import SettingsService
 from app.core.database import async_session_factory
 from app.services.enrichment.service import enrichment_service
@@ -28,6 +32,43 @@ TASK_TRIAGE_ALERT = "triage_alert"
 TASK_ENRICH_ITEM = "enrich_item"
 TASK_DIRECTORY_SYNC = "directory_sync"
 TASK_MAXMIND_UPDATE = "maxmind_update"
+
+
+def _unwrap_terminal_failure(exc: Exception) -> Exception:
+    current = exc
+    seen: set[int] = set()
+    while getattr(current, "__cause__", None) is not None and id(current) not in seen:
+        seen.add(id(current))
+        current = current.__cause__  # type: ignore[assignment]
+    return current
+
+
+def _format_terminal_failure_message(exc: Exception) -> str:
+    root_cause = _unwrap_terminal_failure(exc)
+    root_message = str(root_cause).strip() or root_cause.__class__.__name__
+
+    if isinstance(exc, MaxTimeExceeded):
+        return f"Retry time limit exceeded: {root_message}"
+    if isinstance(exc, MaxRetriesExceeded):
+        return f"Retries exhausted: {root_message}"
+    return root_message
+
+
+async def _handle_triage_terminal_failure(payload: Dict[str, Any], exc: Exception) -> None:
+    """Mark triage as failed only after retry exhaustion."""
+    await _mark_triage_failed(int(payload["alert_id"]), _format_terminal_failure_message(exc))
+
+
+async def _handle_enrich_item_terminal_failure(payload: Dict[str, Any], exc: Exception) -> None:
+    """Clear stuck enrichment pending state after retry exhaustion."""
+    async with async_session_factory() as db:
+        await enrichment_service.clear_item_enrichment_pending_status(
+            db,
+            entity_type=str(payload["entity_type"]),
+            entity_id=int(payload["entity_id"]),
+            item_id=str(payload["item_id"]),
+            error_message=_format_terminal_failure_message(exc),
+        )
 
 
 async def handle_langflow_chat(payload: Dict[str, Any]):
@@ -156,15 +197,12 @@ async def handle_triage_alert(payload: Dict[str, Any]):
     This handler updates the QUEUED placeholder recommendation:
     - On success: The LangFlow agent will call create_triage_recommendation
       which supersedes the QUEUED record with a PENDING one
-    - On failure: Updates the QUEUED record to FAILED with error message
+        - On retryable failure: Leaves the recommendation QUEUED so the worker can retry
+        - On terminal failure: A queue-level failure hook updates the record to FAILED
     
     Payload:
         alert_id: ID of the alert to triage (int or str)
     """
-    from sqlmodel import select
-    from app.models.models import TriageRecommendation
-    from app.models.enums import RecommendationStatus
-    
     alert_id = payload["alert_id"]
     session_id = uuid4()  # Generate a new session ID for each triage
     
@@ -183,11 +221,6 @@ async def handle_triage_alert(payload: Dict[str, Any]):
         flow_id = await settings_service.get_typed_value("langflow.alert_triage_flow_id")
         
         if not flow_id:
-            # Mark as failed if flow not configured
-            await _mark_triage_failed(
-                alert_id,
-                "Alert triage flow not configured. Please set 'langflow.alert_triage_flow_id' in settings."
-            )
             raise LangFlowConfigurationError(
                 "Alert triage flow not configured. Please set 'langflow.alert_triage_flow_id' in settings."
             )
@@ -217,11 +250,9 @@ async def handle_triage_alert(payload: Dict[str, Any]):
             
             # Note: The LangFlow agent should call create_triage_recommendation MCP tool
             # which supersedes the QUEUED placeholder. If it didn't, the record stays QUEUED
-            # and will be picked up on retry or marked failed after max retries.
+            # and will be picked up on retry or marked failed after retries are exhausted.
             
         except Exception as e:
-            # Mark the QUEUED recommendation as FAILED
-            await _mark_triage_failed(alert_id, str(e))
             raise
             
         finally:
@@ -237,7 +268,7 @@ async def _mark_triage_failed(alert_id: int, error_message: str):
     """
     from sqlmodel import select
     from app.models.models import TriageRecommendation
-    from app.models.enums import RecommendationStatus
+    from app.models.enums import RecommendationStatus, RealtimeEventType
     
     try:
         # Use a fresh session to avoid issues with rolled-back transactions
@@ -253,6 +284,13 @@ async def _mark_triage_failed(alert_id: int, error_message: str):
                 recommendation.status = RecommendationStatus.FAILED
                 recommendation.error_message = error_message[:1000] if error_message else None
                 db.add(recommendation)
+                await emit_event(
+                    db,
+                    entity_type="alert",
+                    entity_id=alert_id,
+                    event_type=RealtimeEventType.TRIAGE_COMPLETED,
+                    performed_by="system",
+                )
                 await db.commit()
                 logger.warning(
                     f"Marked triage recommendation as FAILED",
@@ -271,7 +309,12 @@ async def _mark_triage_failed(alert_id: int, error_message: str):
 
 
 async def handle_enrich_item(payload: Dict[str, Any]):
-    """Handle timeline item enrichment in the background worker."""
+    """Handle timeline item enrichment in the background worker.
+
+    Retryable failures are surfaced back to the queue executor so the item can
+    remain pending during retries. A terminal failure hook clears the pending
+    state if retries are exhausted.
+    """
     entity_type = str(payload["entity_type"])
     entity_id = int(payload["entity_id"])
     item_id = str(payload["item_id"])
@@ -354,12 +397,14 @@ def register_task_handlers():
             task_name=TASK_TRIAGE_ALERT,
             handler=handle_triage_alert,
             max_retries=3,
+            on_terminal_failure=_handle_triage_terminal_failure,
         )
 
         task_queue.register_handler(
             task_name=TASK_ENRICH_ITEM,
             handler=handle_enrich_item,
             max_retries=3,
+            on_terminal_failure=_handle_enrich_item_terminal_failure,
         )
 
         task_queue.register_handler(

@@ -5,16 +5,19 @@ Provides asynchronous task execution for:
 - Long-running LangFlow operations
 - Background data processing
 - Scheduled tasks
-- Retry logic with exponential backoff
+- In-worker retry logic with exponential backoff and terminal failure hooks
 """
 import json
 import logging
 import asyncio
+import dataclasses
 from typing import Optional, Dict, Any, Callable, Awaitable
 from datetime import datetime, timezone, timedelta
 
 import asyncpg
 from pgqueuer.db import AsyncpgDriver, AsyncpgPoolDriver
+from pgqueuer.errors import MaxRetriesExceeded, MaxTimeExceeded
+from pgqueuer.executors import RetryWithBackoffEntrypointExecutor
 from pgqueuer.qm import QueueManager
 from pgqueuer.queries import Queries
 from pgqueuer.models import Job
@@ -22,14 +25,53 @@ from pgqueuer.models import Job
 logger = logging.getLogger(__name__)
 
 
+TerminalFailureHandler = Callable[[Dict[str, Any], Exception], Awaitable[None]]
+
+RETRY_INITIAL_DELAY_SECONDS = 5.0
+RETRY_MAX_DELAY = timedelta(seconds=60)
+RETRY_MAX_TIME = timedelta(minutes=10)
+
+
+@dataclasses.dataclass
+class RetryWithTerminalFailureHookExecutor(RetryWithBackoffEntrypointExecutor):
+    """Retry a job with backoff, then run a terminal failure hook once.
+
+    Retry attempts are handled inside the running worker process. If retries are
+    exhausted or the total retry window is exceeded, the optional terminal
+    failure hook is invoked once before the exception is surfaced back to
+    pgqueuer.
+    """
+
+    on_terminal_failure: Optional[TerminalFailureHandler] = dataclasses.field(default=None)
+
+    async def execute(self, job: Job, context: Any) -> None:
+        try:
+            await super().execute(job, context)
+        except (MaxRetriesExceeded, MaxTimeExceeded) as exc:
+            if self.on_terminal_failure is not None:
+                payload: Dict[str, Any] = {}
+                if job.payload:
+                    payload = json.loads(job.payload.decode("utf-8"))
+
+                try:
+                    await self.on_terminal_failure(payload, exc)
+                except Exception:
+                    logger.exception(
+                        "Terminal failure hook failed for task",
+                        extra={"task_id": str(job.id), "task_name": job.entrypoint},
+                    )
+            raise
+
+
 class TaskQueueService:
     """
     Service for managing background task queue using pgqueuer.
-    
+
     Handles:
     - Task enqueueing
     - Worker process management
-    - Retry logic
+    - In-worker retry/backoff policies per handler
+    - Terminal failure callbacks after retry exhaustion
     - Task status tracking
     """
     
@@ -204,6 +246,7 @@ class TaskQueueService:
         task_name: str,
         handler: Callable[[Dict[str, Any]], Awaitable[None]],
         max_retries: int = 3,
+        on_terminal_failure: Optional[TerminalFailureHandler] = None,
     ):
         """
         Register a handler for a task type.
@@ -211,18 +254,33 @@ class TaskQueueService:
         Args:
             task_name: Name/type of task to handle
             handler: Async function to process the task
-            max_retries: Maximum retry attempts on failure
+            max_retries: Number of retries after the initial attempt
+            on_terminal_failure: Optional callback invoked once after retries are
+                exhausted or the retry time limit is exceeded
         """
         if not self.queue_manager:
             raise RuntimeError("Task queue not initialized")
+        if max_retries < 0:
+            raise ValueError("max_retries must be greater than or equal to 0")
         
         # Store handler info for later use
         self._handlers[task_name] = handler
+
+        def build_executor(parameters: Any) -> RetryWithTerminalFailureHookExecutor:
+            return RetryWithTerminalFailureHookExecutor(
+                parameters=parameters,
+                on_terminal_failure=on_terminal_failure,
+                max_attempts=max_retries + 1,
+                initial_delay=RETRY_INITIAL_DELAY_SECONDS,
+                max_delay=RETRY_MAX_DELAY,
+                max_time=RETRY_MAX_TIME,
+            )
         
         # Create a handler that parses JSON payload and register with entrypoint decorator
         @self.queue_manager.entrypoint(
             task_name,
             retry_timer=timedelta(seconds=5),  # Base retry timer
+            executor_factory=build_executor,
         )
         async def entrypoint_handler(job: Job):
             """Wrapper to handle retries and logging."""
@@ -260,7 +318,7 @@ class TaskQueueService:
                         "error": str(e),
                     }
                 )
-                raise  # Re-raise to trigger retry via pgqueuer
+                raise  # Re-raise so the executor can retry or surface terminal failure
         
         logger.info(f"Registered handler for task: {task_name}")
     

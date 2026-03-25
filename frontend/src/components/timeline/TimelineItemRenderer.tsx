@@ -66,13 +66,15 @@ function hasText(value: string | null | undefined): value is string {
 
 function withEnrichmentBlocks(
   item: TimelineItem,
-  baseChildren: React.ReactNode
+  bodyChildren: React.ReactNode,
+  footerChildren?: React.ReactNode
 ): React.ReactNode {
   return (
     <div className="flex w-full flex-1 flex-col gap-3">
-      {baseChildren}
+      {bodyChildren}
       <GoogleWorkspaceEnrichmentBlock item={item} />
       <MaxMindEnrichmentBlock item={item} />
+      {footerChildren}
     </div>
   );
 }
@@ -276,8 +278,8 @@ export function TimelineItemRenderer({
   const [sourceItemsExpanded, setSourceItemsExpanded] = useState(false);
   // State for hover on source toggle area
   const [isSourceToggleHovered, setIsSourceToggleHovered] = useState(false);
-  
   const Icon = getTimelineItemIcon(item.type || 'note');
+  
   const action = `${getTimelineItemAction(item.type || 'note')} ${getTimelineItemLabel(item.type || 'note')}`;
 
   // Determine username based on item type
@@ -375,14 +377,13 @@ export function TimelineItemRenderer({
     ) : null;
     const renderedActionButtons = descriptionNode ? undefined : cardActionButtons;
 
-    const inlineChildren = cardChildren || descriptionNode ? (
+    const cardBody = cardChildren ? (
       <div className="flex w-full flex-1 flex-col gap-3">
         {cardChildren}
-        {descriptionNode}
       </div>
     ) : null;
 
-    let children: React.ReactNode = withEnrichmentBlocks(timelineCurrentItem, inlineChildren);
+    let children: React.ReactNode = withEnrichmentBlocks(timelineCurrentItem, cardBody, descriptionNode);
 
     if (isAlertItem(timelineCurrentItem)) {
       baseCardProps.size = 'x-large';
@@ -525,14 +526,13 @@ export function TimelineItemRenderer({
     ) : null;
     const renderedReplyActionButtons = descriptionNode ? undefined : replyCardActionButtons;
 
-    const replyBaseChildren = replyCardChildren || descriptionNode ? (
+    const replyCardBody = replyCardChildren ? (
       <div className="flex w-full flex-1 flex-col gap-3">
         {replyCardChildren}
-        {descriptionNode}
       </div>
     ) : null;
 
-    let children: React.ReactNode = withEnrichmentBlocks(timelineReply, replyBaseChildren);
+    let children: React.ReactNode = withEnrichmentBlocks(timelineReply, replyCardBody, descriptionNode);
 
     if (isAlertItem(timelineReply)) {
       baseReplyCardProps.size = 'x-large';
@@ -676,7 +676,6 @@ export function TimelineItemRenderer({
         </div>
       )}
       {flattenedReplies.map((reply: TimelineItem, replyIndex: number) => {
-        const ReplyIcon = getTimelineItemIcon(reply.type || 'note');
         const replyAction = `${getTimelineItemAction(reply.type || 'note')} ${getTimelineItemLabel(reply.type || 'note')}`;
         
         const replyUsername = reply.created_by || 'System';

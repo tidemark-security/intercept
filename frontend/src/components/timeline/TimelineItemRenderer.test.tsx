@@ -50,6 +50,49 @@ describe('TimelineItemRenderer enrichments', () => {
     expect(screen.getByText('Active')).toBeInTheDocument();
   });
 
+  it('renders description after enrichments for card items', () => {
+    const item = {
+      id: 'actor-2',
+      type: 'internal_actor',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      name: 'Glenn Bolton',
+      title: 'Principal Consultant',
+      org: 'Tidemark',
+      user_id: 'glenn@glennjamin.com',
+      description: 'Bottom description',
+      enrichments: {
+        google_workspace: {
+          phone: '',
+          google_id: '101004715095336966229',
+          job_title: '',
+          suspended: false,
+          department: '',
+          given_name: 'Glenn',
+          family_name: 'Bolton',
+          display_name: 'Glenn Bolton',
+          organization: '',
+          org_unit_path: '/',
+          primary_email: 'glenn@glennjamin.com',
+        },
+      },
+    } as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="alert" />
+    );
+
+    const enrichmentHeading = screen.getByText('Google Workspace Enrichment');
+    const description = screen.getByText('Bottom description', { selector: 'p' });
+
+    expect(enrichmentHeading.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('renders multiple provider blocks through the shared enrichment wrapper', () => {
     const item = {
       id: 'observable-1',
@@ -139,5 +182,31 @@ describe('TimelineItemRenderer enrichments', () => {
       expect(card.className).toContain('self-stretch');
       expect(card.className).not.toContain('h-full');
     });
+  });
+
+  it('replaces the card primary icon with a spinner while enrichment is active', () => {
+    const item = {
+      id: 'observable-1',
+      type: 'observable',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      observable_type: 'IP',
+      observable_value: '1.1.1.1',
+      enrichment_status: 'pending',
+    } as TimelineItem;
+
+    const { container } = renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="alert" />
+    );
+
+    const card = container.querySelector('.group\\/3e384f9c');
+
+    expect(card).not.toBeNull();
+    expect(card?.querySelectorAll('.animate-spin')).toHaveLength(1);
   });
 });

@@ -2,6 +2,8 @@ import React from 'react';
 import { Tag } from '@/components/data-display/Tag';
 import type { TimelineItem } from '@/types/timeline';
 
+const ACTIVE_ENRICHMENT_STATUSES = new Set(['pending', 'in_progress']);
+
 /**
  * Shared utility functions for timeline rendering
  * Extracted from AlertTimeline.tsx as the authoritative implementation
@@ -143,6 +145,12 @@ export function renderTags(tags: string | string[] | undefined | null): React.Re
       ))}
     </div>
   );
+}
+
+export function isTimelineItemEnrichmentActive(item: TimelineItem): boolean {
+  const status = item.enrichment_status?.trim().toLowerCase();
+
+  return status ? ACTIVE_ENRICHMENT_STATUSES.has(status) : false;
 }
 
 /**
