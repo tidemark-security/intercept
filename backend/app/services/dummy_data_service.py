@@ -743,6 +743,22 @@ class DummyDataService:
         return task
 
     @staticmethod
+    async def _get_tracked_alert(db: AsyncSession, alert_id: int) -> Alert:
+        """Reload an alert as a tracked ORM instance for follow-up writes."""
+        tracked_alert = await db.get(Alert, alert_id)
+        if tracked_alert is None:
+            raise RuntimeError(f"Alert {alert_id} could not be reloaded for dummy data generation")
+        return tracked_alert
+
+    @staticmethod
+    async def _get_tracked_case(db: AsyncSession, case_id: int) -> Case:
+        """Reload a case as a tracked ORM instance for follow-up writes."""
+        tracked_case = await db.get(Case, case_id)
+        if tracked_case is None:
+            raise RuntimeError(f"Case {case_id} could not be reloaded for dummy data generation")
+        return tracked_case
+
+    @staticmethod
     async def generate_cases(db: AsyncSession, count: int = 10) -> List[Case]:
         """Generate random cases by first creating alerts and then triaging/escalating them.
         
@@ -767,18 +783,20 @@ class DummyDataService:
             )
             
             alert = await alert_service.create_alert(db, alert_data)
-            alert.tags = random.sample(DummyDataService.TAGS, random.randint(0, 4))
-            alert.created_at = DummyDataService._random_datetime(15)
-            alert.updated_at = alert.created_at + timedelta(minutes=random.randint(5, 1440))
+            assert alert.id is not None, "Alert must have an ID after creation"
+            tracked_alert = await DummyDataService._get_tracked_alert(db, alert.id)
+            tracked_alert.tags = random.sample(DummyDataService.TAGS, random.randint(0, 4))
+            tracked_alert.created_at = DummyDataService._random_datetime(15)
+            tracked_alert.updated_at = tracked_alert.created_at + timedelta(minutes=random.randint(5, 1440))
             
             # Generate timeline items for the alert
             alert_timeline_items = DummyDataService._generate_timeline_items_for_alert(
                 f"alert-{alert.id}", users
             )
-            alert.timeline_items = alert_timeline_items
+            tracked_alert.timeline_items = alert_timeline_items
             
             await db.commit()
-            await db.refresh(alert)
+            await db.refresh(tracked_alert)
             
             # Now triage the alert and escalate to case
             case_title = random.choice(DummyDataService.CASE_TITLES)
@@ -794,16 +812,17 @@ class DummyDataService:
             )
             
             # Triage the alert - this creates the case
-            assert alert.id is not None, "Alert must have an ID after creation"
-            await alert_service.triage_alert(db, alert.id, triage_request, created_by)
+            await alert_service.triage_alert(db, tracked_alert.id, triage_request, created_by)
+            tracked_alert = await DummyDataService._get_tracked_alert(db, tracked_alert.id)
             
             # Refresh alert to get the case_id
-            await db.refresh(alert)
+            await db.refresh(tracked_alert)
             
             # Get the created case
-            assert alert.case_id is not None, "Alert must have a case_id after escalation"
-            case = await case_service.get_case(db, alert.case_id)
+            assert tracked_alert.case_id is not None, "Alert must have a case_id after escalation"
+            case = await case_service.get_case(db, tracked_alert.case_id)
             assert case is not None, "Case must exist after triage escalation"
+            tracked_case = await DummyDataService._get_tracked_case(db, tracked_alert.case_id)
 
             # Generate timeline items (excluding task type - we'll add those separately)
             timeline_items = DummyDataService._generate_timeline_items_for_case(
@@ -818,23 +837,23 @@ class DummyDataService:
             # Tasks are linked to the case via case_id and will appear in the timeline
             # through the denormalization process - no need to add them to timeline_items JSON
             num_tasks = random.randint(0, 5)
-            assert case.id is not None, "Case must have an ID after creation"
+            assert tracked_case.id is not None, "Case must have an ID after creation"
             for j in range(num_tasks):
                 base_time = DummyDataService._random_datetime(7)
                 await DummyDataService._create_task_for_timeline(
-                    db, case.id, users, base_time
+                    db, tracked_case.id, users, base_time
                 )
 
             # Update case with timeline items
-            case.timeline_items = non_entity_items
-            case.status = random.choice(list(CaseStatus))
+            tracked_case.timeline_items = non_entity_items
+            tracked_case.status = random.choice(list(CaseStatus))
 
-            if case.status == CaseStatus.CLOSED:
-                case.closed_at = case.updated_at
+            if tracked_case.status == CaseStatus.CLOSED:
+                tracked_case.closed_at = tracked_case.updated_at
 
             await db.commit()
-            await db.refresh(case)
-            cases.append(case)
+            await db.refresh(tracked_case)
+            cases.append(tracked_case)
 
         return cases
 
@@ -863,15 +882,17 @@ class DummyDataService:
             )
 
             alert = await alert_service.create_alert(db, alert_data)
+            assert alert.id is not None, "Alert must have an ID after creation"
+            tracked_alert = await DummyDataService._get_tracked_alert(db, alert.id)
 
             # Add tags
-            alert.tags = random.sample(DummyDataService.TAGS, random.randint(0, 4))
+            tracked_alert.tags = random.sample(DummyDataService.TAGS, random.randint(0, 4))
 
             # Generate timeline items
             timeline_items = DummyDataService._generate_timeline_items_for_alert(
                 f"alert-{alert.id}", users
             )
-            alert.timeline_items = timeline_items
+            tracked_alert.timeline_items = timeline_items
 
             # Randomly assign status and triage info
             # Weight the statuses - most alerts should be NEW, some closed
@@ -888,23 +909,23 @@ class DummyDataService:
             ]
             status_weights = [0.5, 0.2, 0.1, 0.1, 0.05, 0.03, 0.02]
 
-            alert.status = random.choices(status_choices, weights=status_weights)[0]
+            tracked_alert.status = random.choices(status_choices, weights=status_weights)[0]
 
-            alert.created_at = DummyDataService._random_datetime(15)
-            alert.updated_at = alert.created_at + timedelta(
+            tracked_alert.created_at = DummyDataService._random_datetime(15)
+            tracked_alert.updated_at = tracked_alert.created_at + timedelta(
                 minutes=random.randint(5, 1440)
             )
 
             # Add triage info for processed alerts
-            if alert.status != AlertStatus.NEW:
-                alert.triage_notes = f"Triage: {random.choice(['True positive - remediated', 'False positive - benign', 'Duplicate alert', 'Unresolved'])}"
-                alert.triaged_at = alert.created_at + timedelta(
+            if tracked_alert.status != AlertStatus.NEW:
+                tracked_alert.triage_notes = f"Triage: {random.choice(['True positive - remediated', 'False positive - benign', 'Duplicate alert', 'Unresolved'])}"
+                tracked_alert.triaged_at = tracked_alert.created_at + timedelta(
                     minutes=random.randint(5, 720)
                 )
 
             await db.commit()
-            await db.refresh(alert)
-            alerts.append(alert)
+            await db.refresh(tracked_alert)
+            alerts.append(tracked_alert)
 
         if include_closure_prone and closure_prone_count > 0:
             closure_alerts = await DummyDataService.generate_closure_prone_alerts(
@@ -1150,14 +1171,16 @@ class DummyDataService:
             )
 
             alert = await alert_service.create_alert(db, alert_data)
-            alert.tags = scenario["tags"]
-            alert.timeline_items = scenario["timeline_items"]
-            alert.created_at = DummyDataService._random_datetime(2)
-            alert.updated_at = alert.created_at + timedelta(minutes=random.randint(1, 90))
+            assert alert.id is not None, "Alert must have an ID after creation"
+            tracked_alert = await DummyDataService._get_tracked_alert(db, alert.id)
+            tracked_alert.tags = scenario["tags"]
+            tracked_alert.timeline_items = scenario["timeline_items"]
+            tracked_alert.created_at = DummyDataService._random_datetime(2)
+            tracked_alert.updated_at = tracked_alert.created_at + timedelta(minutes=random.randint(1, 90))
 
             await db.commit()
-            await db.refresh(alert)
-            alerts.append(alert)
+            await db.refresh(tracked_alert)
+            alerts.append(tracked_alert)
 
         return alerts
 
@@ -1218,9 +1241,11 @@ class DummyDataService:
                 )
 
                 for alert in alerts_to_link:
+                    assert alert.id is not None, "Alert must have an ID before linking"
+                    tracked_alert = await DummyDataService._get_tracked_alert(db, alert.id)
                     case = random.choice(cases)
-                    alert.case_id = case.id
-                    alert.status = AlertStatus.ESCALATED
+                    tracked_alert.case_id = case.id
+                    tracked_alert.status = AlertStatus.ESCALATED
                     linked_count += 1
 
                 await db.commit()
