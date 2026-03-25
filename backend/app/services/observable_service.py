@@ -45,7 +45,8 @@ def extract_observables(timeline_items: List[Dict], max_observables: int = 20) -
         # Extract from ObservableItem
         if item_type == "observable":
             obs_type = item.get("observable_type", "").upper()
-            obs_value = item.get("value", "").strip()
+            raw_obs_value = item.get("observable_value") or item.get("value") or ""
+            obs_value = str(raw_obs_value).strip()
             if obs_type and obs_value:
                 observable_counts[(obs_type, obs_value)] += 1
         

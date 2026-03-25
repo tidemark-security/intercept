@@ -25,6 +25,47 @@ except ImportError:
     get_http_request = None
 
 
+_PRUNED = object()
+_PRESERVE_EMPTY_CONTAINER_KEYS = {"items", "resources", "errors"}
+
+
+def _prune_llm_payload(value: Any, *, preserve_empty: bool = False) -> Any:
+    """Recursively remove token-wasting empty values from LLM-facing payloads."""
+    if value is None:
+        return _PRUNED
+
+    if isinstance(value, str):
+        return value if value.strip() else _PRUNED
+
+    if isinstance(value, dict):
+        pruned_dict: Dict[str, Any] = {}
+        for key, child_value in value.items():
+            pruned_child = _prune_llm_payload(
+                child_value,
+                preserve_empty=key in _PRESERVE_EMPTY_CONTAINER_KEYS,
+            )
+            if pruned_child is _PRUNED:
+                continue
+            pruned_dict[key] = pruned_child
+
+        if pruned_dict or preserve_empty:
+            return pruned_dict
+        return _PRUNED
+
+    if isinstance(value, list):
+        pruned_list = [
+            pruned_child
+            for child in value
+            for pruned_child in [_prune_llm_payload(child)]
+            if pruned_child is not _PRUNED
+        ]
+        if pruned_list or preserve_empty:
+            return pruned_list
+        return _PRUNED
+
+    return value
+
+
 def _get_authenticated_username() -> str:
     """Get the authenticated username from the MCP request context.
     
@@ -71,7 +112,9 @@ async def get_summary_tool(
             max_observables=max_observables,
             since=since,
         )
-        return result.model_dump()
+        payload = result.model_dump(mode="json")
+        pruned_payload = _prune_llm_payload(payload, preserve_empty=True)
+        return pruned_payload if isinstance(pruned_payload, dict) else payload
 
 
 

@@ -5,7 +5,7 @@ specs/004-mcp-server-v1/contracts/mcp-protocol.md
 """
 
 from datetime import datetime
-from typing import Optional, List, Literal
+from typing import Any, Dict, Optional, List, Literal
 from pydantic import BaseModel, Field
 
 
@@ -43,6 +43,10 @@ class TimelinePreview(BaseModel):
     is_truncated: bool = False
     full_length_chars: Optional[int] = None
     entity_id: Optional[str] = None  # Human-readable ID for linked alerts/tasks/cases (e.g., ALT-0000123)
+    observable_type: Optional[str] = None
+    observable_value: Optional[str] = None
+    enrichment_status: Optional[str] = None
+    enrichments: Optional[Dict[str, Any]] = None
 
 
 class TimelineSection(BaseModel):
