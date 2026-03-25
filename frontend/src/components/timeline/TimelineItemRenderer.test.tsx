@@ -7,6 +7,54 @@ import { renderWithProviders } from '../../../tests/test-utils';
 import { TimelineItemRenderer } from './TimelineItemRenderer';
 
 describe('TimelineItemRenderer enrichments', () => {
+  it('renders nested replies without duplicating descendant replies', () => {
+    const item = {
+      id: 'note-parent',
+      type: 'note',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      description: 'Parent note',
+      replies: [
+        {
+          id: 'note-reply-1',
+          type: 'note',
+          created_by: 'analyst',
+          created_at: '2026-03-14T12:45:11.293811Z',
+          timestamp: '2026-03-14T12:45:11.284000Z',
+          tags: [],
+          flagged: false,
+          highlighted: false,
+          description: 'First reply',
+          replies: [
+            {
+              id: 'note-reply-2',
+              type: 'note',
+              created_by: 'analyst',
+              created_at: '2026-03-14T12:50:11.293811Z',
+              timestamp: '2026-03-14T12:50:11.284000Z',
+              tags: [],
+              flagged: false,
+              highlighted: false,
+              description: 'Nested reply',
+              replies: null,
+            },
+          ],
+        },
+      ],
+    } as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="case" />
+    );
+
+    expect(screen.getByText('First reply')).toBeInTheDocument();
+    expect(screen.getAllByText('Nested reply')).toHaveLength(1);
+  });
+
   it('renders google workspace enrichment content for internal actors', () => {
     const item = {
       id: 'actor-1',

@@ -31,7 +31,7 @@ import { convertNumericToAlertId, convertNumericToHumanId } from '@/utils/caseHe
 
 import { Button } from '@/components/buttons/Button';
 
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, MessageSquareReply as ReplyIcon } from 'lucide-react';
 /**
  * Type guard for CaseItem
  */
@@ -641,7 +641,7 @@ export function TimelineItemRenderer({
     combinedReplies.push(...sourceTimelineItems);
   }
   if (hasReplies) {
-    combinedReplies.push(...flattenReplies(itemReplies));
+    combinedReplies.push(...itemReplies);
   }
   
   // Flatten all nested replies into a single array
