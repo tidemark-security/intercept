@@ -24,6 +24,8 @@ import type { MaxMindConfigureRequest } from '../models/MaxMindConfigureRequest'
 import type { MaxMindConfigureResponse } from '../models/MaxMindConfigureResponse';
 import type { MaxMindDatabaseStatus } from '../models/MaxMindDatabaseStatus';
 import type { Page_AuditLogRead_ } from '../models/Page_AuditLogRead_';
+import type { QueueJobsPage } from '../models/QueueJobsPage';
+import type { QueueStatsRead } from '../models/QueueStatsRead';
 import type { UserRole } from '../models/UserRole';
 import type { UserStatus } from '../models/UserStatus';
 import type { CancelablePromise } from '../core/CancelablePromise';
@@ -612,6 +614,85 @@ export class AdminService {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/admin/enrichments/maxmind/update',
+        });
+    }
+    /**
+     * Get Queue Jobs
+     * Get paginated queue jobs with optional filters.
+     * @returns QueueJobsPage Successful Response
+     * @throws ApiError
+     */
+    public static getQueueJobsApiV1AdminQueueJobsGet({
+        entrypoint,
+        status,
+        startDate,
+        endDate,
+        page = 1,
+        size = 25,
+    }: {
+        /**
+         * Filter by task entrypoint name
+         */
+        entrypoint?: (string | null),
+        /**
+         * Filter by job status (queued, picked, successful, exception, canceled)
+         */
+        status?: (string | null),
+        /**
+         * Filter jobs created after this UTC datetime
+         */
+        startDate?: (string | null),
+        /**
+         * Filter jobs created before this UTC datetime
+         */
+        endDate?: (string | null),
+        /**
+         * Page number
+         */
+        page?: number,
+        /**
+         * Items per page
+         */
+        size?: number,
+    }): CancelablePromise<QueueJobsPage> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/admin/queue/jobs',
+            query: {
+                'entrypoint': entrypoint,
+                'status': status,
+                'start_date': startDate,
+                'end_date': endDate,
+                'page': page,
+                'size': size,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Get Queue Stats
+     * Get aggregate job counts grouped by entrypoint and status.
+     * @returns QueueStatsRead Successful Response
+     * @throws ApiError
+     */
+    public static getQueueStatsApiV1AdminQueueStatsGet(): CancelablePromise<Array<QueueStatsRead>> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/admin/queue/stats',
+        });
+    }
+    /**
+     * List Queue Entrypoints
+     * List distinct entrypoint names for filter dropdowns.
+     * @returns string Successful Response
+     * @throws ApiError
+     */
+    public static listQueueEntrypointsApiV1AdminQueueEntrypointsGet(): CancelablePromise<Array<string>> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/admin/queue/entrypoints',
         });
     }
 }

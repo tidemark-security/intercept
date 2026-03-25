@@ -10,6 +10,7 @@ import AdminAuditTrail from "./pages/AdminAuditTrail"
 import AdminUsers from "./pages/AdminUsers"
 import AdminLinkTemplates from "./pages/AdminLinkTemplates"
 import AdminSettings from "./pages/AdminSettings"
+import AdminQueueStatus from "./pages/AdminQueueStatus"
 import { AIChat } from "./pages/AIChat"
 import Home from "./pages/Home"
 import Login from "./pages/Login"
@@ -152,6 +153,14 @@ export default function App() {
             element={
               <ProtectedRoute requiredRole="ADMIN">
                 <AdminSettings />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/queue"
+            element={
+              <ProtectedRoute requiredRole="ADMIN">
+                <AdminQueueStatus />
               </ProtectedRoute>
             }
           />

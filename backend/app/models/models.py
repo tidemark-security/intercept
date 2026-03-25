@@ -2391,3 +2391,41 @@ class WebSocketMessage(SQLModel):
     type: str = Field(description="Message type: event, subscribed, unsubscribed, ping, pong")
     payload: Optional[Dict[str, Any]] = Field(default=None, description="Message payload")
 
+
+# ---------------------------------------------------------------------------
+# Queue status (read-only schemas for pgqueuer tables)
+# ---------------------------------------------------------------------------
+
+class QueueJobRead(SQLModel):
+    """Read-only schema for a pgqueuer job (active or logged)."""
+
+    id: int
+    entrypoint: str
+    status: str
+    priority: int
+    payload: Optional[Dict[str, Any]] = None
+    created: Optional[datetime] = None
+    updated: Optional[datetime] = None
+    picked_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    duration_ms: Optional[int] = None
+    traceback: Optional[str] = None
+
+
+class QueueStatsRead(SQLModel):
+    """Aggregate count of active jobs grouped by entrypoint and status."""
+
+    entrypoint: str
+    status: str
+    count: int
+
+
+class QueueJobsPage(SQLModel):
+    """Paginated response for queue jobs."""
+
+    items: List[QueueJobRead] = []
+    total: int = 0
+    page: int = 1
+    size: int = 25
+    pages: int = 0
+
