@@ -20,6 +20,7 @@ import React, { useCallback, useRef, useState, useEffect } from 'react';
 
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 /** localStorage key for persisting AI pane width */
+const AI_PANE_COLLAPSED_KEY = 'intercept-ai-pane-collapsed';
 const AI_PANE_WIDTH_KEY = 'intercept-ai-pane-width';
 const DEFAULT_WIDTH = 512;
 const MIN_WIDTH = 320;
@@ -41,8 +42,8 @@ export interface ColumnRailProps {
 /**
  * Get persisted width from localStorage
  */
-export function getPersistedWidth(): number {
-  if (typeof window === 'undefined') return DEFAULT_WIDTH;
+export function getPersistedWidth(fallbackWidth: number = DEFAULT_WIDTH): number {
+  if (typeof window === 'undefined') return fallbackWidth;
   try {
     const stored = localStorage.getItem(AI_PANE_WIDTH_KEY);
     if (stored) {
@@ -54,7 +55,34 @@ export function getPersistedWidth(): number {
   } catch {
     // localStorage not available
   }
-  return DEFAULT_WIDTH;
+  return fallbackWidth;
+}
+
+/**
+ * Get persisted AI pane collapsed state from localStorage.
+ */
+export function getPersistedCollapsedState(fallbackCollapsed: boolean): boolean {
+  if (typeof window === 'undefined') return fallbackCollapsed;
+  try {
+    const stored = localStorage.getItem(AI_PANE_COLLAPSED_KEY);
+    if (stored === 'true') return true;
+    if (stored === 'false') return false;
+  } catch {
+    // localStorage not available
+  }
+  return fallbackCollapsed;
+}
+
+/**
+ * Persist AI pane collapsed state to localStorage.
+ */
+export function persistCollapsedState(collapsed: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(AI_PANE_COLLAPSED_KEY, String(collapsed));
+  } catch {
+    // localStorage not available
+  }
 }
 
 /**

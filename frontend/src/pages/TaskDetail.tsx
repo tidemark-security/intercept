@@ -6,7 +6,7 @@ import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { convertTaskHumanIdToNumeric } from '@/utils/humanIdHelpers';
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
-import { getPersistedWidth } from "@/components/layout/ColumnRail";
+import { getPersistedCollapsedState, getPersistedWidth, persistCollapsedState } from "@/components/layout/ColumnRail";
 import { UnifiedTimeline } from "@/components/timeline/UnifiedTimeline";
 import { RightDock } from '@/components/layout/RightDock';
 import { useTaskDetail } from "@/hooks/useTaskDetail";
@@ -63,18 +63,22 @@ function TaskDetailPage() {
   const { switchToColumnOnMobile } = useColumnNavigation(setVisibleColumns);
 
   // AI pane visibility and resizable width (persisted in localStorage)
-  // On mobile, start with AI pane collapsed to show timeline first
+  // Persist the assistant visibility globally across case/task detail pages.
   const [aiPaneCollapsed, setAiPaneCollapsed] = useState(() => {
-    if (typeof window !== 'undefined' && window.innerWidth < 768) {
-      return true;
-    }
-    return false;
+    const defaultCollapsed = typeof window !== 'undefined' && window.innerWidth < 768;
+    return getPersistedCollapsedState(defaultCollapsed);
   });
-  const [aiPaneWidth, setAiPaneWidth] = useState<number>(() => getPersistedWidth());
+  const [aiPaneWidth, setAiPaneWidth] = useState<number>(() =>
+    getPersistedWidth(breakpoint === 'ultrawide' ? 512 : 320)
+  );
 
   // Toggle AI pane visibility
   const handleToggleAiPane = useCallback(() => {
-    setAiPaneCollapsed(prev => !prev);
+    setAiPaneCollapsed(prev => {
+      const next = !prev;
+      persistCollapsedState(next);
+      return next;
+    });
   }, []);
 
   // Right Dock state for three-column layout (with automatic persistence per task)
