@@ -166,6 +166,39 @@ class TimelineService:
         setattr(entity, "timeline_items", timeline_items)
         return entity
 
+    async def prepare_entity_detail_timeline(
+        self,
+        db: AsyncSession,
+        *,
+        entity: Any,
+        entity_type: str,
+        entity_id: int,
+        human_prefix: str,
+        include_linked_timelines: bool = False,
+    ) -> Any:
+        entity = await self.denormalize_entity_timeline(
+            db,
+            entity,
+            human_prefix=human_prefix,
+            include_linked_timelines=include_linked_timelines,
+        )
+        entity = await self.coalesce_timeline_audit(
+            db,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            entity=entity,
+        )
+
+        from app.services.enrichment.service import enrichment_service
+
+        await enrichment_service.reconcile_entity_enrichment_statuses(
+            db,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            timeline_items=list(getattr(entity, "timeline_items", None) or []),
+        )
+        return entity
+
     def _annotate_items_with_audit(self, items: List[Dict[str, Any]], edited_item_ids: Set[str]) -> None:
         for item in items:
             if item.get("id") in edited_item_ids:

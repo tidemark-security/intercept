@@ -233,3 +233,123 @@ class QueueStatusService:
             )
         )
         return [row[0] for row in result.fetchall()]
+
+    async def get_enrichment_jobs_for_entity(
+        self,
+        *,
+        entity_type: str,
+        entity_id: int,
+        item_ids: List[str],
+        linked_task_ids_by_item_id: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, QueueJobRead]:
+        """Return the best matching enrich_item job per timeline item for one entity."""
+        if not item_ids or not await self._has_pgqueuer_tables():
+            return {}
+
+        linked_item_ids_by_task_id = {
+            str(task_id): item_id
+            for item_id, task_id in (linked_task_ids_by_item_id or {}).items()
+            if item_id in item_ids and str(task_id or "").strip()
+        }
+
+        collapsed_log_cte = """
+            collapsed_log AS (
+                SELECT
+                    job_id AS id,
+                    entrypoint,
+                    (array_agg(status ORDER BY id DESC))[1]::text AS status,
+                    max(priority) AS priority,
+                    NULL::bytea AS payload,
+                    min(created) AS created,
+                    max(created) AS updated,
+                    max(created) FILTER (WHERE status = 'picked') AS picked_at,
+                    max(created) FILTER (WHERE status IN ('successful', 'exception', 'canceled')) AS finished_at,
+                    EXTRACT(EPOCH FROM (
+                        max(created) FILTER (WHERE status IN ('successful', 'exception', 'canceled'))
+                        - max(created) FILTER (WHERE status = 'picked')
+                    ))::int * 1000 AS duration_ms,
+                    max(traceback::text) FILTER (WHERE status = 'exception') AS traceback
+                FROM pgqueuer_log
+                WHERE entrypoint = 'enrich_item'
+                GROUP BY job_id, entrypoint
+            )
+        """
+
+        union_sql = """
+            SELECT id, entrypoint, status::text AS status, priority, payload,
+                   created, updated, heartbeat AS picked_at,
+                   NULL::timestamptz AS finished_at,
+                   NULL::int AS duration_ms,
+                   NULL::text AS traceback
+            FROM pgqueuer
+            WHERE entrypoint = 'enrich_item'
+            UNION ALL
+            SELECT id, entrypoint, status, priority, payload,
+                   created, updated, picked_at, finished_at,
+                   duration_ms, traceback
+            FROM collapsed_log
+        """
+
+        sql = text(
+            f"WITH {collapsed_log_cte} "
+            f"SELECT q.* FROM ({union_sql}) q "
+            "WHERE ((q.payload IS NOT NULL "
+            "AND convert_from(q.payload, 'UTF8')::jsonb ->> 'entity_type' = :entity_type "
+            "AND CAST(convert_from(q.payload, 'UTF8')::jsonb ->> 'entity_id' AS integer) = :entity_id "
+            "AND convert_from(q.payload, 'UTF8')::jsonb ->> 'item_id' = ANY(CAST(:item_ids AS text[]))) "
+            "OR (q.payload IS NULL AND CAST(q.id AS text) = ANY(CAST(:linked_task_ids AS text[])))) "
+            "ORDER BY q.created DESC NULLS LAST"
+        )
+
+        rows = (
+            await self.db.execute(
+                sql,
+                {
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "item_ids": item_ids,
+                    "linked_task_ids": list(linked_item_ids_by_task_id.keys()),
+                },
+            )
+        ).fetchall()
+
+        jobs_by_item_id: Dict[str, QueueJobRead] = {}
+        for row in rows:
+            payload = _parse_payload(row.payload)
+            if payload:
+                item_id = str(payload.get("item_id") or "")
+            else:
+                item_id = linked_item_ids_by_task_id.get(str(row.id), "")
+            if not item_id:
+                continue
+
+            job = QueueJobRead(
+                id=row.id,
+                entrypoint=row.entrypoint,
+                status=row.status,
+                priority=row.priority,
+                payload=payload,
+                created=row.created,
+                updated=row.updated,
+                picked_at=row.picked_at,
+                finished_at=row.finished_at,
+                duration_ms=row.duration_ms,
+                traceback=row.traceback,
+            )
+
+            existing = jobs_by_item_id.get(item_id)
+            if existing is None or self._prefer_enrichment_job(job, existing):
+                jobs_by_item_id[item_id] = job
+
+        return jobs_by_item_id
+
+    def _prefer_enrichment_job(self, candidate: QueueJobRead, current: QueueJobRead) -> bool:
+        def rank(job: QueueJobRead) -> tuple[int, datetime]:
+            timestamp = job.finished_at or job.updated or job.created or datetime.min
+            if job.status == "picked":
+                return (3, timestamp)
+            if job.status == "queued":
+                return (2, timestamp)
+            return (1, timestamp)
+
+        return rank(candidate) > rank(current)

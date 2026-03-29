@@ -133,15 +133,13 @@ class CaseService:
         if not db_case:
             return None
 
-        db_case = await timeline_service.denormalize_entity_timeline(
-            db, db_case, human_prefix="CAS",
-            include_linked_timelines=include_linked_timelines
-        )
-        return await timeline_service.coalesce_timeline_audit(
+        return await timeline_service.prepare_entity_detail_timeline(
             db,
             entity_type="case",
             entity_id=case_id,
             entity=db_case,
+            human_prefix="CAS",
+            include_linked_timelines=include_linked_timelines,
         )
     
     async def get_case_by_human_id(self, db: AsyncSession, human_id: str) -> Optional[Case]:

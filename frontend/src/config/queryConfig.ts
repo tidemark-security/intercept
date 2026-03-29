@@ -46,6 +46,11 @@ export const QUERY_REFETCH_INTERVALS = {
    * For active AI triage processing - fast polling to show results quickly
    */
   TRIAGE_ACTIVE: 3 * 1000, // 3 seconds
+
+  /**
+   * For active timeline enrichments - short-lived fallback polling to recover from missed realtime updates
+   */
+  ENRICHMENT_ACTIVE: 3 * 1000, // 3 seconds
 } as const;
 
 /**

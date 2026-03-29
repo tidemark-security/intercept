@@ -3,6 +3,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { Link } from '@/components/navigation/Link';
 import { ActivityItem } from '@/components/data-display/ActivityItem';
 import { BaseCard } from '@/components/cards/BaseCard';
+import { Badge } from '@/components/data-display/Badge';
 import { AlertCard } from '@/components/timeline/AlertCard';
 import { AlertCardContent } from '@/components/timeline/AlertCardContent';
 import { TaskCardContent } from '@/components/timeline/TaskCardContent';
@@ -28,10 +29,18 @@ import {
 import { isAlertItem, isDeletedItem, isNoteItem, isTaskItem } from '@/types/timeline';
 import type { CaseItem } from '@/types/generated/models/CaseItem';
 import { convertNumericToAlertId, convertNumericToHumanId } from '@/utils/caseHelpers';
+import { useEnqueueItemEnrichment } from '@/hooks/useEnqueueItemEnrichment';
 
 import { Button } from '@/components/buttons/Button';
+import { IconButton } from '@/components/buttons/IconButton';
 
-import { ChevronDown, ChevronRight, MessageSquareReply as ReplyIcon } from 'lucide-react';
+import { ChevronDown, ChevronRight, MessageSquareReply as ReplyIcon, RefreshCw } from 'lucide-react';
+import { Tooltip } from '@/components/overlays/Tooltip';
+import {
+  isTimelineItemEnrichmentActive,
+  isTimelineItemEnrichable,
+  isTimelineItemEnrichmentFailed,
+} from './timelineUtils';
 /**
  * Type guard for CaseItem
  */
@@ -156,6 +165,51 @@ function getSourceEntityLabel(item: TimelineItem): 'alert' | 'task' | 'case' {
     return 'task';
   }
   return 'case';
+}
+
+function renderRefreshEnrichmentAction(
+  timelineItem: TimelineItem,
+  options: {
+    enabled: boolean;
+    isActive: boolean;
+    isPending: boolean;
+    pendingItemId?: string;
+    onEnqueue: (itemId: string) => void;
+  },
+): React.ReactNode {
+  if (!options.enabled || !timelineItem.id) {
+    return null;
+  }
+
+  const isFailedEnrichment = isTimelineItemEnrichmentFailed(timelineItem);
+  const isLoading = options.isActive || (options.isPending && options.pendingItemId === timelineItem.id);
+
+  return (
+    <div className="ml-auto flex items-center gap-2">
+      {isFailedEnrichment ? <Badge variant="error">Enrichment Failed</Badge> : null}
+      <Tooltip.Provider>
+        <Tooltip.Root>
+          <Tooltip.Trigger asChild>
+            <IconButton
+              
+              size="small"
+              onClick={(event) => {
+                event.stopPropagation();
+                options.onEnqueue(timelineItem.id!);
+              }}
+              loading={isLoading}
+              disabled={isLoading}
+              icon={<RefreshCw className="h-3.5 w-3.5" />}
+              aria-label={isFailedEnrichment ? 'Retry enrichment' : 'Refresh enrichment'}
+            />
+          </Tooltip.Trigger>
+          <Tooltip.Content side="bottom" align="center" sideOffset={8}>
+            {isFailedEnrichment ? 'Retry enrichment' : 'Refresh enrichment'}
+          </Tooltip.Content>
+        </Tooltip.Root>
+      </Tooltip.Provider>
+    </div>
+  );
 }
 
 /**
@@ -301,6 +355,10 @@ export function TimelineItemRenderer({
   // Use items prop if provided (grouped items), otherwise single item
   const itemsToRender = items && items.length > 1 ? items : [item];
   const isGrouped = itemsToRender.length > 1;
+  const enqueueItemEnrichment = useEnqueueItemEnrichment(
+    entityType ?? 'alert',
+    entityId,
+  );
   
   // Collect all item IDs for group-level actions
   const groupItemIds = isGrouped ? itemsToRender.map(i => i.id || '').filter(Boolean) : [];
@@ -340,11 +398,22 @@ export function TimelineItemRenderer({
       return null;
     }
 
+    const isEnrichable = !!entityType && entityId !== null && isTimelineItemEnrichable(timelineCurrentItem);
+    const isEnrichmentActive = isTimelineItemEnrichmentActive(timelineCurrentItem);
+    const refreshEnrichmentButton = renderRefreshEnrichmentAction(timelineCurrentItem, {
+      enabled: isEnrichable,
+      isActive: isEnrichmentActive,
+      isPending: enqueueItemEnrichment.isPending,
+      pendingItemId: enqueueItemEnrichment.variables?.itemId,
+      onEnqueue: (itemId) => enqueueItemEnrichment.mutate({ itemId }),
+    });
+
     const isCurrentItemLinked = isLinkedTimelineType(timelineCurrentItem.type);
     const cardConfig = createTimelineCard(timelineCurrentItem, {
       size: 'x-large',
       alertId: entityId,
       entityType,
+      actionButtons: refreshEnrichmentButton,
       enableActionMenu: isGrouped,
       itemId: timelineCurrentItem.id,
       onFlag,
@@ -503,10 +572,20 @@ export function TimelineItemRenderer({
 
     const replyDescription = timelineReply.description;
     const shouldRenderInlineDescription = hasText(replyDescription) && timelineReply.type !== 'ttp';
+    const canRefreshEnrichment = !!entityType && entityId !== null && isTimelineItemEnrichable(timelineReply);
+    const isReplyEnrichmentActive = isTimelineItemEnrichmentActive(timelineReply);
+    const replyRefreshEnrichmentButton = renderRefreshEnrichmentAction(timelineReply, {
+      enabled: canRefreshEnrichment,
+      isActive: isReplyEnrichmentActive,
+      isPending: enqueueItemEnrichment.isPending,
+      pendingItemId: enqueueItemEnrichment.variables?.itemId,
+      onEnqueue: (itemId) => enqueueItemEnrichment.mutate({ itemId }),
+    });
     const replyCardConfig = createTimelineCard(timelineReply, {
       size: 'x-large',
       alertId: entityId,
       entityType,
+      actionButtons: replyRefreshEnrichmentButton,
       linkTemplates,
     });
 

@@ -7,12 +7,14 @@ from httpx import AsyncClient
 from pgqueuer.errors import MaxRetriesExceeded
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models.models import Alert, EnrichmentAlias
+from app.models.models import Alert, EnrichmentAlias, QueueJobRead
 from app.models.enums import RealtimeEventType, SettingType
 from app.models.models import AppSetting
 from app.services.enrichment.base import EnrichmentResult
 from app.services.enrichment.providers import register_providers
 from app.services.enrichment.service import enrichment_service
+from app.services.alert_service import alert_service
+from app.services.queue_status_service import QueueStatusService
 from app.services.tasks import _handle_enrich_item_terminal_failure
 from app.services.timeline_service import timeline_service
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
@@ -151,6 +153,16 @@ async def test_enqueue_item_enrichment_returns_task_id(
     assert response.status_code == 200
     assert response.json() == {"enqueued": True, "task_id": "task-enrich-123"}
 
+    async with session_maker() as session:
+        refreshed_alert = await session.get(Alert, alert.id)
+        assert refreshed_alert is not None
+        stored_item = next(
+            item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-1"
+        )
+
+    assert stored_item["enrichment_status"] == "pending"
+    assert stored_item["enrichment_task_id"] == "task-enrich-123"
+
 
 @pytest.mark.asyncio
 async def test_add_internal_actor_auto_enqueues_matching_enrichment(
@@ -200,9 +212,41 @@ async def test_add_internal_actor_auto_enqueues_matching_enrichment(
             captured_payloads.append(
                 {"task_name": task_name, "payload": payload, "priority": priority}
             )
-            return "task-auto-123"
+            return "123"
 
     monkeypatch.setattr("app.services.enrichment.service.get_task_queue_service", lambda: FakeQueue())
+
+    async def fake_get_enrichment_jobs_for_entity(
+        self: QueueStatusService,
+        *,
+        entity_type: str,
+        entity_id: int,
+        item_ids: list[str],
+        linked_task_ids_by_item_id: dict[str, str] | None = None,
+    ) -> dict[str, QueueJobRead]:
+        assert entity_type == "alert"
+        assert entity_id == alert.id
+        assert item_ids == ["item-auto-1"]
+        assert linked_task_ids_by_item_id == {"item-auto-1": "123"}
+        return {
+            "item-auto-1": QueueJobRead(
+                id=123,
+                entrypoint="enrich_item",
+                status="queued",
+                priority=0,
+                payload={
+                    "entity_type": "alert",
+                    "entity_id": alert.id,
+                    "item_id": "item-auto-1",
+                },
+            )
+        }
+
+    monkeypatch.setattr(
+        QueueStatusService,
+        "get_enrichment_jobs_for_entity",
+        fake_get_enrichment_jobs_for_entity,
+    )
 
     session_cookie = await _login(client, analyst.username)
     response = await client.post(
@@ -236,6 +280,7 @@ async def test_add_internal_actor_auto_enqueues_matching_enrichment(
         )
 
     assert stored_item["enrichment_status"] == "pending"
+    assert stored_item["enrichment_task_id"] == "123"
 
 
 @pytest.mark.asyncio
@@ -574,7 +619,7 @@ async def test_run_item_enrichment_keeps_pending_status_on_retryable_failure(
 
 
 @pytest.mark.asyncio
-async def test_enrich_item_terminal_failure_clears_pending_status(
+async def test_enrich_item_terminal_failure_marks_item_failed(
     session_maker: async_sessionmaker[AsyncSession],
     analyst_user_factory,
     monkeypatch: pytest.MonkeyPatch,
@@ -588,6 +633,7 @@ async def test_enrich_item_terminal_failure_clears_pending_status(
         "created_by": analyst.username,
         "user_id": "alice@example.com",
         "enrichment_status": "pending",
+        "enrichment_task_id": "task-terminal-1",
     }
     alert = Alert(
         title="Alert with terminal enrichment failure",
@@ -602,6 +648,8 @@ async def test_enrich_item_terminal_failure_clears_pending_status(
         session.add(alert)
         await session.commit()
         await session.refresh(alert)
+        assert alert.id is not None
+        alert_id = alert.id
 
     emitted_events: list[dict[str, object]] = []
 
@@ -628,14 +676,15 @@ async def test_enrich_item_terminal_failure_clears_pending_status(
     monkeypatch.setattr("app.services.enrichment.service.emit_event", fake_emit_event)
 
     await _handle_enrich_item_terminal_failure(
-        {"entity_type": "alert", "entity_id": alert.id, "item_id": "item-terminal-1"},
+        {"entity_type": "alert", "entity_id": alert_id, "item_id": "item-terminal-1"},
         _make_retries_exhausted_error("provider timeout"),
+        task_id="task-terminal-1",
     )
 
     assert emitted_events == [
         {
             "entity_type": "alert",
-            "entity_id": alert.id,
+                "entity_id": alert_id,
             "event_type": RealtimeEventType.TIMELINE_ITEM_UPDATED,
             "performed_by": "system",
             "item_id": "item-terminal-1",
@@ -643,13 +692,92 @@ async def test_enrich_item_terminal_failure_clears_pending_status(
     ]
 
     async with session_maker() as session:
-        refreshed_alert = await session.get(Alert, alert.id)
+        refreshed_alert = await session.get(Alert, alert_id)
         assert refreshed_alert is not None
         stored_item = next(
             item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-terminal-1"
         )
-        assert "enrichment_status" not in stored_item
+        assert stored_item["enrichment_status"] == "failed"
+        assert "enrichment_task_id" not in stored_item
         assert stored_item["enrichments"]["system"]["error"] == "Retries exhausted: provider timeout"
+
+
+@pytest.mark.asyncio
+async def test_get_alert_reconciles_orphaned_active_enrichment_to_failed(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    analyst = analyst_user_factory(username="analyst.orphaned-enrichment")
+    timeline_item = {
+        "id": "item-orphaned-1",
+        "type": "internal_actor",
+        "timestamp": "2026-03-14T00:00:00Z",
+        "created_at": "2026-03-14T00:00:00Z",
+        "created_by": analyst.username,
+        "user_id": "alice@example.com",
+        "enrichment_status": "in_progress",
+        "enrichment_task_id": "missing-task-1",
+    }
+    alert = Alert(
+        title="Alert with orphaned enrichment",
+        description="Test alert",
+        source="unit-test",
+        timeline_items=[timeline_item],
+        created_by=analyst.username,
+    )
+
+    async with session_maker() as session:
+        session.add(analyst)
+        session.add(alert)
+        await session.commit()
+        await session.refresh(alert)
+        assert alert.id is not None
+        alert_id = alert.id
+
+    async def fake_get_enrichment_jobs_for_entity(
+        self: QueueStatusService,
+        *,
+        entity_type: str,
+        entity_id: int,
+        item_ids: list[str],
+        linked_task_ids_by_item_id: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        assert entity_type == "alert"
+        assert entity_id == alert_id
+        assert item_ids == ["item-orphaned-1"]
+        assert linked_task_ids_by_item_id == {"item-orphaned-1": "missing-task-1"}
+        return {}
+
+    async def fake_emit_event(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(
+        QueueStatusService,
+        "get_enrichment_jobs_for_entity",
+        fake_get_enrichment_jobs_for_entity,
+    )
+    monkeypatch.setattr("app.services.enrichment.service.emit_event", fake_emit_event)
+
+    async with session_maker() as session:
+        detail = await alert_service.get_alert(session, alert_id)
+
+    assert detail is not None
+    response_item = next(
+        item for item in (detail.timeline_items or []) if item.get("id") == "item-orphaned-1"
+    )
+    assert response_item["enrichment_status"] == "failed"
+    assert "enrichment_task_id" not in response_item
+
+    async with session_maker() as session:
+        refreshed_alert = await session.get(Alert, alert_id)
+        assert refreshed_alert is not None
+        stored_item = next(
+            item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-orphaned-1"
+        )
+
+    assert stored_item["enrichment_status"] == "failed"
+    assert "enrichment_task_id" not in stored_item
 
 
 @pytest.mark.asyncio
@@ -690,6 +818,38 @@ async def test_denormalize_timeline_does_not_overwrite_newer_enrichment_state(
             return "task-race-123"
 
     monkeypatch.setattr("app.services.enrichment.service.get_task_queue_service", lambda: FakeQueue())
+
+    async def fake_get_enrichment_jobs_for_entity(
+        self: QueueStatusService,
+        *,
+        entity_type: str,
+        entity_id: int,
+        item_ids: list[str],
+        linked_task_ids_by_item_id: dict[str, str] | None = None,
+    ) -> dict[str, QueueJobRead]:
+        if item_ids == ["item-race-1"]:
+            assert linked_task_ids_by_item_id == {"item-race-1": "task-race-123"}
+            return {
+                "item-race-1": QueueJobRead(
+                    id=456,
+                    entrypoint="enrich_item",
+                    status="queued",
+                    priority=0,
+                    payload={
+                        "entity_type": entity_type,
+                        "entity_id": entity_id,
+                        "item_id": "item-race-1",
+                    },
+                )
+            }
+        return {}
+
+    monkeypatch.setattr(
+        QueueStatusService,
+        "get_enrichment_jobs_for_entity",
+        fake_get_enrichment_jobs_for_entity,
+    )
+
 
     session_cookie = await _login(client, analyst.username)
     response = await client.post(

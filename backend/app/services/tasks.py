@@ -40,7 +40,9 @@ def _unwrap_terminal_failure(exc: Exception) -> Exception:
     while getattr(current, "__cause__", None) is not None and id(current) not in seen:
         seen.add(id(current))
         current = current.__cause__  # type: ignore[assignment]
-    return current
+    if isinstance(current, Exception):
+        return current
+    return exc
 
 
 def _format_terminal_failure_message(exc: Exception) -> str:
@@ -59,15 +61,21 @@ async def _handle_triage_terminal_failure(payload: Dict[str, Any], exc: Exceptio
     await _mark_triage_failed(int(payload["alert_id"]), _format_terminal_failure_message(exc))
 
 
-async def _handle_enrich_item_terminal_failure(payload: Dict[str, Any], exc: Exception) -> None:
-    """Clear stuck enrichment pending state after retry exhaustion."""
+async def _handle_enrich_item_terminal_failure(
+    payload: Dict[str, Any],
+    exc: Exception,
+    *,
+    task_id: str | None = None,
+) -> None:
+    """Mark enrichment as failed after retry exhaustion."""
     async with async_session_factory() as db:
-        await enrichment_service.clear_item_enrichment_pending_status(
+        await enrichment_service.mark_item_enrichment_failed(
             db,
             entity_type=str(payload["entity_type"]),
             entity_id=int(payload["entity_id"]),
             item_id=str(payload["item_id"]),
             error_message=_format_terminal_failure_message(exc),
+            task_id=task_id,
         )
 
 
@@ -308,7 +316,7 @@ async def _mark_triage_failed(alert_id: int, error_message: str):
         )
 
 
-async def handle_enrich_item(payload: Dict[str, Any]):
+async def handle_enrich_item(payload: Dict[str, Any], *, task_id: str | None = None):
     """Handle timeline item enrichment in the background worker.
 
     Retryable failures are surfaced back to the queue executor so the item can
@@ -330,6 +338,7 @@ async def handle_enrich_item(payload: Dict[str, Any]):
             entity_type=entity_type,
             entity_id=entity_id,
             item_id=item_id,
+            task_id=task_id,
         )
 
 

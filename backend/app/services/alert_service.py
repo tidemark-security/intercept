@@ -172,17 +172,13 @@ class AlertService:
         if not db_alert:
             return None
 
-        db_alert = await timeline_service.denormalize_entity_timeline(
-            db,
-            db_alert,
-            human_prefix="ALT",
-            include_linked_timelines=include_linked_timelines,
-        )
-        return await timeline_service.coalesce_timeline_audit(
+        return await timeline_service.prepare_entity_detail_timeline(
             db,
             entity_type="alert",
             entity_id=alert_id,
             entity=db_alert,
+            human_prefix="ALT",
+            include_linked_timelines=include_linked_timelines,
         )
     
     async def get_alert_by_human_id(self, db: AsyncSession, human_id: str) -> Optional[Alert]:

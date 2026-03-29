@@ -106,6 +106,10 @@ class ItemBase(SQLModel):
     flagged: bool = Field(default=False, description="Whether this item is flagged as significant")
     highlighted: bool = Field(default=False, description="Whether this item is highlighted for attention")
     enrichment_status: Optional[str] = Field(default=None, description="Background enrichment status")
+    enrichment_task_id: Optional[str] = Field(
+        default=None,
+        description="Linked pgqueuer job id for the active enrichment task",
+    )
     enrichments: Optional[Dict[str, Any]] = Field(
         default_factory=dict,
         description="Provider enrichment payloads keyed by provider identifier",

@@ -131,17 +131,13 @@ class TaskService:
         if not db_task:
             return None
 
-        db_task = await timeline_service.denormalize_entity_timeline(
-            db,
-            db_task,
-            human_prefix="TSK",
-            include_linked_timelines=include_linked_timelines,
-        )
-        return await timeline_service.coalesce_timeline_audit(
+        return await timeline_service.prepare_entity_detail_timeline(
             db,
             entity_type="task",
             entity_id=task_id,
             entity=db_task,
+            human_prefix="TSK",
+            include_linked_timelines=include_linked_timelines,
         )
     
     async def get_tasks(

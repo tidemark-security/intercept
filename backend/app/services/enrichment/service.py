@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
-from sqlmodel import select
+from sqlmodel import col, select
 
 from app.models.enums import Priority
 from app.models.enums import RealtimeEventType
@@ -25,6 +25,7 @@ from app.models.models import (
 from app.services.enrichment.base import AliasMapping, EnrichmentResult
 from app.services.enrichment.cache import enrichment_cache
 from app.services.enrichment.registry import enrichment_registry
+from app.services.queue_status_service import QueueStatusService
 from app.services.realtime_service import emit_event
 from app.services.settings_service import SettingsService
 from app.services.task_queue_service import get_task_queue_service
@@ -41,6 +42,8 @@ PRIORITY_TO_QUEUE_PRIORITY = {
     Priority.EXTREME: 100,
 }
 
+ACTIVE_ENRICHMENT_STATUSES = {"pending", "in_progress"}
+
 
 class EnrichmentService:
     """Coordinates provider lookup, caching, queueing, and alias persistence."""
@@ -48,6 +51,8 @@ class EnrichmentService:
     def _clear_item_enrichment_state(self, item: Dict[str, Any]) -> bool:
         changed = False
         if item.pop("enrichment_status", None) is not None:
+            changed = True
+        if item.pop("enrichment_task_id", None) is not None:
             changed = True
 
         enrichments = item.get("enrichments")
@@ -59,6 +64,52 @@ class EnrichmentService:
             item["enrichments"] = {}
             changed = True
 
+        return changed
+
+    def _clear_item_enrichment_error(self, item: Dict[str, Any]) -> bool:
+        enrichments = item.get("enrichments")
+        if not isinstance(enrichments, dict):
+            return False
+        if enrichments.pop("system", None) is None:
+            return False
+        if not enrichments:
+            item["enrichments"] = {}
+        return True
+
+    def _link_enrichment_task(self, item: Dict[str, Any], task_id: str) -> bool:
+        changed = False
+        if item.get("enrichment_task_id") != task_id:
+            item["enrichment_task_id"] = task_id
+            changed = True
+        if self._clear_item_enrichment_error(item):
+            changed = True
+        return changed
+
+    def _matches_linked_task(self, item: Dict[str, Any], task_id: str | None) -> bool:
+        if not task_id:
+            return True
+        linked_task_id = item.get("enrichment_task_id")
+        if linked_task_id is None:
+            return True
+        return str(linked_task_id) == task_id
+
+    def _set_item_enrichment_failed(
+        self,
+        item: Dict[str, Any],
+        *,
+        error_message: str | None = None,
+    ) -> bool:
+        changed = False
+        if item.get("enrichment_status") != "failed":
+            item["enrichment_status"] = "failed"
+            changed = True
+        if item.pop("enrichment_task_id", None) is not None:
+            changed = True
+        if error_message:
+            enrichments = item.setdefault("enrichments", {})
+            if enrichments.get("system", {}).get("error") != error_message:
+                enrichments["system"] = {"error": error_message}
+                changed = True
         return changed
 
     async def _get_provider_signatures(
@@ -74,7 +125,7 @@ class EnrichmentService:
 
         for provider in providers:
             if only_enabled:
-                settings = SettingsService(db)
+                settings = SettingsService(db)  # type: ignore[arg-type]
                 if not await self._is_provider_enabled(settings, provider):
                     continue
             signatures.append((provider.provider_id, provider.build_cache_key(provider_item)))
@@ -110,6 +161,7 @@ class EnrichmentService:
         entity_id: int,
         item_id: str,
         error_message: str,
+        task_id: str | None = None,
     ) -> None:
         entity = await self._load_entity(db, entity_type, entity_id)
         if entity is None:
@@ -132,45 +184,14 @@ class EnrichmentService:
             )
             return
 
-        item["enrichment_status"] = "failed"
-        item.setdefault("enrichments", {})["system"] = {"error": error_message}
-        flag_modified(entity, "timeline_items")
-        if hasattr(entity, "updated_at"):
-            entity.updated_at = datetime.now(timezone.utc)
-        await db.commit()
-
-    async def clear_item_enrichment_pending_status(
-        self,
-        db: AsyncSession,
-        *,
-        entity_type: str,
-        entity_id: int,
-        item_id: str,
-        error_message: str,
-    ) -> None:
-        entity = await self._load_entity(db, entity_type, entity_id)
-        if entity is None:
-            logger.warning(
-                "Failed to clear enrichment pending status for missing %s %s",
-                entity_type,
-                entity_id,
+        if not self._matches_linked_task(item, task_id):
+            logger.info(
+                "Skipping enrichment failure update for superseded task",
+                extra={"entity_type": entity_type, "entity_id": entity_id, "item_id": item_id, "task_id": task_id},
             )
             return
 
-        from app.services.timeline_service import timeline_service
-
-        item = timeline_service._find_item_by_id(getattr(entity, "timeline_items", None) or [], item_id)
-        if item is None:
-            logger.warning(
-                "Failed to clear enrichment pending status for missing item %s on %s %s",
-                item_id,
-                entity_type,
-                entity_id,
-            )
-            return
-
-        item.pop("enrichment_status", None)
-        item.setdefault("enrichments", {})["system"] = {"error": error_message}
+        self._set_item_enrichment_failed(item, error_message=error_message)
         flag_modified(entity, "timeline_items")
         if hasattr(entity, "updated_at"):
             entity.updated_at = datetime.now(timezone.utc)
@@ -184,6 +205,25 @@ class EnrichmentService:
         )
         await db.commit()
 
+    async def mark_item_enrichment_failed(
+        self,
+        db: AsyncSession,
+        *,
+        entity_type: str,
+        entity_id: int,
+        item_id: str,
+        error_message: str,
+        task_id: str | None = None,
+    ) -> None:
+        await self._mark_item_enrichment_failed(
+            db,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            item_id=item_id,
+            error_message=error_message,
+            task_id=task_id,
+        )
+
     async def prepare_item_enrichment_enqueue(
         self,
         db: AsyncSession,
@@ -196,6 +236,8 @@ class EnrichmentService:
         if not providers:
             return None
 
+        self._clear_item_enrichment_error(item)
+        item.pop("enrichment_task_id", None)
         item["enrichment_status"] = "pending"
         flag_modified(entity, "timeline_items")
         return self.get_queue_priority_for_entity(entity)
@@ -248,12 +290,20 @@ class EnrichmentService:
         raise_on_error: bool = True,
     ) -> Optional[str]:
         try:
-            return await self._enqueue_item_task(
+            enqueued_task_id = await self._enqueue_item_task(
                 entity_type=entity_type,
                 entity_id=entity_id,
                 item_id=item_id,
                 priority=priority,
             )
+            await self._persist_enrichment_task_link(
+                db,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                item_id=item_id,
+                task_id=enqueued_task_id,
+            )
+            return enqueued_task_id
         except Exception as exc:
             await self._mark_item_enrichment_failed(
                 db,
@@ -266,6 +316,33 @@ class EnrichmentService:
             if raise_on_error:
                 raise
             return None
+
+    async def _persist_enrichment_task_link(
+        self,
+        db: AsyncSession,
+        *,
+        entity_type: str,
+        entity_id: int,
+        item_id: str,
+        task_id: str,
+    ) -> None:
+        entity = await self._load_entity(db, entity_type, entity_id)
+        if entity is None:
+            return
+
+        from app.services.timeline_service import timeline_service
+
+        item = timeline_service._find_item_by_id(getattr(entity, "timeline_items", None) or [], item_id)
+        if item is None:
+            return
+
+        if not self._link_enrichment_task(item, task_id):
+            return
+
+        flag_modified(entity, "timeline_items")
+        if hasattr(entity, "updated_at"):
+            entity.updated_at = datetime.now(timezone.utc)
+        await db.commit()
 
     async def _get_provider_item(self, db: AsyncSession, item: Dict[str, Any]) -> Dict[str, Any]:
         item_type = item.get("type")
@@ -292,7 +369,7 @@ class EnrichmentService:
         db: AsyncSession,
         item: Dict[str, Any],
     ) -> List[Any]:
-        settings = SettingsService(db)
+        settings = SettingsService(db)  # type: ignore[arg-type]
         providers = []
         for provider in enrichment_registry.get_providers_for_item(item):
             if await self._is_provider_enabled(settings, provider):
@@ -355,6 +432,19 @@ class EnrichmentService:
         if item is None:
             raise ValueError(f"Timeline item {item_id} not found")
 
+        await self.reconcile_entity_enrichment_statuses(
+            db,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            timeline_items=getattr(entity, "timeline_items", None) or [],
+        )
+        item = timeline_service._find_item_by_id(getattr(entity, "timeline_items", None) or [], item_id)
+        if item is None:
+            raise ValueError(f"Timeline item {item_id} not found")
+        current_status = str(item.get("enrichment_status") or "").strip().lower()
+        if current_status in ACTIVE_ENRICHMENT_STATUSES and item.get("enrichment_task_id"):
+            return str(item["enrichment_task_id"])
+
         priority = await self.prepare_item_enrichment_enqueue(
             db,
             entity=entity,
@@ -387,11 +477,11 @@ class EnrichmentService:
         normalized_query = self._normalize_alias_value(query)
         statement = select(EnrichmentAlias).where(
             EnrichmentAlias.entity_type == entity_type,
-            EnrichmentAlias.alias_value.ilike(f"%{normalized_query}%"),
+            col(EnrichmentAlias.alias_value).ilike(f"%{normalized_query}%"),
         )
         if provider_id:
             statement = statement.where(EnrichmentAlias.provider_id == provider_id)
-        statement = statement.order_by(EnrichmentAlias.alias_value.asc()).limit(limit)
+        statement = statement.order_by(col(EnrichmentAlias.alias_value).asc()).limit(limit)
         rows = (await db.execute(statement)).scalars().all()
         return [EnrichmentAliasRead.model_validate(row) for row in rows]
 
@@ -467,7 +557,7 @@ class EnrichmentService:
         return True
 
     async def get_provider_statuses(self, db: AsyncSession) -> List[EnrichmentProviderStatusRead]:
-        settings = SettingsService(db)
+        settings = SettingsService(db)  # type: ignore[arg-type]
         statuses: List[EnrichmentProviderStatusRead] = []
         for provider in enrichment_registry.list():
             enabled = await self._is_provider_enabled(settings, provider)
@@ -523,6 +613,7 @@ class EnrichmentService:
         entity_type: str,
         entity_id: int,
         item_id: str,
+        task_id: str | None = None,
     ) -> None:
         entity = await self._load_entity(db, entity_type, entity_id)
         if entity is None:
@@ -533,12 +624,19 @@ class EnrichmentService:
         item = timeline_service._find_item_by_id(getattr(entity, "timeline_items", None) or [], item_id)
         if item is None:
             raise ValueError(f"Timeline item {item_id} not found")
+        if not self._matches_linked_task(item, task_id):
+            logger.info(
+                "Skipping enrichment for superseded task",
+                extra={"entity_type": entity_type, "entity_id": entity_id, "item_id": item_id, "task_id": task_id},
+            )
+            return
 
-        settings = SettingsService(db)
+        settings = SettingsService(db)  # type: ignore[arg-type]
         await self._configure_hot_cache(settings)
         provider_item = await self._get_provider_item(db, item)
         providers = await self.get_matching_enabled_providers(db, provider_item)
         if not providers:
+            item.pop("enrichment_task_id", None)
             item.pop("enrichment_status", None)
             item.setdefault("enrichments", {})["system"] = {"error": "No enabled providers matched this timeline item"}
             flag_modified(entity, "timeline_items")
@@ -555,6 +653,8 @@ class EnrichmentService:
             await db.commit()
             return
 
+        if task_id:
+            self._link_enrichment_task(item, task_id)
         item["enrichment_status"] = "in_progress"
         flag_modified(entity, "timeline_items")
         await db.flush()
@@ -587,6 +687,7 @@ class EnrichmentService:
                 await self._apply_result(db, entity=entity, item=item, item_id=item_id, result=result)
 
             item["enrichment_status"] = "complete"
+            item.pop("enrichment_task_id", None)
             flag_modified(entity, "timeline_items")
             if hasattr(entity, "updated_at"):
                 entity.updated_at = datetime.now(timezone.utc)
@@ -602,6 +703,158 @@ class EnrichmentService:
         except Exception as exc:
             raise
 
+    def _collect_reconcilable_items(
+        self,
+        items: List[Dict[str, Any]],
+        collected: Dict[str, Dict[str, Any]],
+    ) -> None:
+        for item in items:
+            item_id = item.get("id")
+            if item_id:
+                collected[str(item_id)] = item
+            replies = item.get("replies")
+            if isinstance(replies, list) and replies:
+                self._collect_reconcilable_items(replies, collected)
+
+    def _reconcile_item_with_job(
+        self,
+        item: Dict[str, Any],
+        job: Any | None,
+    ) -> bool:
+        status = str(item.get("enrichment_status") or "").strip().lower()
+        if status not in ACTIVE_ENRICHMENT_STATUSES:
+            return False
+
+        if job is None:
+            return self._set_item_enrichment_failed(item)
+
+        changed = False
+        job_id = str(job.id)
+        if item.get("enrichment_task_id") != job_id:
+            item["enrichment_task_id"] = job_id
+            changed = True
+
+        if job.status == "picked" and item.get("enrichment_status") != "in_progress":
+            item["enrichment_status"] = "in_progress"
+            changed = True
+        elif job.status == "queued" and item.get("enrichment_status") != "pending":
+            item["enrichment_status"] = "pending"
+            changed = True
+        elif job.status == "successful":
+            if item.get("enrichment_status") != "complete":
+                item["enrichment_status"] = "complete"
+                changed = True
+            if item.pop("enrichment_task_id", None) is not None:
+                changed = True
+        elif job.status in {"exception", "canceled"}:
+            changed = self._set_item_enrichment_failed(item) or changed
+
+        return changed
+
+    async def reconcile_entity_enrichment_statuses(
+        self,
+        db: AsyncSession,
+        *,
+        entity_type: str,
+        entity_id: int,
+        timeline_items: List[Dict[str, Any]],
+    ) -> List[str]:
+        items_by_id: Dict[str, Dict[str, Any]] = {}
+        self._collect_reconcilable_items(timeline_items, items_by_id)
+
+        active_item_ids = [
+            item_id
+            for item_id, item in items_by_id.items()
+            if str(item.get("enrichment_status") or "").strip().lower() in ACTIVE_ENRICHMENT_STATUSES
+        ]
+        if not active_item_ids:
+            return []
+
+        linked_task_ids_by_item_id = {
+            item_id: str(item.get("enrichment_task_id"))
+            for item_id, item in items_by_id.items()
+            if item_id in active_item_ids and str(item.get("enrichment_task_id") or "").strip()
+        }
+
+        jobs_by_item_id = await QueueStatusService(db).get_enrichment_jobs_for_entity(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            item_ids=active_item_ids,
+            linked_task_ids_by_item_id=linked_task_ids_by_item_id,
+        )
+
+        changed_item_ids: List[str] = []
+        for item_id in active_item_ids:
+            item = items_by_id[item_id]
+            if self._reconcile_item_with_job(item, jobs_by_item_id.get(item_id)):
+                changed_item_ids.append(item_id)
+
+        if not changed_item_ids:
+            return []
+
+        await self._persist_reconciled_items(
+            db,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            items_by_id=items_by_id,
+            changed_item_ids=changed_item_ids,
+        )
+        return changed_item_ids
+
+    async def _persist_reconciled_items(
+        self,
+        db: AsyncSession,
+        *,
+        entity_type: str,
+        entity_id: int,
+        items_by_id: Dict[str, Dict[str, Any]],
+        changed_item_ids: List[str],
+    ) -> None:
+        entity = await self._load_entity(db, entity_type, entity_id)
+        if entity is None:
+            return
+
+        from app.services.timeline_service import timeline_service
+
+        updated = False
+        for item_id in changed_item_ids:
+            stored_item = timeline_service._find_item_by_id(getattr(entity, "timeline_items", None) or [], item_id)
+            response_item = items_by_id.get(item_id)
+            if stored_item is None or response_item is None:
+                continue
+
+            for key in ("enrichment_status", "enrichment_task_id"):
+                if key in response_item:
+                    if stored_item.get(key) != response_item.get(key):
+                        stored_item[key] = response_item.get(key)
+                        updated = True
+                elif key in stored_item:
+                    stored_item.pop(key, None)
+                    updated = True
+
+            response_enrichments = response_item.get("enrichments")
+            if isinstance(response_enrichments, dict):
+                if stored_item.get("enrichments") != response_enrichments:
+                    stored_item["enrichments"] = dict(response_enrichments)
+                    updated = True
+
+        if not updated:
+            return
+
+        flag_modified(entity, "timeline_items")
+        if hasattr(entity, "updated_at"):
+            entity.updated_at = datetime.now(timezone.utc)
+        for item_id in changed_item_ids:
+            await emit_event(
+                db,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                event_type=RealtimeEventType.TIMELINE_ITEM_UPDATED,
+                performed_by="system",
+                item_id=item_id,
+            )
+        await db.commit()
+
     async def run_directory_sync(self, db: AsyncSession, provider_id: str) -> None:
         provider = enrichment_registry.get(provider_id)
         if provider is None:
@@ -609,7 +862,7 @@ class EnrichmentService:
         if not provider.supports_bulk_sync:
             raise ValueError(f"Provider {provider_id} does not support bulk sync")
 
-        settings = SettingsService(db)
+        settings = SettingsService(db)  # type: ignore[arg-type]
         await self._configure_hot_cache(settings)
         if not await self._is_provider_enabled(settings, provider):
             raise ValueError(f"Provider {provider_id} is disabled")

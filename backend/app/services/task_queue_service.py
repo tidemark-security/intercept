@@ -11,6 +11,7 @@ import json
 import logging
 import asyncio
 import dataclasses
+from inspect import signature
 from typing import Optional, Dict, Any, Callable, Awaitable
 from datetime import datetime, timezone, timedelta
 
@@ -25,7 +26,8 @@ from pgqueuer.models import Job
 logger = logging.getLogger(__name__)
 
 
-TerminalFailureHandler = Callable[[Dict[str, Any], Exception], Awaitable[None]]
+TerminalFailureHandler = Callable[..., Awaitable[None]]
+TaskHandler = Callable[..., Awaitable[None]]
 
 RETRY_INITIAL_DELAY_SECONDS = 5.0
 RETRY_MAX_DELAY = timedelta(seconds=60)
@@ -54,7 +56,11 @@ class RetryWithTerminalFailureHookExecutor(RetryWithBackoffEntrypointExecutor):
                     payload = json.loads(job.payload.decode("utf-8"))
 
                 try:
-                    await self.on_terminal_failure(payload, exc)
+                    failure_signature = signature(self.on_terminal_failure)
+                    if "task_id" in failure_signature.parameters:
+                        await self.on_terminal_failure(payload, exc, task_id=str(job.id))
+                    else:
+                        await self.on_terminal_failure(payload, exc)
                 except Exception:
                     logger.exception(
                         "Terminal failure hook failed for task",
@@ -84,13 +90,13 @@ class TaskQueueService:
         """
         self.connection_string = connection_string
         self._pool: Optional[asyncpg.Pool] = None
-        self._connection: Optional[asyncpg.Connection] = None  # For queries/enqueue
+        self._connection: Optional[Any] = None  # For queries/enqueue
         self.driver: Optional[AsyncpgPoolDriver] = None
         self.queue_manager: Optional[QueueManager] = None
         self.queries: Optional[Queries] = None
         self._worker_task: Optional[asyncio.Task] = None
         self._running = False
-        self._handlers: Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]] = {}
+        self._handlers: Dict[str, TaskHandler] = {}
     
     def _convert_connection_string(self, conn_str: str) -> str:
         """
@@ -159,9 +165,6 @@ class TaskQueueService:
                     await self._worker_task
                 except asyncio.CancelledError:
                     pass
-            
-            if self.driver:
-                await self.driver.shutdown()
             
             # Release connection back to pool before closing
             if self._connection and self._pool:
@@ -244,7 +247,7 @@ class TaskQueueService:
     def register_handler(
         self,
         task_name: str,
-        handler: Callable[[Dict[str, Any]], Awaitable[None]],
+        handler: TaskHandler,
         max_retries: int = 3,
         on_terminal_failure: Optional[TerminalFailureHandler] = None,
     ):
@@ -265,7 +268,8 @@ class TaskQueueService:
         
         # Store handler info for later use
         self._handlers[task_name] = handler
-
+        handler_signature = signature(handler)
+        accepts_task_id = "task_id" in handler_signature.parameters
         def build_executor(parameters: Any) -> RetryWithTerminalFailureHookExecutor:
             return RetryWithTerminalFailureHookExecutor(
                 parameters=parameters,
@@ -299,7 +303,10 @@ class TaskQueueService:
                 )
                 
                 # Execute handler
-                await handler(payload)
+                if accepts_task_id:
+                    await handler(payload, task_id=str(job.id))
+                else:
+                    await handler(payload)
                 
                 logger.info(
                     f"Completed task: {task_name}",
@@ -342,11 +349,14 @@ class TaskQueueService:
             """Main worker loop."""
             try:
                 logger.info(f"Starting task queue worker (max_concurrent_tasks={concurrency})")
+                queue_manager = self.queue_manager
+                if queue_manager is None:
+                    raise RuntimeError("Task queue not initialized")
                 
                 while self._running:
                     try:
                         # Process jobs from queue
-                        await self.queue_manager.run(max_concurrent_tasks=concurrency)
+                        await queue_manager.run(max_concurrent_tasks=concurrency)
                     except asyncio.CancelledError:
                         break
                     except Exception as e:
