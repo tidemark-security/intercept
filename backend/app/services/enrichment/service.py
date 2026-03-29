@@ -726,6 +726,8 @@ class EnrichmentService:
             return False
 
         if job is None:
+            if status == "pending" and not str(item.get("enrichment_task_id") or "").strip():
+                return False
             return self._set_item_enrichment_failed(item)
 
         changed = False
@@ -833,9 +835,11 @@ class EnrichmentService:
                     updated = True
 
             response_enrichments = response_item.get("enrichments")
-            if isinstance(response_enrichments, dict):
-                if stored_item.get("enrichments") != response_enrichments:
-                    stored_item["enrichments"] = dict(response_enrichments)
+            if isinstance(response_enrichments, dict) and response_enrichments:
+                merged_enrichments = dict(stored_item.get("enrichments") or {})
+                merged_enrichments.update(response_enrichments)
+                if stored_item.get("enrichments") != merged_enrichments:
+                    stored_item["enrichments"] = merged_enrichments
                     updated = True
 
         if not updated:

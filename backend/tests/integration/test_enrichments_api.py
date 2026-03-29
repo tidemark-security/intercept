@@ -781,6 +781,80 @@ async def test_get_alert_reconciles_orphaned_active_enrichment_to_failed(
 
 
 @pytest.mark.asyncio
+async def test_get_alert_keeps_pending_enrichment_without_linked_job_pending(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    analyst = analyst_user_factory(username="analyst.pending-enrichment")
+    timeline_item = {
+        "id": "item-pending-1",
+        "type": "internal_actor",
+        "timestamp": "2026-03-14T00:00:00Z",
+        "created_at": "2026-03-14T00:00:00Z",
+        "created_by": analyst.username,
+        "user_id": "alice@example.com",
+        "enrichment_status": "pending",
+        "enrichments": {},
+    }
+    alert = Alert(
+        title="Alert with pending enrichment",
+        description="Test alert",
+        source="unit-test",
+        timeline_items=[timeline_item],
+        created_by=analyst.username,
+    )
+
+    async with session_maker() as session:
+        session.add(analyst)
+        session.add(alert)
+        await session.commit()
+        await session.refresh(alert)
+        assert alert.id is not None
+        alert_id = alert.id
+
+    async def fake_get_enrichment_jobs_for_entity(
+        self: QueueStatusService,
+        *,
+        entity_type: str,
+        entity_id: int,
+        item_ids: list[str],
+        linked_task_ids_by_item_id: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        assert entity_type == "alert"
+        assert entity_id == alert_id
+        assert item_ids == ["item-pending-1"]
+        assert linked_task_ids_by_item_id == {}
+        return {}
+
+    monkeypatch.setattr(
+        QueueStatusService,
+        "get_enrichment_jobs_for_entity",
+        fake_get_enrichment_jobs_for_entity,
+    )
+
+    async with session_maker() as session:
+        detail = await alert_service.get_alert(session, alert_id)
+
+    assert detail is not None
+    response_item = next(
+        item for item in (detail.timeline_items or []) if item.get("id") == "item-pending-1"
+    )
+    assert response_item["enrichment_status"] == "pending"
+    assert "enrichment_task_id" not in response_item
+
+    async with session_maker() as session:
+        refreshed_alert = await session.get(Alert, alert_id)
+        assert refreshed_alert is not None
+        stored_item = next(
+            item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-pending-1"
+        )
+
+    assert stored_item["enrichment_status"] == "pending"
+    assert "enrichment_task_id" not in stored_item
+
+
+@pytest.mark.asyncio
 async def test_denormalize_timeline_does_not_overwrite_newer_enrichment_state(
     client: AsyncClient,
     session_maker: async_sessionmaker[AsyncSession],
@@ -910,6 +984,114 @@ async def test_denormalize_timeline_does_not_overwrite_newer_enrichment_state(
         )
 
     assert stored_item["enrichment_status"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_success_does_not_clear_newer_enrichment_results(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    analyst = analyst_user_factory(username="analyst.reconcile-race")
+    alert = Alert(
+        title="Alert with reconcile race",
+        description="Test alert",
+        source="unit-test",
+        timeline_items=[
+            {
+                "id": "item-race-success-1",
+                "type": "internal_actor",
+                "timestamp": "2026-03-14T00:00:00Z",
+                "created_at": "2026-03-14T00:00:00Z",
+                "created_by": analyst.username,
+                "user_id": "alice@example.com",
+                "enrichment_status": "pending",
+                "enrichment_task_id": "task-race-success-123",
+                "enrichments": {},
+            }
+        ],
+        created_by=analyst.username,
+    )
+
+    async with session_maker() as session:
+        session.add(analyst)
+        session.add(alert)
+        await session.commit()
+        await session.refresh(alert)
+
+    async def fake_get_enrichment_jobs_for_entity(
+        self: QueueStatusService,
+        *,
+        entity_type: str,
+        entity_id: int,
+        item_ids: list[str],
+        linked_task_ids_by_item_id: dict[str, str] | None = None,
+    ) -> dict[str, QueueJobRead]:
+        if item_ids == ["item-race-success-1"]:
+            assert linked_task_ids_by_item_id == {"item-race-success-1": "task-race-success-123"}
+            return {
+                "item-race-success-1": QueueJobRead(
+                    id=456,
+                    entrypoint="enrich_item",
+                    status="successful",
+                    priority=0,
+                    payload=None,
+                )
+            }
+        return {}
+
+    monkeypatch.setattr(
+        QueueStatusService,
+        "get_enrichment_jobs_for_entity",
+        fake_get_enrichment_jobs_for_entity,
+    )
+
+    async with session_maker() as stale_session:
+        stale_alert = await stale_session.get(Alert, alert.id)
+        assert stale_alert is not None
+
+        async with session_maker() as fresh_session:
+            fresh_alert = await fresh_session.get(Alert, alert.id)
+            assert fresh_alert is not None
+
+            updated_items = []
+            for item in fresh_alert.timeline_items or []:
+                if item.get("id") == "item-race-success-1":
+                    updated_items.append(
+                        {
+                            **item,
+                            "enrichment_status": "complete",
+                            "enrichments": {
+                                "google_workspace": {"display_name": "Alice Example"}
+                            },
+                        }
+                    )
+                else:
+                    updated_items.append(item)
+
+            fresh_alert.timeline_items = updated_items
+            await fresh_session.commit()
+
+        detail = await alert_service.get_alert(stale_session, alert.id)
+        assert detail is not None
+        response_item = next(
+            item for item in (detail.timeline_items or []) if item.get("id") == "item-race-success-1"
+        )
+
+        assert response_item["enrichment_status"] == "complete"
+        assert response_item["enrichments"] == {}
+
+    async with session_maker() as session:
+        refreshed_alert = await session.get(Alert, alert.id)
+        assert refreshed_alert is not None
+        stored_item = next(
+            item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-race-success-1"
+        )
+
+    assert stored_item["enrichment_status"] == "complete"
+    assert stored_item["enrichments"] == {
+        "google_workspace": {"display_name": "Alice Example"}
+    }
 
 
 @pytest.mark.asyncio
