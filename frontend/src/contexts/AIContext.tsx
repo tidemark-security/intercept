@@ -108,62 +108,32 @@ export function AIProvider({ children }: AIProviderProps) {
     setMessages(prev => [...prev, assistantMessage]);
 
     try {
-      // Create SSE connection for streaming
-      const eventSource = langflowApi.createStreamConnection(sessionId, content);
-
-      eventSource.addEventListener('connected', () => {
-        console.log('SSE connected');
-      });
-
-      eventSource.addEventListener('message', (event) => {
-        const data = JSON.parse(event.data);
-        
-        // Update streaming message with partial content
+      await langflowApi.streamMessage(sessionId, { message: content }, {
+        onConnected: () => {
+          console.log('SSE connected');
+        },
+        onMessage: (data) => {
         setMessages(prev => prev.map(msg => 
           msg.id === assistantMessageId
             ? { ...msg, content: msg.content + data.content }
             : msg
-        ));
-      });
-
-      eventSource.addEventListener('complete', (event) => {
-        const data = JSON.parse(event.data);
-        
-        // Update with final message and remove streaming flag
+          ));
+        },
+        onComplete: (data) => {
         setMessages(prev => prev.map(msg => 
           msg.id === assistantMessageId
             ? { 
                 ...msg,
-                id: data.message_id,
-                content: data.content,
-                isStreaming: false,
-              }
-            : msg
-        ));
-        
-        eventSource.close();
-        setIsLoading(false);
+                  id: data.message_id || msg.id,
+                  content: data.content || msg.content,
+                  isStreaming: false,
+                }
+              : msg
+          ));
+
+          setIsLoading(false);
+        },
       });
-
-      eventSource.addEventListener('error', (event) => {
-        const messageEvent = event as MessageEvent;
-        const data = messageEvent.data ? JSON.parse(messageEvent.data) : { error: 'Stream error' };
-        setError(data.error || 'Failed to receive response');
-        
-        // Remove streaming message
-        setMessages(prev => prev.filter(msg => msg.id !== assistantMessageId));
-        
-        eventSource.close();
-        setIsLoading(false);
-      });
-
-      eventSource.onerror = () => {
-        setError('Connection error');
-        setMessages(prev => prev.filter(msg => msg.id !== assistantMessageId));
-        eventSource.close();
-        setIsLoading(false);
-      };
-
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message');
       setMessages(prev => prev.filter(msg => msg.id !== assistantMessageId));

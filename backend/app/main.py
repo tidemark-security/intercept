@@ -6,6 +6,7 @@ from fastapi_pagination import add_pagination
 from fastapi_pagination.cursor import CursorParams
 
 from app.core.settings_registry import get_local
+from app.core.csrf import CSRFMiddleware
 from app.core.database import test_db_connection
 from app.core.database import async_session_factory
 from app.core.security import initialize_encryption_service
@@ -110,9 +111,12 @@ app.add_middleware(
         "Authorization",
         "X-Requested-With",
         "X-CSRF-Token",
+        "X-XSRF-TOKEN",
     ],
     expose_headers=["*"],
 )
+
+app.add_middleware(CSRFMiddleware)
 
 # Include routers BEFORE MCP generation so routes are available
 app.include_router(cases.router, prefix="/api/v1")

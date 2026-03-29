@@ -140,6 +140,7 @@ export type { SettingType } from './models/SettingType';
 export type { SOCMetricsResponse } from './models/SOCMetricsResponse';
 export type { SOCMetricsSummary } from './models/SOCMetricsSummary';
 export type { SOCMetricsWindow } from './models/SOCMetricsWindow';
+export type { StreamChatRequest } from './models/StreamChatRequest';
 export type { SystemItem } from './models/SystemItem';
 export type { SystemType } from './models/SystemType';
 export type { TaskCreate } from './models/TaskCreate';

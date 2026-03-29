@@ -1374,6 +1374,7 @@ class OIDCAuthRequest(SQLModel, table=True):
 
     state: str = Field(primary_key=True, max_length=255)
     nonce: str = Field(max_length=255)
+    browser_binding_hash: str = Field(max_length=64)
     redirect_to: str = Field(max_length=2048)
     expires_at: datetime = Field(sa_column=Column(UTCDateTime(), index=True))
     consumed_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))

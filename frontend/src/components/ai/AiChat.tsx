@@ -473,81 +473,46 @@ export function AiChat({
     setInternalMessages(prev => [...prev, assistantMessage]);
 
     try {
-      // Create SSE connection for streaming
-      const eventSource = langflowApi.createStreamConnection(activeSessionId, content);
+      await langflowApi.streamMessage(activeSessionId, { message: content }, {
+        onConnected: () => {
+          console.log('SSE connected');
+        },
+        onMessage: (data) => {
+          streamingBufferRef.current[assistantMessageId] =
+            (streamingBufferRef.current[assistantMessageId] || '') + data.content;
 
-      eventSource.addEventListener('connected', () => {
-        console.log('SSE connected');
+          if (streamingFlushTimerRef.current === null) {
+            streamingFlushTimerRef.current = window.setInterval(() => {
+              flushStreamingBuffer(assistantMessageId);
+            }, 60);
+          }
+        },
+        onComplete: (data) => {
+          flushStreamingBuffer(assistantMessageId);
+          stopStreamingFlushTimer();
+          delete streamingBufferRef.current[assistantMessageId];
+
+          const finalContent = data.content || '';
+          const { cleanContent, prompts } = parseSuggestedPrompts(finalContent);
+
+          if (prompts) {
+            setDynamicPrompts(prompts);
+          }
+
+          setInternalMessages(prev => prev.map(msg => 
+            msg.id === assistantMessageId
+              ? { 
+                  ...msg,
+                  id: data.message_id || msg.id,
+                  content: cleanContent,
+                  isStreaming: false,
+                }
+              : msg
+          ));
+
+          setInternalIsLoading(false);
+        },
       });
-
-      eventSource.addEventListener('message', (event) => {
-        const data = JSON.parse(event.data);
-
-        streamingBufferRef.current[assistantMessageId] =
-          (streamingBufferRef.current[assistantMessageId] || '') + data.content;
-
-        if (streamingFlushTimerRef.current === null) {
-          streamingFlushTimerRef.current = window.setInterval(() => {
-            flushStreamingBuffer(assistantMessageId);
-          }, 60);
-        }
-      });
-
-      eventSource.addEventListener('complete', (event) => {
-        const data = JSON.parse(event.data);
-
-        flushStreamingBuffer(assistantMessageId);
-        stopStreamingFlushTimer();
-        delete streamingBufferRef.current[assistantMessageId];
-        
-        // Parse suggested prompts from content
-        const { cleanContent, prompts } = parseSuggestedPrompts(data.content);
-        
-        // Update dynamic prompts if AI provided new ones
-        if (prompts) {
-          setDynamicPrompts(prompts);
-        }
-        
-        // Update with final message (cleaned) and remove streaming flag
-        setInternalMessages(prev => prev.map(msg => 
-          msg.id === assistantMessageId
-            ? { 
-                ...msg,
-                id: data.message_id || msg.id,
-                content: cleanContent,
-                isStreaming: false,
-              }
-            : msg
-        ));
-        
-        eventSource.close();
-        setInternalIsLoading(false);
-      });
-
-      eventSource.addEventListener('error', (event: Event) => {
-        const messageEvent = event as MessageEvent;
-        const data = messageEvent.data ? JSON.parse(messageEvent.data) : { error: 'Stream error' };
-        setInternalError(data.error || 'Failed to receive response');
-
-        stopStreamingFlushTimer();
-        delete streamingBufferRef.current[assistantMessageId];
-        
-        // Remove streaming message on error
-        setInternalMessages(prev => prev.filter(msg => msg.id !== assistantMessageId));
-        
-        eventSource.close();
-        setInternalIsLoading(false);
-      });
-
-      eventSource.onerror = () => {
-        setInternalError('Connection error');
-        stopStreamingFlushTimer();
-        delete streamingBufferRef.current[assistantMessageId];
-        setInternalMessages(prev => prev.filter(msg => msg.id !== assistantMessageId));
-        eventSource.close();
-        setInternalIsLoading(false);
-      };
-
     } catch (err) {
       setInternalError(err instanceof Error ? err.message : 'Failed to send message');
       stopStreamingFlushTimer();

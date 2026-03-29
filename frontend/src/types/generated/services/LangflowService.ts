@@ -9,6 +9,7 @@ import type { LangFlowSessionCreate } from '../models/LangFlowSessionCreate';
 import type { LangFlowSessionRead } from '../models/LangFlowSessionRead';
 import type { LangFlowSessionUpdate } from '../models/LangFlowSessionUpdate';
 import type { MessageFeedbackRequest } from '../models/MessageFeedbackRequest';
+import type { StreamChatRequest } from '../models/StreamChatRequest';
 import type { TestConnectionResponse } from '../models/TestConnectionResponse';
 import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
@@ -282,27 +283,26 @@ export class LangflowService {
      * This endpoint establishes an SSE connection and streams AI responses in real-time.
      * Use EventSource API on frontend to consume the stream.
      *
-     * Query params:
+     * Request body:
      * - message: The message to send to LangFlow
      * @returns any Successful Response
      * @throws ApiError
      */
-    public static streamLangflowResponseApiV1LangflowStreamSessionIdGet({
+    public static streamLangflowResponseApiV1LangflowStreamSessionIdPost({
         sessionId,
-        message,
+        requestBody,
     }: {
         sessionId: string,
-        message: string,
+        requestBody: StreamChatRequest,
     }): CancelablePromise<any> {
         return __request(OpenAPI, {
-            method: 'GET',
+            method: 'POST',
             url: '/api/v1/langflow/stream/{session_id}',
             path: {
                 'session_id': sessionId,
             },
-            query: {
-                'message': message,
-            },
+            body: requestBody,
+            mediaType: 'application/json',
             errors: {
                 422: `Validation Error`,
             },

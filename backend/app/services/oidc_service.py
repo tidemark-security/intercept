@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
 import logging
 import secrets
 from typing import Any, Optional, cast
@@ -13,6 +14,7 @@ from jose.exceptions import ExpiredSignatureError, JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.settings_registry import get_local
 from app.models.enums import AccountType, UserRole, UserStatus
 from app.models.models import OIDCAuthRequest, USERNAME_REGEX, UserAccount
 from app.services import get_audit_service
@@ -76,16 +78,19 @@ class OIDCService:
         *,
         redirect_to: str,
         callback_url: str,
-    ) -> str:
+    ) -> tuple[str, datetime, str]:
         provider = await self._load_provider_configuration(db)
         state = secrets.token_urlsafe(32)
         nonce = secrets.token_urlsafe(32)
+        browser_binding_token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
 
         auth_request = OIDCAuthRequest(
             state=state,
             nonce=nonce,
+            browser_binding_hash=self._hash_browser_binding_token(browser_binding_token),
             redirect_to=redirect_to,
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            expires_at=expires_at,
         )
         db.add(auth_request)
         await db.flush()
@@ -98,7 +103,7 @@ class OIDCService:
             "state": state,
             "nonce": nonce,
         }
-        return f"{provider.authorization_endpoint}?{urlencode(params)}"
+        return f"{provider.authorization_endpoint}?{urlencode(params)}", expires_at, browser_binding_token
 
     async def exchange_code(
         self,
@@ -107,8 +112,13 @@ class OIDCService:
         code: str,
         state: str,
         callback_url: str,
+        browser_binding_token: Optional[str],
     ) -> tuple[UserAccount, str, str, str]:
-        auth_request = await self._consume_auth_request(db, state=state)
+        auth_request = await self._consume_auth_request(
+            db,
+            state=state,
+            browser_binding_token=browser_binding_token,
+        )
         provider = await self._load_provider_configuration(db)
 
         token_data = {
@@ -304,15 +314,29 @@ class OIDCService:
             provider_name=provider_name,
         )
 
-    async def _consume_auth_request(self, db: AsyncSession, *, state: str) -> OIDCAuthRequest:
+    async def _consume_auth_request(
+        self,
+        db: AsyncSession,
+        *,
+        state: str,
+        browser_binding_token: Optional[str],
+    ) -> OIDCAuthRequest:
         auth_request = await db.get(OIDCAuthRequest, state)
         now = datetime.now(timezone.utc)
         if auth_request is None or auth_request.consumed_at is not None or auth_request.expires_at <= now:
             raise OIDCStateError("OIDC state is invalid or expired")
+        if not browser_binding_token:
+            raise OIDCStateError("OIDC browser binding cookie is missing")
+        if self._hash_browser_binding_token(browser_binding_token) != auth_request.browser_binding_hash:
+            raise OIDCStateError("OIDC browser binding is invalid")
 
         auth_request.consumed_at = now
         await db.flush()
         return auth_request
+
+    @staticmethod
+    def _hash_browser_binding_token(token: str) -> str:
+        return hashlib.blake2b(token.encode("utf-8"), digest_size=32).hexdigest()
 
     def _validate_id_token(
         self,
@@ -398,12 +422,28 @@ class OIDCService:
                 return normalized
         return None
 
-    @staticmethod
-    def is_safe_redirect_target(target: str) -> bool:
+    async def is_safe_redirect_target(self, db: AsyncSession, target: str) -> bool:
         if not target:
             return False
         parsed = urlparse(target)
-        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False
+
+        settings = SettingsService(db)  # type: ignore[arg-type]
+        allowed_origins_raw = await settings.get(
+            "oidc.allowed_redirect_origins",
+            default=get_local("oidc.allowed_redirect_origins"),
+        )
+        if isinstance(allowed_origins_raw, str):
+            allowed_origins = [origin.strip() for origin in allowed_origins_raw.split(",") if origin.strip()]
+        elif isinstance(allowed_origins_raw, list):
+            allowed_origins = [str(origin).strip() for origin in allowed_origins_raw if str(origin).strip()]
+        else:
+            allowed_origins = []
+
+        target_origin = f"{parsed.scheme}://{parsed.netloc}".lower()
+        normalized_allowed = {origin.rstrip("/").lower() for origin in allowed_origins}
+        return target_origin in normalized_allowed
 
 
 oidc_service = OIDCService()
