@@ -100,7 +100,7 @@ services:
       "
 
   langflow:
-    image: langflowai/langflow:latest
+    image: langflowai/langflow:1.8.3
     user: root
     environment:
       LANGFLOW_DATABASE_URL: postgresql://langflow_user:langflow_password@postgres:5432/langflow
@@ -112,6 +112,7 @@ services:
       - "7860:7860"
     volumes:
       - langflow_data:/app/langflow
+      - ./langflow/mcp.py:/app/.venv/lib/python3.12/site-packages/lfx/components/models_and_agents/mcp_component.py:ro
     depends_on:
       postgres:
         condition: service_healthy
