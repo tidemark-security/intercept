@@ -100,6 +100,24 @@ def _register(*defs: SettingDefinition) -> None:
         SETTINGS_REGISTRY[d.key] = d
 
 
+def _bulk_sync_schedule_defs(provider_id: str, provider_label: str) -> tuple[SettingDefinition, SettingDefinition]:
+    return (
+        _def(
+            f"enrichment.{provider_id}.bulk_sync_enabled",
+            value_type=SettingType.BOOLEAN,
+            category="enrichment",
+            description=f"Enable daily pgqueuer-backed bulk sync scheduling for {provider_label}",
+            default=False,
+        ),
+        _def(
+            f"enrichment.{provider_id}.bulk_sync_time_utc",
+            category="enrichment",
+            description=f"Daily UTC time for {provider_label} bulk sync in HH:MM format",
+            default="",
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Bootstrap / infrastructure  (local_only — needed before DB is available)
 # ---------------------------------------------------------------------------
@@ -793,6 +811,9 @@ _register(
         default="maxmind/",
         local_only=True,
     ),
+    *_bulk_sync_schedule_defs("entra_id", "Microsoft Entra ID"),
+    *_bulk_sync_schedule_defs("google_workspace", "Google Workspace"),
+    *_bulk_sync_schedule_defs("ldap", "LDAP / Active Directory"),
 )
 
 # ---------------------------------------------------------------------------

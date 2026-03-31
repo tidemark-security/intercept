@@ -90,6 +90,8 @@ const CUSTOM_KEYS = new Set([
   "enrichment.entra_id.client_id",
   "enrichment.entra_id.client_secret",
   "enrichment.entra_id.ttl_seconds",
+  "enrichment.entra_id.bulk_sync_enabled",
+  "enrichment.entra_id.bulk_sync_time_utc",
   "enrichment.google_workspace.enabled",
   "enrichment.google_workspace.domain",
   "enrichment.google_workspace.client_email",
@@ -99,6 +101,8 @@ const CUSTOM_KEYS = new Set([
   "enrichment.google_workspace.admin_email",
   "enrichment.google_workspace.service_account_json",
   "enrichment.google_workspace.ttl_seconds",
+  "enrichment.google_workspace.bulk_sync_enabled",
+  "enrichment.google_workspace.bulk_sync_time_utc",
   "enrichment.ldap.enabled",
   "enrichment.ldap.url",
   "enrichment.ldap.bind_dn",
@@ -107,6 +111,8 @@ const CUSTOM_KEYS = new Set([
   "enrichment.ldap.use_ssl",
   "enrichment.ldap.user_search_filter",
   "enrichment.ldap.ttl_seconds",
+  "enrichment.ldap.bulk_sync_enabled",
+  "enrichment.ldap.bulk_sync_time_utc",
   "enrichment.maxmind.enabled",
   "enrichment.maxmind.account_id",
   "enrichment.maxmind.license_key",
@@ -1530,6 +1536,15 @@ function AdminSettings() {
                           }
                           placeholder="86400"
                         />
+                        <BulkSyncScheduleFields
+                          providerId="entra_id"
+                          providerLabel="Microsoft Entra ID"
+                          configured={entraConfigured}
+                          isDarkTheme={isDarkTheme}
+                          getSetting={getSetting}
+                          settingMeta={settingMeta}
+                          onSave={handleSaveSetting}
+                        />
                       </>
                     ) : null}
                   </div>
@@ -1795,6 +1810,15 @@ function AdminSettings() {
                           }
                           placeholder="86400"
                         />
+                        <BulkSyncScheduleFields
+                          providerId="google_workspace"
+                          providerLabel="Google Workspace"
+                          configured={googleWorkspaceConfigured}
+                          isDarkTheme={isDarkTheme}
+                          getSetting={getSetting}
+                          settingMeta={settingMeta}
+                          onSave={handleSaveSetting}
+                        />
                       </>
                     ) : null}
                   </div>
@@ -1916,6 +1940,15 @@ function AdminSettings() {
                             )
                           }
                           placeholder="86400"
+                        />
+                        <BulkSyncScheduleFields
+                          providerId="ldap"
+                          providerLabel="LDAP / Active Directory"
+                          configured={ldapConfigured}
+                          isDarkTheme={isDarkTheme}
+                          getSetting={getSetting}
+                          settingMeta={settingMeta}
+                          onSave={handleSaveSetting}
                         />
                       </>
                     ) : null}
@@ -2865,6 +2898,85 @@ interface BooleanSettingFieldProps {
   localOnly?: boolean;
   envOverride?: boolean;
   readOnly?: boolean;
+}
+
+interface BulkSyncScheduleFieldsProps {
+  providerId: string;
+  providerLabel: string;
+  configured: boolean;
+  isDarkTheme: boolean;
+  getSetting: (key: string) => string;
+  settingMeta: (key: string) => {
+    value: string;
+    description: string;
+    source?: string;
+    localOnly: boolean;
+    envOverride: boolean;
+    readOnly: boolean;
+  };
+  onSave: (
+    key: string,
+    value: string,
+    isSecret?: boolean,
+    valueType?: SettingType,
+  ) => void;
+}
+
+function BulkSyncScheduleFields({
+  providerId,
+  providerLabel,
+  configured,
+  isDarkTheme,
+  getSetting,
+  settingMeta,
+  onSave,
+}: BulkSyncScheduleFieldsProps) {
+  const enabledKey = `enrichment.${providerId}.bulk_sync_enabled`;
+  const timeKey = `enrichment.${providerId}.bulk_sync_time_utc`;
+  const enabledMeta = settingMeta(enabledKey);
+  const timeMeta = settingMeta(timeKey);
+
+  return (
+    <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-default-background p-4">
+      <StatusCallout
+        variant={configured ? "success" : "warning"}
+        title={configured ? "Bulk sync scheduling is available" : "Bulk sync scheduling needs provider configuration"}
+        description={
+          configured
+            ? `Schedule a daily UTC directory sync for ${providerLabel} using pgqueuer recurring schedules.`
+            : `Finish configuring ${providerLabel} before enabling recurring bulk sync.`
+        }
+        isDarkTheme={isDarkTheme}
+      />
+
+      <BooleanSettingField
+        label="Enable Daily Bulk Sync"
+        description="Queue a recurring daily directory sync for this provider. The sync runs in UTC at the configured time."
+        source={enabledMeta.source}
+        localOnly={enabledMeta.localOnly}
+        envOverride={enabledMeta.envOverride}
+        readOnly={enabledMeta.readOnly}
+        disabled={!configured}
+        value={parseBooleanValue(getSetting(enabledKey) || "false")}
+        onSave={(value) =>
+          onSave(enabledKey, value ? "true" : "false", false, "BOOLEAN")
+        }
+      />
+
+      <SettingField
+        label="Daily Sync Time (UTC)"
+        description="Use 24-hour UTC time. The worker syncs this provider once per day at the selected time."
+        value={getSetting(timeKey)}
+        onSave={(value) => onSave(timeKey, value)}
+        placeholder="02:00"
+        inputType="time"
+        source={timeMeta.source}
+        localOnly={timeMeta.localOnly}
+        envOverride={timeMeta.envOverride}
+        readOnly={timeMeta.readOnly || !configured}
+      />
+    </div>
+  );
 }
 
 function BooleanSettingField({

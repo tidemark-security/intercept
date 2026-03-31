@@ -16,6 +16,7 @@ from typing import Optional, Dict, Any, Callable, Awaitable
 from datetime import datetime, timezone, timedelta
 
 import asyncpg
+from pgqueuer import PgQueuer
 from pgqueuer.db import AsyncpgDriver, AsyncpgPoolDriver
 from pgqueuer.errors import MaxRetriesExceeded, MaxTimeExceeded
 from pgqueuer.executors import RetryWithBackoffEntrypointExecutor
@@ -92,11 +93,13 @@ class TaskQueueService:
         self._pool: Optional[asyncpg.Pool] = None
         self._connection: Optional[Any] = None  # For queries/enqueue
         self.driver: Optional[AsyncpgPoolDriver] = None
+        self.pgqueuer: Optional[PgQueuer] = None
         self.queue_manager: Optional[QueueManager] = None
         self.queries: Optional[Queries] = None
         self._worker_task: Optional[asyncio.Task] = None
         self._running = False
         self._handlers: Dict[str, TaskHandler] = {}
+        self.schedule_refresh_lock = asyncio.Lock()
     
     def _convert_connection_string(self, conn_str: str) -> str:
         """
@@ -132,6 +135,7 @@ class TaskQueueService:
             
             # Create database driver with the pool (handles reconnection automatically)
             self.driver = AsyncpgPoolDriver(self._pool)
+            self.pgqueuer = PgQueuer.from_asyncpg_pool(self._pool)
             
             # Create Queries instance for database operations
             self.queries = Queries.from_asyncpg_pool(self._pool)
@@ -147,7 +151,7 @@ class TaskQueueService:
                 logger.info("pgqueuer schema installed")
             
             # Initialize queue manager
-            self.queue_manager = QueueManager(self.driver)
+            self.queue_manager = self.pgqueuer.qm
             
             logger.info("Task queue service initialized successfully (using connection pool)")
         except Exception as e:
@@ -189,6 +193,7 @@ class TaskQueueService:
         payload: Dict[str, Any],
         priority: int = 0,
         schedule_at: Optional[datetime] = None,
+        dedupe_key: Optional[str] = None,
     ) -> str:
         """
         Enqueue a background task.
@@ -198,6 +203,7 @@ class TaskQueueService:
             payload: Task data/parameters
             priority: Task priority (higher = more important)
             schedule_at: Optional scheduled execution time
+            dedupe_key: Optional deduplication key for queued/picked jobs
             
         Returns:
             Task ID
@@ -225,6 +231,7 @@ class TaskQueueService:
                 payload=payload_bytes,
                 priority=priority,
                 execute_after=execute_after,
+                dedupe_key=dedupe_key,
             )
             
             job_id = job_ids[0] if job_ids else None
@@ -235,6 +242,7 @@ class TaskQueueService:
                     "task_id": str(job_id),
                     "task_name": task_name,
                     "priority": priority,
+                    "dedupe_key": dedupe_key,
                 }
             )
             
@@ -261,7 +269,7 @@ class TaskQueueService:
             on_terminal_failure: Optional callback invoked once after retries are
                 exhausted or the retry time limit is exceeded
         """
-        if not self.queue_manager:
+        if not self.pgqueuer:
             raise RuntimeError("Task queue not initialized")
         if max_retries < 0:
             raise ValueError("max_retries must be greater than or equal to 0")
@@ -281,7 +289,7 @@ class TaskQueueService:
             )
         
         # Create a handler that parses JSON payload and register with entrypoint decorator
-        @self.queue_manager.entrypoint(
+        @self.pgqueuer.entrypoint(
             task_name,
             retry_timer=timedelta(seconds=5),  # Base retry timer
             executor_factory=build_executor,
@@ -336,7 +344,7 @@ class TaskQueueService:
         Args:
             concurrency: Number of concurrent tasks to process
         """
-        if not self.queue_manager:
+        if not self.pgqueuer:
             raise RuntimeError("Task queue not initialized")
         
         if self._running:
@@ -349,14 +357,13 @@ class TaskQueueService:
             """Main worker loop."""
             try:
                 logger.info(f"Starting task queue worker (max_concurrent_tasks={concurrency})")
-                queue_manager = self.queue_manager
-                if queue_manager is None:
+                pgqueuer = self.pgqueuer
+                if pgqueuer is None:
                     raise RuntimeError("Task queue not initialized")
                 
                 while self._running:
                     try:
-                        # Process jobs from queue
-                        await queue_manager.run(max_concurrent_tasks=concurrency)
+                        await pgqueuer.run(max_concurrent_tasks=concurrency)
                     except asyncio.CancelledError:
                         break
                     except Exception as e:

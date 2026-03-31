@@ -5,6 +5,7 @@ Provides CRUD operations for app settings with ADMIN-only access for mutations.
 """
 from __future__ import annotations
 
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,7 +22,13 @@ from app.models.models import (
 )
 from app.services.audit_service import AuditContext
 from app.services.attachment_settings_service import get_attachment_limits
+from app.services.enrichment.bulk_sync_schedule_sync import (
+    cron_expression_for_utc_time,
+    get_bulk_sync_provider_id_from_setting_key,
+)
 from app.services.settings_service import SettingsService
+
+logger = logging.getLogger(__name__)
 
 authenticated_router = APIRouter(
     prefix="/settings",
@@ -34,6 +41,37 @@ router = APIRouter(
     tags=["admin"],
     dependencies=[Depends(require_admin_user)],
 )
+
+
+async def _enqueue_bulk_sync_schedule_refresh_if_needed(key: str) -> None:
+    provider_id = get_bulk_sync_provider_id_from_setting_key(key)
+    if provider_id is None:
+        return
+
+    try:
+        from app.services.task_queue_service import get_task_queue_service
+        from app.services.tasks import TASK_REFRESH_BULK_SYNC_SCHEDULES
+
+        await get_task_queue_service().enqueue(
+            task_name=TASK_REFRESH_BULK_SYNC_SCHEDULES,
+            payload={"provider_id": provider_id},
+        )
+    except Exception:
+        logger.exception(
+            "Failed to enqueue bulk sync schedule refresh",
+            extra={"setting_key": key, "provider_id": provider_id},
+        )
+
+
+def _validate_bulk_sync_setting_value(key: str, value: str | None) -> None:
+    if not key.endswith(".bulk_sync_time_utc"):
+        return
+
+    normalized = (value or "").strip()
+    if not normalized:
+        return
+
+    cron_expression_for_utc_time(normalized)
 
 
 @authenticated_router.get("/attachment-limits", response_model=AttachmentLimitsRead)
@@ -116,11 +154,14 @@ async def create_setting(
     )
     
     try:
-        return await service.create_setting(
+        _validate_bulk_sync_setting_value(setting.key, setting.value)
+        created = await service.create_setting(
             setting,
             performed_by=current_user.username,
             audit_context=audit_context,
         )
+        await _enqueue_bulk_sync_schedule_refresh_if_needed(setting.key)
+        return created
     except ValueError as e:
         detail = str(e)
         code = (
@@ -155,12 +196,15 @@ async def update_setting(
     )
     
     try:
-        return await service.update_setting(
+        _validate_bulk_sync_setting_value(key, setting_update.value)
+        updated = await service.update_setting(
             key,
             setting_update,
             performed_by=current_user.username,
             audit_context=audit_context,
         )
+        await _enqueue_bulk_sync_schedule_refresh_if_needed(key)
+        return updated
     except ValueError as e:
         detail = str(e)
         code = (
@@ -208,5 +252,7 @@ async def delete_setting(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Setting with key '{key}' not found"
         )
+
+    await _enqueue_bulk_sync_schedule_refresh_if_needed(key)
     
     return None

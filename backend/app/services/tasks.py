@@ -20,6 +20,10 @@ from app.services.realtime_service import emit_event
 from app.services.settings_service import SettingsService
 from app.core.database import async_session_factory
 from app.services.enrichment.service import enrichment_service
+from app.services.enrichment.bulk_sync_schedule_sync import (
+    sync_bulk_sync_schedule_for_provider,
+    sync_bulk_sync_schedules,
+)
 from app.services.maxmind_service import maxmind_service
 
 logger = logging.getLogger(__name__)
@@ -32,6 +36,7 @@ TASK_TRIAGE_ALERT = "triage_alert"
 TASK_ENRICH_ITEM = "enrich_item"
 TASK_DIRECTORY_SYNC = "directory_sync"
 TASK_MAXMIND_UPDATE = "maxmind_update"
+TASK_REFRESH_BULK_SYNC_SCHEDULES = "refresh_bulk_sync_schedules"
 
 
 def _unwrap_terminal_failure(exc: Exception) -> Exception:
@@ -77,6 +82,21 @@ async def _handle_enrich_item_terminal_failure(
             error_message=_format_terminal_failure_message(exc),
             task_id=task_id,
         )
+
+
+async def _handle_directory_sync_terminal_failure(payload: Dict[str, Any], exc: Exception) -> None:
+    """Re-enqueue the next scheduled bulk sync after terminal failure."""
+    if not bool(payload.get("reschedule", False)):
+        return
+
+    provider_id = str(payload["provider_id"])
+    logger.warning(
+        "Directory sync failed after retries; scheduling next occurrence",
+        extra={"provider_id": provider_id, "error": _format_terminal_failure_message(exc)},
+    )
+
+    async with async_session_factory() as db:
+        await sync_bulk_sync_schedule_for_provider(db, provider_id)
 
 
 async def handle_langflow_chat(payload: Dict[str, Any]):
@@ -345,11 +365,25 @@ async def handle_enrich_item(payload: Dict[str, Any], *, task_id: str | None = N
 async def handle_directory_sync(payload: Dict[str, Any]):
     """Handle full provider directory synchronization."""
     provider_id = str(payload["provider_id"])
+    reschedule = bool(payload.get("reschedule", False))
 
-    logger.info("Processing directory sync task", extra={"provider_id": provider_id})
+    logger.info(
+        "Processing directory sync task",
+        extra={"provider_id": provider_id, "reschedule": reschedule},
+    )
 
     async with async_session_factory() as db:
         await enrichment_service.run_directory_sync(db, provider_id)
+        if reschedule:
+            await sync_bulk_sync_schedule_for_provider(db, provider_id)
+
+
+async def handle_refresh_bulk_sync_schedules(payload: Dict[str, Any]):
+    """Refresh worker-resident bulk sync schedules from current settings."""
+    logger.info("Refreshing bulk sync schedules", extra={"payload": payload})
+
+    async with async_session_factory() as db:
+        await sync_bulk_sync_schedules(db)
 
 
 async def handle_maxmind_update(payload: Dict[str, Any]):
@@ -420,6 +454,13 @@ def register_task_handlers():
             task_name=TASK_DIRECTORY_SYNC,
             handler=handle_directory_sync,
             max_retries=2,
+            on_terminal_failure=_handle_directory_sync_terminal_failure,
+        )
+
+        task_queue.register_handler(
+            task_name=TASK_REFRESH_BULK_SYNC_SCHEDULES,
+            handler=handle_refresh_bulk_sync_schedules,
+            max_retries=0,
         )
 
         task_queue.register_handler(

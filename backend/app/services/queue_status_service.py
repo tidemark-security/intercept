@@ -34,6 +34,28 @@ def _parse_payload(raw: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _build_job_union_sql(*, active_where_sql: str = "") -> str:
+    """Combine active and historical jobs without duplicating active job ids."""
+    return f"""
+        SELECT id, entrypoint, status::text AS status, priority, payload,
+               created, updated, heartbeat AS picked_at,
+               NULL::timestamptz AS finished_at,
+               NULL::int AS duration_ms,
+               NULL::text AS traceback
+        FROM pgqueuer active
+        {active_where_sql}
+        UNION ALL
+        SELECT log.id, log.entrypoint, log.status, log.priority, log.payload,
+               log.created, log.updated, log.picked_at, log.finished_at,
+               log.duration_ms, log.traceback
+        FROM collapsed_log log
+        WHERE NOT EXISTS (
+            SELECT 1 FROM pgqueuer active
+            WHERE active.id = log.id
+        )
+    """
+
+
 class QueueStatusService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -130,19 +152,7 @@ class QueueStatusService:
 
         where_sql = (" AND " + " AND ".join(where_clauses)) if where_clauses else ""
 
-        union_sql = """
-            SELECT id, entrypoint, status::text AS status, priority, payload,
-                   created, updated, heartbeat AS picked_at,
-                   NULL::timestamptz AS finished_at,
-                   NULL::int AS duration_ms,
-                   NULL::text AS traceback
-            FROM pgqueuer
-            UNION ALL
-            SELECT id, entrypoint, status, priority, payload,
-                   created, updated, picked_at, finished_at,
-                   duration_ms, traceback
-            FROM collapsed_log
-        """
+        union_sql = _build_job_union_sql()
 
         # Count query
         count_sql = text(
@@ -275,20 +285,7 @@ class QueueStatusService:
             )
         """
 
-        union_sql = """
-            SELECT id, entrypoint, status::text AS status, priority, payload,
-                   created, updated, heartbeat AS picked_at,
-                   NULL::timestamptz AS finished_at,
-                   NULL::int AS duration_ms,
-                   NULL::text AS traceback
-            FROM pgqueuer
-            WHERE entrypoint = 'enrich_item'
-            UNION ALL
-            SELECT id, entrypoint, status, priority, payload,
-                   created, updated, picked_at, finished_at,
-                   duration_ms, traceback
-            FROM collapsed_log
-        """
+        union_sql = _build_job_union_sql(active_where_sql="WHERE entrypoint = 'enrich_item'")
 
         sql = text(
             f"WITH {collapsed_log_cte} "

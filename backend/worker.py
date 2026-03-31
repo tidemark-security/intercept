@@ -32,8 +32,10 @@ logger = logging.getLogger(__name__)
 
 # Import app modules after logging is configured
 from app.core.settings_registry import get_local
+from app.core.database import async_session_factory
 from app.core.security import initialize_encryption_service
 from app.services.enrichment.providers import register_providers
+from app.services.enrichment.bulk_sync_schedule_sync import sync_bulk_sync_schedules
 from app.services.task_queue_service import (
     initialize_task_queue_service,
     shutdown_task_queue_service,
@@ -250,6 +252,10 @@ async def run_worker():
         # Register all task handlers
         logger.info("Registering task handlers...")
         register_task_handlers()
+
+        logger.info("Syncing bulk sync schedules...")
+        async with async_session_factory() as db:
+            await sync_bulk_sync_schedules(db)
         
         # Start processing jobs
         logger.info(f"Starting job processing (concurrency={concurrency})...")
