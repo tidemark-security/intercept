@@ -1,7 +1,8 @@
 import { fireEvent, screen } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-import type { TimelineItem } from '@/types/timeline';
+import type { NoteItem } from '@/types/generated/models/NoteItem';
+import type { RecursiveTimelineItem, TimelineItem } from '@/types/timeline';
 
 import { renderWithProviders } from '../../../tests/test-utils';
 import { TimelineItemRenderer } from './TimelineItemRenderer';
@@ -22,7 +23,7 @@ describe('TimelineItemRenderer enrichments', () => {
   });
 
   it('renders nested replies without duplicating descendant replies', () => {
-    const item = {
+    const item: RecursiveTimelineItem<NoteItem> = {
       id: 'note-parent',
       type: 'note',
       created_by: 'admin',
@@ -59,7 +60,7 @@ describe('TimelineItemRenderer enrichments', () => {
           ],
         },
       ],
-    } as TimelineItem;
+    };
 
     renderWithProviders(
       <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="case" />

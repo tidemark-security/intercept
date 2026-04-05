@@ -13,9 +13,7 @@ export function TimelineDescriptionBlock({
   actionButtons,
   className,
 }: TimelineDescriptionBlockProps) {
-  const hasDescriptionContent = React.Children.toArray(children).some(
-    (child) => child !== null && child !== undefined && child !== false,
-  );
+  const hasDescriptionContent = React.Children.toArray(children).length > 0;
 
   return (
     <div

@@ -31,6 +31,7 @@ export interface DeletedItem {
   created_at?: string | null;
   timestamp?: string | null;
   description?: string | null;
+  enrichment_status?: string | null;
   flagged?: boolean;
   highlighted?: boolean;
   deleted_at: string;
@@ -48,6 +49,10 @@ interface RecursiveTimelineFields {
   audit?: TimelineItemAudit | null;
   source_timeline_items?: TimelineItem[] | null;
 }
+
+type WithRecursiveTimelineFields<T> = T extends unknown
+  ? Omit<T, keyof RecursiveTimelineFields> & RecursiveTimelineFields
+  : never;
 
 /**
  * Base timeline item type union (before recursive replies)
@@ -73,14 +78,13 @@ type TimelineItemBase =
   | TaskItem
   | TTPItem;
 
-export type RecursiveTimelineItem<T extends TimelineItemBase = TimelineItemBase> = T & {
-} & RecursiveTimelineFields;
+export type RecursiveTimelineItem<T extends TimelineItemBase = TimelineItemBase> = WithRecursiveTimelineFields<T>;
 
 /**
  * Timeline item with optional recursive replies support
  * Each timeline item can contain an array of nested timeline items as replies
  */
-export type TimelineItem = TimelineItemBase & RecursiveTimelineFields;
+export type TimelineItem = WithRecursiveTimelineFields<TimelineItemBase>;
 
 /**
  * Type guard to check if an item is a AlertItem
