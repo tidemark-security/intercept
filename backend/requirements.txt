@@ -1,5 +1,5 @@
 # Core application dependencies
-aiosqlite==0.22.0
+aiosqlite==0.22.1
 alembic==1.17.2
 argon2-cffi==25.1.0
 asyncpg==0.31.0
