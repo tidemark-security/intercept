@@ -30,11 +30,11 @@ configs:
       -- Creates extensions and Langflow databases on first volume creation.
 
       -- Langflow user and databases
-      DO $$ BEGIN
+      DO $$$$ BEGIN
           IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'langflow_user') THEN
               CREATE ROLE langflow_user WITH LOGIN PASSWORD 'langflow_password';
           END IF;
-      END $$;
+      END $$$$;
 
       SELECT 'CREATE DATABASE langflow OWNER langflow_user'
       WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'langflow')\gexec
@@ -67,7 +67,7 @@ services:
   # PostgreSQL — with pgvector + pg_cron
   # ---------------------------------------------------------------------------
   postgres:
-    image: ghcr.io/tidemark-security/intercept-postgres:${TAG:-0.0.6}
+    image: ghcr.io/tidemark-security/intercept-postgres:${TAG:-0.0.8}
     environment:
       POSTGRES_DB: intercept_case_db
       POSTGRES_USER: intercept_user
@@ -76,7 +76,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - tmi_qs_postgres_data:/var/lib/postgresql/data
     configs:
       - source: db-init
         target: /docker-entrypoint-initdb.d/01-init.sql
@@ -109,7 +109,7 @@ services:
       - "9000:9000"   # API
       - "9001:9001"   # Console
     volumes:
-      - minio_data:/data
+      - tmi_qs_minio_data:/data
     command: server /data --console-address ":9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
@@ -136,7 +136,7 @@ services:
   # Backend API — FastAPI application with auto-migration and user seeding
   # ---------------------------------------------------------------------------
   backend:
-    image: ghcr.io/tidemark-security/intercept-backend:${TAG:-0.0.6}
+    image: ghcr.io/tidemark-security/intercept-backend:${TAG:-0.0.8}
     environment:
       DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@postgres:5432/intercept_case_db
       SECRET_KEY: change-me-to-a-random-secret-key # ⚠️ CHANGE THIS — generate with: python3 -c "import secrets; print(secrets.token_urlsafe(32))"
@@ -171,7 +171,7 @@ services:
   # Background Worker — async job processing (enrichment, notifications, etc.)
   # ---------------------------------------------------------------------------
   worker:
-    image: ghcr.io/tidemark-security/intercept-worker:${TAG:-0.0.6}
+    image: ghcr.io/tidemark-security/intercept-worker:${TAG:-0.0.8}
     environment:
       DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@postgres:5432/intercept_case_db
       SECRET_KEY: change-me-to-a-random-secret-key # Must match backend SECRET_KEY
@@ -203,7 +203,7 @@ services:
   # Frontend — React SPA served by nginx
   # ---------------------------------------------------------------------------
   frontend:
-    image: ghcr.io/tidemark-security/intercept-frontend:${TAG:-0.0.6}
+    image: ghcr.io/tidemark-security/intercept-frontend:${TAG:-0.0.8}
     ports:
       - "80:80"
     depends_on:
@@ -224,13 +224,13 @@ services:
     ports:
       - "7860:7860"
     volumes:
-      - langflow_data:/app/langflow
+      - tmi_qs_langflow_data:/app/langflow
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
 
 volumes:
-  postgres_data:
-  minio_data:
-  langflow_data:
+  tmi_qs_postgres_data:
+  tmi_qs_minio_data:
+  tmi_qs_langflow_data:
