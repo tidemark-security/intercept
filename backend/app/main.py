@@ -60,7 +60,7 @@ async def app_lifespan(app: FastAPI):
     
     # Initialize task queue service (for enqueueing tasks)
     # Note: The actual worker processing runs in separate worker containers
-    # See worker.py and docker-compose.yml worker service
+    # See worker.py and dev/docker-compose.yml worker service
     register_providers()
 
     logger.info("Initializing task queue service...")

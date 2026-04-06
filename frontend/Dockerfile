@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 # Copy package.json only — lockfile references local ../ux path from
-# docker-compose dev setup which isn't available in CI.
+# dev/docker-compose.yml dev setup which isn't available in CI.
 # package.json has the correct git+https URL for @tidemark-security/ux.
 COPY package.json ./
 

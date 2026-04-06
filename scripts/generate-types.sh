@@ -8,7 +8,7 @@ set -e  # Exit on any error
 echo "🚀 Starting TypeScript type generation..."
 
 # Ensure we're in project root
-if [ ! -f "docker-compose.yml" ]; then
+if [ ! -f "VERSION" ]; then
     echo "❌ Error: This script must be run from the project root directory"
     exit 1
 fi

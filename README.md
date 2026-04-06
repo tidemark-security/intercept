@@ -6,13 +6,24 @@ Modern cybersecurity case management for security teams. Track incidents, manage
 
 ## Quick Start
 
-### Prerequisites
+### Try It (no clone needed)
+
+```bash
+curl -O https://raw.githubusercontent.com/tidemark-security/intercept/main/docs/quickstart/docker-compose.yml
+docker compose up -d
+```
+
+Open [http://localhost](http://localhost) and log in with `admin` / `admin`.
+
+### Development Setup
+
+#### Prerequisites
 
 - [Conda](https://docs.conda.io/en/latest/miniconda.html) (Python environment)
 - [Docker](https://www.docker.com/) (PostgreSQL database)
 - [Node.js](https://nodejs.org/) 18+
 
-### Setup
+#### Setup
 
 ```bash
 # Clone and set up environment
@@ -29,11 +40,11 @@ cp backend/.env.example backend/.env
 # Edit backend/.env with your settings (SESSION_SECRET_KEY is required)
 
 # Start database and run migrations
-docker-compose up -d
+cd dev && docker compose up -d && cd ..
 cd backend && alembic upgrade head && cd ..
 ```
 
-### Run
+#### Run
 
 ```bash
 # Terminal 1: Backend

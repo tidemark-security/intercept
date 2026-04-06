@@ -1,0 +1,236 @@
+# =============================================================================
+# Tidemark Intercept — Single-File Quickstart
+# =============================================================================
+#
+# Get up and running in seconds. No repo clone needed — just this file.
+#
+#   curl -O https://raw.githubusercontent.com/tidemark-security/intercept/main/docs/quickstart/docker-compose.yml
+#   docker compose up -d
+#
+# Then open http://localhost in your browser and log in:
+#   Username: admin    Password: admin
+#
+# Default ports:
+#   80    — Frontend UI
+#   8000  — Backend API
+#   9001  — MinIO Console (object storage admin)
+#   7860  — Langflow AI Designer
+#
+# Override the image version:
+#   TAG=0.1.0 docker compose up -d
+#
+# ⚠️  This configuration is for evaluation and local testing.
+# For production, change all passwords, SECRET_KEY, and enable HTTPS.
+# =============================================================================
+
+configs:
+  db-init:
+    content: |
+      -- Tidemark Intercept — database bootstrap
+      -- Creates extensions and Langflow databases on first volume creation.
+
+      -- Langflow user and databases
+      DO $$ BEGIN
+          IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'langflow_user') THEN
+              CREATE ROLE langflow_user WITH LOGIN PASSWORD 'langflow_password';
+          END IF;
+      END $$;
+
+      SELECT 'CREATE DATABASE langflow OWNER langflow_user'
+      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'langflow')\gexec
+
+      SELECT 'CREATE DATABASE langflow_rag OWNER langflow_user'
+      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'langflow_rag')\gexec
+
+      GRANT ALL PRIVILEGES ON DATABASE langflow TO langflow_user;
+      GRANT ALL PRIVILEGES ON DATABASE langflow_rag TO langflow_user;
+
+      -- Extensions for the main app database
+      CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+      CREATE EXTENSION IF NOT EXISTS "pg_trgm";
+      CREATE EXTENSION IF NOT EXISTS vector;
+
+  db-init-pgcron:
+    content: |
+      -- pg_cron extension setup (requires superuser)
+      \c postgres
+      CREATE EXTENSION IF NOT EXISTS pg_cron;
+
+  db-init-pgvector:
+    content: |
+      -- pgvector in langflow_rag database
+      \c langflow_rag
+      CREATE EXTENSION IF NOT EXISTS vector;
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — with pgvector + pg_cron
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: ghcr.io/tidemark-security/intercept-postgres:${TAG:-0.0.6}
+    environment:
+      POSTGRES_DB: intercept_case_db
+      POSTGRES_USER: intercept_user
+      POSTGRES_PASSWORD: intercept_password        # ⚠️ Change for production
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    configs:
+      - source: db-init
+        target: /docker-entrypoint-initdb.d/01-init.sql
+      - source: db-init-pgcron
+        target: /docker-entrypoint-initdb.d/02-init-pgcron.sql
+      - source: db-init-pgvector
+        target: /docker-entrypoint-initdb.d/03-init-pgvector.sql
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pg_cron"
+      - "-c"
+      - "cron.database_name=postgres"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U intercept_user -d intercept_case_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # MinIO — S3-compatible object storage for file attachments
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: minioadmin                  # ⚠️ Change for production
+      MINIO_ROOT_PASSWORD: minioadmin              # ⚠️ Change for production
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # Console
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set minio http://minio:9000 minioadmin minioadmin;
+      mc mb minio/intercept-attachments --ignore-existing;
+      mc anonymous set none minio/intercept-attachments;
+      echo 'MinIO bucket initialized successfully';
+      exit 0;
+      "
+
+  # ---------------------------------------------------------------------------
+  # Backend API — FastAPI application with auto-migration and user seeding
+  # ---------------------------------------------------------------------------
+  backend:
+    image: ghcr.io/tidemark-security/intercept-backend:${TAG:-0.0.6}
+    environment:
+      DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@postgres:5432/intercept_case_db
+      SECRET_KEY: change-me-to-a-random-secret-key # ⚠️ CHANGE THIS — generate with: python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+      SESSION_COOKIE_SECURE: "false"               # Set to "true" when using HTTPS
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: minioadmin
+      STORAGE_SECRET_KEY: minioadmin
+      STORAGE_BUCKET: intercept-attachments
+      STORAGE_USE_SSL: "false"
+      LANGFLOW__BASE_URL: http://langflow:7860/api/v1
+      LANGFLOW__DEFAULT_FLOW_ID: "tmi_general_purpose"
+      LANGFLOW__CASE_DETAIL_FLOW_ID: "tmi_case_agent"
+      LANGFLOW__TASK_DETAIL_FLOW_ID: "tmi_task_agent"
+      LANGFLOW__ALERT_TRIAGE_FLOW_ID: "tmi_alert_triage"
+      AUTO_SEED: "true"                            # Creates admin/admin user on first boot
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Background Worker — async job processing (enrichment, notifications, etc.)
+  # ---------------------------------------------------------------------------
+  worker:
+    image: ghcr.io/tidemark-security/intercept-worker:${TAG:-0.0.6}
+    environment:
+      DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@postgres:5432/intercept_case_db
+      SECRET_KEY: change-me-to-a-random-secret-key # Must match backend SECRET_KEY
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: minioadmin
+      STORAGE_SECRET_KEY: minioadmin
+      STORAGE_BUCKET: intercept-attachments
+      STORAGE_USE_SSL: "false"
+      LANGFLOW__BASE_URL: http://langflow:7860/api/v1
+      LANGFLOW__DEFAULT_FLOW_ID: "tmi_general_purpose"
+      LANGFLOW__CASE_DETAIL_FLOW_ID: "tmi_case_agent"
+      LANGFLOW__TASK_DETAIL_FLOW_ID: "tmi_task_agent"
+      LANGFLOW__ALERT_TRIAGE_FLOW_ID: "tmi_alert_triage"
+      WORKER_CONCURRENCY: "20"
+      HEALTH_PORT: "8001"
+      LOG_LEVEL: "INFO"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Frontend — React SPA served by nginx
+  # ---------------------------------------------------------------------------
+  frontend:
+    image: ghcr.io/tidemark-security/intercept-frontend:${TAG:-0.0.6}
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Langflow — AI/LLM orchestration platform (optional — AI features)
+  # ---------------------------------------------------------------------------
+  langflow:
+    image: langflowai/langflow:1.8.3
+    user: root
+    environment:
+      LANGFLOW_DATABASE_URL: postgresql://langflow_user:langflow_password@postgres:5432/langflow
+      LANGFLOW_CONFIG_DIR: /app/langflow
+      LANGFLOW_AUTO_LOGIN: "true"
+      DO_NOT_TRACK: "true"
+    ports:
+      - "7860:7860"
+    volumes:
+      - langflow_data:/app/langflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  minio_data:
+  langflow_data:

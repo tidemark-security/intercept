@@ -54,7 +54,7 @@ async def test_db_connection():
             "2. Docker container is not started\n\n"
             "To fix this, run one of the following commands:\n\n"
             "📦 Using Docker Compose (recommended):\n"
-            "   docker-compose up postgres -d\n\n"
+            "   cd dev && docker compose up postgres -d\n\n"
             "🐘 Using local PostgreSQL:\n"
             "   sudo systemctl start postgresql\n"
             "   # or on macOS: brew services start postgresql\n\n"

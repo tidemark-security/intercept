@@ -40,5 +40,12 @@ finally:
     conn.close()
 "
 
+if [ "$AUTO_SEED" = "true" ]; then
+    echo "🌱 Auto-seeding initial users..."
+    python -m scripts.seed_test_users || echo "⚠️  Seeding failed (non-fatal)"
+    echo "🌱 Auto-seeding link templates..."
+    python -m scripts.seed_link_templates || echo "⚠️  Seeding failed (non-fatal)"
+fi
+
 echo "🚀 Starting backend server..."
 exec "$@"

@@ -18,7 +18,7 @@ The key principle: **Alembic is the single source of truth for application schem
 
 ```mermaid
 sequenceDiagram
-    participant DC as docker-compose up
+    participant DC as docker compose up
     participant PG as PostgreSQL
     participant BE as Backend Container
     participant WK as Worker Container
@@ -262,13 +262,13 @@ For a completely fresh environment (no existing data):
 
 ```bash
 # 1. Tear down everything including volumes
-docker-compose down -v
+docker compose -f dev/docker-compose.yml down -v
 
 # 2. Rebuild containers (picks up entrypoint.sh changes)
-docker-compose build backend worker
+docker compose -f dev/docker-compose.yml build backend worker
 
 # 3. Start fresh
-docker-compose up -d
+docker compose -f dev/docker-compose.yml up -d
 
 # 4. Seed admin user
 cd backend
@@ -307,25 +307,25 @@ After this one-time setup, Alembic migrations will automatically schedule pg_cro
 Check backend logs for the specific error:
 
 ```bash
-docker-compose logs --tail=50 backend
+docker compose -f dev/docker-compose.yml logs --tail=50 backend
 ```
 
 Common causes:
-- **Extension not found** — init SQL scripts only run on fresh volumes. Recreate with `docker-compose down -v`
+- **Extension not found** — init SQL scripts only run on fresh volumes. Recreate with `docker compose -f dev/docker-compose.yml down -v`
 - **Enum already exists** — Migrations use `DO $$ ... EXCEPTION WHEN duplicate_object` to handle this idempotently
 - **Lock timeout** — If a container crashed while holding the advisory lock, restart postgres to release it
 
 ### Checking Current Migration State
 
 ```bash
-docker-compose exec postgres psql -U intercept_user -d intercept_case_db \
+docker compose -f dev/docker-compose.yml exec postgres psql -U intercept_user -d intercept_case_db \
     -c "SELECT version_num FROM alembic_version;"
 ```
 
 ### Checking Scheduled Jobs
 
 ```bash
-docker-compose exec postgres psql -U intercept_user -d postgres \
+docker compose -f dev/docker-compose.yml exec postgres psql -U intercept_user -d postgres \
     -c "SELECT jobname, schedule, command, database FROM cron.job ORDER BY jobname;"
 ```
 
