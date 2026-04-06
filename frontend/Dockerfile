@@ -16,8 +16,8 @@ RUN npm install
 COPY index.html tsconfig.json tsconfig.node.json vite.config.ts tailwind.config.js postcss.config.js ./
 COPY src/ src/
 
-# Build production bundle
-RUN npm run build
+# Build production bundle (skip tsc — type checking is done in CI)
+RUN npx vite build
 
 # --- Production stage ---
 FROM nginx:alpine
