@@ -978,7 +978,7 @@ import {
   IndentDecrease,
   IndentIncrease,
   IndianRupee,
-  Infinity,
+  Infinity, // eslint-disable-line no-shadow-restricted-names
   Info,
   Inspect,
   InspectionPanel,

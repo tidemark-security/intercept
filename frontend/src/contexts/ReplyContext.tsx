@@ -6,8 +6,6 @@
  * enter/exit functionality for reply mode.
  */
 
-/* eslint-disable react-refresh/only-export-components */
-
 import { createContext, useContext } from 'react';
 
 export type EntityType = 'alert' | 'case' | 'task';

@@ -131,7 +131,7 @@ const ToolbarController: React.FC<ToolbarControllerProps> = ({
           });
           return linkUrl;
         },
-        updateLink: (url: string, title?: string) => realm.pub(updateLink$, { url, title: title || url }),
+        updateLink: (url: string, title?: string) => realm.pub(updateLink$, { url, title: title || url, text: undefined }),
         removeLink: () => realm.pub(removeLink$, undefined),
       };
     }
