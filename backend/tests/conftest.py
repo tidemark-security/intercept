@@ -7,6 +7,9 @@ from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
 from urllib.parse import urlparse
 
+# Disable CSRF for tests (matches CI env) unless explicitly set
+os.environ.setdefault("CSRF_ENABLED", "false")
+
 import httpx
 import pytest
 import pytest_asyncio

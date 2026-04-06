@@ -376,6 +376,10 @@ class EnrichmentService:
         })
         if result.rowcount:  # type: ignore[union-attr]
             await db.commit()
+            # The raw SQL bypassed the ORM, so any entity already in the
+            # identity-map still holds stale timeline_items.  Expire
+            # everything so the next attribute access re-fetches from DB.
+            db.expire_all()
         else:
             await self._persist_enrichment_task_link_locked(
                 db, entity_type=entity_type, entity_id=entity_id,
