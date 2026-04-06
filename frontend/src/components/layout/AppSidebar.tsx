@@ -118,19 +118,21 @@ function useNavigation() {
   );
 
   const handleNavClick = useCallback(
-    (item: NavigationItem) => {
-      if (!item.to) return;
-      navigate(item.to);
+    (itemOrPath: NavigationItem | string) => {
+      const path = typeof itemOrPath === 'string' ? itemOrPath : itemOrPath.to;
+      if (!path) return;
+      navigate(path);
     },
     [navigate],
   );
 
   const handleNavKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>, item: NavigationItem) => {
-      if (!item.to) return;
+    (event: React.KeyboardEvent<HTMLDivElement>, itemOrPath: NavigationItem | string) => {
+      const path = typeof itemOrPath === 'string' ? itemOrPath : itemOrPath.to;
+      if (!path) return;
       if (event.key === "Enter" || event.key === " " || event.key === "Space") {
         event.preventDefault();
-        navigate(item.to);
+        navigate(path);
       }
     },
     [navigate],
@@ -138,7 +140,6 @@ function useNavigation() {
 
   return {
     location,
-    navigate,
     isAdmin,
     visibleNavigationItems,
     mobileNavItems,
@@ -151,7 +152,6 @@ function useNavigation() {
 export function DesktopSidebar() {
   const {
     location,
-    navigate,
     visibleNavigationItems,
     isItemSelected,
     handleNavClick,
@@ -173,7 +173,7 @@ export function DesktopSidebar() {
           />
           <SidebarRailWithLabels.NavItem
             icon={<Search />}
-            onClick={() => navigate("/search")}
+            onClick={() => handleNavClick("/search")}
             selected={
               location.pathname === "/search" ||
               location.pathname.startsWith("/search?")
@@ -263,13 +263,13 @@ export function DesktopSidebar() {
           </DropdownMenu.Root>
           <SidebarRailWithLabels.NavItem
             icon={<User />}
-            onClick={() => navigate("/profile")}
+            onClick={() => handleNavClick("/profile")}
           >
             Profile
           </SidebarRailWithLabels.NavItem>
           <SidebarRailWithLabels.NavItem
             icon={<Lock />}
-            onClick={() => navigate("/logout")}
+            onClick={() => handleNavClick("/logout")}
           >
             Logout
           </SidebarRailWithLabels.NavItem>
@@ -305,7 +305,6 @@ export function DesktopSidebar() {
 
 export function MobileSidebar() {
   const {
-    navigate,
     isAdmin,
     mobileNavItems,
     isItemSelected,
