@@ -67,7 +67,7 @@ services:
   # PostgreSQL — with pgvector + pg_cron
   # ---------------------------------------------------------------------------
   postgres:
-    image: ghcr.io/tidemark-security/intercept-postgres:${TAG:-0.0.8}
+    image: ghcr.io/tidemark-security/intercept-postgres:${TAG:-0.0.9}
     environment:
       POSTGRES_DB: intercept_case_db
       POSTGRES_USER: intercept_user
@@ -136,7 +136,7 @@ services:
   # Backend API — FastAPI application with auto-migration and user seeding
   # ---------------------------------------------------------------------------
   backend:
-    image: ghcr.io/tidemark-security/intercept-backend:${TAG:-0.0.8}
+    image: ghcr.io/tidemark-security/intercept-backend:${TAG:-0.0.9}
     network_mode: host
     environment:
       DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db
@@ -171,7 +171,7 @@ services:
   # Background Worker — async job processing (enrichment, notifications, etc.)
   # ---------------------------------------------------------------------------
   worker:
-    image: ghcr.io/tidemark-security/intercept-worker:${TAG:-0.0.8}
+    image: ghcr.io/tidemark-security/intercept-worker:${TAG:-0.0.9}
     network_mode: host
     environment:
       DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db
@@ -204,7 +204,7 @@ services:
   # Frontend — React SPA served by nginx
   # ---------------------------------------------------------------------------
   frontend:
-    image: ghcr.io/tidemark-security/intercept-frontend:${TAG:-0.0.8}
+    image: ghcr.io/tidemark-security/intercept-frontend:${TAG:-0.0.9}
     ports:
       - "80:80"
     depends_on:
