@@ -2,9 +2,13 @@
 API routes for dummy data generation and management.
 These endpoints are intended for development and testing purposes only.
 """
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, Any
+
+logger = logging.getLogger(__name__)
 
 from app.core.database import get_db
 from app.services.dummy_data_service import dummy_data_service
@@ -47,8 +51,11 @@ async def populate_dummy_data(
         
         return result
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error populating dummy data: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error populating dummy data")
+        raise HTTPException(status_code=500, detail="Error populating dummy data")
 
 
 @router.delete("/clear", response_model=Dict[str, Any])
@@ -57,10 +64,10 @@ async def clear_all_data(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Clear all cases, alerts, and related data from the database.
+    Clear dummy data (tagged with ``tmi_dummy_data``) from the database.
     
-    **Warning**: This operation is irreversible and will delete ALL data.
-    Only use in development environments.
+    **Only** cases, alerts, tasks, and related audit logs that were created
+    by the dummy-data service are removed.  User-created data is untouched.
     
     Requires confirmation parameter to be set to true.
     """
@@ -78,8 +85,11 @@ async def clear_all_data(
         
         return result
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error clearing data: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error clearing data")
+        raise HTTPException(status_code=500, detail="Error clearing data")
 
 
 @router.post("/generate-cases", response_model=Dict[str, Any])
@@ -105,8 +115,11 @@ async def generate_cases_only(
             }
         }
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating cases: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error generating cases")
+        raise HTTPException(status_code=500, detail="Error generating cases")
 
 
 @router.post("/generate-alerts", response_model=Dict[str, Any])
@@ -136,8 +149,11 @@ async def generate_alerts_only(
             }
         }
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating alerts: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error generating alerts")
+        raise HTTPException(status_code=500, detail="Error generating alerts")
 
 
 @router.get("/stats", response_model=Dict[str, Any])
@@ -179,5 +195,8 @@ async def get_data_stats(db: AsyncSession = Depends(get_db)):
             }
         }
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting data stats: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Error getting data stats")
+        raise HTTPException(status_code=500, detail="Error getting data stats")
