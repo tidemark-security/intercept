@@ -1,5 +1,4 @@
 import React from "react";
-import { ArrowLeft } from "lucide-react";
 import { AdminPageLayout as UxAdminPageLayout } from "@tidemark-security/ux";
 import type { AdminPageLayoutProps } from "@tidemark-security/ux";
 import { DesktopSidebar, MobileSidebar, SearchOverlay } from "./AppSidebar";
