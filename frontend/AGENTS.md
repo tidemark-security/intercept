@@ -1,3 +1,25 @@
+# UX Component Library (`@tidemark-security/ux`)
+
+## CRITICAL: Local development uses `npm link`, NOT file paths
+
+When making changes to the UX library and testing them in the frontend:
+
+1. **Build UX**: `cd ~/projects/ux && npm run build`
+2. **Link UX globally**: `cd ~/projects/ux && npm link`
+3. **Link into frontend**: `cd ~/projects/tmi/frontend && npm link @tidemark-security/ux`
+
+This creates a symlink: `node_modules/@tidemark-security/ux → ~/projects/ux`.
+
+**NEVER** use `npm install ../../ux` or `npm install <local-path>` — this copies files instead of symlinking and corrupts `package.json` by replacing the git reference.
+
+After making UX changes, rebuild (`cd ~/projects/ux && npm run build`) — the symlink picks up changes automatically.
+
+**To unlink** (restore git-based version): `cd ~/projects/tmi/frontend && npm unlink @tidemark-security/ux && npm install`
+
+> Running `npm install` in the frontend will also remove the link and restore the Git-based version.
+
+---
+
 # Tailwind / Theming
 
 ## Theme architecture (source of truth)
