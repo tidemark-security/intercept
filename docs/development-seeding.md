@@ -20,7 +20,7 @@ Start the application stack first:
 ```bash
 conda activate intercept
 cd ~/projects/tmi
-docker compose up -d
+cd dev && docker compose up -d && cd ..
 ```
 
 If you want a completely fresh database first:
@@ -28,9 +28,11 @@ If you want a completely fresh database first:
 ```bash
 conda activate intercept
 cd ~/projects/tmi
+cd dev
 docker compose rm -fsv postgres backend worker
-docker volume rm tmi_postgres_data
+docker volume rm dev_postgres_data
 docker compose up -d postgres backend worker
+cd ..
 ```
 
 ## Run the Seed Scripts
@@ -41,13 +43,15 @@ Run the scripts from the host by exec'ing into the backend container:
 conda activate intercept
 cd ~/projects/tmi
 
-docker compose exec -T -e PYTHONPATH=/app backend python /app/scripts/seed_test_users.py
-docker compose exec -T -e PYTHONPATH=/app backend python /app/scripts/seed_link_templates.py
+docker compose -f dev/docker-compose.yml exec -T -e PYTHONPATH=/app backend python /app/scripts/seed_test_users.py
+docker compose -f dev/docker-compose.yml exec -T -e PYTHONPATH=/app backend python /app/scripts/seed_link_templates.py
 ```
 
 ### Why `PYTHONPATH=/app`?
 
 The scripts import modules from the backend package as `app.*`. Setting `PYTHONPATH=/app` ensures those imports resolve correctly in non-interactive `docker compose exec` sessions.
+
+> **Tip:** The quickstart compose (`docs/quickstart/docker-compose.yml`) sets `AUTO_SEED=true`, which runs `seed_test_users.py` automatically on every backend boot. For dev, you can add `AUTO_SEED: "true"` to the backend environment in `dev/docker-compose.yml` to get the same behavior.
 
 ## What Gets Seeded
 
@@ -85,7 +89,7 @@ Check backend logs if a seed command fails:
 ```bash
 conda activate intercept
 cd ~/projects/tmi
-docker compose logs --tail=100 backend
+docker compose -f dev/docker-compose.yml logs --tail=100 backend
 ```
 
 You can also verify the seeded data directly:
@@ -94,10 +98,10 @@ You can also verify the seeded data directly:
 conda activate intercept
 cd ~/projects/tmi
 
-docker compose exec -T postgres psql -U intercept_user -d intercept_case_db \
+docker compose -f dev/docker-compose.yml exec -T postgres psql -U intercept_user -d intercept_case_db \
   -c "SELECT username, role, status FROM user_accounts ORDER BY username;"
 
-docker compose exec -T postgres psql -U intercept_user -d intercept_case_db \
+docker compose -f dev/docker-compose.yml exec -T postgres psql -U intercept_user -d intercept_case_db \
   -c "SELECT template_id, enabled, display_order FROM link_templates ORDER BY display_order;"
 ```
 
@@ -105,4 +109,4 @@ docker compose exec -T postgres psql -U intercept_user -d intercept_case_db \
 
 - These scripts are intended for local development and QA bootstrap.
 - They are safe to rerun.
-- If you add new seed scripts later, prefer documenting them here and using the same `docker compose exec -T -e PYTHONPATH=/app backend ...` pattern.
+- If you add new seed scripts later, prefer documenting them here and using the same `docker compose -f dev/docker-compose.yml exec -T -e PYTHONPATH=/app backend ...` pattern.

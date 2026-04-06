@@ -58,7 +58,7 @@ The system separates the API (producer) from workers (consumers):
 
 ### Docker Compose
 
-Workers run as a separate service in docker-compose.yml:
+Workers run as a separate service in `dev/docker-compose.yml`:
 
 ```yaml
 worker:
@@ -96,8 +96,8 @@ worker:
 Scale horizontally by running multiple worker containers:
 
 ```bash
-# Docker Compose
-docker-compose up -d --scale worker=3
+# Docker Compose (from dev/ directory)
+docker compose up -d --scale worker=3
 
 # Kubernetes
 kubectl scale deployment worker --replicas=3
@@ -400,13 +400,13 @@ Workers run as **standalone containers** separate from the FastAPI API process. 
 
 ```bash
 # Start worker container
-docker-compose up -d worker
+docker compose -f dev/docker-compose.yml up -d worker
 
 # View worker logs
-docker-compose logs -f worker
+docker compose -f dev/docker-compose.yml logs -f worker
 
 # Scale to multiple workers
-docker-compose up -d --scale worker=3
+docker compose -f dev/docker-compose.yml up -d --scale worker=3
 ```
 
 ### Concurrency
@@ -478,8 +478,8 @@ async def handle_external_call(payload: Dict[str, Any]):
 
 1. Check if workers are running:
    ```bash
-   docker-compose ps worker
-   docker-compose logs worker --tail=50
+   docker compose -f dev/docker-compose.yml ps worker
+   docker compose -f dev/docker-compose.yml logs worker --tail=50
    ```
 
 2. Check worker readiness:
@@ -489,7 +489,7 @@ async def handle_external_call(payload: Dict[str, Any]):
 
 3. Verify handlers are registered:
    ```bash
-   docker-compose logs worker | grep "Registered handler"
+   docker compose -f dev/docker-compose.yml logs worker | grep "Registered handler"
    ```
 
 4. Check for database connection issues:
@@ -516,7 +516,7 @@ async def handle_external_call(payload: Dict[str, Any]):
 
 1. Check database connectivity:
    ```bash
-   docker-compose logs worker | grep "database"
+   docker compose -f dev/docker-compose.yml logs worker | grep "database"
    ```
 
 2. Verify pgqueuer tables exist:

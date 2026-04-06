@@ -24,7 +24,7 @@ import app.main as app_main_module
 pytest_plugins = ["tests.fixtures.auth"]
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-COMPOSE_FILE = PROJECT_ROOT / "docker-compose.yml"
+COMPOSE_FILE = PROJECT_ROOT / "dev" / "docker-compose.yml"
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
     "postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_test_db",

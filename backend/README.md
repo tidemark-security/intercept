@@ -22,7 +22,7 @@ FastAPI-based backend for the Intercept security case management platform.
 
 2. **PostgreSQL**: Running instance (via Docker Compose recommended)
    ```bash
-   docker compose up db -d
+   cd dev && docker compose up postgres -d
    ```
 
 3. **Environment Variables**: Copy `.env.example` to `.env` and configure:
@@ -453,9 +453,9 @@ Note: Changing parameters requires rehashing all passwords on next login.
 
 **Solution**: Ensure PostgreSQL is running and database exists
 ```bash
-docker compose up db -d
+cd dev && docker compose up postgres -d
 # Wait for database to be ready
-docker compose exec db psql -U intercept -c "SELECT 1"
+docker compose exec postgres psql -U intercept_user -c "SELECT 1"
 ```
 
 ### Migration Conflicts

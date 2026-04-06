@@ -28,7 +28,7 @@ The Intercept application uses PostgreSQL's `pg_cron` extension to automatically
 
 ### Docker Compose (Development)
 
-The `docker-compose.yml` already configures pg_cron:
+The `dev/docker-compose.yml` already configures pg_cron:
 
 ```yaml
 services:
@@ -264,4 +264,4 @@ VACUUM ANALYZE sessions;
 For issues or questions:
 - Backend README: `/backend/README.md`
 - Database migrations: `db_migrations/versions/`
-- Docker setup: `docker-compose.yml`
+- Docker setup: `dev/docker-compose.yml`

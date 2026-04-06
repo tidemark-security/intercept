@@ -157,7 +157,7 @@ cd backend && uvicorn app.main:app --reload
 cd frontend && npm run dev
 
 # Database
-docker-compose up -d              # Start PostgreSQL
+cd dev && docker compose up -d    # Start PostgreSQL
 cd backend && alembic upgrade head
 
 # Testing

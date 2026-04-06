@@ -22,4 +22,5 @@ RUN set -eux; \
 # Remove build dependencies to keep the image small
 RUN apt-get purge -y --auto-remove git build-essential ca-certificates || true
 
-# Note: extension initialization is performed by ./backend/init.sql mounted by docker-compose
+# Note: extension initialization is performed by init.sql mounted via dev/docker-compose.yml
+# or inlined via configs in docs/quickstart/docker-compose.yml
