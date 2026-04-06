@@ -9,8 +9,8 @@ from typing import Any, Optional, cast
 from urllib.parse import urlencode, urlparse
 
 import httpx
-from jose import jwt
-from jose.exceptions import ExpiredSignatureError, JWTError
+import jwt
+from jwt.exceptions import ExpiredSignatureError, PyJWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -349,7 +349,8 @@ class OIDCService:
     ) -> dict[str, Any]:
         try:
             header = jwt.get_unverified_header(id_token)
-            key = self._select_jwk(jwks, header.get("kid"))
+            jwk_data = self._select_jwk(jwks, header.get("kid"))
+            key = jwt.PyJWK(jwk_data).key
             claims = jwt.decode(
                 id_token,
                 key,
@@ -360,7 +361,7 @@ class OIDCService:
             )
         except ExpiredSignatureError as exc:
             raise OIDCAuthenticationError("OIDC ID token has expired") from exc
-        except JWTError as exc:
+        except PyJWTError as exc:
             raise OIDCAuthenticationError("OIDC ID token validation failed") from exc
 
         nonce = str(claims.get("nonce") or "")
