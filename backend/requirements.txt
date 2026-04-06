@@ -30,7 +30,7 @@ minio==7.2.20
 python-magic==0.4.27
 
 # LangFlow AI Chat dependencies
-sse-starlette==3.0.4
+sse-starlette==3.3.4
 cryptography>=46.0.6
 pgqueuer==0.25.3
 
