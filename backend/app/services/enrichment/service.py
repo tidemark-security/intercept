@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import col, select
@@ -43,6 +43,12 @@ PRIORITY_TO_QUEUE_PRIORITY = {
 }
 
 ACTIVE_ENRICHMENT_STATUSES = {"pending", "in_progress"}
+
+_ENTITY_TYPE_TO_TABLE: Dict[str, str] = {
+    "case": "cases",
+    "alert": "alerts",
+    "task": "tasks",
+}
 
 
 class EnrichmentService:
@@ -326,17 +332,84 @@ class EnrichmentService:
         item_id: str,
         task_id: str,
     ) -> None:
-        entity = await self._load_entity(db, entity_type, entity_id)
+        """Atomically set enrichment_task_id on a timeline item without a full
+        read-modify-write of the JSONB column.  This prevents the stale-snapshot
+        race where this commit overwrites enrichment data the worker has already
+        written.
+
+        Falls back to a locked ORM write for nested reply items.
+        """
+        table = _ENTITY_TYPE_TO_TABLE.get(entity_type.lower())
+        if table is None:
+            return
+
+        # NOTE: table name comes from _ENTITY_TYPE_TO_TABLE (hardcoded),
+        # never from user input.
+        sql = text(f"""
+            UPDATE {table}
+            SET timeline_items = (
+                SELECT jsonb_set(
+                    timeline_items #- ARRAY[idx, 'enrichments', 'system'],
+                    ARRAY[idx, 'enrichment_task_id'],
+                    to_jsonb(:task_id ::text)
+                )
+                FROM (
+                    SELECT (ordinality - 1)::text AS idx
+                    FROM jsonb_array_elements({table}.timeline_items) WITH ORDINALITY
+                    WHERE value->>'id' = :item_id
+                    LIMIT 1
+                ) AS pos
+            ),
+            updated_at = :now
+            WHERE id = :entity_id
+            AND EXISTS (
+                SELECT 1 FROM jsonb_array_elements(timeline_items) AS e
+                WHERE e->>'id' = :item_id
+            )
+        """)
+
+        result = await db.execute(sql, {
+            "item_id": item_id,
+            "task_id": task_id,
+            "entity_id": entity_id,
+            "now": datetime.now(timezone.utc),
+        })
+        if result.rowcount:  # type: ignore[union-attr]
+            await db.commit()
+            # The raw SQL bypassed the ORM, so any entity already in the
+            # identity-map still holds stale timeline_items.  Expire
+            # everything so the next attribute access re-fetches from DB.
+            db.expire_all()
+        else:
+            await self._persist_enrichment_task_link_locked(
+                db, entity_type=entity_type, entity_id=entity_id,
+                item_id=item_id, task_id=task_id,
+            )
+
+    async def _persist_enrichment_task_link_locked(
+        self,
+        db: AsyncSession,
+        *,
+        entity_type: str,
+        entity_id: int,
+        item_id: str,
+        task_id: str,
+    ) -> None:
+        """Fallback for nested reply items where the atomic jsonb_set missed.
+        Uses SELECT FOR UPDATE to serialise the write."""
+        logger.debug(
+            "Atomic task-link update missed (item may be nested); "
+            "falling back to locked read-modify-write",
+            extra={"entity_type": entity_type, "entity_id": entity_id, "item_id": item_id},
+        )
+        entity = await self._load_entity_for_update(db, entity_type, entity_id)
         if entity is None:
             return
 
         from app.services.timeline_service import timeline_service
 
         item = timeline_service._find_item_by_id(getattr(entity, "timeline_items", None) or [], item_id)
-        if item is None:
-            return
-
-        if not self._link_enrichment_task(item, task_id):
+        if item is None or not self._link_enrichment_task(item, task_id):
             return
 
         flag_modified(entity, "timeline_items")
@@ -932,6 +1005,18 @@ class EnrichmentService:
         if normalized_type == "task":
             return await db.get(Task, entity_id)
         raise ValueError(f"Unsupported entity_type {entity_type}")
+
+    async def _load_entity_for_update(self, db: AsyncSession, entity_type: str, entity_id: int) -> Optional[Any]:
+        normalized_type = entity_type.lower()
+        if normalized_type == "case":
+            stmt = select(Case).where(Case.id == entity_id).with_for_update()  # type: ignore[arg-type]
+        elif normalized_type == "alert":
+            stmt = select(Alert).where(Alert.id == entity_id).with_for_update()  # type: ignore[arg-type]
+        elif normalized_type == "task":
+            stmt = select(Task).where(Task.id == entity_id).with_for_update()  # type: ignore[arg-type]
+        else:
+            raise ValueError(f"Unsupported entity_type {entity_type}")
+        return (await db.execute(stmt)).scalar_one_or_none()
 
 
 enrichment_service = EnrichmentService()

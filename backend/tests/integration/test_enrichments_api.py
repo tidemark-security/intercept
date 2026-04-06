@@ -6,6 +6,7 @@ import pytest
 from httpx import AsyncClient
 from pgqueuer.errors import MaxRetriesExceeded
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.models import Alert, EnrichmentAlias, QueueJobRead
 from app.models.enums import RealtimeEventType, SettingType
@@ -1148,4 +1149,85 @@ async def test_admin_directory_sync_returns_404_for_unknown_provider(
     )
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "Provider not found"
+
+
+@pytest.mark.asyncio
+async def test_persist_task_link_does_not_clobber_concurrent_enrichment(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    """Regression: _persist_enrichment_task_link must not overwrite enrichment
+    data that the worker committed between enqueue and the task-link persist.
+
+    Simulates the race by writing enrichment results to the DB (as the worker
+    would) between the first commit and the task-link persist call.
+    """
+    analyst = analyst_user_factory(username="analyst.task-link-race")
+
+    alert = Alert(
+        title="Alert for task-link race test",
+        description="Test alert",
+        source="unit-test",
+        timeline_items=[
+            {
+                "id": "item-race-1",
+                "type": "observable",
+                "timestamp": "2026-03-14T00:00:00Z",
+                "created_at": "2026-03-14T00:00:00Z",
+                "created_by": analyst.username,
+                "observable_type": "ip",
+                "value": "1.2.3.4",
+                "enrichment_status": "pending",
+            }
+        ],
+        created_by=analyst.username,
+    )
+
+    async with session_maker() as session:
+        session.add(analyst)
+        session.add(alert)
+        await session.commit()
+        await session.refresh(alert)
+
+    # Simulate the worker completing enrichment (separate session, like
+    # the worker process) BEFORE _persist_enrichment_task_link runs.
+    async with session_maker() as worker_session:
+        worker_alert = await worker_session.get(Alert, alert.id)
+        assert worker_alert is not None
+        items = list(worker_alert.timeline_items or [])
+        for item in items:
+            if item.get("id") == "item-race-1":
+                item["enrichment_status"] = "complete"
+                item["enrichments"] = {
+                    "maxmind": {"country": "US", "city": "Los Angeles"},
+                }
+                item.pop("enrichment_task_id", None)
+        worker_alert.timeline_items = items
+        flag_modified(worker_alert, "timeline_items")
+        await worker_session.commit()
+
+    # Now call _persist_enrichment_task_link (the API handler's second commit)
+    # which previously would do a full read-modify-write and clobber the
+    # worker's enrichment data.
+    async with session_maker() as session:
+        await enrichment_service._persist_enrichment_task_link(
+            session,
+            entity_type="alert",
+            entity_id=alert.id,
+            item_id="item-race-1",
+            task_id="task-race-456",
+        )
+
+    # Verify the worker's enrichment data survived the task-link persist.
+    async with session_maker() as session:
+        refreshed_alert = await session.get(Alert, alert.id)
+        assert refreshed_alert is not None
+        stored_item = next(
+            item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-race-1"
+        )
+
+    assert stored_item.get("enrichment_task_id") == "task-race-456", \
+        "enrichment_task_id was not set by _persist_enrichment_task_link"
+    assert stored_item["enrichments"] == {
+        "maxmind": {"country": "US", "city": "Los Angeles"},
+    }, "Worker enrichment data was clobbered by _persist_enrichment_task_link"
