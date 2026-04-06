@@ -102,7 +102,7 @@ async def seed_test_users() -> None:
                 
                 print(f"  New Status: {existing_user.status.value}")
                 print(f"  New must_change_password: {existing_user.must_change_password}")
-                print(f"  Password reset to: {user_config['password']}")
+                print(f"  Password: reset to default")
                 continue
             
             # Create new user
@@ -127,7 +127,7 @@ async def seed_test_users() -> None:
             print(f"  ID: {new_user.id}")
             print(f"  Username: {new_user.username}")
             print(f"  Email: {new_user.email}")
-            print(f"  Password: {user_config['password']}")
+            print(f"  Password: same as username")
             print(f"  Role: {new_user.role.value}")
             print(f"  Status: {new_user.status.value}")
     
@@ -139,7 +139,7 @@ async def seed_test_users() -> None:
     for user_config in TEST_USERS:
         print(f"  {user_config['role'].value}:")
         print(f"    Username: {user_config['username']}")
-        print(f"    Password: {user_config['password']}")
+        print(f"    Password: same as username")
         print()
     
     await engine.dispose()
