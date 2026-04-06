@@ -66,6 +66,26 @@ Regenerate TypeScript types to keep frontend in sync:
 ./scripts/generate-types.sh
 ```
 
+### Releasing a New Version
+
+Uses [bump-my-version](https://github.com/callowayproject/bump-my-version) to update `VERSION`, `frontend/package.json`, create a commit, and tag.
+
+```bash
+# Bump patch (0.0.3 → 0.0.4)
+bump-my-version bump patch
+
+# Bump minor (0.0.3 → 0.1.0)
+bump-my-version bump minor
+
+# Bump major (0.0.3 → 1.0.0)
+bump-my-version bump major
+
+# Push the commit and tag to trigger the release workflow
+git push origin main --tags
+```
+
+The `v*.*.*` tag triggers the [Release workflow](.github/workflows/release.yml), which builds and pushes Docker images to GHCR and creates a GitHub Release.
+
 ### Key Documentation
 
 - [MCP Integration Guide](docs/mcp-integration-guide.md) — Connect AI tools to Intercept
