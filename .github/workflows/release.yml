@@ -14,8 +14,24 @@ env:
   IMAGE_PREFIX: ghcr.io/tidemark-security
 
 jobs:
+  guard:
+    name: Verify tag is on main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check tagged commit is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME does not point to a commit on main. Aborting release."
+            exit 1
+          fi
+
   build-backend:
     name: Build Backend
+    needs: [guard]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -53,6 +69,7 @@ jobs:
 
   build-worker:
     name: Build Worker
+    needs: [guard]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -90,6 +107,7 @@ jobs:
 
   build-frontend:
     name: Build Frontend
+    needs: [guard]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -126,7 +144,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [build-backend, build-worker, build-frontend]
+    needs: [guard, build-backend, build-worker, build-frontend]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
