@@ -71,7 +71,6 @@ async def enqueue_item_enrichment(
             entity_id=entity_id,
             item_id=item_id,
         )
-        await db.commit()
         return {"enqueued": True, "task_id": task_id}
     except ValueError as exc:
         await db.rollback()

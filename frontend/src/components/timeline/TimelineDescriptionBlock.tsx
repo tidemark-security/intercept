@@ -13,6 +13,8 @@ export function TimelineDescriptionBlock({
   actionButtons,
   className,
 }: TimelineDescriptionBlockProps) {
+  const hasDescriptionContent = React.Children.toArray(children).length > 0;
+
   return (
     <div
       className={cn(
@@ -23,7 +25,12 @@ export function TimelineDescriptionBlock({
       <div className="flex w-full flex-col gap-3">
         {children}
         {actionButtons ? (
-          <div className="flex w-full flex-col items-start">
+          <div
+            className={cn(
+              'flex w-full flex-col items-start',
+              hasDescriptionContent && 'border-t border-solid border-neutral-border pt-3',
+            )}
+          >
             {actionButtons}
           </div>
         ) : null}

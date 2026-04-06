@@ -356,7 +356,7 @@ async def test_password_change_audit_logging(
     session_cookie = login_response.cookies.get("intercept_session")
 
     # Change password with audit logging enabled
-    with caplog.at_level(logging.INFO, logger="app.audit.auth"):
+    with caplog.at_level(logging.INFO, logger="app.audit"):
         change_response = await client.post(
             "/api/v1/auth/password/change",
             json={
@@ -368,18 +368,17 @@ async def test_password_change_audit_logging(
         assert change_response.status_code == 204
 
     # Verify audit log contains password change event
-    audit_records = [r for r in caplog.records if r.name == "app.audit.auth"]
+    audit_records = [r for r in caplog.records if r.name == "app.audit"]
     assert len(audit_records) > 0
     
     password_change_logs = [
         r for r in audit_records 
-        if hasattr(r, "auth") and r.auth.get("event") == "auth.password_changed"
+        if hasattr(r, "audit") and r.audit.get("event") == "auth.password_changed"
     ]
     assert len(password_change_logs) > 0
     
-    log_entry = password_change_logs[0].auth
-    assert log_entry["user_id"] == str(user.id)
-    assert log_entry["username"] == user.username
-    assert log_entry["was_forced"] is False  # Voluntary change
+    log_entry = password_change_logs[0].audit
+    assert log_entry["entity_id"] == str(user.id)
+    assert log_entry["performed_by"] == user.username
     # correlation_id is optional, may be None in test environment
     assert "ip_address" in log_entry

@@ -4,6 +4,7 @@ import type { AlertReadWithCase } from '@/types/generated/models/AlertReadWithCa
 import { queryKeys } from './queryKeys';
 import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS, QUERY_REFETCH_INTERVALS_WS } from '@/config/queryConfig';
 import { useRealtimeSubscription } from './useRealtimeSubscription';
+import { hasActiveTimelineEnrichments } from '@/utils/enrichmentState';
 
 /**
  * Options for useAlertDetail hook
@@ -45,16 +46,16 @@ export function useAlertDetail(
     },
     enabled: alertId !== null, // Only fetch when alertId is provided
     staleTime: QUERY_STALE_TIMES.REALTIME, // 30 seconds for real-time collaboration
-    // When WS is connected, use 5-minute fallback; otherwise dynamic polling
-    refetchInterval: isConnected
-      ? QUERY_REFETCH_INTERVALS_WS.DETAIL
-      : (query) => {
-          const data = query.state.data;
-          if (data?.triage_recommendation?.status === 'QUEUED') {
-            return QUERY_REFETCH_INTERVALS.TRIAGE_ACTIVE; // 3 seconds during active triage
-          }
-          return QUERY_REFETCH_INTERVALS.DETAIL; // 30 seconds normally
-        },
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (hasActiveTimelineEnrichments(data)) {
+        return QUERY_REFETCH_INTERVALS.ENRICHMENT_ACTIVE;
+      }
+      if (!isConnected && data?.triage_recommendation?.status === 'QUEUED') {
+        return QUERY_REFETCH_INTERVALS.TRIAGE_ACTIVE;
+      }
+      return isConnected ? QUERY_REFETCH_INTERVALS_WS.DETAIL : QUERY_REFETCH_INTERVALS.DETAIL;
+    },
     refetchIntervalInBackground: false, // Pause polling when tab is inactive
     // Don't retry on 404 errors to show NotFoundError immediately
     retry: (failureCount, error) => {

@@ -50,9 +50,7 @@ def password_hasher() -> PasswordHasher:
 @pytest.fixture
 def auth_service(password_hasher: PasswordHasher) -> AuthService:
     """Create an AuthService instance with mocked audit service."""
-    with patch("app.services.auth_service.AuthAuditService") as mock_audit:
-        service = AuthService(password_hasher=password_hasher, audit_service=mock_audit())
-        return service
+    return AuthService(password_hasher=password_hasher)
 
 
 @pytest.fixture
@@ -110,8 +108,13 @@ async def test_change_password_verifies_current_password(
     mock_result.scalars.return_value = mock_scalars
     mock_db.execute = AsyncMock(return_value=mock_result)
     
-    # Mock session resolution
-    with patch.object(auth_service, "_resolve_active_session", return_value=sample_session):
+    # Mock session resolution + audit service
+    with patch.object(auth_service, "_resolve_active_session", return_value=sample_session), \
+         patch("app.services.auth_service.get_audit_service") as mock_get_audit:
+        mock_audit_svc = MagicMock()
+        mock_audit_svc.password_changed = AsyncMock()
+        mock_get_audit.return_value = mock_audit_svc
+
         # Attempt with correct current password should not raise
         await auth_service.change_password(
             mock_db,
@@ -155,7 +158,8 @@ async def test_change_password_enforces_minimum_length(
     sample_session: AuthSession,
 ) -> None:
     """Test that change_password enforces minimum password length of 12 characters."""
-    with patch.object(auth_service, "_resolve_active_session", return_value=sample_session):
+    with patch.object(auth_service, "_resolve_active_session", return_value=sample_session), \
+         patch("app.services.auth_service.get_audit_service"):
         with pytest.raises(PasswordPolicyViolation, match="minimum length"):
             await auth_service.change_password(
                 mock_db,
@@ -174,7 +178,8 @@ async def test_change_password_enforces_complexity_requirements(
     sample_session: AuthSession,
 ) -> None:
     """Test that change_password enforces password complexity (upper, lower, number, special)."""
-    with patch.object(auth_service, "_resolve_active_session", return_value=sample_session):
+    with patch.object(auth_service, "_resolve_active_session", return_value=sample_session), \
+         patch("app.services.auth_service.get_audit_service"):
         # Missing uppercase
         with pytest.raises(PasswordPolicyViolation, match="upper, lower, number, and special"):
             await auth_service.change_password(
@@ -242,7 +247,12 @@ async def test_change_password_preserves_current_session(
     mock_result.scalars.return_value.all.return_value = [other_session]
     mock_db.execute.return_value = mock_result
 
-    with patch.object(auth_service, "_resolve_active_session", return_value=sample_session):
+    with patch.object(auth_service, "_resolve_active_session", return_value=sample_session), \
+         patch("app.services.auth_service.get_audit_service") as mock_get_audit:
+        mock_audit_svc = MagicMock()
+        mock_audit_svc.password_changed = AsyncMock()
+        mock_get_audit.return_value = mock_audit_svc
+
         await auth_service.change_password(
             mock_db,
             session_token="valid_token",
@@ -295,7 +305,12 @@ async def test_change_password_revokes_other_sessions(
     mock_result.scalars.return_value.all.return_value = [session2, session3]
     mock_db.execute.return_value = mock_result
 
-    with patch.object(auth_service, "_resolve_active_session", return_value=sample_session):
+    with patch.object(auth_service, "_resolve_active_session", return_value=sample_session), \
+         patch("app.services.auth_service.get_audit_service") as mock_get_audit:
+        mock_audit_svc = MagicMock()
+        mock_audit_svc.password_changed = AsyncMock()
+        mock_get_audit.return_value = mock_audit_svc
+
         await auth_service.change_password(
             mock_db,
             session_token="valid_token",
@@ -331,7 +346,12 @@ async def test_change_password_updates_user_fields(
     mock_result.scalars.return_value.all.return_value = []
     mock_db.execute.return_value = mock_result
 
-    with patch.object(auth_service, "_resolve_active_session", return_value=sample_session):
+    with patch.object(auth_service, "_resolve_active_session", return_value=sample_session), \
+         patch("app.services.auth_service.get_audit_service") as mock_get_audit:
+        mock_audit_svc = MagicMock()
+        mock_audit_svc.password_changed = AsyncMock()
+        mock_get_audit.return_value = mock_audit_svc
+
         await auth_service.change_password(
             mock_db,
             session_token="valid_token",
@@ -389,9 +409,8 @@ async def test_change_password_calls_audit_logging(
     password_hasher: PasswordHasher,
 ) -> None:
     """Test that change_password calls audit service with correct parameters."""
-    # Create auth service with mocked audit service
-    mock_audit = MagicMock()
-    auth_service = AuthService(password_hasher=password_hasher, audit_service=mock_audit)
+    # Create auth service
+    auth_service = AuthService(password_hasher=password_hasher)
 
     # Mock no other sessions
     mock_result = MagicMock()
@@ -404,7 +423,12 @@ async def test_change_password_calls_audit_logging(
         correlation_id="test-correlation-123",
     )
 
-    with patch.object(auth_service, "_resolve_active_session", return_value=sample_session):
+    with patch.object(auth_service, "_resolve_active_session", return_value=sample_session), \
+         patch("app.services.auth_service.get_audit_service") as mock_get_audit:
+        mock_audit_svc = MagicMock()
+        mock_audit_svc.password_changed = AsyncMock()
+        mock_get_audit.return_value = mock_audit_svc
+
         await auth_service.change_password(
             mock_db,
             session_token="valid_token",
@@ -414,10 +438,10 @@ async def test_change_password_calls_audit_logging(
         )
 
         # Verify audit logging was called
-        mock_audit.password_changed.assert_called_once()
+        mock_audit_svc.password_changed.assert_called_once()
         
         # Verify audit call parameters
-        call_args = mock_audit.password_changed.call_args
+        call_args = mock_audit_svc.password_changed.call_args
         assert call_args.kwargs["user_id"] == sample_user.id
         assert call_args.kwargs["username"] == sample_user.username
         assert call_args.kwargs["was_forced"] is False  # Voluntary change

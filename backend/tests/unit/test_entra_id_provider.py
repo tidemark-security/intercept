@@ -46,8 +46,10 @@ class FakeAsyncClient:
         return FakeResponse(200, {"access_token": "entra-token", "expires_in": 3600})
 
     async def get(self, url: str, headers: dict[str, str] | None = None, params: dict[str, object] | None = None):
-        assert headers == {"Authorization": "Bearer entra-token"}
+        assert headers is not None
+        assert headers.get("Authorization") == "Bearer entra-token"
         if url.endswith("/users/alice@example.com"):
+            assert headers == {"Authorization": "Bearer entra-token"}
             return FakeResponse(
                 200,
                 {
@@ -68,6 +70,7 @@ class FakeAsyncClient:
                 },
             )
         if url.endswith("/users/entra-user-1/manager"):
+            assert headers == {"Authorization": "Bearer entra-token"}
             return FakeResponse(
                 200,
                 {
@@ -78,6 +81,7 @@ class FakeAsyncClient:
                 },
             )
         if "/users?" in url or url.endswith("/users"):
+            assert headers == {"Authorization": "Bearer entra-token"}
             return FakeResponse(
                 200,
                 {
@@ -95,6 +99,61 @@ class FakeAsyncClient:
                 },
             )
         raise AssertionError(f"Unexpected GET request: {url} {params}")
+
+
+class SamLookupAsyncClient(FakeAsyncClient):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.requests: list[tuple[str, dict[str, str] | None, dict[str, object] | None]] = []
+
+    async def get(self, url: str, headers: dict[str, str] | None = None, params: dict[str, object] | None = None):
+        self.requests.append((url, headers, params))
+        assert headers is not None
+        assert headers.get("Authorization") == "Bearer entra-token"
+
+        if url.endswith("/users") and params == {
+            "$filter": "mail eq 'corp\\alice'",
+            "$select": "id,displayName,givenName,surname,mail,userPrincipalName,jobTitle,department,officeLocation,mobilePhone,businessPhones,onPremisesSamAccountName,employeeId,accountEnabled",
+        }:
+            assert headers == {"Authorization": "Bearer entra-token"}
+            return FakeResponse(200, {"value": []})
+
+        if url.endswith("/users") and params == {
+            "$filter": "onPremisesSamAccountName eq 'alice'",
+            "$select": "id,displayName,givenName,surname,mail,userPrincipalName,jobTitle,department,officeLocation,mobilePhone,businessPhones,onPremisesSamAccountName,employeeId,accountEnabled",
+            "$count": "true",
+        }:
+            assert headers == {"Authorization": "Bearer entra-token", "ConsistencyLevel": "eventual"}
+            return FakeResponse(
+                200,
+                {
+                    "@odata.count": 1,
+                    "value": [
+                        {
+                            "id": "entra-user-sam",
+                            "displayName": "Alice Analyst",
+                            "givenName": "Alice",
+                            "surname": "Analyst",
+                            "mail": "alice@example.com",
+                            "userPrincipalName": "alice@example.com",
+                            "jobTitle": "Security Analyst",
+                            "department": "SOC",
+                            "officeLocation": "HQ",
+                            "mobilePhone": "+1-555-0100",
+                            "businessPhones": ["+1-555-0110"],
+                            "onPremisesSamAccountName": "alice",
+                            "employeeId": "E123",
+                            "accountEnabled": True,
+                        }
+                    ],
+                },
+            )
+
+        if url.endswith("/users/entra-user-sam/manager"):
+            assert headers == {"Authorization": "Bearer entra-token"}
+            return FakeResponse(404, {})
+
+        raise AssertionError(f"Unexpected GET request: {url} {params} {headers}")
 
 
 def test_can_enrich_and_build_cache_key() -> None:
@@ -130,6 +189,33 @@ async def test_enrich_fetches_user_and_manager(monkeypatch: pytest.MonkeyPatch) 
     assert result.enrichment_data["manager_email"] == "morgan@example.com"
     alias_types = {alias.alias_type for alias in result.aliases}
     assert {"email", "upn", "samaccountname", "employee_id"}.issubset(alias_types)
+
+
+@pytest.mark.asyncio
+async def test_enrich_uses_advanced_query_for_sam_account_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = SamLookupAsyncClient()
+    monkeypatch.setattr("app.services.enrichment.providers.entra_id.httpx.AsyncClient", lambda *args, **kwargs: client)
+    provider = entra_id_provider.__class__()
+    settings = StubSettings(
+        {
+            "enrichment.entra_id.tenant_id": "tenant-id",
+            "enrichment.entra_id.client_id": "client-id",
+            "enrichment.entra_id.client_secret": "client-secret",
+        }
+    )
+
+    result = await provider.enrich(
+        db=None,  # type: ignore[arg-type]
+        settings=settings,  # type: ignore[arg-type]
+        item={"type": "internal_actor", "user_id": "CORP\\alice"},
+        entity_type="alert",
+        entity_id=1,
+    )
+
+    assert result.provider_id == "entra_id"
+    assert result.cache_key == "user:corp\\alice"
+    assert result.enrichment_data["sam_account_name"] == "alice"
+    assert all(not url.endswith("/users/corp\\alice") for url, _, _ in client.requests)
 
 
 @pytest.mark.asyncio

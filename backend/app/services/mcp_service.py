@@ -70,6 +70,22 @@ _MERMAID_OPERATIONAL_ERROR_MARKERS = (
 )
 
 
+def _build_timeline_preview_text(item: Dict[str, Any]) -> str:
+    """Build a concise preview string tailored to the timeline item type."""
+    item_type = item.get("type", "")
+    description = str(item.get("description") or "").strip()
+
+    if item_type == "observable":
+        observable_value = str(item.get("observable_value") or item.get("value") or "").strip()
+        if observable_value and description:
+            return f"{observable_value}: {description}"
+        if observable_value:
+            return observable_value
+        return description
+
+    return str(item.get("body") or item.get("content") or description).strip()
+
+
 def _resolve_mermaid_validator_command() -> list[str]:
     """Resolve parser-based Mermaid validator dependencies and invocation command."""
     node_path = shutil.which("node")
@@ -306,11 +322,15 @@ async def get_summary(
             timestamp = entity.created_at
         
         author = item.get('author')
-        
-        # Generate preview from body/content
-        body = item.get('body') or item.get('content') or item.get('description') or ""
+
+        # Generate preview from item content with observable-specific formatting.
+        body = _build_timeline_preview_text(item)
         preview = body[:200]
         is_truncated = len(body) > 200
+        observable_type = None
+        observable_value = None
+        enrichment_status = item.get('enrichment_status') if 'enrichment_status' in item else None
+        enrichments = item.get('enrichments') if isinstance(item.get('enrichments'), dict) else None
         
         # Extract entity_id for linked items (alerts, tasks, cases)
         entity_id = None
@@ -326,6 +346,11 @@ async def get_summary(
             case_id = item.get('case_id')
             if case_id is not None:
                 entity_id = format_entity_id(case_id, get_prefix_for_kind('case'))
+        elif item_type == 'observable':
+            raw_observable_type = item.get('observable_type')
+            raw_observable_value = item.get('observable_value') or item.get('value')
+            observable_type = str(raw_observable_type) if raw_observable_type else None
+            observable_value = str(raw_observable_value) if raw_observable_value else None
         
         timeline_previews.append(TimelinePreview(
             timeline_id=str(item_id),
@@ -336,6 +361,10 @@ async def get_summary(
             is_truncated=is_truncated,
             full_length_chars=len(body) if is_truncated else None,
             entity_id=entity_id,
+            observable_type=observable_type,
+            observable_value=observable_value,
+            enrichment_status=enrichment_status,
+            enrichments=enrichments,
         ))
     
     timeline_section = TimelineSection(

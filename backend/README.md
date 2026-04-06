@@ -606,6 +606,6 @@ GET /health/db
 ## Support
 
 For issues and questions:
-- **Bug Reports**: [GitHub Issues](https://github.com/your-org/intercept/issues)
-- **Documentation**: [Wiki](https://github.com/your-org/intercept/wiki)
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/intercept/discussions)
+- **Bug Reports**: [GitHub Issues](https://github.com/tidemark-security/intercept/issues)
+- **Documentation**: [Wiki](https://github.com/tidemark-security/intercept/wiki)
+- **Discussions**: [GitHub Discussions](https://github.com/tidemark-security/intercept/discussions)

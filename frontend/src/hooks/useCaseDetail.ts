@@ -4,6 +4,7 @@ import { CasesService } from '@/types/generated/services/CasesService';
 import { queryKeys } from './queryKeys';
 import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS, QUERY_REFETCH_INTERVALS_WS } from '@/config/queryConfig';
 import { useRealtimeSubscription } from './useRealtimeSubscription';
+import { hasActiveTimelineEnrichments } from '@/utils/enrichmentState';
 
 /**
  * Options for useCaseDetail hook
@@ -54,7 +55,12 @@ export function useCaseDetail(
     },
     enabled: caseId !== null, // Only fetch when we have a case ID
     staleTime: QUERY_STALE_TIMES.REALTIME, // 30 seconds for real-time collaboration
-    refetchInterval: isConnected ? QUERY_REFETCH_INTERVALS_WS.DETAIL : QUERY_REFETCH_INTERVALS.DETAIL,
+    refetchInterval: (query) => {
+      if (hasActiveTimelineEnrichments(query.state.data)) {
+        return QUERY_REFETCH_INTERVALS.ENRICHMENT_ACTIVE;
+      }
+      return isConnected ? QUERY_REFETCH_INTERVALS_WS.DETAIL : QUERY_REFETCH_INTERVALS.DETAIL;
+    },
     refetchIntervalInBackground: false, // Pause polling when tab is inactive
     // Don't retry on 404 errors to show NotFoundError immediately
     retry: (failureCount, error) => {

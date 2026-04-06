@@ -166,6 +166,39 @@ class TimelineService:
         setattr(entity, "timeline_items", timeline_items)
         return entity
 
+    async def prepare_entity_detail_timeline(
+        self,
+        db: AsyncSession,
+        *,
+        entity: Any,
+        entity_type: str,
+        entity_id: int,
+        human_prefix: str,
+        include_linked_timelines: bool = False,
+    ) -> Any:
+        entity = await self.denormalize_entity_timeline(
+            db,
+            entity,
+            human_prefix=human_prefix,
+            include_linked_timelines=include_linked_timelines,
+        )
+        entity = await self.coalesce_timeline_audit(
+            db,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            entity=entity,
+        )
+
+        from app.services.enrichment.service import enrichment_service
+
+        await enrichment_service.reconcile_entity_enrichment_statuses(
+            db,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            timeline_items=list(getattr(entity, "timeline_items", None) or []),
+        )
+        return entity
+
     def _annotate_items_with_audit(self, items: List[Dict[str, Any]], edited_item_ids: Set[str]) -> None:
         for item in items:
             if item.get("id") in edited_item_ids:
@@ -716,7 +749,7 @@ class TimelineService:
         created_by: str,
         entity_id: Optional[int] = None,
         entity_type: str = "case",
-    ) -> Dict[str, Any]:
+    ) -> tuple[Dict[str, Any], Optional[int]]:
         """
         Add a timeline item with external resource synchronization.
         
@@ -736,7 +769,8 @@ class TimelineService:
             entity_type: "case" or "alert" - alerts reject task items
         
         Returns:
-            The normalized item dict (with task_id for tasks)
+            The normalized item dict (with task_id for tasks) and optional
+            enrichment queue priority for deferred enqueue after commit.
         
         Raises:
             ValueError: If trying to add a task to an alert
@@ -763,23 +797,22 @@ class TimelineService:
             # Return the reference for the caller
             normalized = self._strip_task_snapshot_fields(normalized)
             normalized["task_id"] = task_id
-            return normalized
+            return normalized, None
         
         # Add to timeline (for non-task items)
         self.add_timeline_item(entity, normalized, created_by=created_by)
 
+        enrichment_priority: Optional[int] = None
         if entity_id is not None:
             from app.services.enrichment.service import enrichment_service
 
-            await enrichment_service.maybe_enqueue_item_enrichment(
+            enrichment_priority = await enrichment_service.prepare_item_enrichment_enqueue(
                 db,
                 entity=entity,
-                entity_type=entity_type,
-                entity_id=entity_id,
                 item=normalized,
             )
         
-        return normalized
+        return normalized, enrichment_priority
 
     async def update_timeline_item_with_sync(
         self,

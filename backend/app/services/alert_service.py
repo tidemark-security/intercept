@@ -23,6 +23,7 @@ from app.services.alert_triage_apply_service import (
     is_triage_completion_status,
     mark_alert_escalated,
 )
+from app.services.timeline_add_service import add_timeline_item_and_commit, update_timeline_item_and_commit
 from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
@@ -171,17 +172,13 @@ class AlertService:
         if not db_alert:
             return None
 
-        db_alert = await timeline_service.denormalize_entity_timeline(
-            db,
-            db_alert,
-            human_prefix="ALT",
-            include_linked_timelines=include_linked_timelines,
-        )
-        return await timeline_service.coalesce_timeline_audit(
+        return await timeline_service.prepare_entity_detail_timeline(
             db,
             entity_type="alert",
             entity_id=alert_id,
             entity=db_alert,
+            human_prefix="ALT",
+            include_linked_timelines=include_linked_timelines,
         )
     
     async def get_alert_by_human_id(self, db: AsyncSession, human_id: str) -> Optional[Alert]:
@@ -576,36 +573,16 @@ class AlertService:
             db_alert = await self._get_alert_model(db, alert_id)
             if not db_alert:
                 return None
-            
-            # Use mode='json' to ensure datetime fields are serialized to ISO strings
-            item_dict = timeline_item.model_dump(mode='json')
-            
-            # Add via timeline service with resource sync
-            # entity_type="alert" will raise error if trying to add task items
-            item_dict = await timeline_service.add_timeline_item_with_sync(
-                db, db_alert, item_dict, added_by,
-                entity_id=alert_id, entity_type="alert"
-            )
-            
-            await emit_event(
-                db,
-                entity_type="alert",
-                entity_id=alert_id,
-                event_type=RealtimeEventType.TIMELINE_ITEM_ADDED,
-                performed_by=added_by,
-                item_id=item_dict.get("id"),
-            )
 
-            await db.commit()
-            
-            await get_audit_service(db).log_timeline_item_added(
-                entity_type="alert",
+            item_dict = await add_timeline_item_and_commit(
+                db,
+                entity=db_alert,
                 entity_id=alert_id,
-                item_id=item_dict.get("id", ""),
-                item_type=item_dict.get("type", "unknown"),
-                user=added_by,
-                new_value=item_dict,
+                entity_type="alert",
+                timeline_item=timeline_item,
+                performed_by=added_by,
             )
+            
             logger.info(f"Timeline item added to alert by {added_by}")
             return await self.get_alert(db, alert_id)
             
@@ -637,41 +614,19 @@ class AlertService:
             if not existing_item:
                 raise ValueError(f"Timeline item {item_id} not found")
             
-            # Use mode='json' to ensure datetime fields are serialized to ISO strings
-            item_dict = updated_item.model_dump(mode='json')
-            
-            # Update via timeline service with resource sync
-            result = await timeline_service.update_timeline_item_with_sync(
-                db, db_alert, item_id, item_dict, updated_by
-            )
-            
-            if result is None:
-                raise ValueError(f"Timeline item {item_id} not found")
-            
-            # Re-fetch the updated item for audit logging
-            updated_dict = timeline_service._find_item_by_id(db_alert.timeline_items or [], item_id) or item_dict
-            
-            # Audit log the edit with field-level changes
-            await get_audit_service(db).log_timeline_edit(
-                entity_type="alert",
-                entity_id=alert_id,
-                item_id=item_id,
-                item_type=updated_dict.get('type', 'unknown'),
-                before=existing_item,
-                after=updated_dict,
-                user=updated_by,
-            )
-            
-            await emit_event(
+            updated_dict = await update_timeline_item_and_commit(
                 db,
-                entity_type="alert",
+                entity=db_alert,
                 entity_id=alert_id,
-                event_type=RealtimeEventType.TIMELINE_ITEM_UPDATED,
-                performed_by=updated_by,
+                entity_type="alert",
                 item_id=item_id,
+                existing_item=existing_item,
+                timeline_item=updated_item,
+                performed_by=updated_by,
             )
 
-            await db.commit()
+            if updated_dict is None:
+                raise ValueError(f"Timeline item {item_id} not found")
             
             logger.info(
                 f"Timeline item {item_id} (type: {updated_dict.get('type')}) updated in alert {alert_id} by {updated_by}"

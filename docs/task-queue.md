@@ -8,7 +8,7 @@ The task queue system enables:
 
 - **Asynchronous task execution** - Offload long-running operations from HTTP requests
 - **Scheduled tasks** - Execute tasks at a specified future time
-- **Automatic retries** - Failed tasks are retried with configurable backoff
+- **Automatic retries** - Failed tasks are retried in-worker with configurable backoff
 - **Priority-based processing** - Higher priority tasks are processed first
 - **Transactional guarantees** - Jobs are stored in PostgreSQL with ACID properties
 - **Standalone workers** - Workers run in separate containers for horizontal scaling
@@ -248,9 +248,20 @@ def register_task_handlers():
     task_queue.register_handler(
         task_name="my_task",
         handler=handle_my_task,
-        max_retries=3,  # Retry up to 3 times on failure
+        max_retries=3,  # Retry up to 3 additional times after the initial attempt
     )
 ```
+
+`register_handler()` uses a custom executor built on pgqueuer's `RetryWithBackoffEntrypointExecutor`.
+The retry loop happens inside a single worker execution rather than by creating a new queue row for each attempt.
+
+Current defaults in Intercept:
+
+- `max_retries` means retries after the initial attempt
+- Initial backoff delay: 5 seconds
+- Maximum backoff delay: 60 seconds
+- Maximum total retry window: 10 minutes
+- Optional terminal failure hook: runs once after retries are exhausted
 
 This is called automatically in `main.py`:
 
@@ -291,14 +302,41 @@ Handles batch processing of multiple messages through LangFlow.
 }
 ```
 
+### `triage_alert`
+
+Runs AI alert triage through LangFlow.
+
+Failure behavior:
+
+- The recommendation remains `QUEUED` during retry attempts
+- The recommendation is marked `FAILED` only after retries are exhausted
+- The final `error_message` records the terminal failure cause
+
+### `enrich_item`
+
+Runs provider enrichment for a timeline item.
+
+Failure behavior:
+
+- Timeline items remain `pending` during retry attempts
+- On terminal failure, `enrichment_status` is cleared so the item is not left stuck in `pending`
+- A system error payload is written into the item's `enrichments` map
+
 ## Error Handling & Retries
 
 When a task handler raises an exception:
 
 1. The error is logged with task details
-2. pgqueuer automatically schedules a retry based on `retry_timer` (default: 5 seconds)
-3. Retries continue until `max_retries` is exhausted
-4. Failed tasks remain in the queue for inspection
+2. The custom retry executor retries the handler in-process with exponential backoff and jitter
+3. Retries continue until `max_retries` or the total retry time limit is exhausted
+4. If configured, a terminal failure hook runs once after retries are exhausted
+5. The job ends in pgqueuer's terminal `exception` state and is written to `pgqueuer_log`
+
+Important distinctions:
+
+- `retry_timer` is still used by pgqueuer to recover stale `picked` jobs if a worker dies or stops heartbeating
+- `retry_timer` is not the bounded retry policy for normal handler exceptions
+- Retry attempt counts are tracked in the running executor, not persisted on the job row
 
 ```python
 # Handler that may fail and retry
@@ -310,9 +348,9 @@ async def handle_external_api_call(payload: Dict[str, Any]):
         # This will trigger a retry
         raise
     except ValidationError as e:
-        # Log but don't retry for validation errors
+        # Log and complete without retrying
         logger.error(f"Validation failed: {e}")
-        # Don't re-raise - task completes (with failure logged)
+        # Don't re-raise - task completes successfully from the queue's perspective
 ```
 
 ## Monitoring
@@ -326,6 +364,7 @@ INFO - Enqueued task: langflow_chat (task_id=123, priority=0)
 INFO - Processing task: langflow_chat (task_id=123)
 INFO - Completed task: langflow_chat (task_id=123)
 ERROR - Task failed: langflow_chat (task_id=123, error=...)
+ERROR - Exception while processing entrypoint/job-id: langflow_chat/123
 ```
 
 ### Database Queries
@@ -336,8 +375,11 @@ Check queue status directly in PostgreSQL:
 -- View pending jobs
 SELECT * FROM pgqueuer WHERE status = 'queued' ORDER BY priority DESC, created_at;
 
--- View recent job history
+-- View recent job history, including terminal exceptions
 SELECT * FROM pgqueuer_log ORDER BY created_at DESC LIMIT 100;
+
+-- View recent failed jobs
+SELECT * FROM pgqueuer_log WHERE status = 'exception' ORDER BY created_at DESC LIMIT 100;
 
 -- Queue statistics
 SELECT entrypoint, status, COUNT(*) 
@@ -460,7 +502,8 @@ async def handle_external_call(payload: Dict[str, Any]):
 1. Check the error logs for the task
 2. Verify the payload is valid JSON
 3. Check if external dependencies are available
-4. Review retry count vs max_retries setting
+4. Review `max_retries`, backoff timing, and any task-specific terminal failure hook
+5. Check `pgqueuer_log` for the final terminal exception after retries are exhausted
 
 ### Queue Building Up
 
@@ -509,7 +552,7 @@ If you see "connection is closed" errors:
 | `initialize()` | Connect to database and setup pgqueuer schema |
 | `shutdown()` | Gracefully shutdown workers and connections |
 | `enqueue(task_name, payload, priority, schedule_at)` | Add a task to the queue |
-| `register_handler(task_name, handler, max_retries)` | Register a task handler |
+| `register_handler(task_name, handler, max_retries, on_terminal_failure=None)` | Register a task handler with retry/backoff behavior |
 | `start_worker(concurrency)` | Start processing tasks |
 | `stop_worker()` | Stop processing tasks |
 

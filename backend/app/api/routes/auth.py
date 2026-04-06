@@ -10,9 +10,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.route_utils import (
-    issue_session_cookie,
+    generate_csrf_token,
+    issue_authenticated_session_cookies,
+    issue_csrf_cookie,
     read_session_cookie,
-    revoke_session_cookie,
+    revoke_authenticated_session_cookies,
 )
 from app.core.settings_registry import get_local
 from app.core.database import get_db
@@ -228,7 +230,7 @@ async def login(
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
-    issue_session_cookie(response, result.session_token, result.session.expires_at)
+    issue_authenticated_session_cookies(response, result.session_token, result.session.expires_at)
 
     user_summary = UserSummary(
         id=result.user.id,
@@ -281,14 +283,16 @@ async def logout(
             reason=SessionRevokedReason.USER_LOGOUT,
         )
     except SessionNotFoundError:
-        revoke_session_cookie(response)
-        return _validation_error(
+        error_response = _validation_error(
             message="Session is invalid or expired",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
+        revoke_authenticated_session_cookies(error_response)
+        return error_response
 
-    revoke_session_cookie(response)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    logout_response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    revoke_authenticated_session_cookies(logout_response)
+    return logout_response
 
 
 @router.post("/passkeys/register/options", response_model=PasskeyBeginResponse)
@@ -432,7 +436,7 @@ async def finish_passkey_authentication(
     )
     auth_result.user.last_login_at = datetime.now(timezone.utc)
 
-    issue_session_cookie(response, auth_login.session_token, auth_login.session.expires_at)
+    issue_authenticated_session_cookies(response, auth_login.session_token, auth_login.session.expires_at)
 
     return LoginResponse(
         user=UserSummary(
@@ -558,11 +562,14 @@ async def get_session(
             session_token=session_token,
         )
     except SessionNotFoundError:
-        revoke_session_cookie(response)
-        return _validation_error(
+        error_response = _validation_error(
             message="Session is invalid or expired",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
+        revoke_authenticated_session_cookies(error_response)
+        return error_response
+
+    issue_csrf_cookie(response, generate_csrf_token(), session_data.session.expires_at)
 
     user_summary = UserSummary(
         id=session_data.user.id,
@@ -623,11 +630,12 @@ async def change_password(
             metadata=metadata,
         )
     except SessionNotFoundError:
-        revoke_session_cookie(response)
-        return _validation_error(
+        error_response = _validation_error(
             message="Session is invalid or expired",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
+        revoke_authenticated_session_cookies(error_response)
+        return error_response
     except InvalidCredentialsError:
         return _validation_error(
             message="Invalid current password",

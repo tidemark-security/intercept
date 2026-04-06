@@ -106,6 +106,10 @@ class ItemBase(SQLModel):
     flagged: bool = Field(default=False, description="Whether this item is flagged as significant")
     highlighted: bool = Field(default=False, description="Whether this item is highlighted for attention")
     enrichment_status: Optional[str] = Field(default=None, description="Background enrichment status")
+    enrichment_task_id: Optional[str] = Field(
+        default=None,
+        description="Linked pgqueuer job id for the active enrichment task",
+    )
     enrichments: Optional[Dict[str, Any]] = Field(
         default_factory=dict,
         description="Provider enrichment payloads keyed by provider identifier",
@@ -1370,6 +1374,7 @@ class OIDCAuthRequest(SQLModel, table=True):
 
     state: str = Field(primary_key=True, max_length=255)
     nonce: str = Field(max_length=255)
+    browser_binding_hash: str = Field(max_length=64)
     redirect_to: str = Field(max_length=2048)
     expires_at: datetime = Field(sa_column=Column(UTCDateTime(), index=True))
     consumed_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
@@ -2390,4 +2395,42 @@ class WebSocketMessage(SQLModel):
     """Message format for WebSocket communication."""
     type: str = Field(description="Message type: event, subscribed, unsubscribed, ping, pong")
     payload: Optional[Dict[str, Any]] = Field(default=None, description="Message payload")
+
+
+# ---------------------------------------------------------------------------
+# Queue status (read-only schemas for pgqueuer tables)
+# ---------------------------------------------------------------------------
+
+class QueueJobRead(SQLModel):
+    """Read-only schema for a pgqueuer job (active or logged)."""
+
+    id: int
+    entrypoint: str
+    status: str
+    priority: int
+    payload: Optional[Dict[str, Any]] = None
+    created: Optional[datetime] = None
+    updated: Optional[datetime] = None
+    picked_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    duration_ms: Optional[int] = None
+    traceback: Optional[str] = None
+
+
+class QueueStatsRead(SQLModel):
+    """Aggregate count of active jobs grouped by entrypoint and status."""
+
+    entrypoint: str
+    status: str
+    count: int
+
+
+class QueueJobsPage(SQLModel):
+    """Paginated response for queue jobs."""
+
+    items: List[QueueJobRead] = []
+    total: int = 0
+    page: int = 1
+    size: int = 25
+    pages: int = 0
 

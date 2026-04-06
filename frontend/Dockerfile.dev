@@ -2,8 +2,11 @@ FROM node:24-slim
 
 WORKDIR /app
 
+# Copy UX library (referenced as file:../../ux in package.json)
+COPY --from=ux . /ux
+
 # Copy package files first for better layer caching
-COPY package.json package-lock.json* ./
+COPY package.json ./
 
 # Install dependencies
 RUN npm install

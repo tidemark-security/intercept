@@ -5,10 +5,30 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import ProfileManagement from "../../src/pages/ProfileManagement";
 import { ApiKeysService } from "../../src/types/generated/services/ApiKeysService";
 import { AuthenticationService } from "../../src/types/generated/services/AuthenticationService";
+import { type SessionContextValue } from "../../src/contexts/sessionContext";
 import { renderWithProviders } from "../test-utils";
 
+const mockSessionValue: SessionContextValue = {
+  status: "authenticated",
+  user: { id: "user-1", username: "analyst", role: "ANALYST", status: "ACTIVE" },
+  session: null,
+  mustChangePassword: false,
+  lockout: null,
+  error: null,
+  login: vi.fn().mockResolvedValue(undefined),
+  loginWithPasskey: vi.fn().mockResolvedValue("failed"),
+  logout: vi.fn().mockResolvedValue(undefined),
+  refreshSession: vi.fn().mockResolvedValue(undefined),
+  resolveError: vi.fn(),
+  acknowledgeLockout: vi.fn(),
+  setMustChangePassword: vi.fn(),
+  isAdmin: false,
+  isAnalyst: true,
+  isAuditor: false,
+};
+
 const renderPage = () => {
-  return renderWithProviders(<ProfileManagement />);
+  return renderWithProviders(<ProfileManagement />, { sessionValue: mockSessionValue });
 };
 
 const showToast = vi.fn();

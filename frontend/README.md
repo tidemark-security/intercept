@@ -51,6 +51,79 @@ This generates TypeScript types from OpenAPI schema in `src/types/generated/`.
 
 The frontend connects to the backend API. If running on non-standard ports, update the API URL in your development setup.
 
+## UX Component Library
+
+Many UI components are imported from `@tidemark-security/ux`, a shared component library. In production, the package is installed from the Git repository. For local development, you can link a local clone so changes are reflected immediately.
+
+### Setting up local UX development
+
+1. **Clone the UX repo** as a sibling directory:
+
+   ```bash
+   cd ~/projects          # or wherever tmi/ lives
+   git clone https://github.com/tidemark-security/ux.git
+   ```
+
+   Your directory structure should look like:
+   ```
+   ~/projects/
+   ├── tmi/
+   │   └── frontend/      # this project
+   └── ux/                # UX component library
+   ```
+
+2. **Build the UX library** (required — TMI consumes the dist bundle):
+
+   ```bash
+   cd ~/projects/ux
+   npm install
+   npm run build
+   ```
+
+3. **Link UX into the frontend** using `npm link`:
+
+   ```bash
+   # Step 1: Register UX as a globally linkable package
+   cd ~/projects/ux
+   npm link
+
+   # Step 2: Create the symlink in TMI's node_modules
+   cd ~/projects/tmi/frontend
+   npm link @tidemark-security/ux
+   ```
+
+   This creates `node_modules/@tidemark-security/ux → ~/projects/ux`. Any rebuild of the UX dist is immediately available without reinstalling.
+
+4. **After making UX changes**, rebuild the dist:
+
+   ```bash
+   cd ~/projects/ux
+   npm run build
+   ```
+
+   The frontend dev server (Vite) will hot-reload automatically.
+
+### Unlinking
+
+To go back to the Git-based version:
+
+```bash
+cd ~/projects/tmi/frontend
+npm unlink @tidemark-security/ux
+npm install
+```
+
+> **Note:** Running `npm install` in the frontend will also remove the link and restore the Git-based version.
+
+### How `npm link` works
+
+`npm link` is a two-step process:
+
+1. **`npm link`** (in the package directory) — creates a global symlink from Node's global `node_modules` to that directory.
+2. **`npm link <package-name>`** (in the consumer) — creates a symlink in the consumer's `node_modules` pointing to the global symlink.
+
+The linked package resolves its own dependencies from *its own* `node_modules`, not the consumer's. This is why `vite.config.ts` includes resolve aliases for `react`, `react-dom`, and `react-router-dom` — they force a single copy of React across both packages.
+
 ## Running the Application
 
 ### Development Mode
@@ -570,6 +643,6 @@ Configure your server to:
 ## Support
 
 For issues and questions:
-- **Bug Reports**: [GitHub Issues](https://github.com/your-org/intercept/issues)
-- **Documentation**: [Wiki](https://github.com/your-org/intercept/wiki)
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/intercept/discussions)
+- **Bug Reports**: [GitHub Issues](https://github.com/tidemark-security/intercept/issues)
+- **Documentation**: [Wiki](https://github.com/tidemark-security/intercept/wiki)
+- **Discussions**: [GitHub Discussions](https://github.com/tidemark-security/intercept/discussions)

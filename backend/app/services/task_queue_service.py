@@ -5,16 +5,21 @@ Provides asynchronous task execution for:
 - Long-running LangFlow operations
 - Background data processing
 - Scheduled tasks
-- Retry logic with exponential backoff
+- In-worker retry logic with exponential backoff and terminal failure hooks
 """
 import json
 import logging
 import asyncio
+import dataclasses
+from inspect import signature
 from typing import Optional, Dict, Any, Callable, Awaitable
 from datetime import datetime, timezone, timedelta
 
 import asyncpg
+from pgqueuer import PgQueuer
 from pgqueuer.db import AsyncpgDriver, AsyncpgPoolDriver
+from pgqueuer.errors import MaxRetriesExceeded, MaxTimeExceeded
+from pgqueuer.executors import RetryWithBackoffEntrypointExecutor
 from pgqueuer.qm import QueueManager
 from pgqueuer.queries import Queries
 from pgqueuer.models import Job
@@ -22,14 +27,58 @@ from pgqueuer.models import Job
 logger = logging.getLogger(__name__)
 
 
+TerminalFailureHandler = Callable[..., Awaitable[None]]
+TaskHandler = Callable[..., Awaitable[None]]
+
+RETRY_INITIAL_DELAY_SECONDS = 5.0
+RETRY_MAX_DELAY = timedelta(seconds=60)
+RETRY_MAX_TIME = timedelta(minutes=10)
+
+
+@dataclasses.dataclass
+class RetryWithTerminalFailureHookExecutor(RetryWithBackoffEntrypointExecutor):
+    """Retry a job with backoff, then run a terminal failure hook once.
+
+    Retry attempts are handled inside the running worker process. If retries are
+    exhausted or the total retry window is exceeded, the optional terminal
+    failure hook is invoked once before the exception is surfaced back to
+    pgqueuer.
+    """
+
+    on_terminal_failure: Optional[TerminalFailureHandler] = dataclasses.field(default=None)
+
+    async def execute(self, job: Job, context: Any) -> None:
+        try:
+            await super().execute(job, context)
+        except (MaxRetriesExceeded, MaxTimeExceeded) as exc:
+            if self.on_terminal_failure is not None:
+                payload: Dict[str, Any] = {}
+                if job.payload:
+                    payload = json.loads(job.payload.decode("utf-8"))
+
+                try:
+                    failure_signature = signature(self.on_terminal_failure)
+                    if "task_id" in failure_signature.parameters:
+                        await self.on_terminal_failure(payload, exc, task_id=str(job.id))
+                    else:
+                        await self.on_terminal_failure(payload, exc)
+                except Exception:
+                    logger.exception(
+                        "Terminal failure hook failed for task",
+                        extra={"task_id": str(job.id), "task_name": job.entrypoint},
+                    )
+            raise
+
+
 class TaskQueueService:
     """
     Service for managing background task queue using pgqueuer.
-    
+
     Handles:
     - Task enqueueing
     - Worker process management
-    - Retry logic
+    - In-worker retry/backoff policies per handler
+    - Terminal failure callbacks after retry exhaustion
     - Task status tracking
     """
     
@@ -42,13 +91,15 @@ class TaskQueueService:
         """
         self.connection_string = connection_string
         self._pool: Optional[asyncpg.Pool] = None
-        self._connection: Optional[asyncpg.Connection] = None  # For queries/enqueue
+        self._connection: Optional[Any] = None  # For queries/enqueue
         self.driver: Optional[AsyncpgPoolDriver] = None
+        self.pgqueuer: Optional[PgQueuer] = None
         self.queue_manager: Optional[QueueManager] = None
         self.queries: Optional[Queries] = None
         self._worker_task: Optional[asyncio.Task] = None
         self._running = False
-        self._handlers: Dict[str, Callable[[Dict[str, Any]], Awaitable[None]]] = {}
+        self._handlers: Dict[str, TaskHandler] = {}
+        self.schedule_refresh_lock = asyncio.Lock()
     
     def _convert_connection_string(self, conn_str: str) -> str:
         """
@@ -84,6 +135,7 @@ class TaskQueueService:
             
             # Create database driver with the pool (handles reconnection automatically)
             self.driver = AsyncpgPoolDriver(self._pool)
+            self.pgqueuer = PgQueuer.from_asyncpg_pool(self._pool)
             
             # Create Queries instance for database operations
             self.queries = Queries.from_asyncpg_pool(self._pool)
@@ -99,7 +151,7 @@ class TaskQueueService:
                 logger.info("pgqueuer schema installed")
             
             # Initialize queue manager
-            self.queue_manager = QueueManager(self.driver)
+            self.queue_manager = self.pgqueuer.qm
             
             logger.info("Task queue service initialized successfully (using connection pool)")
         except Exception as e:
@@ -117,9 +169,6 @@ class TaskQueueService:
                     await self._worker_task
                 except asyncio.CancelledError:
                     pass
-            
-            if self.driver:
-                await self.driver.shutdown()
             
             # Release connection back to pool before closing
             if self._connection and self._pool:
@@ -144,6 +193,7 @@ class TaskQueueService:
         payload: Dict[str, Any],
         priority: int = 0,
         schedule_at: Optional[datetime] = None,
+        dedupe_key: Optional[str] = None,
     ) -> str:
         """
         Enqueue a background task.
@@ -153,6 +203,7 @@ class TaskQueueService:
             payload: Task data/parameters
             priority: Task priority (higher = more important)
             schedule_at: Optional scheduled execution time
+            dedupe_key: Optional deduplication key for queued/picked jobs
             
         Returns:
             Task ID
@@ -180,6 +231,7 @@ class TaskQueueService:
                 payload=payload_bytes,
                 priority=priority,
                 execute_after=execute_after,
+                dedupe_key=dedupe_key,
             )
             
             job_id = job_ids[0] if job_ids else None
@@ -190,6 +242,7 @@ class TaskQueueService:
                     "task_id": str(job_id),
                     "task_name": task_name,
                     "priority": priority,
+                    "dedupe_key": dedupe_key,
                 }
             )
             
@@ -202,8 +255,9 @@ class TaskQueueService:
     def register_handler(
         self,
         task_name: str,
-        handler: Callable[[Dict[str, Any]], Awaitable[None]],
+        handler: TaskHandler,
         max_retries: int = 3,
+        on_terminal_failure: Optional[TerminalFailureHandler] = None,
     ):
         """
         Register a handler for a task type.
@@ -211,18 +265,34 @@ class TaskQueueService:
         Args:
             task_name: Name/type of task to handle
             handler: Async function to process the task
-            max_retries: Maximum retry attempts on failure
+            max_retries: Number of retries after the initial attempt
+            on_terminal_failure: Optional callback invoked once after retries are
+                exhausted or the retry time limit is exceeded
         """
-        if not self.queue_manager:
+        if not self.pgqueuer:
             raise RuntimeError("Task queue not initialized")
+        if max_retries < 0:
+            raise ValueError("max_retries must be greater than or equal to 0")
         
         # Store handler info for later use
         self._handlers[task_name] = handler
+        handler_signature = signature(handler)
+        accepts_task_id = "task_id" in handler_signature.parameters
+        def build_executor(parameters: Any) -> RetryWithTerminalFailureHookExecutor:
+            return RetryWithTerminalFailureHookExecutor(
+                parameters=parameters,
+                on_terminal_failure=on_terminal_failure,
+                max_attempts=max_retries + 1,
+                initial_delay=RETRY_INITIAL_DELAY_SECONDS,
+                max_delay=RETRY_MAX_DELAY,
+                max_time=RETRY_MAX_TIME,
+            )
         
         # Create a handler that parses JSON payload and register with entrypoint decorator
-        @self.queue_manager.entrypoint(
+        @self.pgqueuer.entrypoint(
             task_name,
             retry_timer=timedelta(seconds=5),  # Base retry timer
+            executor_factory=build_executor,
         )
         async def entrypoint_handler(job: Job):
             """Wrapper to handle retries and logging."""
@@ -241,7 +311,10 @@ class TaskQueueService:
                 )
                 
                 # Execute handler
-                await handler(payload)
+                if accepts_task_id:
+                    await handler(payload, task_id=str(job.id))
+                else:
+                    await handler(payload)
                 
                 logger.info(
                     f"Completed task: {task_name}",
@@ -260,7 +333,7 @@ class TaskQueueService:
                         "error": str(e),
                     }
                 )
-                raise  # Re-raise to trigger retry via pgqueuer
+                raise  # Re-raise so the executor can retry or surface terminal failure
         
         logger.info(f"Registered handler for task: {task_name}")
     
@@ -271,7 +344,7 @@ class TaskQueueService:
         Args:
             concurrency: Number of concurrent tasks to process
         """
-        if not self.queue_manager:
+        if not self.pgqueuer:
             raise RuntimeError("Task queue not initialized")
         
         if self._running:
@@ -284,11 +357,13 @@ class TaskQueueService:
             """Main worker loop."""
             try:
                 logger.info(f"Starting task queue worker (max_concurrent_tasks={concurrency})")
+                pgqueuer = self.pgqueuer
+                if pgqueuer is None:
+                    raise RuntimeError("Task queue not initialized")
                 
                 while self._running:
                     try:
-                        # Process jobs from queue
-                        await self.queue_manager.run(max_concurrent_tasks=concurrency)
+                        await pgqueuer.run(max_concurrent_tasks=concurrency)
                     except asyncio.CancelledError:
                         break
                     except Exception as e:

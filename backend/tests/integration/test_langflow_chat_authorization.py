@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
 import pytest
 from httpx import AsyncClient
+from sqlmodel import select
 
+from app.core.settings_registry import get_local
 from app.models.enums import MessageRole
 from app.models.models import LangFlowMessage, LangFlowSession
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
@@ -32,6 +35,31 @@ async def _login_and_get_session_cookie(
     session_cookie = login_response.cookies.get("intercept_session")
     assert session_cookie is not None
     return session_cookie, user.username, user_id
+
+
+async def _login_and_get_auth_cookies(
+    client: AsyncClient,
+    session_maker: Any,
+    user_factory,
+) -> tuple[str, str, str, UUID]:
+    user = user_factory()
+
+    async with session_maker() as session:
+        session.add(user)
+        await session.commit()
+        user_id = user.id
+
+    login_response = await client.post(
+        "/api/v1/auth/login",
+        json={"username": user.username, "password": DEFAULT_TEST_PASSWORD},
+    )
+    assert login_response.status_code == 200
+
+    session_cookie = login_response.cookies.get(get_local("auth.session.cookie_name"))
+    csrf_cookie = login_response.cookies.get(get_local("auth.csrf.cookie_name"))
+    assert session_cookie is not None
+    assert csrf_cookie is not None
+    return session_cookie, csrf_cookie, user.username, user_id
 
 
 @pytest.mark.asyncio
@@ -183,3 +211,100 @@ async def test_admin_unknown_username_returns_404(
     )
 
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_stream_endpoint_requires_post(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie, _, _ = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    response = await client.get(
+        f"/api/v1/langflow/stream/{UUID(int=0)}",
+        cookies={get_local("auth.session.cookie_name"): session_cookie},
+    )
+
+    assert response.status_code == 405
+
+
+@pytest.mark.asyncio
+async def test_stream_endpoint_creates_messages_via_post(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.routes.langflow as langflow_routes
+
+    session_cookie, csrf_cookie, _username, user_id = await _login_and_get_auth_cookies(
+        client,
+        session_maker,
+        analyst_user_factory,
+    )
+
+    async with session_maker() as session:
+        chat_session = LangFlowSession(
+            flow_id="general_flow",
+            user_id=user_id,
+            title="Streaming Chat",
+        )
+        session.add(chat_session)
+        await session.commit()
+        await session.refresh(chat_session)
+        session_id = chat_session.id
+
+    class FakeLangFlowService:
+        async def stream_message(self, *, flow_id: str, message: str, session_id: UUID, context: dict[str, Any]):
+            assert flow_id == "general_flow"
+            assert message == "hello stream"
+            assert session_id
+            assert context == {}
+            yield {"event": "token", "data": {"chunk": "Hello"}}
+            yield {"event": "token", "data": {"chunk": " world"}}
+            yield {
+                "event": "add_message",
+                "data": {
+                    "sender": "Machine",
+                    "text": "Hello world",
+                    "properties": {"state": "complete"},
+                },
+            }
+
+        async def close(self) -> None:
+            return None
+
+    async def fake_get_langflow_service(_db):
+        return FakeLangFlowService()
+
+    monkeypatch.setattr(langflow_routes, "get_langflow_service", fake_get_langflow_service)
+
+    response = await client.post(
+        f"/api/v1/langflow/stream/{session_id}",
+        json={"message": "hello stream"},
+        cookies={
+            get_local("auth.session.cookie_name"): session_cookie,
+            get_local("auth.csrf.cookie_name"): csrf_cookie,
+        },
+        headers={get_local("auth.csrf.header_name"): csrf_cookie},
+    )
+
+    assert response.status_code == 200
+    assert "event: message" in response.text
+    assert "Hello" in response.text
+    assert "event: complete" in response.text
+
+    async with session_maker() as session:
+        result = await session.execute(
+            select(LangFlowMessage)
+            .where(LangFlowMessage.session_id == session_id)
+            .order_by(LangFlowMessage.created_at)
+        )
+        stored_messages = result.scalars().all()
+
+    assert len(stored_messages) == 2
+    assert stored_messages[0].role == MessageRole.USER
+    assert stored_messages[0].content == "hello stream"
+    assert stored_messages[1].role == MessageRole.ASSISTANT
+    assert stored_messages[1].content == "Hello world"

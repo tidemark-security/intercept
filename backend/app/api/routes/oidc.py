@@ -9,7 +9,12 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.admin_auth import require_admin_user
-from app.api.route_utils import issue_session_cookie
+from app.api.route_utils import (
+    issue_authenticated_session_cookies,
+    issue_oidc_browser_binding_cookie,
+    read_oidc_browser_binding_cookie,
+    revoke_oidc_browser_binding_cookie,
+)
 from app.core.database import get_db
 from app.services.auth_service import RequestMetadata, auth_service
 from app.services.audit_service import get_audit_service
@@ -66,12 +71,12 @@ async def begin_oidc_login(
     db: AsyncSession = Depends(get_db),
     next: str = Query(..., description="Absolute frontend URL to return to after authentication"),
 ):
-    if not oidc_service.is_safe_redirect_target(next):
+    if not await oidc_service.is_safe_redirect_target(db, next):
         return _frontend_error_redirect(str(request.base_url).rstrip("/"), "Invalid OIDC return target")
 
     callback_url = str(request.url_for("finish_oidc_login"))
     try:
-        authorization_url = await oidc_service.begin_login(
+        authorization_url, expires_at, browser_binding_token = await oidc_service.begin_login(
             db,
             redirect_to=next,
             callback_url=callback_url,
@@ -81,7 +86,9 @@ async def begin_oidc_login(
         await db.rollback()
         return _frontend_error_redirect(next, str(exc))
 
-    return RedirectResponse(url=authorization_url, status_code=status.HTTP_302_FOUND)
+    response = RedirectResponse(url=authorization_url, status_code=status.HTTP_302_FOUND)
+    issue_oidc_browser_binding_cookie(response, browser_binding_token, expires_at)
+    return response
 
 
 @router.get("/callback", name="finish_oidc_login")
@@ -94,6 +101,7 @@ async def finish_oidc_login(
     callback_url = str(request.url_for("finish_oidc_login"))
     metadata = _build_metadata(request)
     fallback_redirect = request.headers.get("origin") or str(request.base_url).rstrip("/")
+    browser_binding_token = read_oidc_browser_binding_cookie(request)
 
     try:
         user, issuer, subject, redirect_to = await oidc_service.exchange_code(
@@ -101,6 +109,7 @@ async def finish_oidc_login(
             code=code,
             state=state,
             callback_url=callback_url,
+            browser_binding_token=browser_binding_token,
         )
         auth_result = await auth_service.create_session_for_user(
             db,
@@ -124,10 +133,13 @@ async def finish_oidc_login(
             oidc_issuer=None,
             context=metadata.to_audit_context(),
         )
-        return _frontend_error_redirect(fallback_redirect, str(exc))
+        response = _frontend_error_redirect(fallback_redirect, str(exc))
+        revoke_oidc_browser_binding_cookie(response)
+        return response
 
     response = RedirectResponse(url=redirect_to, status_code=status.HTTP_302_FOUND)
-    issue_session_cookie(response, auth_result.session_token, auth_result.session.expires_at)
+    revoke_oidc_browser_binding_cookie(response)
+    issue_authenticated_session_cookies(response, auth_result.session_token, auth_result.session.expires_at)
     return response
 
 

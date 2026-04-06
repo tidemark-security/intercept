@@ -5,6 +5,7 @@ import { queryKeys } from './queryKeys';
 import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS, QUERY_REFETCH_INTERVALS_WS } from '@/config/queryConfig';
 import { convertTaskHumanIdToNumeric } from '@/utils/humanIdHelpers';
 import { useRealtimeSubscription } from './useRealtimeSubscription';
+import { hasActiveTimelineEnrichments } from '@/utils/enrichmentState';
 
 /**
  * Options for useTaskDetail hook
@@ -66,7 +67,12 @@ export function useTaskDetail(
     },
     enabled: taskId !== null,
     staleTime: QUERY_STALE_TIMES.REALTIME, // 30 seconds for real-time collaboration
-    refetchInterval: isConnected ? QUERY_REFETCH_INTERVALS_WS.DETAIL : QUERY_REFETCH_INTERVALS.DETAIL,
+    refetchInterval: (query) => {
+      if (hasActiveTimelineEnrichments(query.state.data)) {
+        return QUERY_REFETCH_INTERVALS.ENRICHMENT_ACTIVE;
+      }
+      return isConnected ? QUERY_REFETCH_INTERVALS_WS.DETAIL : QUERY_REFETCH_INTERVALS.DETAIL;
+    },
     refetchIntervalInBackground: false, // Pause polling when tab is inactive
     // Don't retry on 404 errors to show NotFoundError immediately
     retry: (failureCount, error) => {

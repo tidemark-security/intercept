@@ -42,6 +42,10 @@ export type EmailItem = {
      */
     enrichment_status?: (string | null);
     /**
+     * Linked pgqueuer job id for the active enrichment task
+     */
+    enrichment_task_id?: (string | null);
+    /**
      * Provider enrichment payloads keyed by provider identifier
      */
     enrichments?: (Record<string, any> | null);

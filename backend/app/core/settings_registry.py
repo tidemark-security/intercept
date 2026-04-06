@@ -100,6 +100,24 @@ def _register(*defs: SettingDefinition) -> None:
         SETTINGS_REGISTRY[d.key] = d
 
 
+def _bulk_sync_schedule_defs(provider_id: str, provider_label: str) -> tuple[SettingDefinition, SettingDefinition]:
+    return (
+        _def(
+            f"enrichment.{provider_id}.bulk_sync_enabled",
+            value_type=SettingType.BOOLEAN,
+            category="enrichment",
+            description=f"Enable daily pgqueuer-backed bulk sync scheduling for {provider_label}",
+            default=False,
+        ),
+        _def(
+            f"enrichment.{provider_id}.bulk_sync_time_utc",
+            category="enrichment",
+            description=f"Daily UTC time for {provider_label} bulk sync in HH:MM format",
+            default="",
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Bootstrap / infrastructure  (local_only — needed before DB is available)
 # ---------------------------------------------------------------------------
@@ -217,6 +235,31 @@ _register(
         category="session",
         description="Maximum session lifetime in hours regardless of activity",
         default=48,
+    ),
+    _def(
+        "auth.csrf.enabled",
+        env_var="CSRF_ENABLED",
+        value_type=SettingType.BOOLEAN,
+        local_only=True,
+        category="session",
+        description="Whether CSRF validation is enforced for session-cookie mutations",
+        default=True,
+    ),
+    _def(
+        "auth.csrf.cookie_name",
+        env_var="CSRF_COOKIE_NAME",
+        local_only=True,
+        category="session",
+        description="Name of the readable CSRF cookie",
+        default="XSRF-TOKEN",
+    ),
+    _def(
+        "auth.csrf.header_name",
+        env_var="CSRF_HEADER_NAME",
+        local_only=True,
+        category="session",
+        description="Header that must mirror the CSRF cookie on unsafe requests",
+        default="X-XSRF-TOKEN",
     ),
 )
 
@@ -392,6 +435,27 @@ _register(
         category="oidc",
         description="JSON array of usernames allowed to use local password login while OIDC is enabled",
         default=[],
+    ),
+    _def(
+        "oidc.allowed_redirect_origins",
+        env_var="OIDC_ALLOWED_REDIRECT_ORIGINS",
+        value_type=SettingType.JSON,
+        category="oidc",
+        description="JSON array of allowed frontend origins for the OIDC next parameter",
+        default=[
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:5173",
+        ],
+    ),
+    _def(
+        "oidc.browser_binding.cookie_name",
+        env_var="OIDC_BROWSER_BINDING_COOKIE_NAME",
+        local_only=True,
+        category="oidc",
+        description="Cookie used to bind an OIDC login flow to the initiating browser",
+        default="intercept_oidc_binding",
     ),
 )
 
@@ -747,6 +811,9 @@ _register(
         default="maxmind/",
         local_only=True,
     ),
+    *_bulk_sync_schedule_defs("entra_id", "Microsoft Entra ID"),
+    *_bulk_sync_schedule_defs("google_workspace", "Google Workspace"),
+    *_bulk_sync_schedule_defs("ldap", "LDAP / Active Directory"),
 )
 
 # ---------------------------------------------------------------------------

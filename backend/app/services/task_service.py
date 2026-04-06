@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from app.models.models import Task, TaskCreate, TaskUpdate, TaskRead, TaskTimelineItem, UserAccount, Actor, Alert, Case
 from app.models.enums import TaskStatus, Priority, RealtimeEventType
+from app.services.timeline_add_service import add_timeline_item_and_commit, update_timeline_item_and_commit
 from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
@@ -24,6 +25,14 @@ VALID_PRIORITIES = {e.value for e in Priority}
 
 
 class TaskService:
+
+    @staticmethod
+    def _validate_task_timeline_item(item_dict: Dict[str, Any]) -> None:
+        if item_dict.get("type") == "task":
+            raise HTTPException(
+                status_code=400,
+                detail="Task timeline items cannot be added to tasks. Tasks cannot be nested.",
+            )
 
     async def _reload_task_response(self, db: AsyncSession, task_id: int) -> Task:
         """Reload a task through the canonical read path before returning it."""
@@ -122,17 +131,13 @@ class TaskService:
         if not db_task:
             return None
 
-        db_task = await timeline_service.denormalize_entity_timeline(
-            db,
-            db_task,
-            human_prefix="TSK",
-            include_linked_timelines=include_linked_timelines,
-        )
-        return await timeline_service.coalesce_timeline_audit(
+        return await timeline_service.prepare_entity_detail_timeline(
             db,
             entity_type="task",
             entity_id=task_id,
             entity=db_task,
+            human_prefix="TSK",
+            include_linked_timelines=include_linked_timelines,
         )
     
     async def get_tasks(
@@ -422,43 +427,19 @@ class TaskService:
             db_task = await self._get_task_model(db, task_id)
             if not db_task:
                 return None
-            
-            # Use mode='json' to ensure datetime fields are serialized to ISO strings
-            item_dict = timeline_item.model_dump(mode='json')
-            
-            # Validate: tasks cannot contain task timeline items (no nesting)
-            if item_dict.get("type") == "task":
-                raise HTTPException(
-                    status_code=400,
-                    detail="Task timeline items cannot be added to tasks. Tasks cannot be nested."
-                )
-            
-            # Add via timeline service with resource sync
-            item_dict = await timeline_service.add_timeline_item_with_sync(
-                db, db_task, item_dict, added_by,
-                entity_id=task_id, entity_type="task"
-            )
-            
-            await emit_event(
+
+            item_dict = await add_timeline_item_and_commit(
                 db,
-                entity_type="task",
+                entity=db_task,
                 entity_id=task_id,
-                event_type=RealtimeEventType.TIMELINE_ITEM_ADDED,
+                entity_type="task",
+                timeline_item=timeline_item,
                 performed_by=added_by,
-                item_id=item_dict.get("id"),
+                validate_item=self._validate_task_timeline_item,
             )
 
-            await db.commit()
             await db.refresh(db_task)
             
-            await get_audit_service(db).log_timeline_item_added(
-                entity_type="task",
-                entity_id=task_id,
-                item_id=item_dict.get("id", ""),
-                item_type=item_dict.get("type", "unknown"),
-                user=added_by,
-                new_value=item_dict,
-            )
             logger.info(f"Timeline item added to task by {added_by}")
             return await self._reload_task_response(db, task_id)
             
@@ -489,41 +470,19 @@ class TaskService:
             if not existing_item:
                 raise ValueError(f"Timeline item {item_id} not found")
             
-            # Use mode='json' to ensure datetime fields are serialized to ISO strings
-            item_dict = updated_item.model_dump(mode='json')
-            
-            # Update via timeline service with resource sync
-            result = await timeline_service.update_timeline_item_with_sync(
-                db, db_task, item_id, item_dict, updated_by
-            )
-            
-            if result is None:
-                raise ValueError(f"Timeline item {item_id} not found")
-            
-            # Re-fetch the updated item for audit logging
-            updated_dict = timeline_service._find_item_by_id(db_task.timeline_items or [], item_id) or item_dict
-            
-            # Audit log the edit with field-level changes
-            await get_audit_service(db).log_timeline_edit(
-                entity_type="task",
-                entity_id=task_id,
-                item_id=item_id,
-                item_type=updated_dict.get('type', 'unknown'),
-                before=existing_item,
-                after=updated_dict,
-                user=updated_by,
-            )
-            
-            await emit_event(
+            updated_dict = await update_timeline_item_and_commit(
                 db,
-                entity_type="task",
+                entity=db_task,
                 entity_id=task_id,
-                event_type=RealtimeEventType.TIMELINE_ITEM_UPDATED,
-                performed_by=updated_by,
+                entity_type="task",
                 item_id=item_id,
+                existing_item=existing_item,
+                timeline_item=updated_item,
+                performed_by=updated_by,
             )
 
-            await db.commit()
+            if updated_dict is None:
+                raise ValueError(f"Timeline item {item_id} not found")
             await db.refresh(db_task)
             
             logger.info(

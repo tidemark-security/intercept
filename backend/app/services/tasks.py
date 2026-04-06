@@ -6,16 +6,24 @@ Defines task handlers for:
 - Batch processing
 - Scheduled tasks
 - Alert triage via LangFlow
+- Terminal failure hooks for retried worker tasks
 """
 import logging
 from typing import Dict, Any
 from uuid import UUID, uuid4
 
+from pgqueuer.errors import MaxRetriesExceeded, MaxTimeExceeded
+
 from app.services.task_queue_service import get_task_queue_service
 from app.services.langflow_service import LangFlowService, LangFlowConfigurationError
+from app.services.realtime_service import emit_event
 from app.services.settings_service import SettingsService
 from app.core.database import async_session_factory
 from app.services.enrichment.service import enrichment_service
+from app.services.enrichment.bulk_sync_schedule_sync import (
+    sync_bulk_sync_schedule_for_provider,
+    sync_bulk_sync_schedules,
+)
 from app.services.maxmind_service import maxmind_service
 
 logger = logging.getLogger(__name__)
@@ -28,6 +36,67 @@ TASK_TRIAGE_ALERT = "triage_alert"
 TASK_ENRICH_ITEM = "enrich_item"
 TASK_DIRECTORY_SYNC = "directory_sync"
 TASK_MAXMIND_UPDATE = "maxmind_update"
+TASK_REFRESH_BULK_SYNC_SCHEDULES = "refresh_bulk_sync_schedules"
+
+
+def _unwrap_terminal_failure(exc: Exception) -> Exception:
+    current = exc
+    seen: set[int] = set()
+    while getattr(current, "__cause__", None) is not None and id(current) not in seen:
+        seen.add(id(current))
+        current = current.__cause__  # type: ignore[assignment]
+    if isinstance(current, Exception):
+        return current
+    return exc
+
+
+def _format_terminal_failure_message(exc: Exception) -> str:
+    root_cause = _unwrap_terminal_failure(exc)
+    root_message = str(root_cause).strip() or root_cause.__class__.__name__
+
+    if isinstance(exc, MaxTimeExceeded):
+        return f"Retry time limit exceeded: {root_message}"
+    if isinstance(exc, MaxRetriesExceeded):
+        return f"Retries exhausted: {root_message}"
+    return root_message
+
+
+async def _handle_triage_terminal_failure(payload: Dict[str, Any], exc: Exception) -> None:
+    """Mark triage as failed only after retry exhaustion."""
+    await _mark_triage_failed(int(payload["alert_id"]), _format_terminal_failure_message(exc))
+
+
+async def _handle_enrich_item_terminal_failure(
+    payload: Dict[str, Any],
+    exc: Exception,
+    *,
+    task_id: str | None = None,
+) -> None:
+    """Mark enrichment as failed after retry exhaustion."""
+    async with async_session_factory() as db:
+        await enrichment_service.mark_item_enrichment_failed(
+            db,
+            entity_type=str(payload["entity_type"]),
+            entity_id=int(payload["entity_id"]),
+            item_id=str(payload["item_id"]),
+            error_message=_format_terminal_failure_message(exc),
+            task_id=task_id,
+        )
+
+
+async def _handle_directory_sync_terminal_failure(payload: Dict[str, Any], exc: Exception) -> None:
+    """Re-enqueue the next scheduled bulk sync after terminal failure."""
+    if not bool(payload.get("reschedule", False)):
+        return
+
+    provider_id = str(payload["provider_id"])
+    logger.warning(
+        "Directory sync failed after retries; scheduling next occurrence",
+        extra={"provider_id": provider_id, "error": _format_terminal_failure_message(exc)},
+    )
+
+    async with async_session_factory() as db:
+        await sync_bulk_sync_schedule_for_provider(db, provider_id)
 
 
 async def handle_langflow_chat(payload: Dict[str, Any]):
@@ -156,15 +225,12 @@ async def handle_triage_alert(payload: Dict[str, Any]):
     This handler updates the QUEUED placeholder recommendation:
     - On success: The LangFlow agent will call create_triage_recommendation
       which supersedes the QUEUED record with a PENDING one
-    - On failure: Updates the QUEUED record to FAILED with error message
+        - On retryable failure: Leaves the recommendation QUEUED so the worker can retry
+        - On terminal failure: A queue-level failure hook updates the record to FAILED
     
     Payload:
         alert_id: ID of the alert to triage (int or str)
     """
-    from sqlmodel import select
-    from app.models.models import TriageRecommendation
-    from app.models.enums import RecommendationStatus
-    
     alert_id = payload["alert_id"]
     session_id = uuid4()  # Generate a new session ID for each triage
     
@@ -183,11 +249,6 @@ async def handle_triage_alert(payload: Dict[str, Any]):
         flow_id = await settings_service.get_typed_value("langflow.alert_triage_flow_id")
         
         if not flow_id:
-            # Mark as failed if flow not configured
-            await _mark_triage_failed(
-                alert_id,
-                "Alert triage flow not configured. Please set 'langflow.alert_triage_flow_id' in settings."
-            )
             raise LangFlowConfigurationError(
                 "Alert triage flow not configured. Please set 'langflow.alert_triage_flow_id' in settings."
             )
@@ -217,11 +278,9 @@ async def handle_triage_alert(payload: Dict[str, Any]):
             
             # Note: The LangFlow agent should call create_triage_recommendation MCP tool
             # which supersedes the QUEUED placeholder. If it didn't, the record stays QUEUED
-            # and will be picked up on retry or marked failed after max retries.
+            # and will be picked up on retry or marked failed after retries are exhausted.
             
         except Exception as e:
-            # Mark the QUEUED recommendation as FAILED
-            await _mark_triage_failed(alert_id, str(e))
             raise
             
         finally:
@@ -237,7 +296,7 @@ async def _mark_triage_failed(alert_id: int, error_message: str):
     """
     from sqlmodel import select
     from app.models.models import TriageRecommendation
-    from app.models.enums import RecommendationStatus
+    from app.models.enums import RecommendationStatus, RealtimeEventType
     
     try:
         # Use a fresh session to avoid issues with rolled-back transactions
@@ -253,6 +312,13 @@ async def _mark_triage_failed(alert_id: int, error_message: str):
                 recommendation.status = RecommendationStatus.FAILED
                 recommendation.error_message = error_message[:1000] if error_message else None
                 db.add(recommendation)
+                await emit_event(
+                    db,
+                    entity_type="alert",
+                    entity_id=alert_id,
+                    event_type=RealtimeEventType.TRIAGE_COMPLETED,
+                    performed_by="system",
+                )
                 await db.commit()
                 logger.warning(
                     f"Marked triage recommendation as FAILED",
@@ -270,8 +336,13 @@ async def _mark_triage_failed(alert_id: int, error_message: str):
         )
 
 
-async def handle_enrich_item(payload: Dict[str, Any]):
-    """Handle timeline item enrichment in the background worker."""
+async def handle_enrich_item(payload: Dict[str, Any], *, task_id: str | None = None):
+    """Handle timeline item enrichment in the background worker.
+
+    Retryable failures are surfaced back to the queue executor so the item can
+    remain pending during retries. A terminal failure hook clears the pending
+    state if retries are exhausted.
+    """
     entity_type = str(payload["entity_type"])
     entity_id = int(payload["entity_id"])
     item_id = str(payload["item_id"])
@@ -287,17 +358,32 @@ async def handle_enrich_item(payload: Dict[str, Any]):
             entity_type=entity_type,
             entity_id=entity_id,
             item_id=item_id,
+            task_id=task_id,
         )
 
 
 async def handle_directory_sync(payload: Dict[str, Any]):
     """Handle full provider directory synchronization."""
     provider_id = str(payload["provider_id"])
+    reschedule = bool(payload.get("reschedule", False))
 
-    logger.info("Processing directory sync task", extra={"provider_id": provider_id})
+    logger.info(
+        "Processing directory sync task",
+        extra={"provider_id": provider_id, "reschedule": reschedule},
+    )
 
     async with async_session_factory() as db:
         await enrichment_service.run_directory_sync(db, provider_id)
+        if reschedule:
+            await sync_bulk_sync_schedule_for_provider(db, provider_id)
+
+
+async def handle_refresh_bulk_sync_schedules(payload: Dict[str, Any]):
+    """Refresh worker-resident bulk sync schedules from current settings."""
+    logger.info("Refreshing bulk sync schedules", extra={"payload": payload})
+
+    async with async_session_factory() as db:
+        await sync_bulk_sync_schedules(db)
 
 
 async def handle_maxmind_update(payload: Dict[str, Any]):
@@ -354,18 +440,27 @@ def register_task_handlers():
             task_name=TASK_TRIAGE_ALERT,
             handler=handle_triage_alert,
             max_retries=3,
+            on_terminal_failure=_handle_triage_terminal_failure,
         )
 
         task_queue.register_handler(
             task_name=TASK_ENRICH_ITEM,
             handler=handle_enrich_item,
             max_retries=3,
+            on_terminal_failure=_handle_enrich_item_terminal_failure,
         )
 
         task_queue.register_handler(
             task_name=TASK_DIRECTORY_SYNC,
             handler=handle_directory_sync,
             max_retries=2,
+            on_terminal_failure=_handle_directory_sync_terminal_failure,
+        )
+
+        task_queue.register_handler(
+            task_name=TASK_REFRESH_BULK_SYNC_SCHEDULES,
+            handler=handle_refresh_bulk_sync_schedules,
+            max_retries=0,
         )
 
         task_queue.register_handler(

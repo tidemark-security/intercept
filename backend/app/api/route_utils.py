@@ -8,6 +8,7 @@ authentication session helpers, and attachment upload/download helpers.
 from __future__ import annotations
 
 import logging
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from functools import wraps
@@ -495,34 +496,57 @@ async def handle_generate_download_url(
 # ---------------------------------------------------------------------------
 
 
-def _cookie_kwargs(expires_at: Optional[datetime] = None) -> dict:
+def _normalize_cookie_expiry(expires_at: Optional[datetime]) -> Optional[datetime]:
+    if isinstance(expires_at, datetime):
+        if expires_at.tzinfo is None:
+            return expires_at.replace(tzinfo=timezone.utc)
+        return expires_at.astimezone(timezone.utc)
+    return expires_at
+
+
+def _cookie_kwargs(
+    *,
+    key: str,
+    path: str,
+    expires_at: Optional[datetime] = None,
+    max_age: Optional[int] = None,
+    httponly: Optional[bool] = None,
+    samesite: Optional[str] = None,
+) -> dict:
     """Build keyword arguments for ``Response.set_cookie`` from the settings registry."""
     kwargs: dict[str, object] = {
-        "key": get_local("auth.session.cookie_name"),
-        "httponly": get_local("auth.session.cookie_http_only"),
+        "key": key,
+        "httponly": get_local("auth.session.cookie_http_only") if httponly is None else httponly,
         "secure": get_local("auth.session.cookie_secure"),
-        "samesite": get_local("auth.session.cookie_same_site"),
-        "path": get_local("auth.session.cookie_path"),
+        "samesite": get_local("auth.session.cookie_same_site") if samesite is None else samesite,
+        "path": path,
     }
 
     domain = get_local("auth.session.cookie_domain")
     if domain:
         kwargs["domain"] = domain
 
-    if isinstance(expires_at, datetime):
-        expiry = expires_at
-        if expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=timezone.utc)
-        else:
-            expiry = expiry.astimezone(timezone.utc)
+    expiry = _normalize_cookie_expiry(expires_at)
+    if isinstance(expiry, datetime):
         kwargs["expires"] = expiry
-    elif expires_at is not None:
-        kwargs["expires"] = expires_at
+    elif expiry is not None:
+        kwargs["expires"] = expiry
 
-    idle_hours = get_local("auth.session.idle_timeout_hours")
-    kwargs["max_age"] = int(idle_hours * 3600)
+    if max_age is None:
+        idle_hours = get_local("auth.session.idle_timeout_hours")
+        max_age = int(idle_hours * 3600)
+    kwargs["max_age"] = max_age
 
     return kwargs
+
+
+def _delete_cookie(response: Response, *, key: str, path: str) -> None:
+    cookie_domain = get_local("auth.session.cookie_domain")
+
+    if cookie_domain:
+        response.delete_cookie(key=key, path=path, domain=cookie_domain)
+    else:
+        response.delete_cookie(key=key, path=path)
 
 
 def issue_session_cookie(response: Response, session_token: str, expires_at: datetime) -> None:
@@ -540,37 +564,115 @@ def issue_session_cookie(response: Response, session_token: str, expires_at: dat
     if not isinstance(expires_at, datetime):
         raise TypeError("expires_at must be a datetime instance")
 
-    expiry = expires_at
-    if expiry.tzinfo is None:
-        expiry = expiry.replace(tzinfo=timezone.utc)
-    else:
-        expiry = expiry.astimezone(timezone.utc)
-
-    kwargs = _cookie_kwargs(expires_at=expiry)
+    expiry = _normalize_cookie_expiry(expires_at)
+    kwargs = _cookie_kwargs(
+        key=get_local("auth.session.cookie_name"),
+        path=get_local("auth.session.cookie_path"),
+        expires_at=expiry,
+    )
     response.set_cookie(value=session_token, **kwargs)
+
+
+def generate_csrf_token() -> str:
+    """Return a new opaque CSRF token."""
+
+    return secrets.token_urlsafe(32)
+
+
+def issue_csrf_cookie(response: Response, csrf_token: str, expires_at: datetime) -> None:
+    """Attach the readable CSRF cookie to the response."""
+
+    if not isinstance(csrf_token, str) or not csrf_token:
+        raise ValueError("csrf_token must be a non-empty string")
+
+    expiry = _normalize_cookie_expiry(expires_at)
+    kwargs = _cookie_kwargs(
+        key=get_local("auth.csrf.cookie_name"),
+        path=get_local("auth.session.cookie_path"),
+        expires_at=expiry,
+        httponly=False,
+    )
+    response.set_cookie(value=csrf_token, **kwargs)
+
+
+def issue_authenticated_session_cookies(response: Response, session_token: str, expires_at: datetime) -> str:
+    """Issue both the session cookie and the readable CSRF cookie."""
+
+    issue_session_cookie(response, session_token, expires_at)
+    csrf_token = generate_csrf_token()
+    issue_csrf_cookie(response, csrf_token, expires_at)
+    return csrf_token
 
 
 def revoke_session_cookie(response: Response) -> None:
     """Delete the session cookie from the client response."""
 
-    cookie_name = get_local("auth.session.cookie_name")
-    cookie_path = get_local("auth.session.cookie_path")
-    cookie_domain = get_local("auth.session.cookie_domain")
+    _delete_cookie(
+        response,
+        key=get_local("auth.session.cookie_name"),
+        path=get_local("auth.session.cookie_path"),
+    )
 
-    if cookie_domain:
-        response.delete_cookie(
-            key=cookie_name,
-            path=cookie_path,
-            domain=cookie_domain,
-        )
-    else:
-        response.delete_cookie(
-            key=cookie_name,
-            path=cookie_path,
-        )
+
+def revoke_csrf_cookie(response: Response) -> None:
+    """Delete the readable CSRF cookie from the client response."""
+
+    _delete_cookie(
+        response,
+        key=get_local("auth.csrf.cookie_name"),
+        path=get_local("auth.session.cookie_path"),
+    )
+
+
+def revoke_authenticated_session_cookies(response: Response) -> None:
+    """Delete both session and CSRF cookies from the client response."""
+
+    revoke_session_cookie(response)
+    revoke_csrf_cookie(response)
 
 
 def read_session_cookie(request: Request) -> Optional[str]:
     """Return the session token from the incoming request, if present."""
 
     return request.cookies.get(get_local("auth.session.cookie_name"))
+
+
+def read_csrf_cookie(request: Request) -> Optional[str]:
+    """Return the CSRF token from the incoming request, if present."""
+
+    return request.cookies.get(get_local("auth.csrf.cookie_name"))
+
+
+def issue_oidc_browser_binding_cookie(response: Response, browser_binding_token: str, expires_at: datetime) -> None:
+    """Attach the short-lived OIDC browser-binding cookie to the response."""
+
+    if not isinstance(browser_binding_token, str) or not browser_binding_token:
+        raise ValueError("browser_binding_token must be a non-empty string")
+
+    expiry = _normalize_cookie_expiry(expires_at)
+    now = datetime.now(timezone.utc)
+    max_age = max(1, int((expiry - now).total_seconds())) if isinstance(expiry, datetime) else 300
+    kwargs = _cookie_kwargs(
+        key=get_local("oidc.browser_binding.cookie_name"),
+        path="/api/v1/auth/oidc",
+        expires_at=expiry,
+        max_age=max_age,
+        httponly=True,
+    )
+    response.set_cookie(value=browser_binding_token, **kwargs)
+
+
+def revoke_oidc_browser_binding_cookie(response: Response) -> None:
+    """Delete the OIDC browser-binding cookie from the client response."""
+
+    _delete_cookie(
+        response,
+        key=get_local("oidc.browser_binding.cookie_name"),
+        path="/api/v1/auth/oidc",
+    )
+
+
+def read_oidc_browser_binding_cookie(request: Request) -> Optional[str]:
+    """Return the OIDC browser-binding token from the incoming request, if present."""
+
+    return request.cookies.get(get_local("oidc.browser_binding.cookie_name"))

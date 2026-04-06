@@ -1,11 +1,11 @@
 "use client";
 
 import React from "react";
+import { RelativeTime } from "@tidemark-security/ux";
 import { Priority } from "@/components/misc/Priority";
 import { State } from "@/components/misc/State";
 import { TagsManager } from "@/components/forms/TagsManager";
 import { CopyableTimestamp } from "@/components/data-display/CopyableTimestamp";
-import { RelativeTime } from "@/components/data-display/RelativeTime";
 import MarkdownContent from "@/components/data-display/MarkdownContent";
 import { alertStatusToUIState, caseStatusToUIState, taskStatusToUIState, priorityToUIPriority } from "@/utils/statusHelpers";
 

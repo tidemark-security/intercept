@@ -1,10 +1,29 @@
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 
 import Login from "../../src/pages/Login";
 import { type SessionContextValue } from "../../src/contexts/sessionContext";
 import { renderWithProviders } from "../test-utils";
+
+vi.mock("@/types/generated/services/AuthenticationService", () => ({
+  AuthenticationService: {
+    getOidcConfigApiV1AuthOidcConfigGet: vi.fn().mockResolvedValue({
+      enabled: false,
+      providerName: "SSO",
+    }),
+  },
+}));
+
+vi.mock("@/types/generated/core/ApiError", () => ({
+  ApiError: class ApiError extends Error {
+    body: any;
+    constructor(message: string) {
+      super(message);
+      this.body = {};
+    }
+  },
+}));
 
 function createSessionValue(
   overrides: Partial<SessionContextValue> = {}
@@ -38,7 +57,7 @@ describe("Login page", () => {
     renderWithProviders(<Login />, { sessionValue });
 
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText(/username/i), "analyst");
+    await user.type(await screen.findByLabelText(/username/i), "analyst");
     await user.click(screen.getByRole("button", { name: /continue/i }));
 
     expect(loginWithPasskey).toHaveBeenCalledWith("analyst");
@@ -53,7 +72,7 @@ describe("Login page", () => {
     renderWithProviders(<Login />, { sessionValue });
 
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText(/username/i), "analyst");
+    await user.type(await screen.findByLabelText(/username/i), "analyst");
     await user.click(screen.getByRole("button", { name: /continue/i }));
     const passwordInput = await screen.findByPlaceholderText(/enter your password/i);
     await user.type(passwordInput, "TestPassword123!");
@@ -71,7 +90,7 @@ describe("Login page", () => {
     renderWithProviders(<Login />, { sessionValue });
 
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText(/username/i), "analyst");
+    await user.type(await screen.findByLabelText(/username/i), "analyst");
     await user.click(screen.getByRole("button", { name: /continue/i }));
 
     expect(loginWithPasskey).toHaveBeenCalledWith("analyst");

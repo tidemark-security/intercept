@@ -4,7 +4,7 @@ import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { useSession } from "../contexts/sessionContext";
 import { DashboardCard } from "@/components/cards/DashboardCard";
 
-import { AlertCircle, Link2, ScrollText, Settings, Users } from 'lucide-react';
+import { AlertCircle, Activity, Link2, ScrollText, Settings, Users } from 'lucide-react';
 interface AdminCard {
   title: string;
   description: string;
@@ -36,6 +36,12 @@ const adminCards: AdminCard[] = [
     description: "Review system activity, security events, and admin actions",
     icon: <ScrollText />,
     link: "/admin/audit",
+  },
+  {
+    title: "Worker Queue",
+    description: "Monitor background task status and queue health",
+    icon: <Activity />,
+    link: "/admin/queue",
   },
 ];
 

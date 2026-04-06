@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -19,6 +20,9 @@ logger = logging.getLogger(__name__)
 _GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 _TOKEN_URL = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 _TOKEN_SCOPE = "https://graph.microsoft.com/.default"
+_GUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 _USER_FIELDS = ",".join([
     "id",
@@ -69,7 +73,7 @@ class EntraIDProvider(EnrichmentProvider):
 
     async def _get_token(self, tenant_id: str, client_id: str, client_secret: str) -> str:
         now = datetime.now(timezone.utc)
-        if self._token_value and self._token_expires_at and now < self._token_expires_at:
+        if self._token_value is not None and self._token_expires_at and now < self._token_expires_at:
             return self._token_value
 
         url = _TOKEN_URL.format(tenant_id=tenant_id)
@@ -85,7 +89,10 @@ class EntraIDProvider(EnrichmentProvider):
             )
             resp.raise_for_status()
             payload = resp.json()
-            self._token_value = payload["access_token"]
+            access_token = payload.get("access_token")
+            if not isinstance(access_token, str) or not access_token:
+                raise ValueError("Entra ID token response missing access_token")
+            self._token_value = access_token
             expires_in = int(payload.get("expires_in") or 3600)
             self._token_expires_at = now + timedelta(seconds=max(60, expires_in - 60))
             return self._token_value
@@ -111,23 +118,53 @@ class EntraIDProvider(EnrichmentProvider):
             resp.raise_for_status()
             return resp.json()
 
+    def _graph_headers(self, token: str, *, advanced_query: bool = False) -> Dict[str, str]:
+        headers = {"Authorization": f"Bearer {token}"}
+        if advanced_query:
+            headers["ConsistencyLevel"] = "eventual"
+        return headers
+
+    def _should_try_direct_user_lookup(self, identifier: str) -> bool:
+        return "@" in identifier or bool(_GUID_RE.match(identifier))
+
+    def _normalize_sam_account_name(self, identifier: str) -> str:
+        if "\\" in identifier:
+            return identifier.rsplit("\\", 1)[-1]
+        return identifier
+
     async def _lookup_user(self, token: str, identifier: str) -> Optional[Dict[str, Any]]:
         """Look up a single user by UPN/object id first, then by mail or samAccountName."""
-        headers = {"Authorization": f"Bearer {token}"}
         encoded_identifier = identifier.replace("'", "''")
+        sam_identifier = self._normalize_sam_account_name(identifier)
+        encoded_sam_identifier = sam_identifier.replace("'", "''")
         async with httpx.AsyncClient(timeout=15) as client:
-            endpoints = [
-                (f"{_GRAPH_BASE}/users/{identifier}", {"$select": _USER_FIELDS}),
+            endpoints: List[tuple[str, Dict[str, str], Dict[str, Any]]] = []
+            if self._should_try_direct_user_lookup(identifier):
+                endpoints.append(
+                    (
+                        f"{_GRAPH_BASE}/users/{identifier}",
+                        self._graph_headers(token),
+                        {"$select": _USER_FIELDS},
+                    )
+                )
+
+            endpoints.extend([
                 (
                     f"{_GRAPH_BASE}/users",
+                    self._graph_headers(token),
                     {"$filter": f"mail eq '{encoded_identifier}'", "$select": _USER_FIELDS},
                 ),
                 (
                     f"{_GRAPH_BASE}/users",
-                    {"$filter": f"onPremisesSamAccountName eq '{encoded_identifier}'", "$select": _USER_FIELDS},
+                    self._graph_headers(token, advanced_query=True),
+                    {
+                        "$filter": f"onPremisesSamAccountName eq '{encoded_sam_identifier}'",
+                        "$select": _USER_FIELDS,
+                        "$count": "true",
+                    },
                 ),
-            ]
-            for endpoint, params in endpoints:
+            ])
+            for endpoint, headers, params in endpoints:
                 try:
                     resp = await client.get(endpoint, headers=headers, params=params)
                     if resp.status_code == 404:

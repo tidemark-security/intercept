@@ -63,6 +63,12 @@ class ChatResponse(BaseModel):
     stream_url: Optional[str] = Field(default=None, description="URL for streaming response")
 
 
+class StreamChatRequest(BaseModel):
+    """Request to stream a chat message response."""
+    message: str = Field(min_length=1, max_length=10000, description="Message content")
+    context: Optional[Dict[str, Any]] = Field(default=None, description="Additional context")
+
+
 class SessionWithMessages(BaseModel):
     """Session with message count."""
     session: LangFlowSessionRead
@@ -664,10 +670,10 @@ async def test_langflow_connection(
         )
 
 
-@router.get("/stream/{session_id}")
+@router.post("/stream/{session_id}")
 async def stream_langflow_response(
     session_id: UUID,
-    message: str,
+    body: StreamChatRequest,
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_authenticated_user),
 ):
@@ -679,7 +685,7 @@ async def stream_langflow_response(
     This endpoint establishes an SSE connection and streams AI responses in real-time.
     Use EventSource API on frontend to consume the stream.
     
-    Query params:
+    Request body:
     - message: The message to send to LangFlow
     """
     # Verify session access
@@ -703,7 +709,7 @@ async def stream_langflow_response(
             user_message = LangFlowMessage(
                 session_id=session.id,
                 role=MessageRole.USER,
-                content=message,
+                content=body.message,
                 message_metadata={},
             )
             db.add(user_message)
@@ -724,9 +730,9 @@ async def stream_langflow_response(
             # Stream from LangFlow
             async for chunk in langflow_service.stream_message(
                 flow_id=session.flow_id,
-                message=message,
+                message=body.message,
                 session_id=session.id,
-                context=session.context,
+                context=body.context or session.context,
             ):
                 # LangFlow SSE events have multiple types:
                 # 1. {'event': 'add_message', 'data': {'sender': 'User'|'Machine', 'text': '...', 'properties': {'state': 'partial'|'complete'}}}

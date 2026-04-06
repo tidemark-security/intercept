@@ -1,6 +1,9 @@
 import React from 'react';
 import { Tag } from '@/components/data-display/Tag';
 import type { TimelineItem } from '@/types/timeline';
+import { isEnrichmentStatusActive } from '@/utils/enrichmentState';
+
+const FAILED_ENRICHMENT_STATUSES = new Set(['failed']);
 
 /**
  * Shared utility functions for timeline rendering
@@ -143,6 +146,49 @@ export function renderTags(tags: string | string[] | undefined | null): React.Re
       ))}
     </div>
   );
+}
+
+export function isTimelineItemEnrichmentActive(item: TimelineItem): boolean {
+  return isEnrichmentStatusActive(item.enrichment_status);
+}
+
+export function isTimelineItemEnrichmentFailed(item: TimelineItem): boolean {
+  const status = item.enrichment_status?.trim().toLowerCase();
+
+  return status ? FAILED_ENRICHMENT_STATUSES.has(status) : false;
+}
+
+export function isTimelineItemEnrichable(item: TimelineItem): boolean {
+  const itemType = item.type;
+
+  if (itemType === 'internal_actor') {
+    const identifierFields = [
+      (item as TimelineItem & { user_id?: string | null }).user_id,
+      (item as TimelineItem & { contact_email?: string | null }).contact_email,
+      (item as TimelineItem & { name?: string | null }).name,
+    ];
+
+    return identifierFields.some((value) => typeof value === 'string' && value.trim().length > 0);
+  }
+
+  if (itemType === 'observable') {
+    const observableType = String((item as TimelineItem & { observable_type?: string | null }).observable_type || '').trim().toUpperCase();
+    const observableValue = String((item as TimelineItem & { observable_value?: string | null }).observable_value || '').trim();
+    return observableType === 'IP' && observableValue.length > 0;
+  }
+
+  if (itemType === 'system') {
+    const ipAddress = String((item as TimelineItem & { ip_address?: string | null }).ip_address || '').trim();
+    return ipAddress.length > 0;
+  }
+
+  if (itemType === 'network_traffic') {
+    const sourceIp = String((item as TimelineItem & { source_ip?: string | null }).source_ip || '').trim();
+    const destinationIp = String((item as TimelineItem & { destination_ip?: string | null }).destination_ip || '').trim();
+    return sourceIp.length > 0 || destinationIp.length > 0;
+  }
+
+  return false;
 }
 
 /**

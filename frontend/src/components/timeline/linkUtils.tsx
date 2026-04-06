@@ -194,14 +194,22 @@ export function combineWithAutoLinks(
   }
   
   if (!autoLinkButtons) {
-    return customButtons;
+    return (
+      <div className="flex w-full items-center justify-end">
+        {customButtons}
+      </div>
+    );
   }
   
   // Both exist - combine them
   return (
-    <div className="flex gap-1">
-      {customButtons}
-      {autoLinkButtons}
+    <div className="flex w-full items-center gap-2">
+      <div className="flex items-center gap-1">
+        {autoLinkButtons}
+      </div>
+      <div className="ml-auto flex items-center gap-2">
+        {customButtons}
+      </div>
     </div>
   );
 }

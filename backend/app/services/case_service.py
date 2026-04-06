@@ -16,6 +16,7 @@ from app.models.models import (
     CaseReadWithAlerts, AlertReadWithCase, CaseTimelineItem, CaseAlertClosureUpdate,
 )
 from app.models.enums import CaseStatus, AlertStatus, TaskStatus, RealtimeEventType
+from app.services.timeline_add_service import add_timeline_item_and_commit, update_timeline_item_and_commit
 from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
@@ -132,15 +133,13 @@ class CaseService:
         if not db_case:
             return None
 
-        db_case = await timeline_service.denormalize_entity_timeline(
-            db, db_case, human_prefix="CAS",
-            include_linked_timelines=include_linked_timelines
-        )
-        return await timeline_service.coalesce_timeline_audit(
+        return await timeline_service.prepare_entity_detail_timeline(
             db,
             entity_type="case",
             entity_id=case_id,
             entity=db_case,
+            human_prefix="CAS",
+            include_linked_timelines=include_linked_timelines,
         )
     
     async def get_case_by_human_id(self, db: AsyncSession, human_id: str) -> Optional[Case]:
@@ -597,35 +596,16 @@ class CaseService:
             db_case = await self._get_case_model(db, case_id)
             if not db_case:
                 return None
-            
-            # Use mode='json' to ensure datetime fields are serialized to ISO strings
-            item_dict = timeline_item.model_dump(mode='json')
-            
-            # Add via timeline service with resource sync (handles task creation, etc.)
-            item_dict = await timeline_service.add_timeline_item_with_sync(
-                db, db_case, item_dict, created_by,
-                entity_id=case_id, entity_type="case"
-            )
-            
-            await get_audit_service(db).log_timeline_item_added(
-                entity_type="case",
-                entity_id=case_id,
-                item_id=item_dict.get("id", ""),
-                item_type=item_dict.get("type", "unknown"),
-                user=created_by,
-                new_value=item_dict,
-            )
-            
-            await emit_event(
-                db,
-                entity_type="case",
-                entity_id=case_id,
-                event_type=RealtimeEventType.TIMELINE_ITEM_ADDED,
-                performed_by=created_by,
-                item_id=item_dict.get("id"),
-            )
 
-            await db.commit()
+            item_dict = await add_timeline_item_and_commit(
+                db,
+                entity=db_case,
+                entity_id=case_id,
+                entity_type="case",
+                timeline_item=timeline_item,
+                performed_by=created_by,
+            )
+            
             await db.refresh(db_case)
             
             logger.info(f"Timeline item added to case by {created_by}")
@@ -656,43 +636,24 @@ class CaseService:
             if not db_case or not db_case.timeline_items:
                 return None
             
-            # Use mode='json' to ensure datetime fields are serialized to ISO strings
-            item_dict = timeline_item.model_dump(mode='json')
-            
             # Find the existing item for audit logging
             existing_item = timeline_service._find_item_by_id(db_case.timeline_items or [], item_id)
             if not existing_item:
                 return None
-            
-            # Update via timeline service with resource sync (handles task updates, etc.)
-            result = await timeline_service.update_timeline_item_with_sync(
-                db, db_case, item_id, item_dict, updated_by
-            )
-            
-            if result is None:
-                return None
 
-            updated_item = timeline_service._find_item_by_id(db_case.timeline_items or [], item_id) or item_dict
-            await get_audit_service(db).log_timeline_edit(
-                entity_type="case",
-                entity_id=case_id,
-                item_id=item_id,
-                item_type=updated_item.get("type", existing_item.get("type", "unknown")),
-                before=existing_item,
-                after=updated_item,
-                user=updated_by,
-            )
-
-            await emit_event(
+            updated_item = await update_timeline_item_and_commit(
                 db,
-                entity_type="case",
+                entity=db_case,
                 entity_id=case_id,
-                event_type=RealtimeEventType.TIMELINE_ITEM_UPDATED,
-                performed_by=updated_by,
+                entity_type="case",
                 item_id=item_id,
+                existing_item=existing_item,
+                timeline_item=timeline_item,
+                performed_by=updated_by,
             )
 
-            await db.commit()
+            if updated_item is None:
+                return None
             await db.refresh(db_case)
 
             logger.info(f"Timeline item {item_id} updated in case by {updated_by}")

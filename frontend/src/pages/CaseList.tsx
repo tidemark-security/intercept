@@ -74,8 +74,8 @@ function CasesListPage() {
       if (breakpoint === 'ultrawide') {
         setVisibleColumns('left+center');
       } else if (breakpoint === 'desktop' || breakpoint === 'tablet') {
-        // Always keep left column visible on non-mobile breakpoints
-        setVisibleColumns('left+center');
+        // Match alerts behavior: focus the selected entity on desktop/tablet
+        setVisibleColumns('center');
       }
       // Mobile: keep current single column
     }
@@ -151,11 +151,11 @@ function CasesListPage() {
   const handleCaseSelect = (caseId: number, caseHumanId: string) => {
     setSelectedCaseId(caseId);
     
-    if (breakpoint === 'mobile') {
-      // On mobile, navigate to detail view
+    if (breakpoint === 'mobile' || breakpoint === 'desktop' || breakpoint === 'tablet') {
+      // On mobile, desktop, and tablet, navigate directly to the detail view
       navigate(`/cases/${caseHumanId}`);
     } else {
-      // On non-mobile, stay in list view and show read-only timeline
+      // On ultrawide, stay in list view and show read-only timeline
       // (visibleColumns will be updated by useEffect)
     }
   };

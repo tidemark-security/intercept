@@ -70,7 +70,9 @@ Regenerate TypeScript types to keep frontend in sync:
 
 - [MCP Integration Guide](docs/mcp-integration-guide.md) — Connect AI tools to Intercept
 - [Search Architecture](docs/search-architecture.md) — How search works
-- [Task Queue](docs/task-queue.md) — Background job processing
+- [Task Queue](docs/task-queue.md) — Background job processing, in-worker retry/backoff, and terminal failure handling
+
+Operator note: background retries now happen inside the worker with backoff. Alert triage is only marked `FAILED` after retries are exhausted, and timeline enrichment clears stuck `pending` state on terminal failure.
 
 ## Features
 

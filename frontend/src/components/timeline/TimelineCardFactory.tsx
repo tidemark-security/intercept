@@ -19,9 +19,11 @@ import type { TimelineItem } from '@/types/timeline';
 import { getTimelineIcon } from '@/utils/timelineIcons';
 import { Badge } from '@/components/data-display/Badge';
 import type { CopyTarget } from '@/components/cards/BaseCard';
+import { LoaderCircle } from 'lucide-react';
 import { combineWithAutoLinks } from './linkUtils';
 import type { LinkTemplate } from '@/utils/linkTemplates';
 import { CardActionsMenu } from './CardActionsMenu';
+import { isTimelineItemEnrichmentActive } from './timelineUtils';
 
 /**
  * Convert timeline item type to human-readable title.
@@ -326,6 +328,10 @@ export function createTimelineCard(
 ): CardConfig {
   const handler = handlerRegistry.get(item.type || '') || fallbackHandler;
   const config = handler(item, options);
+
+  if (isTimelineItemEnrichmentActive(item)) {
+    config.baseIcon = <LoaderCircle className="animate-spin" />;
+  }
   
   // Auto-generate link buttons if templates are provided
   let finalActionButtons = config.actionButtons || options.actionButtons;

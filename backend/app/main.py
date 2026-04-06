@@ -1,18 +1,35 @@
+import os
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
+
+
+def _read_version() -> str:
+    env_ver = os.environ.get("APP_VERSION")
+    if env_ver:
+        return env_ver
+    version_file = Path(__file__).resolve().parents[2] / "VERSION"
+    if version_file.is_file():
+        return version_file.read_text().strip()
+    return "dev"
+
+
+APP_VERSION = _read_version()
 from fastapi_pagination import add_pagination
 from fastapi_pagination.cursor import CursorParams
 
 from app.core.settings_registry import get_local
+from app.core.csrf import CSRFMiddleware
 from app.core.database import test_db_connection
 from app.core.database import async_session_factory
 from app.core.security import initialize_encryption_service
 from app.services.task_queue_service import initialize_task_queue_service, shutdown_task_queue_service
 from app.services.enrichment.providers import register_providers
 from app.services.tasks import register_task_handlers
-from app.api.routes import admin_auth, alerts, audit, auth, cases, dashboard, dummy_data, link_templates, mitre, tasks, settings as settings_routes, langflow, api_keys, soc_metrics, triage_recommendations, search, validation, features, oidc, enrichments
+from app.api.routes import admin_auth, alerts, audit, auth, cases, dashboard, dummy_data, link_templates, mitre, tasks, settings as settings_routes, langflow, api_keys, soc_metrics, triage_recommendations, search, validation, features, oidc, enrichments, queue_status
 from app.api.routes import websocket as ws_route
 # from app.api.routes import admin_auth, alerts, auth, cases, dashboard, dummy_data, link_templates, mitre, soc_metrics, tasks, api_keys
 # Import models to register them with SQLModel
@@ -110,9 +127,12 @@ app.add_middleware(
         "Authorization",
         "X-Requested-With",
         "X-CSRF-Token",
+        "X-XSRF-TOKEN",
     ],
     expose_headers=["*"],
 )
+
+app.add_middleware(CSRFMiddleware)
 
 # Include routers BEFORE MCP generation so routes are available
 app.include_router(cases.router, prefix="/api/v1")
@@ -132,6 +152,7 @@ app.include_router(settings_routes.authenticated_router, prefix="/api/v1")
 app.include_router(settings_routes.router, prefix="/api/v1")
 app.include_router(enrichments.router, prefix="/api/v1")
 app.include_router(enrichments.admin_router, prefix="/api/v1")
+app.include_router(queue_status.router, prefix="/api/v1")
 app.include_router(langflow.router, prefix="/api/v1")
 app.include_router(soc_metrics.router, prefix="/api/v1")
 app.include_router(api_keys.router, prefix="/api/v1")
@@ -300,7 +321,7 @@ async def root():
     """Root endpoint."""
     return {
         "message": "Tidemark Intercept API",
-        "version": "1.0.0",
+        "version": APP_VERSION,
         "docs": "/docs",
         "mcp": "/mcp"
     }
@@ -312,7 +333,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "intercept-case-management",
-        "version": "1.0.0"
+        "version": APP_VERSION
     }
 
 
