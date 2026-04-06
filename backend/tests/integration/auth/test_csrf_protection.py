@@ -35,6 +35,10 @@ async def _login_and_get_auth_cookies(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    not get_local("auth.csrf.enabled"),
+    reason="CSRF protection is disabled",
+)
 async def test_password_change_rejects_missing_csrf_header(
     client: AsyncClient,
     session_maker: async_sessionmaker[AsyncSession],

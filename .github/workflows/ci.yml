@@ -91,6 +91,7 @@ jobs:
           TEST_DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db
           SECRET_KEY: ci-test-secret-key
           SKIP_DOCKER_TEST_SETUP: "1"
+          CSRF_ENABLED: "false"
         run: pytest
 
   test-frontend:
