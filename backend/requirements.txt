@@ -17,7 +17,7 @@ pydantic-settings==2.12.0
 python-dotenv==1.2.1
 PyJWT[crypto]==2.10.1
 python-multipart==0.0.21
-sqlakeyset==2.0.1762907931
+sqlakeyset==2.0.1775222100
 sqlmodel==0.0.27
 webauthn==2.7.0
 uvicorn[standard]==0.38.0
