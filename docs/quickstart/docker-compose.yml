@@ -137,23 +137,23 @@ services:
   # ---------------------------------------------------------------------------
   backend:
     image: ghcr.io/tidemark-security/intercept-backend:${TAG:-0.0.8}
+    network_mode: host
     environment:
-      DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@postgres:5432/intercept_case_db
+      DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db
       SECRET_KEY: change-me-to-a-random-secret-key # ⚠️ CHANGE THIS — generate with: python3 -c "import secrets; print(secrets.token_urlsafe(32))"
       SESSION_COOKIE_SECURE: "false"               # Set to "true" when using HTTPS
-      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ENDPOINT: localhost:9000
       STORAGE_ACCESS_KEY: minioadmin
       STORAGE_SECRET_KEY: minioadmin
       STORAGE_BUCKET: intercept-attachments
       STORAGE_USE_SSL: "false"
-      LANGFLOW__BASE_URL: http://langflow:7860/api/v1
+      LANGFLOW__BASE_URL: http://localhost:7860/api/v1
       LANGFLOW__DEFAULT_FLOW_ID: "tmi_general_purpose"
       LANGFLOW__CASE_DETAIL_FLOW_ID: "tmi_case_agent"
       LANGFLOW__TASK_DETAIL_FLOW_ID: "tmi_task_agent"
       LANGFLOW__ALERT_TRIAGE_FLOW_ID: "tmi_alert_triage"
       AUTO_SEED: "true"                            # Creates admin/admin user on first boot
-    ports:
-      - "8000:8000"
+      CORS_ORIGINS: '["http://localhost"]'         # Adjust for production (e.g. "https://example.com")
     depends_on:
       postgres:
         condition: service_healthy
@@ -172,15 +172,16 @@ services:
   # ---------------------------------------------------------------------------
   worker:
     image: ghcr.io/tidemark-security/intercept-worker:${TAG:-0.0.8}
+    network_mode: host
     environment:
-      DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@postgres:5432/intercept_case_db
+      DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db
       SECRET_KEY: change-me-to-a-random-secret-key # Must match backend SECRET_KEY
-      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ENDPOINT: localhost:9000
       STORAGE_ACCESS_KEY: minioadmin
       STORAGE_SECRET_KEY: minioadmin
       STORAGE_BUCKET: intercept-attachments
       STORAGE_USE_SSL: "false"
-      LANGFLOW__BASE_URL: http://langflow:7860/api/v1
+      LANGFLOW__BASE_URL: http://localhost:7860/api/v1
       LANGFLOW__DEFAULT_FLOW_ID: "tmi_general_purpose"
       LANGFLOW__CASE_DETAIL_FLOW_ID: "tmi_case_agent"
       LANGFLOW__TASK_DETAIL_FLOW_ID: "tmi_task_agent"
