@@ -55,7 +55,7 @@
     "@playwright/test": "^1.56.1",
     "@tailwindcss/typography": "^0.5.19",
     "@testing-library/jest-dom": "^6.4.5",
-    "@testing-library/react": "^15.0.4",
+    "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.5.2",
     "@types/form-data": "^2.2.1",
     "@types/node": "^20.10.4",
