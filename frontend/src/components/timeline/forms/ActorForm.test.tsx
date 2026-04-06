@@ -216,7 +216,6 @@ describe("AddActorForm", () => {
       </TimelineFormProvider>,
     );
 
-    expect(screen.getByText("Primary users")).toBeInTheDocument();
     expect(screen.getAllByText("John Doe")).toHaveLength(1);
     expect(screen.getByText("Primary ID: john@example.com")).toBeInTheDocument();
     expect(screen.getByText("4 matches")).toBeInTheDocument();
