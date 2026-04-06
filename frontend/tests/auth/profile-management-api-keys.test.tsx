@@ -10,7 +10,7 @@ import { renderWithProviders } from "../test-utils";
 
 const mockSessionValue: SessionContextValue = {
   status: "authenticated",
-  user: { id: "user-1", username: "analyst", role: "analyst", status: "active" },
+  user: { id: "user-1", username: "analyst", role: "ANALYST", status: "ACTIVE" },
   session: null,
   mustChangePassword: false,
   lockout: null,
