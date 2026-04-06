@@ -17,3 +17,8 @@ replace = "\"version\": \"{new_version}\""
 filename = "frontend/package-lock.json"
 search = "\"version\": \"{current_version}\""
 replace = "\"version\": \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "docs/quickstart/docker-compose.yml"
+search = "${{TAG:-{current_version}}}"
+replace = "${{TAG:-{new_version}}}"
