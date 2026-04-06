@@ -8,7 +8,8 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sqlalchemy import select
+from sqlalchemy import select, delete, cast
+from sqlalchemy.dialects.postgresql import JSONB as PG_JSONB
 
 from app.models.models import (
     UserAccount,
@@ -48,6 +49,11 @@ from app.services.case_service import case_service
 from app.services.alert_service import alert_service
 from app.services.task_service import task_service
 from app.models.models import AlertTriageRequest
+
+
+# Sentinel tag applied to every entity created by this service.
+# ``clear_all_data`` deletes **only** rows carrying this tag.
+DUMMY_DATA_TAG = "tmi_dummy_data"
 
 
 class DummyDataService:
@@ -740,6 +746,8 @@ class DummyDataService:
         
         created_by = random.choice(users)
         task = await task_service.create_task(db, task_data, created_by)
+        task.tags = [DUMMY_DATA_TAG]
+        await db.flush()
         return task
 
     @staticmethod
@@ -785,7 +793,7 @@ class DummyDataService:
             alert = await alert_service.create_alert(db, alert_data)
             assert alert.id is not None, "Alert must have an ID after creation"
             tracked_alert = await DummyDataService._get_tracked_alert(db, alert.id)
-            tracked_alert.tags = random.sample(DummyDataService.TAGS, random.randint(0, 4))
+            tracked_alert.tags = [DUMMY_DATA_TAG] + random.sample(DummyDataService.TAGS, random.randint(0, 4))
             tracked_alert.created_at = DummyDataService._random_datetime(15)
             tracked_alert.updated_at = tracked_alert.created_at + timedelta(minutes=random.randint(5, 1440))
             
@@ -846,6 +854,7 @@ class DummyDataService:
 
             # Update case with timeline items
             tracked_case.timeline_items = non_entity_items
+            tracked_case.tags = [DUMMY_DATA_TAG] + random.sample(DummyDataService.TAGS, random.randint(0, 3))
             tracked_case.status = random.choice(list(CaseStatus))
 
             if tracked_case.status == CaseStatus.CLOSED:
@@ -885,8 +894,8 @@ class DummyDataService:
             assert alert.id is not None, "Alert must have an ID after creation"
             tracked_alert = await DummyDataService._get_tracked_alert(db, alert.id)
 
-            # Add tags
-            tracked_alert.tags = random.sample(DummyDataService.TAGS, random.randint(0, 4))
+            # Add tags (always include the dummy-data sentinel)
+            tracked_alert.tags = [DUMMY_DATA_TAG] + random.sample(DummyDataService.TAGS, random.randint(0, 4))
 
             # Generate timeline items
             timeline_items = DummyDataService._generate_timeline_items_for_alert(
@@ -1173,7 +1182,7 @@ class DummyDataService:
             alert = await alert_service.create_alert(db, alert_data)
             assert alert.id is not None, "Alert must have an ID after creation"
             tracked_alert = await DummyDataService._get_tracked_alert(db, alert.id)
-            tracked_alert.tags = scenario["tags"]
+            tracked_alert.tags = [DUMMY_DATA_TAG] + scenario["tags"]
             tracked_alert.timeline_items = scenario["timeline_items"]
             tracked_alert.created_at = DummyDataService._random_datetime(2)
             tracked_alert.updated_at = tracked_alert.created_at + timedelta(minutes=random.randint(1, 90))
@@ -1277,17 +1286,34 @@ class DummyDataService:
 
     @staticmethod
     async def clear_all_data(db: AsyncSession) -> Dict[str, Any]:
-        """Clear all cases and alerts from the database."""
+        """Clear dummy-data entities (those tagged with ``tmi_dummy_data``).
+
+        Only rows whose ``tags`` JSONB column contains the sentinel tag are
+        removed.  Related audit-log rows are cleaned up first.
+        """
         try:
-            from sqlalchemy import text
+            tag_pattern = cast([DUMMY_DATA_TAG], PG_JSONB)
+
+            # Helper: JSONB contains filter for a model's tags column
+            def _tagged(model: type) -> Any:  # type: ignore[type-arg]
+                return model.tags.contains(tag_pattern)  # type: ignore[union-attr]
 
             # Delete in proper order due to foreign key constraints
-            await db.execute(text("DELETE FROM audit_logs"))
-            await db.execute(text("DELETE FROM alerts"))
-            await db.execute(text("DELETE FROM cases"))
+            # Tasks reference cases, alerts reference cases
+            tasks_result = await db.execute(delete(Task).where(_tagged(Task)))
+            alerts_result = await db.execute(delete(Alert).where(_tagged(Alert)))
+            cases_result = await db.execute(delete(Case).where(_tagged(Case)))
             await db.commit()
 
-            return {"success": True, "message": "All data cleared successfully"}
+            return {
+                "success": True,
+                "message": "Dummy data cleared successfully",
+                "data": {
+                    "alerts_deleted": alerts_result.rowcount,  # type: ignore[union-attr]
+                    "cases_deleted": cases_result.rowcount,  # type: ignore[union-attr]
+                    "tasks_deleted": tasks_result.rowcount,  # type: ignore[union-attr]
+                },
+            }
         except Exception as e:
             await db.rollback()
             return {"success": False, "message": f"Error clearing data: {str(e)}"}
