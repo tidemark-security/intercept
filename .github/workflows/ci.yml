@@ -83,13 +83,14 @@ jobs:
 
       - name: Install dependencies
         working-directory: backend
-        run: pip install -r requirements.txt
+        run: pip install -r requirements-test.txt
 
       - name: Run tests
         working-directory: backend
         env:
-          DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db
+          TEST_DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db
           SECRET_KEY: ci-test-secret-key
+          SKIP_DOCKER_TEST_SETUP: "1"
         run: pytest
 
   test-frontend:
