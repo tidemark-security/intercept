@@ -35,4 +35,4 @@ cryptography==46.0.3
 pgqueuer==0.25.3
 
 # Worker dependencies
-aiohttp==3.11.18
+aiohttp==3.13.5
