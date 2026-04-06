@@ -67,7 +67,7 @@ services:
   # PostgreSQL — with pgvector + pg_cron
   # ---------------------------------------------------------------------------
   postgres:
-    image: ghcr.io/tidemark-security/intercept-postgres:${TAG:-0.0.7}
+    image: ghcr.io/tidemark-security/intercept-postgres:${TAG:-0.0.8}
     environment:
       POSTGRES_DB: intercept_case_db
       POSTGRES_USER: intercept_user
@@ -136,7 +136,7 @@ services:
   # Backend API — FastAPI application with auto-migration and user seeding
   # ---------------------------------------------------------------------------
   backend:
-    image: ghcr.io/tidemark-security/intercept-backend:${TAG:-0.0.7}
+    image: ghcr.io/tidemark-security/intercept-backend:${TAG:-0.0.8}
     environment:
       DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@postgres:5432/intercept_case_db
       SECRET_KEY: change-me-to-a-random-secret-key # ⚠️ CHANGE THIS — generate with: python3 -c "import secrets; print(secrets.token_urlsafe(32))"
@@ -171,7 +171,7 @@ services:
   # Background Worker — async job processing (enrichment, notifications, etc.)
   # ---------------------------------------------------------------------------
   worker:
-    image: ghcr.io/tidemark-security/intercept-worker:${TAG:-0.0.7}
+    image: ghcr.io/tidemark-security/intercept-worker:${TAG:-0.0.8}
     environment:
       DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@postgres:5432/intercept_case_db
       SECRET_KEY: change-me-to-a-random-secret-key # Must match backend SECRET_KEY
@@ -203,7 +203,7 @@ services:
   # Frontend — React SPA served by nginx
   # ---------------------------------------------------------------------------
   frontend:
-    image: ghcr.io/tidemark-security/intercept-frontend:${TAG:-0.0.7}
+    image: ghcr.io/tidemark-security/intercept-frontend:${TAG:-0.0.8}
     ports:
       - "80:80"
     depends_on:
