@@ -1,7 +1,23 @@
+import os
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
+
+
+def _read_version() -> str:
+    env_ver = os.environ.get("APP_VERSION")
+    if env_ver:
+        return env_ver
+    version_file = Path(__file__).resolve().parents[2] / "VERSION"
+    if version_file.is_file():
+        return version_file.read_text().strip()
+    return "dev"
+
+
+APP_VERSION = _read_version()
 from fastapi_pagination import add_pagination
 from fastapi_pagination.cursor import CursorParams
 
@@ -305,7 +321,7 @@ async def root():
     """Root endpoint."""
     return {
         "message": "Tidemark Intercept API",
-        "version": "1.0.0",
+        "version": APP_VERSION,
         "docs": "/docs",
         "mcp": "/mcp"
     }
@@ -317,7 +333,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "intercept-case-management",
-        "version": "1.0.0"
+        "version": APP_VERSION
     }
 
 
