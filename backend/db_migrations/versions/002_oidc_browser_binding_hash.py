@@ -19,6 +19,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    conn = op.get_bind()
+    result = conn.execute(
+        sa.text(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'oidc_auth_requests' AND column_name = 'browser_binding_hash'"
+        )
+    )
+    if result.fetchone():
+        return  # Column already exists (created by 001_initial_schema)
+
     op.add_column(
         "oidc_auth_requests",
         sa.Column("browser_binding_hash", sa.String(length=64), nullable=False, server_default=""),
