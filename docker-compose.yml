@@ -57,6 +57,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile.dev
+      additional_contexts:
+        ux: ../ux
     environment:
       VITE_API_URL: http://localhost:8000
     ports:
