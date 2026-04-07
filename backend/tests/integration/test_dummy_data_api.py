@@ -13,6 +13,15 @@ from app.models.models import Alert, Case
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
+def _assert_timeline_storage_shape(items: Any) -> None:
+    assert isinstance(items, dict)
+    for item in items.values():
+        assert isinstance(item, dict)
+        replies = item.get("replies")
+        if replies is not None:
+            _assert_timeline_storage_shape(replies)
+
+
 async def _login_and_get_session_cookie(
     client: AsyncClient,
     session_maker: Any,
@@ -77,6 +86,12 @@ async def test_populate_dummy_data_persists_generated_alerts(
 
     assert len(alerts) == payload["data"]["alerts_created"]
     assert len(cases) == payload["data"]["cases_created"]
+
+    for alert in alerts:
+        _assert_timeline_storage_shape(alert.timeline_items or {})
+
+    for case in cases:
+        _assert_timeline_storage_shape(case.timeline_items or {})
 
     linked_alerts = [alert for alert in alerts if alert.case_id is not None]
     assert len(linked_alerts) == expected_linked_count
