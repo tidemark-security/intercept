@@ -112,17 +112,23 @@ class WorkerHealthServer:
         """
         try:
             service = get_task_queue_service()
-            
-            # Check if queue manager and pool are valid
-            if service.queue_manager and service._pool:
-                # Check pool health by getting size
-                pool_size = service._pool.get_size()
-                if pool_size > 0:
-                    return web.json_response({
-                        "status": "ready",
-                        "worker_id": METRICS.worker_id,
-                        "pool_size": pool_size,
-                    })
+
+            ready, reason = service.get_worker_readiness()
+            if ready:
+                return web.json_response({
+                    "status": "ready",
+                    "worker_id": METRICS.worker_id,
+                    "pool_size": service.get_pool_size(),
+                })
+
+            return web.json_response(
+                {
+                    "status": "not ready",
+                    "worker_id": METRICS.worker_id,
+                    "reason": reason,
+                },
+                status=503,
+            )
         except RuntimeError:
             pass
         except Exception as e:
