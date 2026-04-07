@@ -41,10 +41,10 @@ finally:
 "
 
 if [ "$AUTO_SEED" = "true" ]; then
-    echo "🌱 Auto-seeding initial users..."
-    python -m scripts.seed_test_users || echo "⚠️  Seeding failed (non-fatal)"
+    echo "🌱 Ensuring initial admin user exists..."
+    python -m scripts.seed_initial_admin || echo "⚠️  Admin seeding failed (non-fatal)"
     echo "🌱 Auto-seeding link templates..."
-    python -m scripts.seed_link_templates || echo "⚠️  Seeding failed (non-fatal)"
+    python -m scripts.seed_link_templates || echo "⚠️  Link template seeding failed (non-fatal)"
 fi
 
 echo "🚀 Starting backend server..."
