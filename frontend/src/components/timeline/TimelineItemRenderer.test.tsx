@@ -33,8 +33,8 @@ describe('TimelineItemRenderer enrichments', () => {
       flagged: false,
       highlighted: false,
       description: 'Parent note',
-      replies: [
-        {
+      replies: {
+        'note-reply-1': {
           id: 'note-reply-1',
           type: 'note',
           created_by: 'analyst',
@@ -44,8 +44,8 @@ describe('TimelineItemRenderer enrichments', () => {
           flagged: false,
           highlighted: false,
           description: 'First reply',
-          replies: [
-            {
+          replies: {
+            'note-reply-2': {
               id: 'note-reply-2',
               type: 'note',
               created_by: 'analyst',
@@ -57,9 +57,9 @@ describe('TimelineItemRenderer enrichments', () => {
               description: 'Nested reply',
               replies: null,
             },
-          ],
+          },
         },
-      ],
+      },
     };
 
     renderWithProviders(

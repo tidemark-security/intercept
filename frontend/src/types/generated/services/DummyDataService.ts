@@ -52,10 +52,10 @@ export class DummyDataService {
     }
     /**
      * Clear All Data
-     * Clear all cases, alerts, and related data from the database.
+     * Clear dummy data (tagged with ``tmi_dummy_data``) from the database.
      *
-     * **Warning**: This operation is irreversible and will delete ALL data.
-     * Only use in development environments.
+     * **Only** cases, alerts, tasks, and related audit logs that were created
+     * by the dummy-data service are removed.  User-created data is untouched.
      *
      * Requires confirmation parameter to be set to true.
      * @returns any Successful Response

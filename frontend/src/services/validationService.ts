@@ -2,7 +2,7 @@
  * Validation Service
  * 
  * Fetches validation rules from the backend API and provides
- * client-side validation with caching (1h TTL in localStorage).
+ * client-side validation with in-memory caching and local fallback.
  */
 
 import { ValidationService } from '@/types/generated';
@@ -94,8 +94,8 @@ let memoryCache: Record<string, ValidationRule> | null = null;
 let fetchPromise: Promise<Record<string, ValidationRule>> | null = null;
 
 /**
- * Get validation rules, using cache if available
- * Returns cached rules or fetches from API
+ * Get validation rules, preferring fresh backend rules.
+ * Uses localStorage only as a fallback if the API is unavailable.
  */
 export async function getValidationRules(): Promise<Record<string, ValidationRule>> {
   // Check memory cache first (fastest)
@@ -103,19 +103,14 @@ export async function getValidationRules(): Promise<Record<string, ValidationRul
     return memoryCache;
   }
 
-  // Check localStorage cache
-  const cachedRules = getCachedRules();
-  if (cachedRules) {
-    memoryCache = cachedRules;
-    return cachedRules;
-  }
-
   // Deduplicate concurrent fetches
   if (fetchPromise) {
     return fetchPromise;
   }
 
-  // Fetch from API
+  const cachedRules = getCachedRules();
+
+  // Fetch from API and fall back to cached rules only if the request fails.
   fetchPromise = fetchRulesFromApi()
     .then((rules) => {
       memoryCache = rules;
@@ -125,6 +120,11 @@ export async function getValidationRules(): Promise<Record<string, ValidationRul
     })
     .catch((error) => {
       fetchPromise = null;
+      if (cachedRules) {
+        console.warn('Using cached validation rules after API fetch failed:', error);
+        memoryCache = cachedRules;
+        return cachedRules;
+      }
       throw error;
     });
 

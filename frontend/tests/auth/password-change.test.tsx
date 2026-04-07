@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi, describe, it, expect, beforeEach } from "vitest";
 
@@ -281,7 +281,10 @@ describe("ChangePasswordForm - Forced Change", () => {
     expect(submitButton).toBeDisabled();
     
     // Clean up by resolving the promise
-    resolvePromise!();
+    await act(async () => {
+      resolvePromise!();
+      await pendingPromise;
+    });
   });
 
   it("calls logout when logout button is clicked", async () => {

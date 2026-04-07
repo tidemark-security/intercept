@@ -9,6 +9,14 @@ from app.services.storage_service import storage_service
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
+def _timeline_values(items: Any) -> list[dict[str, Any]]:
+    if isinstance(items, dict):
+        return [item for item in items.values() if isinstance(item, dict)]
+    if isinstance(items, list):
+        return [item for item in items if isinstance(item, dict)]
+    return []
+
+
 async def _login_and_get_session_cookie(
     client: AsyncClient,
     session_maker: Any,
@@ -89,7 +97,7 @@ async def test_generate_task_attachment_upload_url_creates_uploading_timeline_it
 
     assert task_response.status_code == 200
     task_body = task_response.json()
-    attachment = next(item for item in task_body["timeline_items"] if item["id"] == body["item_id"])
+    attachment = next(item for item in _timeline_values(task_body["timeline_items"]) if item["id"] == body["item_id"])
     assert attachment["type"] == "attachment"
     assert attachment["upload_status"] == "UPLOADING"
     assert attachment["file_name"] == "report.txt"
@@ -146,7 +154,7 @@ async def test_complete_task_attachment_upload_updates_status_and_hash(
 
     assert status_response.status_code == 200
     task_body = status_response.json()
-    attachment = next(item for item in task_body["timeline_items"] if item["id"] == item_id)
+    attachment = next(item for item in _timeline_values(task_body["timeline_items"]) if item["id"] == item_id)
     assert attachment["upload_status"] == "COMPLETE"
     assert attachment["file_hash"] == "abc123"
 

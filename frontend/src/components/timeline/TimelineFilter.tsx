@@ -5,6 +5,7 @@ import { ToggleGroup } from '@/components/buttons/ToggleGroup';
 import { useTheme } from '@/contexts/ThemeContext';
 import type { TimelineItem } from '@/types/timeline';
 import { getTimelineItemIcon, getTimelineItemLabel } from '@/utils/timelineMapping';
+import { getTimelineItems } from '@/utils/timelineHelpers';
 
 import { ArrowDown, ArrowUp, Calendar, Clock, Layers } from 'lucide-react';
 export type SortOption = 'created_at' | 'timestamp';
@@ -81,11 +82,9 @@ export function TimelineFilter({
           types.add(item.type);
         }
         // Recursively check replies
-        if (item.replies && Array.isArray(item.replies)) {
-          const replies = item.replies as TimelineItem[];
-          if (replies.length > 0) {
-            addTypesFromItems(replies);
-          }
+        const replies = getTimelineItems({ timeline_items: item.replies ?? null });
+        if (replies.length > 0) {
+          addTypesFromItems(replies);
         }
       });
     };

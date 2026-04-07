@@ -695,7 +695,7 @@ class AlertService:
     async def _preload_timeline_entities(
         self,
         db: AsyncSession,
-        timeline_items: List[Dict[str, Any]]
+        timeline_items: List[Dict[str, Any]] | Dict[str, Dict[str, Any]]
     ) -> None:
         """Preload all entities referenced in timeline items to avoid N+1 queries.
         
@@ -706,9 +706,9 @@ class AlertService:
         task_ids: Set[int] = set()
         case_ids: Set[int] = set()
         
-        def extract_ids_recursive(items: List[Dict[str, Any]]) -> None:
+        def extract_ids_recursive(items: List[Dict[str, Any]] | Dict[str, Dict[str, Any]]) -> None:
             """Recursively extract entity IDs from items and their replies."""
-            for item in items:
+            for item in timeline_service._iter_items(items):
                 item_type = item.get("type")
                 
                 # Extract entity IDs based on item type

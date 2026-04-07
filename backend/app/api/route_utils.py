@@ -213,10 +213,11 @@ def create_human_id_decorator(id_prefix: str, default_param_name: str = "id"):
 
 
 def find_attachment_item(
-    timeline_items: Optional[List[Dict[str, Any]]], item_id: str
+    timeline_items: Optional[List[Dict[str, Any]] | Dict[str, Dict[str, Any]]], item_id: str
 ) -> Optional[Dict[str, Any]]:
     """Find an attachment timeline item by ID."""
-    for item in timeline_items or []:
+    items = timeline_items.values() if isinstance(timeline_items, dict) else (timeline_items or [])
+    for item in items:
         if item.get("id") == item_id and item.get("type") == "attachment":
             return item
     return None

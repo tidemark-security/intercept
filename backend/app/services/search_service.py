@@ -30,6 +30,25 @@ from app.core.validation import STRICT_PATTERNS
 logger = logging.getLogger(__name__)
 
 
+TIMELINE_ITEMS_SQL = """
+    SELECT value AS item
+    FROM jsonb_each(
+        CASE
+            WHEN jsonb_typeof(timeline_items) = 'object' THEN timeline_items
+            ELSE '{}'::jsonb
+        END
+    )
+    UNION ALL
+    SELECT value AS item
+    FROM jsonb_array_elements(
+        CASE
+            WHEN jsonb_typeof(timeline_items) = 'array' THEN timeline_items
+            ELSE '[]'::jsonb
+        END
+    )
+"""
+
+
 # =============================================================================
 # Query Classification
 # =============================================================================
@@ -573,21 +592,37 @@ class SearchService:
             param_name = f"containment_{param_idx}"
             # Build JSONB containment: timeline_items @> CAST(:param AS jsonb)
             # Note: Use CAST() instead of :: to avoid SQLAlchemy parameter parsing issues
-            conditions.append(f"timeline_items @> CAST(:{param_name} AS jsonb)")
-            # Create the JSONB pattern - note we use a list with one object
-            params[param_name] = json.dumps([{"type": item_type, field_name: value}])
+            type_param = f"containment_type_{param_idx}"
+            value_param = f"containment_value_{param_idx}"
+            conditions.append(
+                f"""EXISTS (
+                    SELECT 1
+                    FROM ({TIMELINE_ITEMS_SQL}) AS timeline_match
+                    WHERE timeline_match.item->>'type' = :{type_param}
+                      AND timeline_match.item->>'{field_name}' = :{value_param}
+                )"""
+            )
+            params[type_param] = item_type
+            params[value_param] = value
             param_idx += 1
         
         # Add observable type mappings
         observable_types = OBSERVABLE_TYPE_MAPPINGS.get(query_type, [])
         for obs_type in observable_types:
             param_name = f"containment_{param_idx}"
-            conditions.append(f"timeline_items @> CAST(:{param_name} AS jsonb)")
-            params[param_name] = json.dumps([{
-                "type": "observable",
-                "observable_type": obs_type,
-                "observable_value": value
-            }])
+            observable_type_param = f"containment_observable_type_{param_idx}"
+            observable_value_param = f"containment_observable_value_{param_idx}"
+            conditions.append(
+                f"""EXISTS (
+                    SELECT 1
+                    FROM ({TIMELINE_ITEMS_SQL}) AS timeline_match
+                    WHERE timeline_match.item->>'type' = 'observable'
+                      AND timeline_match.item->>'observable_type' = :{observable_type_param}
+                      AND timeline_match.item->>'observable_value' = :{observable_value_param}
+                )"""
+            )
+            params[observable_type_param] = obs_type
+            params[observable_value_param] = value
             param_idx += 1
         
         if not conditions:
@@ -641,9 +676,22 @@ class SearchService:
         params = {}
         
         for idx, type_filter in enumerate(self.DOMAIN_CONTAINING_TYPES):
-            param_name = f"domain_type_{idx}"
-            gin_conditions.append(f"timeline_items @> CAST(:{param_name} AS jsonb)")
-            params[param_name] = json.dumps([type_filter])
+            type_param = f"domain_type_{idx}"
+            observable_type = type_filter.get("observable_type")
+            observable_type_param = f"domain_observable_type_{idx}"
+            observable_clause = ""
+            if observable_type is not None:
+                observable_clause = f" AND timeline_domain.item->>'observable_type' = :{observable_type_param}"
+                params[observable_type_param] = str(observable_type)
+
+            gin_conditions.append(
+                f"""EXISTS (
+                    SELECT 1
+                    FROM ({TIMELINE_ITEMS_SQL}) AS timeline_domain
+                    WHERE timeline_domain.item->>'type' = :{type_param}{observable_clause}
+                )"""
+            )
+            params[type_param] = str(type_filter["type"])
         
         # Combine: (GIN pre-filter) AND (ILIKE refinement)
         # The GIN conditions are OR'd together (any matching type)
@@ -711,12 +759,12 @@ class SearchService:
             )
             OR EXISTS (
                 SELECT 1
-                FROM jsonb_array_elements(COALESCE(timeline_items, '[]'::jsonb)) AS item
+                FROM ({TIMELINE_ITEMS_SQL}) AS item
                 WHERE EXISTS (
                     SELECT 1
                     FROM jsonb_array_elements_text(
                         CASE
-                            WHEN jsonb_typeof(item->'tags') = 'array' THEN item->'tags'
+                            WHEN jsonb_typeof(item.item->'tags') = 'array' THEN item.item->'tags'
                             ELSE '[]'::jsonb
                         END
                     ) AS timeline_tag
@@ -927,9 +975,9 @@ class SearchService:
                         -- For JSONB matches, return full timeline item JSON (no truncation)
                         COALESCE(
                             (
-                                SELECT item::text
-                                FROM jsonb_array_elements(timeline_items) AS item
-                                WHERE item::text ILIKE '%' || :query || '%'
+                                SELECT item.item::text
+                                FROM ({TIMELINE_ITEMS_SQL}) AS item
+                                WHERE item.item::text ILIKE '%' || :query || '%'
                                 LIMIT 1
                             ),
                             COALESCE(title, '') || ' ' || COALESCE(LEFT(description, 100), '')
@@ -1479,9 +1527,9 @@ class SearchService:
                     ELSE
                         COALESCE(
                             (
-                                SELECT item::text
-                                FROM jsonb_array_elements(timeline_items) AS item
-                                WHERE item::text ILIKE '%' || :query || '%'
+                                SELECT item.item::text
+                                FROM ({TIMELINE_ITEMS_SQL}) AS item
+                                WHERE item.item::text ILIKE '%' || :query || '%'
                                 LIMIT 1
                             ),
                             COALESCE(title, '') || ' ' || COALESCE(LEFT(description, 100), '')

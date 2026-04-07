@@ -74,7 +74,7 @@ async def test_create_task_serializes_response_after_reload(
     payload = response.json()
     assert payload["title"] == "Serialized task create"
     assert payload["human_id"].startswith("TSK-")
-    assert payload["timeline_items"] == []
+    assert payload["timeline_items"] == {}
 
 
 @pytest.mark.asyncio
@@ -141,4 +141,4 @@ async def test_add_task_timeline_item_serializes_response_after_reload(
     payload = response.json()
     assert payload["id"] == task_id
     assert len(payload["timeline_items"]) == 1
-    assert payload["timeline_items"][0]["id"] == "task-note-1"
+    assert payload["timeline_items"]["task-note-1"]["id"] == "task-note-1"

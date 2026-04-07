@@ -14,6 +14,6 @@ export type DeletedItem = {
     original_created_at?: (string | null);
     original_created_by?: (string | null);
     parent_id?: (string | null);
-    replies?: null;
+    replies?: (Record<string, Record<string, any>> | null);
 };
 

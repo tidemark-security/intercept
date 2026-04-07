@@ -8,6 +8,7 @@ import type { TaskRead } from '@/types/generated/models/TaskRead';
 import type { TimelineItem } from '@/types/timeline';
 import { queryKeys } from './queryKeys';
 import { removeTimelineItemById } from '@/utils/timelineUtils';
+import { getTimelineItemMap } from '@/utils/timelineHelpers';
 
 interface DeleteTimelineItemParams {
   itemId: string;
@@ -89,7 +90,7 @@ export function useDeleteTimelineItem(
       const previousEntity = queriesData.length > 0 ? queriesData[0][1] : undefined;
 
       // Optimistically update the cache by removing the item using shared utility
-      const previousTimeline = previousEntity?.timeline_items as unknown as TimelineItem[] | null;
+      const previousTimeline = getTimelineItemMap(previousEntity ?? null);
       if (previousEntity && previousTimeline) {
         const updatedEntity = {
           ...previousEntity,

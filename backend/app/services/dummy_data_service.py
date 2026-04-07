@@ -35,6 +35,7 @@ from app.models.models import (
     ProcessItem,
     RegistryChangeItem,
     CaseItem,
+    _coerce_timeline_item_storage,
 )
 from app.models.enums import (
     CaseStatus,
@@ -751,6 +752,11 @@ class DummyDataService:
         return task
 
     @staticmethod
+    def _normalize_timeline_items(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Convert generated timeline lists into object-backed storage."""
+        return _coerce_timeline_item_storage(items)
+
+    @staticmethod
     async def _get_tracked_alert(db: AsyncSession, alert_id: int) -> Alert:
         """Reload an alert as a tracked ORM instance for follow-up writes."""
         tracked_alert = await db.get(Alert, alert_id)
@@ -801,7 +807,7 @@ class DummyDataService:
             alert_timeline_items = DummyDataService._generate_timeline_items_for_alert(
                 f"alert-{alert.id}", users
             )
-            tracked_alert.timeline_items = alert_timeline_items
+            tracked_alert.timeline_items = DummyDataService._normalize_timeline_items(alert_timeline_items)
             
             await db.commit()
             await db.refresh(tracked_alert)
@@ -853,7 +859,7 @@ class DummyDataService:
                 )
 
             # Update case with timeline items
-            tracked_case.timeline_items = non_entity_items
+            tracked_case.timeline_items = DummyDataService._normalize_timeline_items(non_entity_items)
             tracked_case.tags = [DUMMY_DATA_TAG] + random.sample(DummyDataService.TAGS, random.randint(0, 3))
             tracked_case.status = random.choice(list(CaseStatus))
 
@@ -901,7 +907,7 @@ class DummyDataService:
             timeline_items = DummyDataService._generate_timeline_items_for_alert(
                 f"alert-{alert.id}", users
             )
-            tracked_alert.timeline_items = timeline_items
+            tracked_alert.timeline_items = DummyDataService._normalize_timeline_items(timeline_items)
 
             # Randomly assign status and triage info
             # Weight the statuses - most alerts should be NEW, some closed
@@ -1183,7 +1189,7 @@ class DummyDataService:
             assert alert.id is not None, "Alert must have an ID after creation"
             tracked_alert = await DummyDataService._get_tracked_alert(db, alert.id)
             tracked_alert.tags = [DUMMY_DATA_TAG] + scenario["tags"]
-            tracked_alert.timeline_items = scenario["timeline_items"]
+            tracked_alert.timeline_items = DummyDataService._normalize_timeline_items(scenario["timeline_items"])
             tracked_alert.created_at = DummyDataService._random_datetime(2)
             tracked_alert.updated_at = tracked_alert.created_at + timedelta(minutes=random.randint(1, 90))
 

@@ -337,7 +337,7 @@ class EnrichmentService:
         race where this commit overwrites enrichment data the worker has already
         written.
 
-        Falls back to a locked ORM write for nested reply items.
+        Falls back to a locked ORM write for legacy array rows and nested reply items.
         """
         table = _ENTITY_TYPE_TO_TABLE.get(entity_type.lower())
         if table is None:
@@ -347,25 +347,15 @@ class EnrichmentService:
         # never from user input.
         sql = text(f"""
             UPDATE {table}
-            SET timeline_items = (
-                SELECT jsonb_set(
-                    timeline_items #- ARRAY[idx, 'enrichments', 'system'],
-                    ARRAY[idx, 'enrichment_task_id'],
-                    to_jsonb(:task_id ::text)
-                )
-                FROM (
-                    SELECT (ordinality - 1)::text AS idx
-                    FROM jsonb_array_elements({table}.timeline_items) WITH ORDINALITY
-                    WHERE value->>'id' = :item_id
-                    LIMIT 1
-                ) AS pos
+            SET timeline_items = jsonb_set(
+                timeline_items #- ARRAY[:item_id, 'enrichments', 'system'],
+                ARRAY[:item_id, 'enrichment_task_id'],
+                to_jsonb(:task_id ::text)
             ),
             updated_at = :now
             WHERE id = :entity_id
-            AND EXISTS (
-                SELECT 1 FROM jsonb_array_elements(timeline_items) AS e
-                WHERE e->>'id' = :item_id
-            )
+            AND jsonb_typeof(timeline_items) = 'object'
+            AND timeline_items ? :item_id
         """)
 
         result = await db.execute(sql, {
@@ -778,15 +768,17 @@ class EnrichmentService:
 
     def _collect_reconcilable_items(
         self,
-        items: List[Dict[str, Any]],
+        items: Any,
         collected: Dict[str, Dict[str, Any]],
     ) -> None:
-        for item in items:
+        from app.services.timeline_service import timeline_service
+
+        for item in timeline_service._iter_items(items):
             item_id = item.get("id")
             if item_id:
                 collected[str(item_id)] = item
             replies = item.get("replies")
-            if isinstance(replies, list) and replies:
+            if replies:
                 self._collect_reconcilable_items(replies, collected)
 
     def _reconcile_item_with_job(
@@ -832,7 +824,7 @@ class EnrichmentService:
         *,
         entity_type: str,
         entity_id: int,
-        timeline_items: List[Dict[str, Any]],
+        timeline_items: Any,
     ) -> List[str]:
         items_by_id: Dict[str, Dict[str, Any]] = {}
         self._collect_reconcilable_items(timeline_items, items_by_id)
@@ -885,7 +877,7 @@ class EnrichmentService:
         items_by_id: Dict[str, Dict[str, Any]],
         changed_item_ids: List[str],
     ) -> None:
-        entity = await self._load_entity(db, entity_type, entity_id)
+        entity = await self._load_entity_for_update(db, entity_type, entity_id)
         if entity is None:
             return
 

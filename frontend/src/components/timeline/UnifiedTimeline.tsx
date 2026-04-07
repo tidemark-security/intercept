@@ -195,7 +195,7 @@ function UnifiedTimelineInner({
       return 0;
     }
 
-    const timelineItems = (entityDetail?.timeline_items as unknown as TimelineItem[] | null) || [];
+    const timelineItems = getTimelineItems(entityDetail);
     const taskIdSet = new Set<number>();
     timelineItems.forEach((item) => {
       if (item.type === 'task' && typeof (item as any).task_id === 'number') {
@@ -225,8 +225,8 @@ function UnifiedTimelineInner({
 
   // Filter and sort timeline items
   const filteredAndSortedItems = useMemo(() => {
-    const timelineItems = entityDetail?.timeline_items as unknown as TimelineItem[] | null;
-    if (!timelineItems || !Array.isArray(timelineItems)) {
+    const timelineItems = getTimelineItems(entityDetail);
+    if (timelineItems.length === 0) {
       return [];
     }
 
@@ -280,15 +280,15 @@ function UnifiedTimelineInner({
   const handleReply = React.useCallback((itemId: string) => {
     if (isReadOnly) return;
 
-    const allItems = entityDetail?.timeline_items as unknown as TimelineItem[] | null;
-    if (!allItems) return;
+    const allItems = getTimelineItems(entityDetail);
+    if (allItems.length === 0) return;
 
     const findItemById = (targetId: string, items: TimelineItem[]): TimelineItem | null => {
       for (const item of items) {
         if (item.id === targetId) return item;
 
-        const itemReplies = item.replies as TimelineItem[] | null | undefined;
-        if (itemReplies && Array.isArray(itemReplies) && itemReplies.length > 0) {
+        const itemReplies = getTimelineItems({ timeline_items: item.replies ?? null });
+        if (itemReplies.length > 0) {
           const found = findItemById(targetId, itemReplies);
           if (found) return found;
         }
@@ -398,11 +398,9 @@ function UnifiedTimelineInner({
     
     const countDescendants = (item: TimelineItem): number => {
       let c = 0;
-      const replies = item.replies;
-      if (replies && Array.isArray(replies)) {
-        for (const reply of (replies as TimelineItem[])) {
-          c += 1 + countDescendants(reply);
-        }
+      const replies = getTimelineItems({ timeline_items: item.replies ?? null });
+      for (const reply of replies) {
+        c += 1 + countDescendants(reply);
       }
       return c;
     };
@@ -525,7 +523,7 @@ function UnifiedTimelineInner({
           linkedTaskCount={linkedTaskCount}
           caseTags={caseTags}
           showTimelineFilter={true}
-          timelineItems={(entityDetail?.timeline_items as unknown as TimelineItem[]) || []}
+          timelineItems={getTimelineItems(entityDetail)}
           selectedType={selectedType}
           onTypeChange={setSelectedType}
           sortBy={sortBy}
@@ -553,8 +551,8 @@ function UnifiedTimelineInner({
         ) : entityDetail ? (
           <>
             {(() => {
-              const timelineItems = entityDetail.timeline_items as unknown as TimelineItem[] | null;
-              const hasTimelineItems = timelineItems && Array.isArray(timelineItems) && timelineItems.length > 0;
+              const timelineItems = getTimelineItems(entityDetail);
+              const hasTimelineItems = timelineItems.length > 0;
               
               return (
                 <div className="flex w-full flex-col items-start gap-4">

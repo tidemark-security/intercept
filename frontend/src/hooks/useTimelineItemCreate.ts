@@ -9,6 +9,25 @@ import { deleteDraft } from '@/utils/draftStorage';
 import type { TimelineItemType } from '@/types/drafts';
 import { getEntityQueryKey } from './queryKeys';
 
+function normalizeTimelineItemMap(
+  timelineItems: TimelineItemResponse['timeline_items']
+): Record<string, any> {
+  if (!timelineItems) {
+    return {};
+  }
+
+  if (Array.isArray(timelineItems)) {
+    return timelineItems.reduce<Record<string, any>>((accumulator, item) => {
+      if (item && typeof item === 'object' && 'id' in item && typeof item.id === 'string') {
+        accumulator[item.id] = item;
+      }
+      return accumulator;
+    }, {});
+  }
+
+  return { ...timelineItems };
+}
+
 /**
  * Timeline item creation payload
  * This matches the structure expected by the backend API
@@ -171,12 +190,14 @@ export function useTimelineItemCreate(
           _optimistic: true,
         };
 
+        const timelineItems = normalizeTimelineItemMap(previousData.timeline_items);
+
         const updatedData: TimelineItemResponse = {
           ...previousData,
-          timeline_items: [
-            ...(previousData.timeline_items || []),
-            optimisticItem as any,
-          ] as any,
+          timeline_items: {
+            ...timelineItems,
+            [formData.id]: optimisticItem as any,
+          } as any,
         };
 
         // Use partial key matching to handle query keys with options like includeLinkedTimelines

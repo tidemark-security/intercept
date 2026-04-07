@@ -43,6 +43,30 @@ async def _login(client: AsyncClient, username: str) -> str:
     return session_cookie
 
 
+def _timeline_values(items: Any) -> list[dict[str, Any]]:
+    if isinstance(items, dict):
+        return [item for item in items.values() if isinstance(item, dict)]
+    if isinstance(items, list):
+        return [item for item in items if isinstance(item, dict)]
+    return []
+
+
+def _timeline_map(items: Any) -> dict[str, dict[str, Any]]:
+    if isinstance(items, dict):
+        return {
+            str(item.get("id") or key): item
+            for key, item in items.items()
+            if isinstance(item, dict)
+        }
+    if isinstance(items, list):
+        return {
+            str(item.get("id")): item
+            for item in items
+            if isinstance(item, dict) and item.get("id")
+        }
+    return {}
+
+
 @pytest.mark.asyncio
 async def test_search_aliases_returns_matches_for_authenticated_users(
     client: AsyncClient,
@@ -136,9 +160,7 @@ async def test_enqueue_item_enrichment_returns_task_id(
             async with session_maker() as session:
                 refreshed_alert = await session.get(Alert, alert.id)
                 assert refreshed_alert is not None
-                stored_item = next(
-                    item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-1"
-                )
+                stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-1")
 
             assert stored_item["enrichment_status"] == "pending"
             return "task-enrich-123"
@@ -157,9 +179,7 @@ async def test_enqueue_item_enrichment_returns_task_id(
     async with session_maker() as session:
         refreshed_alert = await session.get(Alert, alert.id)
         assert refreshed_alert is not None
-        stored_item = next(
-            item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-1"
-        )
+        stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-1")
 
     assert stored_item["enrichment_status"] == "pending"
     assert stored_item["enrichment_task_id"] == "task-enrich-123"
@@ -205,9 +225,7 @@ async def test_add_internal_actor_auto_enqueues_matching_enrichment(
             async with session_maker() as session:
                 refreshed_alert = await session.get(Alert, alert.id)
                 assert refreshed_alert is not None
-                stored_item = next(
-                    item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-auto-1"
-                )
+                stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-auto-1")
 
             assert stored_item["enrichment_status"] == "pending"
             captured_payloads.append(
@@ -276,9 +294,7 @@ async def test_add_internal_actor_auto_enqueues_matching_enrichment(
     async with session_maker() as session:
         refreshed_alert = await session.get(Alert, alert.id)
         assert refreshed_alert is not None
-        stored_item = next(
-            item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-auto-1"
-        )
+        stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-auto-1")
 
     assert stored_item["enrichment_status"] == "pending"
     assert stored_item["enrichment_task_id"] == "123"
@@ -341,9 +357,7 @@ async def test_update_observable_clears_stale_enrichment_and_reenqueues(
             async with session_maker() as session:
                 refreshed_alert = await session.get(Alert, alert.id)
                 assert refreshed_alert is not None
-                stored_item = next(
-                    item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-ip-1"
-                )
+                stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-ip-1")
 
             assert stored_item["observable_value"] == "8.8.8.8"
             assert stored_item["enrichment_status"] == "pending"
@@ -446,9 +460,7 @@ async def test_update_without_enrichment_identity_change_does_not_reenqueue(
     async with session_maker() as session:
         refreshed_alert = await session.get(Alert, alert.id)
         assert refreshed_alert is not None
-        stored_item = next(
-            item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-ip-stable"
-        )
+        stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-ip-stable")
 
     assert stored_item["enrichment_status"] == "complete"
     assert stored_item["enrichments"]["maxmind"]["results"]["8.8.8.8"]["databases"]["GeoLite2-ASN"][
@@ -612,9 +624,7 @@ async def test_run_item_enrichment_keeps_pending_status_on_retryable_failure(
     async with session_maker() as session:
         refreshed_alert = await session.get(Alert, alert.id)
         assert refreshed_alert is not None
-        stored_item = next(
-            item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-retryable-1"
-        )
+        stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-retryable-1")
         assert stored_item["enrichment_status"] == "pending"
         assert stored_item.get("enrichments") is None
 
@@ -695,9 +705,7 @@ async def test_enrich_item_terminal_failure_marks_item_failed(
     async with session_maker() as session:
         refreshed_alert = await session.get(Alert, alert_id)
         assert refreshed_alert is not None
-        stored_item = next(
-            item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-terminal-1"
-        )
+        stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-terminal-1")
         assert stored_item["enrichment_status"] == "failed"
         assert "enrichment_task_id" not in stored_item
         assert stored_item["enrichments"]["system"]["error"] == "Retries exhausted: provider timeout"
@@ -764,18 +772,14 @@ async def test_get_alert_reconciles_orphaned_active_enrichment_to_failed(
         detail = await alert_service.get_alert(session, alert_id)
 
     assert detail is not None
-    response_item = next(
-        item for item in (detail.timeline_items or []) if item.get("id") == "item-orphaned-1"
-    )
+    response_item = next(item for item in _timeline_values(detail.timeline_items) if item.get("id") == "item-orphaned-1")
     assert response_item["enrichment_status"] == "failed"
     assert "enrichment_task_id" not in response_item
 
     async with session_maker() as session:
         refreshed_alert = await session.get(Alert, alert_id)
         assert refreshed_alert is not None
-        stored_item = next(
-            item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-orphaned-1"
-        )
+        stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-orphaned-1")
 
     assert stored_item["enrichment_status"] == "failed"
     assert "enrichment_task_id" not in stored_item
@@ -838,18 +842,14 @@ async def test_get_alert_keeps_pending_enrichment_without_linked_job_pending(
         detail = await alert_service.get_alert(session, alert_id)
 
     assert detail is not None
-    response_item = next(
-        item for item in (detail.timeline_items or []) if item.get("id") == "item-pending-1"
-    )
+    response_item = next(item for item in _timeline_values(detail.timeline_items) if item.get("id") == "item-pending-1")
     assert response_item["enrichment_status"] == "pending"
     assert "enrichment_task_id" not in response_item
 
     async with session_maker() as session:
         refreshed_alert = await session.get(Alert, alert_id)
         assert refreshed_alert is not None
-        stored_item = next(
-            item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-pending-1"
-        )
+        stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-pending-1")
 
     assert stored_item["enrichment_status"] == "pending"
     assert "enrichment_task_id" not in stored_item
@@ -947,20 +947,18 @@ async def test_denormalize_timeline_does_not_overwrite_newer_enrichment_state(
             fresh_alert = await fresh_session.get(Alert, alert.id)
             assert fresh_alert is not None
 
-            updated_items = []
-            for item in fresh_alert.timeline_items or []:
+            updated_items = {}
+            for item in _timeline_values(fresh_alert.timeline_items):
                 if item.get("id") == "item-race-1":
-                    updated_items.append(
-                        {
-                            **item,
-                            "enrichment_status": "complete",
-                            "enrichments": {
-                                "google_workspace": {"display_name": "Alice Example"}
-                            },
-                        }
-                    )
+                    updated_items[str(item["id"])] = {
+                        **item,
+                        "enrichment_status": "complete",
+                        "enrichments": {
+                            "google_workspace": {"display_name": "Alice Example"}
+                        },
+                    }
                 else:
-                    updated_items.append(item)
+                    updated_items[str(item["id"])] = item
 
             fresh_alert.timeline_items = updated_items
             await fresh_session.commit()
@@ -970,9 +968,7 @@ async def test_denormalize_timeline_does_not_overwrite_newer_enrichment_state(
             stale_alert,
             human_prefix="ALT",
         )
-        response_item = next(
-            item for item in (denormalized_alert.timeline_items or []) if item.get("id") == "item-race-1"
-        )
+        response_item = next(item for item in _timeline_values(denormalized_alert.timeline_items) if item.get("id") == "item-race-1")
 
         assert response_item["enrichment_status"] == "pending"
         await stale_session.commit()
@@ -980,9 +976,7 @@ async def test_denormalize_timeline_does_not_overwrite_newer_enrichment_state(
     async with session_maker() as session:
         refreshed_alert = await session.get(Alert, alert.id)
         assert refreshed_alert is not None
-        stored_item = next(
-            item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-race-1"
-        )
+        stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-race-1")
 
     assert stored_item["enrichment_status"] == "complete"
 
@@ -1055,29 +1049,25 @@ async def test_reconcile_success_does_not_clear_newer_enrichment_results(
             fresh_alert = await fresh_session.get(Alert, alert.id)
             assert fresh_alert is not None
 
-            updated_items = []
-            for item in fresh_alert.timeline_items or []:
+            updated_items = {}
+            for item in _timeline_values(fresh_alert.timeline_items):
                 if item.get("id") == "item-race-success-1":
-                    updated_items.append(
-                        {
-                            **item,
-                            "enrichment_status": "complete",
-                            "enrichments": {
-                                "google_workspace": {"display_name": "Alice Example"}
-                            },
-                        }
-                    )
+                    updated_items[str(item["id"])] = {
+                        **item,
+                        "enrichment_status": "complete",
+                        "enrichments": {
+                            "google_workspace": {"display_name": "Alice Example"}
+                        },
+                    }
                 else:
-                    updated_items.append(item)
+                    updated_items[str(item["id"])] = item
 
             fresh_alert.timeline_items = updated_items
             await fresh_session.commit()
 
         detail = await alert_service.get_alert(stale_session, alert.id)
         assert detail is not None
-        response_item = next(
-            item for item in (detail.timeline_items or []) if item.get("id") == "item-race-success-1"
-        )
+        response_item = next(item for item in _timeline_values(detail.timeline_items) if item.get("id") == "item-race-success-1")
 
         assert response_item["enrichment_status"] == "complete"
         assert response_item["enrichments"] == {}
@@ -1085,9 +1075,7 @@ async def test_reconcile_success_does_not_clear_newer_enrichment_results(
     async with session_maker() as session:
         refreshed_alert = await session.get(Alert, alert.id)
         assert refreshed_alert is not None
-        stored_item = next(
-            item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-race-success-1"
-        )
+        stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-race-success-1")
 
     assert stored_item["enrichment_status"] == "complete"
     assert stored_item["enrichments"] == {
@@ -1194,7 +1182,7 @@ async def test_persist_task_link_does_not_clobber_concurrent_enrichment(
     async with session_maker() as worker_session:
         worker_alert = await worker_session.get(Alert, alert.id)
         assert worker_alert is not None
-        items = list(worker_alert.timeline_items or [])
+        items = _timeline_values(worker_alert.timeline_items)
         for item in items:
             if item.get("id") == "item-race-1":
                 item["enrichment_status"] = "complete"
@@ -1222,9 +1210,7 @@ async def test_persist_task_link_does_not_clobber_concurrent_enrichment(
     async with session_maker() as session:
         refreshed_alert = await session.get(Alert, alert.id)
         assert refreshed_alert is not None
-        stored_item = next(
-            item for item in (refreshed_alert.timeline_items or []) if item.get("id") == "item-race-1"
-        )
+        stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-race-1")
 
     assert stored_item.get("enrichment_task_id") == "task-race-456", \
         "enrichment_task_id was not set by _persist_enrichment_task_link"

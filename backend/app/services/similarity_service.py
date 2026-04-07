@@ -188,8 +188,14 @@ async def find_related_alerts(
         
         # Check for shared entities (IPs, domains, hashes)
         # Extract entities from both alerts
-        seed_entities = extract_high_signal_entities(alert.timeline_items or [])
-        match_entities = extract_high_signal_entities(similar_alert.timeline_items or [])
+        from app.services.timeline_service import timeline_service
+
+        seed_entities = extract_high_signal_entities(
+            timeline_service._response_items(alert.timeline_items)
+        )
+        match_entities = extract_high_signal_entities(
+            timeline_service._response_items(similar_alert.timeline_items)
+        )
         
         # Find shared entities
         shared = seed_entities & match_entities

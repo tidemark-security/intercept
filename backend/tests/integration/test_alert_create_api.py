@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, cast
 
 import pytest
 from httpx import AsyncClient
@@ -103,3 +104,36 @@ async def test_update_alert_serializes_loaded_triage_recommendation(
     assert payload["title"] == "Updated title"
     assert payload["triage_recommendation"] is not None
     assert payload["triage_recommendation"]["alert_id"] == alert_id
+
+
+@pytest.mark.asyncio
+async def test_get_alerts_serializes_legacy_list_backed_timeline_items(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    now = datetime.now(timezone.utc)
+
+    async with session_maker() as session:
+        alert = Alert(
+            title="Legacy list-backed alert",
+            description="Stored before object timeline migration",
+            source="seed",
+            timeline_items=cast(Any, []),
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(alert)
+        await session.commit()
+
+    response = await client.get(
+        "/api/v1/alerts",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    matching_alert = next(item for item in payload["items"] if item["title"] == "Legacy list-backed alert")
+    assert matching_alert["timeline_items"] == {}

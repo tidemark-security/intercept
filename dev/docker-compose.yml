@@ -41,6 +41,7 @@ services:
       dockerfile: Dockerfile.dev
     network_mode: host
     environment:
+      AUTO_SEED: "true"
       DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db
       STORAGE_ENDPOINT: localhost:9000
       STORAGE_ACCESS_KEY: minioadmin

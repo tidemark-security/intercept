@@ -11,6 +11,7 @@ import json
 import logging
 import asyncio
 import dataclasses
+import contextlib
 from inspect import signature
 from typing import Optional, Dict, Any, Callable, Awaitable
 from datetime import datetime, timezone, timedelta
@@ -98,6 +99,7 @@ class TaskQueueService:
         self.queries: Optional[Queries] = None
         self._worker_task: Optional[asyncio.Task] = None
         self._running = False
+        self._last_worker_error: Optional[str] = None
         self._handlers: Dict[str, TaskHandler] = {}
         self.schedule_refresh_lock = asyncio.Lock()
     
@@ -352,22 +354,26 @@ class TaskQueueService:
             return
         
         self._running = True
+        self._last_worker_error = None
         
         async def worker_loop():
             """Main worker loop."""
             try:
                 logger.info(f"Starting task queue worker (max_concurrent_tasks={concurrency})")
-                pgqueuer = self.pgqueuer
-                if pgqueuer is None:
+                if self.pgqueuer is None:
                     raise RuntimeError("Task queue not initialized")
                 
                 while self._running:
                     try:
-                        await pgqueuer.run(max_concurrent_tasks=concurrency)
+                        self._last_worker_error = None
+                        await self._run_pgqueuer_services(concurrency=concurrency)
                     except asyncio.CancelledError:
                         break
                     except Exception as e:
-                        logger.error(f"Worker error: {e}")
+                        self._last_worker_error = str(e) or e.__class__.__name__
+                        logger.exception("Worker error: %s", e)
+                        if not self._running:
+                            break
                         await asyncio.sleep(5)  # Brief pause before retry
                 
                 logger.info("Task queue worker stopped")
@@ -377,6 +383,73 @@ class TaskQueueService:
         
         # Start worker in background
         self._worker_task = asyncio.create_task(worker_loop())
+
+    async def _run_pgqueuer_services(self, concurrency: int) -> None:
+        if self.pgqueuer is None:
+            raise RuntimeError("Task queue not initialized")
+
+        queue_manager_task = asyncio.create_task(
+            self.pgqueuer.qm.run(max_concurrent_tasks=concurrency),
+            name="pgqueuer-queue-manager",
+        )
+        scheduler_manager_task = asyncio.create_task(
+            self.pgqueuer.sm.run(),
+            name="pgqueuer-scheduler-manager",
+        )
+        tasks = {queue_manager_task, scheduler_manager_task}
+
+        try:
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+
+            for task in done:
+                if task.cancelled():
+                    continue
+                exc = task.exception()
+                if exc is not None:
+                    raise exc
+
+            if pending:
+                completed_task = next(iter(done))
+                raise RuntimeError(f"{completed_task.get_name()} stopped unexpectedly")
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            with contextlib.suppress(Exception):
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    def get_worker_readiness(self) -> tuple[bool, str]:
+        if not self.queue_manager or not self.queries or not self._pool:
+            return False, "task queue not initialized"
+
+        if not self._running or self._worker_task is None:
+            return False, "worker loop not started"
+
+        if self._worker_task.done():
+            try:
+                worker_error = self._worker_task.exception()
+            except asyncio.CancelledError:
+                worker_error = None
+
+            if worker_error is not None:
+                return False, str(worker_error) or worker_error.__class__.__name__
+            return False, "worker loop stopped"
+
+        if self._last_worker_error:
+            return False, self._last_worker_error
+
+        try:
+            if self._pool.get_size() <= 0:
+                return False, "database pool not ready"
+        except Exception as exc:
+            return False, str(exc) or exc.__class__.__name__
+
+        return True, ""
+
+    def get_pool_size(self) -> int:
+        if not self._pool:
+            return 0
+        return self._pool.get_size()
     
     async def stop_worker(self):
         """Stop the background worker process."""
