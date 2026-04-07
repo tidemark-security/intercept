@@ -162,44 +162,47 @@ describe('useTimelineItemCreate', () => {
     );
 
     let mutationPromise: Promise<unknown> | undefined;
+    const payload = {
+      id: 'observable-1',
+      type: 'observable',
+      observable_type: 'IP',
+      observable_value: '1.1.1.1',
+      description: 'Optimistic observable',
+    };
 
     await act(async () => {
-      mutationPromise = result.current.mutateAsync({
+      mutationPromise = result.current.mutateAsync(payload);
+    });
+
+    await waitFor(() => {
+      const optimisticCase = queryClient.getQueryData<any>(
+        queryKey,
+      );
+
+      expect(optimisticCase.timeline_items['observable-1']).toMatchObject({
         id: 'observable-1',
         type: 'observable',
         observable_type: 'IP',
         observable_value: '1.1.1.1',
-        description: 'Optimistic observable',
-      });
-
-      await waitFor(() => {
-        const optimisticCase = queryClient.getQueryData<any>(
-          queryKey,
-        );
-
-        expect(optimisticCase.timeline_items['observable-1']).toMatchObject({
-          id: 'observable-1',
-          type: 'observable',
-          observable_type: 'IP',
-          observable_value: '1.1.1.1',
-          _optimistic: true,
-        });
+        _optimistic: true,
       });
     });
 
-    deferred.resolve({
-      ...detail,
-      timeline_items: {
-        'observable-1': {
-          id: 'observable-1',
-          type: 'observable',
-          observable_type: 'IP',
-          observable_value: '1.1.1.1',
-          description: 'Optimistic observable',
+    await act(async () => {
+      deferred.resolve({
+        ...detail,
+        timeline_items: {
+          'observable-1': {
+            id: 'observable-1',
+            type: 'observable',
+            observable_type: 'IP',
+            observable_value: '1.1.1.1',
+            description: 'Optimistic observable',
+          },
         },
-      },
-    });
+      });
 
-    await mutationPromise;
+      await mutationPromise;
+    });
   });
 });
