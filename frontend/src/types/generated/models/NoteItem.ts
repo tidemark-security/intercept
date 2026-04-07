@@ -56,7 +56,7 @@ export type NoteItem = {
     /**
      * Optional nested timeline items as replies (typed in Union definitions)
      */
-    replies?: null;
+    replies?: (Record<string, Record<string, any>> | null);
     /**
      * Response-only audit metadata dynamically coalesced from audit logs
      */

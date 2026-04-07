@@ -58,7 +58,7 @@ export type TaskItem = {
     /**
      * Optional nested timeline items as replies (typed in Union definitions)
      */
-    replies?: null;
+    replies?: (Record<string, Record<string, any>> | null);
     /**
      * Response-only audit metadata dynamically coalesced from audit logs
      */
@@ -73,6 +73,6 @@ export type TaskItem = {
     /**
      * Timeline items from the linked task (populated on read with include_linked_timelines=true)
      */
-    source_timeline_items?: null;
+    source_timeline_items?: (Record<string, Record<string, any>> | null);
 };
 
