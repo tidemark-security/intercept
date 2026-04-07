@@ -804,6 +804,11 @@ class AlertRead(AlertBase):
     tags: Optional[List[str]] = None
     triage_recommendation: Optional["TriageRecommendationRead"] = None
 
+    @field_validator("timeline_items", mode="before")
+    @classmethod
+    def coerce_timeline_items(cls, value: Any) -> TimelineItemStorage:
+        return _coerce_timeline_item_storage(value)
+
     @computed_field
     @property
     def human_id(self) -> str:
