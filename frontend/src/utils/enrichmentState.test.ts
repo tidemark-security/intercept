@@ -13,16 +13,16 @@ describe('enrichmentState', () => {
   it('detects active enrichments in nested timeline replies', () => {
     expect(
       hasActiveTimelineEnrichments({
-        timeline_items: [
-          {
+        timeline_items: {
+          'item-1': {
             enrichment_status: 'complete',
-            replies: [
-              {
+            replies: {
+              'reply-1': {
                 enrichment_status: 'pending',
               },
-            ],
+            },
           },
-        ],
+        },
       }),
     ).toBe(true);
   });
@@ -30,10 +30,10 @@ describe('enrichmentState', () => {
   it('returns false when no timeline item is actively enriching', () => {
     expect(
       hasActiveTimelineEnrichments({
-        timeline_items: [
-          { enrichment_status: 'complete' },
-          { enrichment_status: 'failed' },
-        ],
+        timeline_items: {
+          'item-1': { enrichment_status: 'complete' },
+          'item-2': { enrichment_status: 'failed' },
+        },
       }),
     ).toBe(false);
   });

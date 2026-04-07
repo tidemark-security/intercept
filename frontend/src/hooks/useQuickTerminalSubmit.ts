@@ -113,6 +113,11 @@ export function useQuickTerminalSubmit({ entityId, entityType }: UseQuickTermina
           timestamp: new Date().toISOString(),
           parent_id: parentItemId || null,
         });
+        const optimisticItemId = optimisticItem.id;
+
+        if (!optimisticItemId) {
+          return { previousEntity };
+        }
 
         const previousTimeline = getTimelineItemMap(previousEntity);
 
@@ -120,12 +125,12 @@ export function useQuickTerminalSubmit({ entityId, entityType }: UseQuickTermina
           ? updateTimelineItemById(previousTimeline, parentItemId, {
               replies: {
                 ...((previousTimeline[parentItemId]?.replies as Record<string, unknown> | null | undefined) ?? {}),
-                [optimisticItem.id]: optimisticItem,
+                [optimisticItemId]: optimisticItem,
               } as any,
             })
           : {
               ...previousTimeline,
-              [optimisticItem.id]: optimisticItem,
+              [optimisticItemId]: optimisticItem,
             };
         
         const updatedEntity = {

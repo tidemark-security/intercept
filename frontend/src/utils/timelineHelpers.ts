@@ -15,9 +15,9 @@ function sortTimelineItems(items: TimelineItem[]): TimelineItem[] {
 
 export function getTimelineItemMap(
   alertDetail: { timeline_items?: unknown } | null,
-): TimelineItemMap | null {
+): TimelineItemMap {
   if (!alertDetail || !alertDetail.timeline_items || typeof alertDetail.timeline_items !== 'object') {
-    return null;
+    return {};
   }
   if (Array.isArray(alertDetail.timeline_items)) {
     return Object.fromEntries(
@@ -33,9 +33,8 @@ export function getTimelineItemMap(
  * Get timeline items from alert detail with proper type casting
  * Handles the type assertion in one place
  */
-export function getTimelineItems(alertDetail: { timeline_items?: unknown } | null): TimelineItem[] | null {
+export function getTimelineItems(alertDetail: { timeline_items?: unknown } | null): TimelineItem[] {
   const itemMap = getTimelineItemMap(alertDetail);
-  if (!itemMap) return [];
   return sortTimelineItems(Object.values(itemMap));
 }
 
@@ -49,6 +48,6 @@ export function getTimelineItemProperty(
   property: 'flagged' | 'highlighted'
 ): boolean {
   const timelineItems = getTimelineItems(alertDetail);
-  const item = timelineItems ? findTimelineItem(timelineItems, itemId) : null;
+  const item = findTimelineItem(timelineItems, itemId);
   return item?.[property] ?? false;
 }
