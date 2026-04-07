@@ -11,6 +11,14 @@ from app.models.models import Alert, Case, TriageRecommendation
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
+def _timeline_values(items: Any) -> list[dict[str, Any]]:
+    if isinstance(items, dict):
+        return [item for item in items.values() if isinstance(item, dict)]
+    if isinstance(items, list):
+        return [item for item in items if isinstance(item, dict)]
+    return []
+
+
 async def _login_and_get_session_cookie(
     client: AsyncClient,
     session_maker: Any,
@@ -95,7 +103,7 @@ async def test_accept_manual_recommendation_creates_case(
         assert refreshed_alert.status == AlertStatus.ESCALATED
         assert refreshed_alert.triaged_at is not None
         assert refreshed_alert.assignee is not None
-        timeline_items = refreshed_alert.timeline_items or []
+        timeline_items = _timeline_values(refreshed_alert.timeline_items)
         note_items = [item for item in timeline_items if item.get("type") == "note"]
         assert any(
             "accepted AI recommendation" in (item.get("description") or "")
@@ -164,7 +172,7 @@ async def test_accept_closed_recommendation_closes_without_case(
         assert refreshed_alert.status == AlertStatus.CLOSED_FP
         assert refreshed_alert.triaged_at is not None
         assert refreshed_alert.assignee is not None
-        timeline_items = refreshed_alert.timeline_items or []
+        timeline_items = _timeline_values(refreshed_alert.timeline_items)
         note_items = [item for item in timeline_items if item.get("type") == "note"]
         assert any(
             "accepted AI recommendation" in (item.get("description") or "")

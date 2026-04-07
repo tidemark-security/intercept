@@ -26,6 +26,7 @@ import {
   getTimelineItemAction,
   getTimelineItemLabel,
 } from '@/utils/timelineMapping';
+import { getTimelineItems } from '@/utils/timelineHelpers';
 import { isAlertItem, isDeletedItem, isNoteItem, isTaskItem } from '@/types/timeline';
 import type { CaseItem } from '@/types/generated/models/CaseItem';
 import { convertNumericToAlertId, convertNumericToHumanId } from '@/utils/caseHelpers';
@@ -98,8 +99,8 @@ function flattenReplies(items: TimelineItem[]): TimelineItem[] {
   const traverse = (currentItems: TimelineItem[]) => {
     for (const currentItem of currentItems) {
       flattened.push(currentItem);
-      const nestedReplies = currentItem.replies as TimelineItem[] | null | undefined;
-      if (nestedReplies && Array.isArray(nestedReplies) && nestedReplies.length > 0) {
+      const nestedReplies = getTimelineItems({ timeline_items: currentItem.replies ?? null });
+      if (nestedReplies.length > 0) {
         traverse(nestedReplies);
       }
     }
@@ -115,8 +116,8 @@ function collectItemIds(items: TimelineItem[], targetSet: Set<string>): void {
       targetSet.add(currentItem.id);
     }
 
-    const nestedReplies = currentItem.replies as TimelineItem[] | null | undefined;
-    if (nestedReplies && Array.isArray(nestedReplies) && nestedReplies.length > 0) {
+    const nestedReplies = getTimelineItems({ timeline_items: currentItem.replies ?? null });
+    if (nestedReplies.length > 0) {
       collectItemIds(nestedReplies, targetSet);
     }
   }
@@ -698,12 +699,12 @@ export function TimelineItemRenderer({
   }
 
   // Render nested replies - flatten multi-level nesting into single-level thread
-  const itemReplies = item.replies as TimelineItem[] | null | undefined;
-  const hasReplies = itemReplies && Array.isArray(itemReplies) && itemReplies.length > 0;
+  const itemReplies = getTimelineItems({ timeline_items: item.replies ?? null });
+  const hasReplies = itemReplies.length > 0;
   
   // For alert/task items, also include source_timeline_items (timeline from the linked entity)
-  const sourceTimelineItems = (item as any).source_timeline_items as TimelineItem[] | null | undefined;
-  const hasSourceItems = sourceTimelineItems && Array.isArray(sourceTimelineItems) && sourceTimelineItems.length > 0;
+  const sourceTimelineItems = getTimelineItems({ timeline_items: (item as any).source_timeline_items ?? null });
+  const hasSourceItems = sourceTimelineItems.length > 0;
   
   // Track IDs of source timeline items (these should be read-only since they belong to the linked entity)
   const sourceItemIds = new Set<string>();

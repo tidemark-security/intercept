@@ -1,7 +1,7 @@
 import re
 import json
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any, Union, Literal
+from typing import Optional, List, Dict, Any, Union, Literal, TypeAlias
 from uuid import UUID, uuid4
 
 from sqlmodel import SQLModel, Field, Relationship, Column
@@ -85,6 +85,42 @@ class UTCDateTime(TypeDecorator):
 
 
 # Timeline Item Models - strongly typed with first-class attributes
+TimelineItemStorage: TypeAlias = Dict[str, Dict[str, Any]]
+
+
+def _coerce_timeline_item_storage(value: Any) -> TimelineItemStorage:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        if all(isinstance(item, dict) for item in value.values()):
+            coerced: TimelineItemStorage = {}
+            for key, item in value.items():
+                item_copy = dict(item)
+                replies = item_copy.get("replies")
+                if replies is not None:
+                    item_copy["replies"] = _coerce_timeline_item_storage(replies)
+                item_id = item_copy.get("id") or str(key)
+                item_copy["id"] = str(item_id)
+                coerced[str(item_id)] = item_copy
+            return coerced
+        return {}
+    if isinstance(value, list):
+        coerced = {}
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            item_copy = dict(item)
+            item_id = item_copy.get("id")
+            if not item_id:
+                continue
+            replies = item_copy.get("replies")
+            if replies is not None:
+                item_copy["replies"] = _coerce_timeline_item_storage(replies)
+            coerced[str(item_id)] = item_copy
+        return coerced
+    return {}
+
+
 class ItemBase(SQLModel):
     """Base class for all timeline items."""
 
@@ -116,12 +152,20 @@ class ItemBase(SQLModel):
     )
     # Reply support: parent_id references another timeline item's id for threaded conversations
     parent_id: Optional[str] = Field(default=None, description="ID of parent timeline item for replies (null for top-level items)")
-    # Replies use Dict[str, Any] in base for JSON storage, but typed in Union definitions below
-    replies: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Optional nested timeline items as replies (typed in Union definitions)")
+    # Replies use the same ID-keyed object shape as top-level timeline items.
+    replies: Optional[TimelineItemStorage] = Field(
+        default_factory=dict,
+        description="Optional nested timeline items as replies (typed in Union definitions)",
+    )
     audit: Optional["TimelineItemAudit"] = Field(
         default=None,
         description="Response-only audit metadata dynamically coalesced from audit logs",
     )
+
+    @field_validator("replies", mode="before")
+    @classmethod
+    def coerce_replies(cls, value: Any) -> TimelineItemStorage:
+        return _coerce_timeline_item_storage(value)
 
 
 class TimelineItemAudit(SQLModel):
@@ -144,7 +188,12 @@ class DeletedItem(SQLModel):
     )
     original_created_by: Optional[str] = None
     parent_id: Optional[str] = None
-    replies: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
+    replies: Optional[TimelineItemStorage] = Field(default_factory=dict)
+
+    @field_validator("replies", mode="before")
+    @classmethod
+    def coerce_replies(cls, value: Any) -> TimelineItemStorage:
+        return _coerce_timeline_item_storage(value)
 
 
 class NoteItem(ItemBase):
@@ -344,10 +393,15 @@ class AlertItem(ItemBase):
     priority: Optional[Priority] = None
     assignee: Optional[str] = None  # unified field for assignee
     # Optionally embedded timeline items from the linked alert (populated when include_linked_timelines=true)
-    source_timeline_items: Optional[List[Dict[str, Any]]] = Field(
+    source_timeline_items: Optional[TimelineItemStorage] = Field(
         default=None,
         description="Timeline items from the linked alert (populated on read with include_linked_timelines=true)"
     )
+
+    @field_validator("source_timeline_items", mode="before")
+    @classmethod
+    def coerce_source_timeline_items(cls, value: Any) -> TimelineItemStorage:
+        return _coerce_timeline_item_storage(value)
 
 
 class CaseItem(ItemBase):
@@ -362,10 +416,15 @@ class CaseItem(ItemBase):
     priority: Optional[Priority] = None
     assignee: Optional[str] = None  # unified field for assignee
     # Optionally embedded timeline items from the linked case (populated when include_linked_timelines=true)
-    source_timeline_items: Optional[List[Dict[str, Any]]] = Field(
+    source_timeline_items: Optional[TimelineItemStorage] = Field(
         default=None,
         description="Timeline items from the linked case (populated on read with include_linked_timelines=true)"
     )
+
+    @field_validator("source_timeline_items", mode="before")
+    @classmethod
+    def coerce_source_timeline_items(cls, value: Any) -> TimelineItemStorage:
+        return _coerce_timeline_item_storage(value)
 
 
 class TaskItem(ItemBase):
@@ -384,10 +443,15 @@ class TaskItem(ItemBase):
         sa_column=Column(DateTime(timezone=True))
     )
     # Optionally embedded timeline items from the linked task (populated when include_linked_timelines=true)
-    source_timeline_items: Optional[List[Dict[str, Any]]] = Field(
+    source_timeline_items: Optional[TimelineItemStorage] = Field(
         default=None,
         description="Timeline items from the linked task (populated on read with include_linked_timelines=true)"
     )
+
+    @field_validator("source_timeline_items", mode="before")
+    @classmethod
+    def coerce_source_timeline_items(cls, value: Any) -> TimelineItemStorage:
+        return _coerce_timeline_item_storage(value)
 
 
 class ForensicArtifactItem(ItemBase):
@@ -454,8 +518,7 @@ class RegistryChangeItem(ItemBase):
 
 
 # Union types for timeline items
-# Note: The 'replies' field in ItemBase stores List[Dict[str, Any]] at runtime for JSON serialization,
-# but semantically these dicts represent nested items of the same union type.
+# Note: The 'replies' field in ItemBase stores nested items keyed by item ID.
 # The frontend and type generation tools should treat replies as recursive timeline items.
 
 AlertTimelineItem = Union[
@@ -554,8 +617,8 @@ class Case(CaseBase, table=True):
     )
 
     # Timeline items stored as JSONB for flexibility
-    timeline_items: Optional[List[Dict[str, Any]]] = Field(
-        default_factory=list, sa_column=Column(JSONB)
+    timeline_items: Optional[TimelineItemStorage] = Field(
+        default_factory=dict, sa_column=Column(JSONB)
     )
 
     # Tags stored as JSON array
@@ -564,6 +627,13 @@ class Case(CaseBase, table=True):
     # Relationships
     alerts: List["Alert"] = Relationship(back_populates="case")
     tasks: List["Task"] = Relationship(back_populates="case")
+
+    @field_validator("timeline_items", mode="before")
+    @classmethod
+    def coerce_timeline_items(cls, value: Any) -> TimelineItemStorage:
+        return _coerce_timeline_item_storage(value)
+
+
 class CaseCreate(CaseBase):
     """Schema for creating a case."""
     assignee: Optional[str] = None
@@ -588,10 +658,15 @@ class CaseUpdate(SQLModel):
     # affected_systems: Optional[str] = None
     # impact_assessment: Optional[str] = None
     tags: Optional[List[str]] = None
-    timeline_items: Optional[List[CaseTimelineItem]] = None
+    timeline_items: Optional[Dict[str, CaseTimelineItem]] = None
     # Array of per-alert closure status updates to apply when closing the case
     # Only used when status is being set to CLOSED
     alert_closure_updates: Optional[List[CaseAlertClosureUpdate]] = None
+
+    @field_validator("timeline_items", mode="before")
+    @classmethod
+    def coerce_timeline_items(cls, value: Any) -> TimelineItemStorage:
+        return _coerce_timeline_item_storage(value)
 
 
 class CaseRead(CaseBase):
@@ -604,8 +679,13 @@ class CaseRead(CaseBase):
     created_at: datetime
     updated_at: datetime
     closed_at: Optional[datetime] = None
-    timeline_items: Optional[List[CaseTimelineItem]] = None
+    timeline_items: Optional[Dict[str, CaseTimelineItem]] = None
     tags: Optional[List[str]] = None
+
+    @field_validator("timeline_items", mode="before")
+    @classmethod
+    def coerce_timeline_items(cls, value: Any) -> TimelineItemStorage:
+        return _coerce_timeline_item_storage(value)
 
     @computed_field
     @property
@@ -657,8 +737,8 @@ class Alert(AlertBase, table=True):
     )
 
     # Timeline items stored as JSONB for flexibility
-    timeline_items: Optional[List[Dict[str, Any]]] = Field(
-        default_factory=list, sa_column=Column(JSONB)
+    timeline_items: Optional[TimelineItemStorage] = Field(
+        default_factory=dict, sa_column=Column(JSONB)
     )
 
     # Tags stored as JSON array
@@ -669,6 +749,11 @@ class Alert(AlertBase, table=True):
         back_populates="alert",
         sa_relationship_kwargs={"cascade": "all, delete-orphan", "uselist": False}
     )
+
+    @field_validator("timeline_items", mode="before")
+    @classmethod
+    def coerce_timeline_items(cls, value: Any) -> TimelineItemStorage:
+        return _coerce_timeline_item_storage(value)
 
 
 class AlertCreate(AlertBase):
@@ -684,8 +769,13 @@ class AlertUpdate(SQLModel):
     priority: Optional[Priority] = None
     source: Optional[str] = None
     assignee: Optional[str] = Field(None, max_length=100)
-    timeline_items: Optional[List[AlertTimelineItem]] = None
+    timeline_items: Optional[Dict[str, AlertTimelineItem]] = None
     tags: Optional[List[str]] = None
+
+    @field_validator("timeline_items", mode="before")
+    @classmethod
+    def coerce_timeline_items(cls, value: Any) -> TimelineItemStorage:
+        return _coerce_timeline_item_storage(value)
 
 
 class AlertTriageRequest(SQLModel):
@@ -710,7 +800,7 @@ class AlertRead(AlertBase):
     linked_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
-    timeline_items: Optional[List[AlertTimelineItem]] = None
+    timeline_items: Optional[Dict[str, AlertTimelineItem]] = None
     tags: Optional[List[str]] = None
     triage_recommendation: Optional["TriageRecommendationRead"] = None
 
@@ -949,12 +1039,17 @@ class Task(TaskBase, table=True):
     )
 
     # Timeline items stored as JSONB for flexibility (like alerts/cases)
-    timeline_items: Optional[List[Dict[str, Any]]] = Field(
-        default_factory=list, sa_column=Column(JSONB)
+    timeline_items: Optional[TimelineItemStorage] = Field(
+        default_factory=dict, sa_column=Column(JSONB)
     )
 
     # Tags stored as JSON array
     tags: Optional[List[str]] = Field(default_factory=list, sa_column=Column(JSONB))
+
+    @field_validator("timeline_items", mode="before")
+    @classmethod
+    def coerce_timeline_items(cls, value: Any) -> TimelineItemStorage:
+        return _coerce_timeline_item_storage(value)
 
 
 class TaskCreate(TaskBase):
@@ -974,8 +1069,13 @@ class TaskUpdate(SQLModel):
     assignee: Optional[str] = None
     due_date: Optional[datetime] = None
     case_id: Optional[int] = None
-    timeline_items: Optional[List[TaskTimelineItem]] = None
+    timeline_items: Optional[Dict[str, TaskTimelineItem]] = None
     tags: Optional[List[str]] = None
+
+    @field_validator("timeline_items", mode="before")
+    @classmethod
+    def coerce_timeline_items(cls, value: Any) -> TimelineItemStorage:
+        return _coerce_timeline_item_storage(value)
 
 
 class TaskRead(TaskBase):
@@ -989,7 +1089,7 @@ class TaskRead(TaskBase):
     linked_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
-    timeline_items: Optional[List[TaskTimelineItem]] = None
+    timeline_items: Optional[Dict[str, TaskTimelineItem]] = None
     tags: Optional[List[str]] = None
 
     @computed_field

@@ -31,10 +31,10 @@ import { TasksService } from "@/types/generated/services/TasksService";
 import type { AlertRead } from "@/types/generated/models/AlertRead";
 import type { CaseReadWithAlerts } from "@/types/generated/models/CaseReadWithAlerts";
 import type { TaskRead } from "@/types/generated/models/TaskRead";
-import type { TimelineItem } from "@/types/timeline";
 import type { EntityType } from "@/components/forms/QuickTerminal";
 import { getEntityQueryKey } from './queryKeys';
-import { createOptimisticTimelineItem } from '@/utils/timelineUtils';
+import { createOptimisticTimelineItem, updateTimelineItemById } from '@/utils/timelineUtils';
+import { getTimelineItemMap } from '@/utils/timelineHelpers';
 
 interface UseQuickTerminalSubmitParams {
   entityId: number | null;
@@ -111,13 +111,26 @@ export function useQuickTerminalSubmit({ entityId, entityType }: UseQuickTermina
           type: "note",
           description: noteText,
           timestamp: new Date().toISOString(),
+          parent_id: parentItemId || null,
         });
 
-        const previousTimeline = (previousEntity.timeline_items as unknown as TimelineItem[]) || [];
+        const previousTimeline = getTimelineItemMap(previousEntity);
+
+        const nextTimeline = parentItemId
+          ? updateTimelineItemById(previousTimeline, parentItemId, {
+              replies: {
+                ...((previousTimeline[parentItemId]?.replies as Record<string, unknown> | null | undefined) ?? {}),
+                [optimisticItem.id]: optimisticItem,
+              } as any,
+            })
+          : {
+              ...previousTimeline,
+              [optimisticItem.id]: optimisticItem,
+            };
         
         const updatedEntity = {
           ...previousEntity,
-          timeline_items: [...previousTimeline, optimisticItem] as any,
+          timeline_items: nextTimeline as any,
         };
         
         // Use partial key matching for all entity types (they may have options like includeLinkedTimelines)

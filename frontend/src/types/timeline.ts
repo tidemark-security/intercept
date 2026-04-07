@@ -40,14 +40,14 @@ export interface DeletedItem {
   original_created_at?: string | null;
   original_created_by?: string | null;
   parent_id?: string | null;
-  replies?: TimelineItem[] | null;
+  replies?: Record<string, TimelineItem> | null;
 }
 
 interface RecursiveTimelineFields {
   parent_id?: string | null;
-  replies?: TimelineItem[] | null;
+  replies?: Record<string, TimelineItem> | null;
   audit?: TimelineItemAudit | null;
-  source_timeline_items?: TimelineItem[] | null;
+  source_timeline_items?: Record<string, TimelineItem> | null;
 }
 
 type WithRecursiveTimelineFields<T> = T extends unknown
@@ -82,7 +82,7 @@ export type RecursiveTimelineItem<T extends TimelineItemBase = TimelineItemBase>
 
 /**
  * Timeline item with optional recursive replies support
- * Each timeline item can contain an array of nested timeline items as replies
+ * Each timeline item can contain nested timeline items keyed by reply ID
  */
 export type TimelineItem = WithRecursiveTimelineFields<TimelineItemBase>;
 

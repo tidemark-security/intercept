@@ -46,6 +46,27 @@ from tests.fixtures.timeline_payloads import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _timeline_values(items: Any) -> list[dict[str, Any]]:
+    if isinstance(items, dict):
+        return [
+            {
+                **item,
+                "replies": _timeline_values(item.get("replies")),
+            }
+            for item in items.values()
+            if isinstance(item, dict)
+        ]
+    if isinstance(items, list):
+        return [
+            {
+                **item,
+                "replies": _timeline_values(item.get("replies")),
+            }
+            for item in items
+            if isinstance(item, dict)
+        ]
+    return []
+
 async def _login_and_get_session_cookie(
     client: AsyncClient,
     session_maker: Any,
@@ -102,7 +123,9 @@ async def _add_timeline_item(
     assert response.status_code == expected_status, (
         f"Expected {expected_status}, got {response.status_code}: {response.text}"
     )
-    return response.json()
+    body = response.json()
+    body["timeline_items"] = _timeline_values(body.get("timeline_items"))
+    return body
 
 
 # ---------------------------------------------------------------------------

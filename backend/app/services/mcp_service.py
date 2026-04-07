@@ -287,7 +287,9 @@ async def get_summary(
     )
     
     # Get timeline items
-    timeline_items: List[Dict[str, Any]] = entity.timeline_items or []
+    from app.services.timeline_service import timeline_service
+
+    timeline_items: List[Dict[str, Any]] = timeline_service._response_items(entity.timeline_items)
     
     # Apply since filter if provided
     if since_dt:
@@ -1061,6 +1063,7 @@ async def get_item(
     """
     import base64
     import json
+    from app.services.timeline_service import timeline_service
     
     # Validate max_chars
     max_chars = min(max(100, max_chars), 10000)
@@ -1096,7 +1099,7 @@ async def get_item(
                 parent_kind = "task"
             
             if parent_entity:
-                for item in (parent_entity.timeline_items or []):
+                for item in timeline_service._iter_items(parent_entity.timeline_items):
                     if item.get("id") == item_id:
                         found_item = item
                         break
@@ -1114,7 +1117,7 @@ async def get_item(
             entities = result.scalars().all()
             
             for entity in entities:
-                for item in (entity.timeline_items or []):
+                for item in timeline_service._iter_items(entity.timeline_items):
                     if item.get("id") == item_id:
                         found_item = item
                         parent_entity = entity

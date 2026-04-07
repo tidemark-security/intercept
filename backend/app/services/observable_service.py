@@ -5,10 +5,18 @@ from timeline items.
 """
 
 import re
-from typing import List, Dict, Set
+from typing import Any, List, Dict, Set
 from collections import defaultdict
 
 from app.mcp.schemas import ObservableSummary
+
+
+def _timeline_values(timeline_items: Any) -> List[Dict[str, Any]]:
+    if isinstance(timeline_items, dict):
+        return [item for item in timeline_items.values() if isinstance(item, dict)]
+    if isinstance(timeline_items, list):
+        return [item for item in timeline_items if isinstance(item, dict)]
+    return []
 
 
 # Regex patterns for observable extraction
@@ -20,7 +28,7 @@ SHA256_PATTERN = re.compile(r'\b[a-fA-F0-9]{64}\b')
 EMAIL_PATTERN = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
 
 
-def extract_observables(timeline_items: List[Dict], max_observables: int = 20) -> List[ObservableSummary]:
+def extract_observables(timeline_items: Any, max_observables: int = 20) -> List[ObservableSummary]:
     """Extract and deduplicate observables from timeline items.
     
     Args:
@@ -39,7 +47,7 @@ def extract_observables(timeline_items: List[Dict], max_observables: int = 20) -
     # Track observables with counts
     observable_counts: Dict[tuple, int] = defaultdict(int)
     
-    for item in timeline_items:
+    for item in _timeline_values(timeline_items):
         item_type = item.get("type", "")
         
         # Extract from ObservableItem
@@ -137,7 +145,7 @@ def _extract_from_text(text: str, observable_counts: Dict[tuple, int]) -> None:
                 observable_counts[("DOMAIN", domain)] += 1
 
 
-def extract_high_signal_entities(timeline_items: List[Dict]) -> Set[str]:
+def extract_high_signal_entities(timeline_items: Any) -> Set[str]:
     """Extract high-signal entities for similarity matching.
     
     Returns a set of entity strings (IPs, domains, hashes) that appear

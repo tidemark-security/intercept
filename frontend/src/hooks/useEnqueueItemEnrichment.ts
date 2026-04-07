@@ -27,13 +27,13 @@ interface EnqueueItemEnrichmentResponse {
 
 interface TimelineItemLike {
   id?: string | null;
-  replies?: TimelineItemLike[] | null;
+  replies?: Record<string, TimelineItemLike> | null;
   enrichment_status?: string | null;
   enrichment_task_id?: string | null;
 }
 
 interface EntityDetailWithTimeline {
-  timeline_items?: TimelineItemLike[] | null;
+  timeline_items?: Record<string, TimelineItemLike> | null;
 }
 
 interface EnqueueItemEnrichmentContext {
@@ -42,16 +42,16 @@ interface EnqueueItemEnrichmentContext {
 }
 
 function updateTimelineItems(
-  items: TimelineItemLike[] | null | undefined,
+  items: Record<string, TimelineItemLike> | null | undefined,
   itemId: string,
   updateItem: (item: TimelineItemLike) => TimelineItemLike,
-): { items: TimelineItemLike[] | null | undefined; changed: boolean } {
-  if (!Array.isArray(items) || items.length === 0) {
+): { items: Record<string, TimelineItemLike> | null | undefined; changed: boolean } {
+  if (!items || Object.keys(items).length === 0) {
     return { items, changed: false };
   }
 
   let changed = false;
-  const nextItems = items.map((item) => {
+  const nextItems = Object.fromEntries(Object.entries(items).map(([key, item]) => {
     let nextItem = item;
 
     if (item.id === itemId) {
@@ -59,7 +59,7 @@ function updateTimelineItems(
       changed = changed || nextItem !== item;
     }
 
-    if (Array.isArray(item.replies) && item.replies.length > 0) {
+    if (item.replies && Object.keys(item.replies).length > 0) {
       const updatedReplies = updateTimelineItems(item.replies, itemId, updateItem);
       if (updatedReplies.changed) {
         nextItem = {
@@ -70,8 +70,8 @@ function updateTimelineItems(
       }
     }
 
-    return nextItem;
-  });
+    return [key, nextItem];
+  }));
 
   return changed ? { items: nextItems, changed: true } : { items, changed: false };
 }

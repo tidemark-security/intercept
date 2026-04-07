@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -53,6 +54,40 @@ async def test_create_case_serializes_response_after_reload(
     payload = response.json()
     assert payload["title"] == "Case serialization check"
     assert payload["human_id"].startswith("CAS-")
+    assert payload["timeline_items"] == {}
+
+
+@pytest.mark.asyncio
+async def test_get_cases_serializes_legacy_list_backed_timeline_items(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    now = datetime.now(timezone.utc)
+
+    async with session_maker() as session:
+        case = Case(
+            title="Legacy list-backed case",
+            description="Stored before object timeline migration",
+            created_by="seed-user",
+            timeline_items=[],
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(case)
+        await session.commit()
+
+    response = await client.get(
+        "/api/v1/cases",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    matching_case = next(item for item in payload["items"] if item["title"] == "Legacy list-backed case")
+    assert matching_case["timeline_items"] == {}
 
 
 @pytest.mark.asyncio

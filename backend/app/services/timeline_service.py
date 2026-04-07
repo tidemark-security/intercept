@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
+from typing import Any, Dict, Iterable, List, Optional, Set, TYPE_CHECKING
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
@@ -39,9 +39,60 @@ class TimelineService:
     and mutation (add/update/remove) across alerts and cases.
     """
 
-    def _ensure_list(self, entity: Any) -> None:
-        if getattr(entity, "timeline_items", None) is None:
-            entity.timeline_items = []
+    def _iter_items(self, items: Any) -> Iterable[Dict[str, Any]]:
+        if isinstance(items, dict):
+            return items.values()
+        if isinstance(items, list):
+            return items
+        return ()
+
+    def _ensure_item_id(self, item: Dict[str, Any]) -> None:
+        if not item.get("id"):
+            item["id"] = self.generate_item_id()
+
+    def _coerce_item_for_storage(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        self._ensure_item_id(item)
+        replies = item.get("replies")
+        item["replies"] = self._coerce_storage_items(replies)
+        return item
+
+    def _coerce_storage_items(self, items: Any) -> Dict[str, Dict[str, Any]]:
+        mapping: Dict[str, Dict[str, Any]] = {}
+
+        if isinstance(items, dict):
+            candidates = list(items.values())
+        else:
+            candidates = list(items or [])
+
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            self._coerce_item_for_storage(candidate)
+            mapping[str(candidate["id"])] = candidate
+
+        return mapping
+
+    def _ensure_storage_items(self, entity: Any) -> Dict[str, Dict[str, Any]]:
+        items = self._coerce_storage_items(getattr(entity, "timeline_items", None))
+        entity.timeline_items = items
+        return items
+
+    def _response_items(self, items: Any) -> List[Dict[str, Any]]:
+        response_items: List[Dict[str, Any]] = []
+        for item in self._iter_items(items):
+            item_copy = dict(item)
+            item_copy["replies"] = self._response_items(item.get("replies"))
+            response_items.append(item_copy)
+        response_items.sort(key=self._timeline_sort_key)
+        return response_items
+
+    def _response_mapping(self, items: Any) -> Dict[str, Dict[str, Any]]:
+        response_items: Dict[str, Dict[str, Any]] = {}
+        for item in self._iter_items(items):
+            item_copy = dict(item)
+            item_copy["replies"] = self._response_mapping(item.get("replies"))
+            response_items[str(item_copy["id"])] = item_copy
+        return response_items
 
     def generate_item_id(self) -> str:
         """Generate a unique identifier for a timeline item."""
@@ -62,7 +113,7 @@ class TimelineService:
         
         # Check each reply recursively
         if item.get("replies"):
-            for reply in item["replies"]:
+            for reply in self._iter_items(item["replies"]):
                 self._validate_reply_depth(reply, current_depth + 1, max_depth)
 
     async def normalize_item(self, db: AsyncSession, item: Dict[str, Any]) -> Dict[str, Any]:
@@ -75,7 +126,7 @@ class TimelineService:
         # Recursively normalize replies if present (up to max depth)
         if "replies" in normalized and normalized["replies"]:
             normalized_replies = []
-            for reply in normalized["replies"]:
+            for reply in self._iter_items(normalized["replies"]):
                 # Recursively normalize each reply (which may have its own replies)
                 normalized_replies.append(await self.normalize_item(db, reply))
             normalized["replies"] = normalized_replies
@@ -105,19 +156,23 @@ class TimelineService:
             include_linked_timelines: If True, alert and task items will include
                 source_timeline_items from the linked entity
         """
-        items = list(getattr(entity, "timeline_items", None) or [])
+        items = self._response_mapping(getattr(entity, "timeline_items", None))
         
         # Filter out any previously injected items (in case entity was cached/reused)
-        items = [it for it in items if not it.get("_injected")]
+        items = {
+            item_id: item
+            for item_id, item in items.items()
+            if not item.get("_injected")
+        }
         
         # Inject synthetic timeline items for linked entities
         items = await self._inject_linked_entity_items(db, entity, human_prefix, items)
 
-        denormed: List[Dict[str, Any]] = []
-        for it in items:
-            denormed.append(await self._denormalize_item_recursive(
-                db, it, include_linked_timelines=include_linked_timelines
-            ))
+        denormed: Dict[str, Dict[str, Any]] = {}
+        for item_id, item in items.items():
+            denormed[item_id] = await self._denormalize_item_recursive(
+                db, item, include_linked_timelines=include_linked_timelines
+            )
 
         if detach:
             state = sa_inspect(entity)
@@ -136,7 +191,7 @@ class TimelineService:
         entity: Any,
     ) -> Any:
         """Annotate denormalized timeline items with audit metadata and tombstones."""
-        timeline_items = list(getattr(entity, "timeline_items", None) or [])
+        timeline_items = self._response_mapping(getattr(entity, "timeline_items", None))
         if not timeline_items:
             return entity
 
@@ -195,19 +250,19 @@ class TimelineService:
             db,
             entity_type=entity_type,
             entity_id=entity_id,
-            timeline_items=list(getattr(entity, "timeline_items", None) or []),
+            timeline_items=getattr(entity, "timeline_items", None) or {},
         )
         return entity
 
-    def _annotate_items_with_audit(self, items: List[Dict[str, Any]], edited_item_ids: Set[str]) -> None:
-        for item in items:
+    def _annotate_items_with_audit(self, items: Dict[str, Dict[str, Any]], edited_item_ids: Set[str]) -> None:
+        for item in items.values():
             if item.get("id") in edited_item_ids:
                 item["audit"] = {"edited": True}
             replies = item.get("replies")
-            if replies and isinstance(replies, list):
+            if replies and isinstance(replies, dict):
                 self._annotate_items_with_audit(replies, edited_item_ids)
 
-    def _inject_deleted_tombstones(self, items: List[Dict[str, Any]], deleted_rows: List[AuditLog]) -> None:
+    def _inject_deleted_tombstones(self, items: Dict[str, Dict[str, Any]], deleted_rows: List[AuditLog]) -> None:
         for row in deleted_rows:
             if not row.item_id:
                 continue
@@ -221,22 +276,20 @@ class TimelineService:
                 "original_created_at": snapshot.get("created_at"),
                 "original_created_by": snapshot.get("created_by"),
                 "parent_id": snapshot.get("parent_id"),
-                "replies": [],
+                "replies": {},
             }
             parent_id = snapshot.get("parent_id")
             if parent_id and self._add_reply_to_parent(items, parent_id, tombstone):
                 continue
             if not self._contains_item(items, row.item_id):
-                items.append(tombstone)
+                items[str(row.item_id)] = tombstone
 
-        items.sort(key=self._timeline_sort_key)
-
-    def _contains_item(self, items: List[Dict[str, Any]], item_id: str) -> bool:
-        for item in items:
+    def _contains_item(self, items: Dict[str, Dict[str, Any]], item_id: str) -> bool:
+        for item in items.values():
             if item.get("id") == item_id:
                 return True
             replies = item.get("replies")
-            if replies and isinstance(replies, list) and self._contains_item(replies, item_id):
+            if replies and isinstance(replies, dict) and self._contains_item(replies, item_id):
                 return True
         return False
 
@@ -263,8 +316,8 @@ class TimelineService:
         db: AsyncSession,
         entity: Any,
         human_prefix: str,
-        items: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        items: Dict[str, Dict[str, Any]]
+    ) -> Dict[str, Dict[str, Any]]:
         """
         Inject synthetic timeline items for linked entities based on FK relationships.
         
@@ -291,10 +344,10 @@ class TimelineService:
                             "tags": ["linked-alert"],
                             "flagged": False,
                             "highlighted": False,
-                            "replies": [],
+                            "replies": {},
                             "_injected": True,  # Mark as dynamically injected
                         }
-                        items.append(alert_item)
+                        items[str(alert_item["id"])] = alert_item
             
             # Inject task items for linked tasks
             tasks = getattr(entity, "tasks", None)
@@ -317,10 +370,10 @@ class TimelineService:
                             "tags": ["linked-task"],
                             "flagged": False,
                             "highlighted": False,
-                            "replies": [],
+                            "replies": {},
                             "_injected": True,  # Mark as dynamically injected
                         }
-                        items.append(task_item)
+                        items[str(task_item["id"])] = task_item
         
         elif human_prefix == "ALT":
             # Inject case item if alert is linked to a case
@@ -345,10 +398,10 @@ class TimelineService:
                         "tags": ["linked"],
                         "flagged": False,
                         "highlighted": False,
-                        "replies": [],
+                        "replies": {},
                         "_injected": True,  # Mark as dynamically injected
                     }
-                    items.append(case_item)
+                    items[str(case_item["id"])] = case_item
         
         elif human_prefix == "TSK":
             # Inject case item if task is linked to a case
@@ -373,10 +426,10 @@ class TimelineService:
                         "tags": ["linked"],
                         "flagged": False,
                         "highlighted": False,
-                        "replies": [],
+                        "replies": {},
                         "_injected": True,  # Mark as dynamically injected
                     }
-                    items.append(case_item)
+                    items[str(case_item["id"])] = case_item
         
         return items
     
@@ -412,11 +465,12 @@ class TimelineService:
         
         # Recursively denormalize replies if present
         if "replies" in denormalized and denormalized["replies"]:
-            denormalized_replies = []
-            for reply in denormalized["replies"]:
-                denormalized_replies.append(await self._denormalize_item_recursive(
+            denormalized_replies: Dict[str, Dict[str, Any]] = {}
+            for reply in self._iter_items(denormalized["replies"]):
+                denormalized_reply = await self._denormalize_item_recursive(
                     db, reply, include_linked_timelines=include_linked_timelines
-                ))
+                )
+                denormalized_replies[str(denormalized_reply["id"])] = denormalized_reply
             denormalized["replies"] = denormalized_replies
         
         return denormalized
@@ -489,12 +543,12 @@ class TimelineService:
         # Optionally embed task's timeline items as source_timeline_items
         if include_linked_timelines and task.timeline_items:
             # Denormalize the task's timeline items (without further nesting to avoid infinite recursion)
-            source_items = []
-            for task_item in task.timeline_items:
+            source_items: Dict[str, Dict[str, Any]] = {}
+            for task_item in self._iter_items(task.timeline_items):
                 denormalized = await self._denormalize_item_recursive(
                     db, task_item, include_linked_timelines=False  # Don't recurse into linked entities
                 )
-                source_items.append(denormalized)
+                source_items[str(denormalized["id"])] = denormalized
             item["source_timeline_items"] = source_items
         
         return item
@@ -921,24 +975,23 @@ class TimelineService:
         # Remove from timeline
         return self.remove_timeline_item(entity, item_id)
 
-    def _find_item_by_id(self, items: List[Dict[str, Any]], item_id: str) -> Optional[Dict[str, Any]]:
+    def _find_item_by_id(self, items: Any, item_id: str) -> Optional[Dict[str, Any]]:
         """Recursively find a timeline item by ID, supporting nested replies."""
         if not items:
             return None
-        for item in items:
+        if isinstance(items, dict) and item_id in items:
+            return items[item_id]
+        for item in self._iter_items(items):
             if item.get("id") == item_id:
                 return item
             # Check replies recursively
-            replies = item.get("replies")
-            if replies and isinstance(replies, list):
-                found = self._find_item_by_id(replies, item_id)
-                if found:
-                    return found
+            found = self._find_item_by_id(item.get("replies") or {}, item_id)
+            if found:
+                return found
         return None
 
     def _add_item_metadata(self, item: Dict[str, Any], created_by: str) -> None:
-        if not item.get("id"):
-            item["id"] = self.generate_item_id()
+        self._ensure_item_id(item)
         if not item.get("created_at"):
             item["created_at"] = datetime.now(timezone.utc).isoformat()
         item["created_by"] = created_by
@@ -949,10 +1002,13 @@ class TimelineService:
             if isinstance(value, datetime):
                 item[key] = value.isoformat()
             elif isinstance(value, list):
-                # Handle lists that might contain dicts with datetime values
-                for i, list_item in enumerate(value):
+                for list_item in value:
                     if isinstance(list_item, dict):
                         self._serialize_datetime_fields(list_item)
+            elif isinstance(value, dict):
+                for nested_item in value.values():
+                    if isinstance(nested_item, dict):
+                        self._serialize_datetime_fields(nested_item)
 
     def add_timeline_item(self, entity: Any, item: Dict[str, Any], created_by: str) -> None:
         """
@@ -961,16 +1017,17 @@ class TimelineService:
         If item has a parent_id, this will add it as a reply to the parent item.
         Otherwise, it will add it as a top-level timeline item.
         """
-        self._ensure_list(entity)
+        timeline_items = self._ensure_storage_items(entity)
         self._add_item_metadata(item, created_by)
         # Ensure all datetime fields are serialized to ISO strings before storing in JSON column
         self._serialize_datetime_fields(item)
+        self._coerce_item_for_storage(item)
         
         # Check if this is a reply (has parent_id)
         parent_id = item.get("parent_id")
         if parent_id:
             # Find parent and add as reply
-            if self._add_reply_to_parent(entity.timeline_items, parent_id, item):
+            if self._add_reply_to_parent(timeline_items, parent_id, item):
                 flag_modified(entity, "timeline_items")
                 if hasattr(entity, "updated_at"):
                     setattr(entity, "updated_at", datetime.now(timezone.utc))
@@ -981,23 +1038,29 @@ class TimelineService:
                 pass
         
         # Add as top-level item
-        entity.timeline_items.append(item)
+        timeline_items[str(item["id"])] = item
         # Mark the JSON column as modified so SQLAlchemy knows to update it
         flag_modified(entity, "timeline_items")
         if hasattr(entity, "updated_at"):
             setattr(entity, "updated_at", datetime.now(timezone.utc))
     
-    def _add_reply_to_parent(self, items: List[Dict[str, Any]], parent_id: str, reply: Dict[str, Any]) -> bool:
+    def _add_reply_to_parent(self, items: Any, parent_id: str, reply: Dict[str, Any]) -> bool:
         """
         Recursively search for parent item and add reply to it.
         Returns True if parent found and reply added, False otherwise.
         """
-        for item in items:
+        for item in self._iter_items(items):
             if item.get("id") == parent_id:
                 # Found parent - add reply
-                if "replies" not in item:
-                    item["replies"] = []
-                item["replies"].append(reply)
+                existing_replies = item.get("replies")
+                if isinstance(existing_replies, dict):
+                    existing_replies[str(reply["id"])] = reply
+                elif isinstance(existing_replies, list):
+                    existing_replies.append(reply)
+                elif isinstance(items, dict):
+                    item["replies"] = {str(reply["id"]): reply}
+                else:
+                    item["replies"] = [reply]
                 return True
             
             # Check nested replies
@@ -1012,7 +1075,7 @@ class TimelineService:
         Update a timeline item by id; preserves created_* fields; returns True if found and updated.
         Supports nested replies at any depth.
         """
-        items = getattr(entity, "timeline_items", None)
+        items = self._ensure_storage_items(entity)
         if not items:
             return False
         
@@ -1025,8 +1088,25 @@ class TimelineService:
         
         return False
     
-    def _update_item_recursive(self, items: List[Dict[str, Any]], item_id: str, updated: Dict[str, Any], updated_by: str) -> bool:
+    def _update_item_recursive(self, items: Any, item_id: str, updated: Dict[str, Any], updated_by: str) -> bool:
         """Recursively search and update a timeline item by ID."""
+        if isinstance(items, dict) and item_id in items:
+            item = items[item_id]
+            created_at = item.get("created_at")
+            created_by = item.get("created_by")
+            existing_replies = item.get("replies")
+
+            new_item = {**item, **updated}
+            new_item["id"] = item_id
+            new_item["created_at"] = created_at
+            new_item["created_by"] = created_by
+            if existing_replies is not None:
+                new_item["replies"] = existing_replies
+            self._serialize_datetime_fields(new_item)
+            self._coerce_item_for_storage(new_item)
+            items[item_id] = new_item
+            return True
+
         for idx, item in enumerate(items):
             if item.get("id") == item_id:
                 # Found the item - update it
@@ -1048,6 +1128,7 @@ class TimelineService:
                 for key, value in new_item.items():
                     if isinstance(value, datetime):
                         new_item[key] = value.isoformat()
+                self._coerce_item_for_storage(new_item)
                 
                 items[idx] = new_item
                 return True
@@ -1065,7 +1146,7 @@ class TimelineService:
         Remove a timeline item by id; returns True if item removed.
         Supports removing nested replies at any depth.
         """
-        items = getattr(entity, "timeline_items", None)
+        items = self._ensure_storage_items(entity)
         if not items:
             return False
         
@@ -1078,8 +1159,17 @@ class TimelineService:
         
         return False
     
-    def _remove_item_recursive(self, items: List[Dict[str, Any]], item_id: str) -> bool:
+    def _remove_item_recursive(self, items: Any, item_id: str) -> bool:
         """Recursively search and remove a timeline item by ID."""
+        if isinstance(items, dict):
+            if items.pop(item_id, None) is not None:
+                return True
+            for item in items.values():
+                replies = item.get('replies')
+                if replies and self._remove_item_recursive(replies, item_id):
+                    return True
+            return False
+
         # Try to remove at current level
         original_len = len(items)
         items[:] = [it for it in items if it.get("id") != item_id]

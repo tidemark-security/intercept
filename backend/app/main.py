@@ -2,6 +2,8 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.openapi.utils import get_openapi
+from fastapi.routing import APIRoute
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
@@ -26,6 +28,11 @@ from app.core.csrf import CSRFMiddleware
 from app.core.database import test_db_connection
 from app.core.database import async_session_factory
 from app.core.security import initialize_encryption_service
+from app.api.routes.admin_auth import (
+    require_admin_user,
+    require_authenticated_user,
+    require_non_auditor_user,
+)
 from app.services.task_queue_service import initialize_task_queue_service, shutdown_task_queue_service
 from app.services.enrichment.providers import register_providers
 from app.services.tasks import register_task_handlers
@@ -112,6 +119,61 @@ app = FastAPI(
     redoc_url="/redoc",
     redirect_slashes=True  # Handle trailing slash redirects automatically
 )
+
+
+AUTH_DEPENDENCIES = {
+    require_authenticated_user,
+    require_admin_user,
+    require_non_auditor_user,
+}
+
+
+def _has_auth_dependency(dependant) -> bool:
+    for dependency in dependant.dependencies:
+        if dependency.call in AUTH_DEPENDENCIES or _has_auth_dependency(dependency):
+            return True
+    return False
+
+
+def custom_openapi() -> dict:
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+
+    components = openapi_schema.setdefault("components", {})
+    security_schemes = components.setdefault("securitySchemes", {})
+    security_schemes["BearerAuth"] = {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "API Key",
+        "description": "Enter a Tidemark API key. Swagger will send it as Authorization: Bearer <key>.",
+    }
+
+    for route in app.routes:
+        if not isinstance(route, APIRoute) or not _has_auth_dependency(route.dependant):
+            continue
+
+        path_item = openapi_schema.get("paths", {}).get(route.path_format)
+        if not path_item:
+            continue
+
+        for method in route.methods:
+            operation = path_item.get(method.lower())
+            if operation is None:
+                continue
+            operation["security"] = [{"BearerAuth": []}]
+
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 # Configure CORS
 app.add_middleware(

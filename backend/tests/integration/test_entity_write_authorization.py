@@ -11,6 +11,14 @@ from app.models.models import Alert, Case, Task
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
+def _timeline_values(items: Any) -> list[dict[str, Any]]:
+    if isinstance(items, dict):
+        return [item for item in items.values() if isinstance(item, dict)]
+    if isinstance(items, list):
+        return [item for item in items if isinstance(item, dict)]
+    return []
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -290,6 +298,6 @@ async def test_analyst_can_edit_other_users_timeline_items(
     )
 
     assert response.status_code == 200
-    timeline_items = response.json()["timeline_items"]
+    timeline_items = _timeline_values(response.json()["timeline_items"])
     updated_item = next(item for item in timeline_items if item["id"] == original_item["id"])
     assert updated_item["description"] == f"Edited by {editor_username}"

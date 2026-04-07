@@ -4,11 +4,33 @@ from copy import deepcopy
 from typing import Any, Callable, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import select
 
 from app.models.enums import RealtimeEventType
+from app.models.models import Alert, Case, Task
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
 from app.services.timeline_service import timeline_service
+
+
+async def _load_entity_for_timeline_update(
+    db: AsyncSession,
+    *,
+    entity_type: str,
+    entity_id: int,
+) -> Any | None:
+    normalized_type = entity_type.lower()
+    if normalized_type == "case":
+        stmt = select(Case).where(Case.id == entity_id).with_for_update()
+    elif normalized_type == "alert":
+        stmt = select(Alert).where(Alert.id == entity_id).with_for_update()
+    elif normalized_type == "task":
+        stmt = select(Task).where(Task.id == entity_id).with_for_update()
+    else:
+        raise ValueError(f"Unsupported entity type for timeline update: {entity_type}")
+
+    result = await db.execute(stmt)
+    return result.scalar_one_or_none()
 
 
 async def add_timeline_item_and_commit(
@@ -21,6 +43,14 @@ async def add_timeline_item_and_commit(
     performed_by: str,
     validate_item: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> dict[str, Any]:
+    entity = await _load_entity_for_timeline_update(
+        db,
+        entity_type=entity_type,
+        entity_id=entity_id,
+    )
+    if entity is None:
+        raise ValueError(f"{entity_type} {entity_id} not found")
+
     item_dict = timeline_item.model_dump(mode="json")
 
     if validate_item is not None:
@@ -81,6 +111,14 @@ async def update_timeline_item_and_commit(
     timeline_item: Any,
     performed_by: str,
 ) -> Optional[dict[str, Any]]:
+    entity = await _load_entity_for_timeline_update(
+        db,
+        entity_type=entity_type,
+        entity_id=entity_id,
+    )
+    if entity is None:
+        return None
+
     previous_item = deepcopy(existing_item)
     item_dict = timeline_item.model_dump(mode="json")
 

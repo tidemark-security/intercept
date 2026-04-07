@@ -8,6 +8,7 @@ import type { TaskRead } from '@/types/generated/models/TaskRead';
 import type { TimelineItem } from '@/types/timeline';
 import { queryKeys } from './queryKeys';
 import { findTimelineItem, updateTimelineItemById } from '@/utils/timelineUtils';
+import { getTimelineItemMap } from '@/utils/timelineHelpers';
 
 interface TimelineItemUpdate {
   itemId: string;
@@ -62,7 +63,7 @@ export function useUpdateTimelineItem(
       }
       const queriesData = queryClient.getQueriesData<AlertRead | CaseRead | TaskRead>({ queryKey, exact: false });
       const currentData = queriesData.length > 0 ? queriesData[0][1] : undefined;
-      const currentTimeline = currentData?.timeline_items as unknown as TimelineItem[] | null;
+      const currentTimeline = getTimelineItemMap(currentData ?? null);
       
       // Find the item to update using shared utility
       const currentItem = currentTimeline ? findTimelineItem(currentTimeline, itemId) : null;
@@ -130,7 +131,7 @@ export function useUpdateTimelineItem(
       const previousData = queriesData.length > 0 ? queriesData[0][1] : undefined;
 
       // Optimistically update the cache using shared utility
-      const previousTimeline = previousData?.timeline_items as unknown as TimelineItem[] | null;
+      const previousTimeline = getTimelineItemMap(previousData ?? null);
       if (previousData && previousTimeline) {
         const updatedData = {
           ...previousData,

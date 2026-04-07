@@ -5,6 +5,23 @@
 import type { TimelineItem } from '@/types/timeline';
 import type { TimelineItemType } from '@/types/drafts';
 
+export type TimelineItemMap = Record<string, TimelineItem>;
+export type TimelineItemCollection = TimelineItem[] | TimelineItemMap | null | undefined;
+
+function toCollectionArray(items: TimelineItemCollection): TimelineItem[] {
+  if (Array.isArray(items)) {
+    return items;
+  }
+  if (items && typeof items === 'object') {
+    return Object.values(items).sort((left, right) => {
+      const leftKey = left.timestamp || left.created_at || '';
+      const rightKey = right.timestamp || right.created_at || '';
+      return leftKey.localeCompare(rightKey);
+    });
+  }
+  return [];
+}
+
 /**
  * Recursively find a timeline item by ID
  * Searches through nested replies to find matching item
@@ -14,14 +31,14 @@ import type { TimelineItemType } from '@/types/drafts';
  * @returns Found item or null if not found
  */
 export function findTimelineItem(
-  items: TimelineItem[],
+  items: TimelineItemCollection,
   itemId: string
 ): TimelineItem | null {
-  for (const item of items) {
+  for (const item of toCollectionArray(items)) {
     if (item.id === itemId) return item;
     
-    const replies = item.replies as TimelineItem[] | null | undefined;
-    if (replies && Array.isArray(replies)) {
+    const replies = item.replies;
+    if (replies) {
       const found = findTimelineItem(replies, itemId);
       if (found) return found;
     }
@@ -39,23 +56,51 @@ export function findTimelineItem(
  * @returns New array with the updated item
  */
 export function updateTimelineItemById(
-  items: TimelineItem[],
+  items: TimelineItemCollection,
   itemId: string,
   updates: Partial<TimelineItem>
-): TimelineItem[] {
-  return items.map((item): TimelineItem => {
+) : TimelineItemCollection {
+  if (Array.isArray(items)) {
+    return items.map((item): TimelineItem => {
+      if (item.id === itemId) {
+        return { ...item, ...updates } as TimelineItem;
+      }
+      const replies = item.replies;
+      if (replies) {
+        return {
+          ...item,
+          replies: updateTimelineItemById(replies, itemId, updates) as TimelineItemMap,
+        } as TimelineItem;
+      }
+      return item;
+    });
+  }
+
+  if (!items || typeof items !== 'object') {
+    return items;
+  }
+
+  let changed = false;
+  const nextItems: TimelineItemMap = {};
+
+  for (const [key, item] of Object.entries(items)) {
+    let nextItem = item;
     if (item.id === itemId) {
-      return { ...item, ...updates } as TimelineItem;
+      nextItem = { ...item, ...updates } as TimelineItem;
+      changed = true;
     }
-    const replies = item.replies as TimelineItem[] | null | undefined;
-    if (replies && Array.isArray(replies) && replies.length > 0) {
-      return {
-        ...item,
-        replies: updateTimelineItemById(replies, itemId, updates),
-      } as TimelineItem;
+    const replies = item.replies;
+    if (replies) {
+      const nextReplies = updateTimelineItemById(replies, itemId, updates) as TimelineItemMap;
+      if (nextReplies !== replies) {
+        nextItem = { ...nextItem, replies: nextReplies } as TimelineItem;
+        changed = true;
+      }
     }
-    return item;
-  });
+    nextItems[key] = nextItem;
+  }
+
+  return changed ? nextItems : items;
 }
 
 /**
@@ -67,21 +112,49 @@ export function updateTimelineItemById(
  * @returns New array without the removed item
  */
 export function removeTimelineItemById(
-  items: TimelineItem[],
+  items: TimelineItemCollection,
   itemId: string
-): TimelineItem[] {
-  return items
-    .filter(item => item.id !== itemId)
-    .map((item): TimelineItem => {
-      const replies = item.replies as TimelineItem[] | null | undefined;
-      if (replies && Array.isArray(replies) && replies.length > 0) {
-        return {
-          ...item,
-          replies: removeTimelineItemById(replies, itemId),
-        } as TimelineItem;
+): TimelineItemCollection {
+  if (Array.isArray(items)) {
+    return items
+      .filter(item => item.id !== itemId)
+      .map((item): TimelineItem => {
+        const replies = item.replies;
+        if (replies) {
+          return {
+            ...item,
+            replies: removeTimelineItemById(replies, itemId) as TimelineItemMap,
+          } as TimelineItem;
+        }
+        return item;
+      });
+  }
+
+  if (!items || typeof items !== 'object') {
+    return items;
+  }
+
+  let changed = false;
+  const nextItems: TimelineItemMap = {};
+  for (const [key, item] of Object.entries(items)) {
+    if (item.id === itemId) {
+      changed = true;
+      continue;
+    }
+
+    let nextItem = item;
+    const replies = item.replies;
+    if (replies) {
+      const nextReplies = removeTimelineItemById(replies, itemId) as TimelineItemMap;
+      if (nextReplies !== replies) {
+        nextItem = { ...item, replies: nextReplies } as TimelineItem;
+        changed = true;
       }
-      return item;
-    });
+    }
+    nextItems[key] = nextItem;
+  }
+
+  return changed ? nextItems : items;
 }
 
 /**
