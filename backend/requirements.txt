@@ -19,7 +19,7 @@ PyJWT[crypto]>=2.12.0
 python-multipart>=0.0.22
 sqlakeyset==2.0.1762907931
 sqlmodel==0.0.27
-webauthn==2.7.0
+webauthn==2.7.1
 uvicorn[standard]==0.38.0
 
 # MCP
