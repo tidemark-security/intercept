@@ -11,7 +11,7 @@ fastapi==0.125.0
 geoip2==5.2.0
 httpx==0.28.1
 ldap3==2.9.1
-mitreattack-python==5.3.0
+mitreattack-python==5.4.4
 psycopg2-binary==2.9.11
 pydantic-settings==2.12.0
 python-dotenv==1.2.1
