@@ -24,7 +24,9 @@ from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 def test_langflow_bundled_assets_live_under_backend_static() -> None:
     asset_dir = langflow_routes._get_langflow_asset_dir()
 
-    assert asset_dir == Path("/home/gb/projects/tmi/backend/app/static/langflow")
+    assert asset_dir.is_dir()
+    assert asset_dir.name == "langflow"
+    assert asset_dir.parent.name == "static"
     assert (asset_dir / "tmi_general_purpose.json").is_file()
     assert (asset_dir / "tmi_case_agent.json").is_file()
     assert (asset_dir / "tmi_task_agent.json").is_file()

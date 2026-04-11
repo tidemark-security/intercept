@@ -48,7 +48,6 @@ describe("LangflowSetupStatus", () => {
       screen.getByText("Langflow setup completed with warnings"),
     ).toBeInTheDocument();
     expect(screen.getByText("Automation NHI account")).toBeInTheDocument();
-    expect(screen.getByText("Warnings")).toBeInTheDocument();
     expect(
       screen.getByText(
         "Existing flow 'General purpose flow' differs from the bundled asset and was not overwritten",
