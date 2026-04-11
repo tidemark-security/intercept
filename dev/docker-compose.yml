@@ -2,6 +2,10 @@
 # DEVELOPMENT Docker Compose — for local dev with hot-reload and source mounts.
 # Run from this directory:  cd dev && docker compose up -d
 #
+# WARNING: This configuration is for local development and testing only.
+# Do not use in production as it contains weak hardcoded secrets, and lacks 
+# proper security measures.
+#
 # For a single-file quickstart using published images (no repo clone needed),
 # see docs/quickstart/docker-compose.yml
 # =============================================================================
@@ -39,7 +43,10 @@ services:
     build:
       context: ../backend
       dockerfile: Dockerfile.dev
-    network_mode: host
+    extra_hosts:
+      - "localhost:host-gateway"
+    ports:
+      - "8000:8000"
     environment:
       AUTO_SEED: "true"
       DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db
@@ -49,10 +56,7 @@ services:
       STORAGE_BUCKET: intercept-attachments
       STORAGE_USE_SSL: "false"
       LANGFLOW__BASE_URL: http://localhost:7860/api/v1
-      LANGFLOW__DEFAULT_FLOW_ID: "tmi_general_purpose"
-      LANGFLOW__CASE_DETAIL_FLOW_ID: "tmi_case_agent"
-      LANGFLOW__TASK_DETAIL_FLOW_ID: "tmi_task_agent"
-      LANGFLOW__ALERT_TRIAGE_FLOW_ID: "tmi_alert_triage"
+      LANGFLOW__API_KEY: ${LANGFLOW_API_KEY:-dev-langflow-api-key}
       SECRET_KEY: dev-secret-key-change-in-production
     volumes:
       - ../backend:/app
@@ -115,15 +119,29 @@ services:
     user: root
     environment:
       LANGFLOW_DATABASE_URL: postgresql://langflow_user:langflow_password@postgres:5432/langflow
+      LANGFLOW_PGVECTOR_DATABASE_URL: postgresql://langflow_user:langflow_password@postgres:5432/langflow_rag
+      LANGFLOW_VARIABLES_TO_GET_FROM_ENVIRONMENT: "LANGFLOW_PGVECTOR_DATABASE_URL"
       LANGFLOW_CONFIG_DIR: /app/langflow
+      LANGFLOW_AUTO_LOGIN: "false"
+      LANGFLOW_SUPERUSER: ${LANGFLOW_SUPERUSER:-admin}
+      LANGFLOW_SUPERUSER_PASSWORD: ${LANGFLOW_SUPERUSER_PASSWORD:-admin}
+      LANGFLOW_SECRET_KEY: ${LANGFLOW_SECRET_KEY:-dev-langflow-secret-change-in-production}
+      LANGFLOW_NEW_USER_IS_ACTIVE: "false"
+      LANGFLOW_ENABLE_SUPERUSER_CLI: "false"
+      LANGFLOW_API_KEY_SOURCE: env
+      LANGFLOW_API_KEY: ${LANGFLOW_API_KEY:-dev-langflow-api-key}
       DO_NOT_TRACK: "true"
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPIK_API_KEY: ${OPIK_API_KEY:-}
+      OPIK_URL_OVERRIDE: ${OPIK_URL_OVERRIDE:-}
+      OPIK_PROJECT_NAME: ${OPIK_PROJECT_NAME:-}
+      OPIK_WORKSPACE: ${OPIK_WORKSPACE:-}
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "localhost:host-gateway"
     ports:
       - "7860:7860"
     volumes:
       - langflow_data:/app/langflow
-      - ../langflow/mcp.py:/app/.venv/lib/python3.12/site-packages/lfx/components/models_and_agents/mcp_component.py:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -133,7 +151,10 @@ services:
     build:
       context: ../backend
       dockerfile: Dockerfile.dev
-    network_mode: host
+    extra_hosts:
+      - "localhost:host-gateway"
+    ports:
+      - "8001:8001"
     environment:
       DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db
       STORAGE_ENDPOINT: localhost:9000
@@ -143,10 +164,7 @@ services:
       STORAGE_USE_SSL: "false"
       SECRET_KEY: dev-secret-key-change-in-production
       LANGFLOW__BASE_URL: http://localhost:7860/api/v1
-      LANGFLOW__DEFAULT_FLOW_ID: "tmi_general_purpose"
-      LANGFLOW__CASE_DETAIL_FLOW_ID: "tmi_case_agent"
-      LANGFLOW__TASK_DETAIL_FLOW_ID: "tmi_task_agent"
-      LANGFLOW__ALERT_TRIAGE_FLOW_ID: "tmi_alert_triage"
+      LANGFLOW__API_KEY: ${LANGFLOW_API_KEY:-dev-langflow-api-key}
       WORKER_CONCURRENCY: "20"
       HEALTH_PORT: "8001"
       LOG_LEVEL: "INFO"

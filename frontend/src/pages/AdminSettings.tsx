@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { AdminPageLayout } from "../components/layout/AdminPageLayout";
+import { ModalShell } from "@/components/overlays";
 import { TextField } from "@/components/forms/TextField";
 import { TextArea } from "@/components/forms/TextArea";
 import { Button } from "@/components/buttons/Button";
@@ -11,17 +12,22 @@ import { useTheme } from "@/contexts/ThemeContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
 import { cn } from "@/utils/cn";
+import { LangflowConnectionStatus } from "@/components/admin/LangflowConnectionStatus";
+import { LangflowSetupStatus } from "@/components/admin/LangflowSetupStatus";
 
 import { useSession } from "../contexts/sessionContext";
 import { ApiError } from "../types/generated/core/ApiError";
+import { OpenAPI } from "../types/generated/core/OpenAPI";
 import { AdminService } from "../types/generated/services/AdminService";
 import { AuthenticationService } from "../types/generated/services/AuthenticationService";
 import { LangflowService } from "../types/generated/services/LangflowService";
 import type {
   AppSettingRead,
+  LangFlowSetupResponse,
   MaxMindConfigureResponse,
   MaxMindDatabaseStatus,
 } from "../types/generated";
+import type { TestConnectionResponse } from "../types/generated/models/TestConnectionResponse";
 import type { SettingType } from "../types/generated/models/SettingType";
 import {
   useSettings,
@@ -40,8 +46,10 @@ import {
   RefreshCw,
   Save,
   Settings,
+  Shield,
   Sparkles,
   Upload,
+  Workflow,
 } from "lucide-react";
 
 const DEFAULT_CASE_CLOSURE_RECOMMENDED_TAGS = [
@@ -52,6 +60,8 @@ const DEFAULT_CASE_CLOSURE_RECOMMENDED_TAGS = [
   "No Action Required",
   "Duplicate",
 ];
+
+const LANGFLOW_SETUP_DEFAULT_USERNAME = "tidemark_ai";
 
 const MAXMIND_DATABASES_QUERY_KEY = ["admin", "maxmind", "databases"] as const;
 
@@ -217,6 +227,46 @@ const extractApiErrorMessage = (err: unknown, fallback: string): string => {
   return fallback;
 };
 
+const deriveLangflowMcpSseUrl = (apiBaseUrl: string): string => {
+  const fallbackOrigin =
+    typeof window !== "undefined" ? window.location.origin : apiBaseUrl;
+
+  try {
+    const parsed = new URL(apiBaseUrl || fallbackOrigin);
+    const normalizedPath = parsed.pathname.replace(/\/$/, "");
+    if (normalizedPath.endsWith("/api/v1")) {
+      parsed.pathname = normalizedPath.slice(0, -7) || "/";
+    } else if (normalizedPath.endsWith("/api")) {
+      parsed.pathname = normalizedPath.slice(0, -4) || "/";
+    }
+
+    return `${parsed.toString().replace(/\/$/, "")}/mcp/sse`;
+  } catch {
+    return `${fallbackOrigin.replace(/\/$/, "")}/mcp/sse`;
+  }
+};
+
+const deriveBackendApiBaseUrlFromMcpSseUrl = (
+  mcpSseUrl: string,
+  fallbackApiBaseUrl: string,
+): string => {
+  const fallbackOrigin =
+    typeof window !== "undefined" ? window.location.origin : fallbackApiBaseUrl;
+
+  try {
+    const parsed = new URL(mcpSseUrl || fallbackOrigin);
+    const normalizedPath = parsed.pathname.replace(/\/$/, "");
+
+    if (normalizedPath.endsWith("/mcp/sse")) {
+      parsed.pathname = normalizedPath.slice(0, -8) || "/";
+    }
+
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return fallbackApiBaseUrl;
+  }
+};
+
 function AdminSettings() {
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === "dark";
@@ -235,10 +285,18 @@ function AdminSettings() {
   const googleServiceAccountFileInputRef = useRef<HTMLInputElement>(null);
 
   const [testingConnection, setTestingConnection] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState<{
-    success: boolean;
-    message: string;
-  } | null>(null);
+  const [connectionStatus, setConnectionStatus] =
+    useState<TestConnectionResponse | null>(null);
+  const [showLangflowSetupModal, setShowLangflowSetupModal] = useState(false);
+  const [langflowSetupUsername, setLangflowSetupUsername] = useState(
+    LANGFLOW_SETUP_DEFAULT_USERNAME,
+  );
+  const [langflowSetupMcpUrl, setLangflowSetupMcpUrl] = useState("");
+  const [langflowSetupPage, setLangflowSetupPage] = useState<
+    "overview" | "configure" | "results"
+  >("overview");
+  const [langflowSetupStatus, setLangflowSetupStatus] =
+    useState<LangFlowSetupResponse | null>(null);
   const [testingOidcDiscovery, setTestingOidcDiscovery] = useState(false);
   const [oidcDiscoveryStatus, setOidcDiscoveryStatus] = useState<{
     success: boolean;
@@ -265,10 +323,27 @@ function AdminSettings() {
     title: string;
     description: string;
   } | null>(null);
-  const [activeSectionId, setActiveSectionId] = useState("case-closure-settings");
+  const [activeSectionId, setActiveSectionId] = useState(
+    "case-closure-settings",
+  );
   const [isCompactTocOpen, setIsCompactTocOpen] = useState(false);
 
   const isAdmin = currentUser?.role === "ADMIN";
+  const backendApiBaseUrl =
+    OpenAPI.BASE ||
+    (typeof window !== "undefined"
+      ? window.location.origin
+      : "http://localhost:8000");
+  const defaultLangflowMcpUrl = useMemo(
+    () => deriveLangflowMcpSseUrl(backendApiBaseUrl),
+    [backendApiBaseUrl],
+  );
+
+  useEffect(() => {
+    setLangflowSetupMcpUrl((currentValue) =>
+      currentValue.trim() ? currentValue : defaultLangflowMcpUrl,
+    );
+  }, [defaultLangflowMcpUrl]);
 
   const { data: maxMindDatabases = [], isLoading: maxMindDatabasesLoading } =
     useQuery({
@@ -329,6 +404,66 @@ function AdminSettings() {
           "Failed to queue MaxMind update",
         ),
       });
+    },
+  });
+
+  const langflowSetupMutation = useMutation({
+    mutationFn: ({
+      nhiUsername,
+      mcpSseUrl,
+    }: {
+      nhiUsername: string;
+      mcpSseUrl: string;
+    }) =>
+      LangflowService.setupInterceptMcpServerApiV1LangflowAdminSetupInterceptMcpPost(
+        {
+          requestBody: {
+            backend_api_base_url: deriveBackendApiBaseUrlFromMcpSseUrl(
+              mcpSseUrl,
+              backendApiBaseUrl,
+            ),
+            nhi_username: nhiUsername.trim() || LANGFLOW_SETUP_DEFAULT_USERNAME,
+          },
+        },
+      ),
+    onSuccess: async (response) => {
+      setLangflowSetupStatus(response);
+      setLangflowSetupPage("results");
+
+      if (response.success) {
+        await queryClient.invalidateQueries({
+          queryKey: ["admin", "settings"],
+        });
+        setConnectionStatus(null);
+      }
+
+      showToast(
+        response.success
+          ? response.warnings?.length
+            ? "Langflow setup completed with warnings"
+            : "Langflow setup completed"
+          : "Langflow setup failed",
+        response.message,
+        response.success
+          ? response.warnings?.length
+            ? "neutral"
+            : "success"
+          : "error",
+      );
+    },
+    onError: (err) => {
+      const message = extractApiErrorMessage(
+        err,
+        "Failed to set up the Intercept MCP server in Langflow",
+      );
+      setLangflowSetupStatus({
+        success: false,
+        message,
+        steps: [],
+        warnings: [],
+      });
+      setLangflowSetupPage("results");
+      showToast("Langflow setup failed", message, "error");
     },
   });
 
@@ -406,10 +541,41 @@ function AdminSettings() {
       setConnectionStatus({
         success: false,
         message: err instanceof Error ? err.message : "Connection test failed",
+        checks: [],
       });
     } finally {
       setTestingConnection(false);
     }
+  };
+
+  const openLangflowSetupModal = () => {
+    setLangflowSetupStatus(null);
+    setLangflowSetupPage("overview");
+    setLangflowSetupMcpUrl(defaultLangflowMcpUrl);
+    setShowLangflowSetupModal(true);
+  };
+
+  const closeLangflowSetupModal = () => {
+    if (langflowSetupMutation.isPending) {
+      return;
+    }
+    setShowLangflowSetupModal(false);
+  };
+
+  const runLangflowSetup = async () => {
+    setLangflowSetupStatus(null);
+    await langflowSetupMutation.mutateAsync({
+      nhiUsername: langflowSetupUsername,
+      mcpSseUrl: langflowSetupMcpUrl,
+    });
+  };
+
+  const goToLangflowSetupOverview = () => {
+    setLangflowSetupPage("overview");
+  };
+
+  const goToLangflowSetupConfiguration = () => {
+    setLangflowSetupPage("configure");
   };
 
   const testOidcDiscovery = async () => {
@@ -796,8 +962,7 @@ function AdminSettings() {
     sectionNavigationItems.find((item) => item.id === activeSectionId)?.label ??
     sectionNavigationItems[0]?.label ??
     "Sections";
-  const showDesktopToc =
-    breakpoint === "desktop" || breakpoint === "ultrawide";
+  const showDesktopToc = breakpoint === "desktop" || breakpoint === "ultrawide";
 
   useEffect(() => {
     setActiveSectionId((currentId) => {
@@ -809,13 +974,18 @@ function AdminSettings() {
   }, [sectionNavigationItems]);
 
   useEffect(() => {
-    if (typeof window === "undefined" || typeof IntersectionObserver === "undefined") {
+    if (
+      typeof window === "undefined" ||
+      typeof IntersectionObserver === "undefined"
+    ) {
       return;
     }
 
     const sectionElements = sectionNavigationItems
       .map((item) => document.getElementById(item.id))
-      .filter((element): element is HTMLElement => element instanceof HTMLElement);
+      .filter(
+        (element): element is HTMLElement => element instanceof HTMLElement,
+      );
 
     if (sectionElements.length === 0) {
       return;
@@ -941,530 +1111,163 @@ function AdminSettings() {
               ) : null}
 
               <div className="min-w-0 flex-1 flex flex-col gap-8">
-            <div
-              id="case-closure-settings"
-              className="scroll-mt-24 flex flex-col gap-6"
-            >
-              <h2 className="text-heading-2 font-heading-2 text-default-font">
-                General
-              </h2>
-              <section className="flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6">
-              <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
-                <Settings className="text-[20px] text-subtext-color" />
-                <h3 className="text-heading-3 font-heading-3 text-default-font">
-                  Case Closure Settings
-                </h3>
-              </div>
-
-              <TagsSettingField
-                label="Recommended Closure Tags"
-                description={
-                  settingMeta("case_closure.recommended_tags").description
-                }
-                source={settingMeta("case_closure.recommended_tags").source}
-                readOnly={settingMeta("case_closure.recommended_tags").readOnly}
-                value={getSetting("case_closure.recommended_tags")}
-                fallbackTags={DEFAULT_CASE_CLOSURE_RECOMMENDED_TAGS}
-                onSave={(tags) =>
-                  handleSaveSetting(
-                    "case_closure.recommended_tags",
-                    JSON.stringify(tags),
-                    false,
-                    "JSON",
-                  )
-                }
-              />
-              </section>
-            </div>
-
-            <div
-              id="attachment-limits-settings"
-              className="scroll-mt-24 flex flex-col gap-6"
-            >
-              <h2 className="text-heading-2 font-heading-2 text-default-font">
-                System
-              </h2>
-              <section className="flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6">
-                <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
-                  <Upload className="text-[20px] text-subtext-color" />
-                  <h3 className="text-heading-3 font-heading-3 text-default-font">
-                    Attachment Limits
-                  </h3>
-                </div>
-
-                <SettingField
-                  label="Maximum Upload Size (MB)"
-                  {...settingMeta("storage.max_upload_size_mb")}
-                  onSave={(value) =>
-                    handleSaveSetting(
-                      "storage.max_upload_size_mb",
-                      value,
-                      false,
-                      "NUMBER",
-                    )
-                  }
-                  placeholder="50"
-                  inputType="number"
-                  inputMode="numeric"
-                  min={1}
-                  step={1}
-                />
-
-                <SettingField
-                  label="Maximum Image Preview Size (MB)"
-                  {...settingMeta("storage.max_image_preview_size_mb")}
-                  onSave={(value) =>
-                    handleSaveSetting(
-                      "storage.max_image_preview_size_mb",
-                      value,
-                      false,
-                      "NUMBER",
-                    )
-                  }
-                  placeholder="5"
-                  inputType="number"
-                  inputMode="numeric"
-                  min={1}
-                  step={1}
-                />
-
-                <SettingField
-                  label="Maximum Text Preview Size (MB)"
-                  {...settingMeta("storage.max_text_preview_size_mb")}
-                  onSave={(value) =>
-                    handleSaveSetting(
-                      "storage.max_text_preview_size_mb",
-                      value,
-                      false,
-                      "NUMBER",
-                    )
-                  }
-                  placeholder="1"
-                  inputType="number"
-                  inputMode="numeric"
-                  min={1}
-                  step={1}
-                />
-              </section>
-            </div>
-
-            <div
-              id="oidc-settings"
-              className="scroll-mt-24 flex flex-col gap-6"
-            >
-              <h2 className="text-heading-2 font-heading-2 text-default-font">
-                Identity Providers
-              </h2>
-              <section className="flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6">
-              <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
-                <Settings className="text-[20px] text-subtext-color" />
-                <h3 className="text-heading-3 font-heading-3 text-default-font">
-                  OIDC / Single Sign-On
-                </h3>
-              </div>
-
-              <StatusCallout
-                variant={
-                  parseBooleanValue(getSetting("oidc.enabled"))
-                    ? getSetting("oidc.discovery_url") &&
-                      getSetting("oidc.client_id")
-                      ? "success"
-                      : "warning"
-                    : "warning"
-                }
-                title={
-                  parseBooleanValue(getSetting("oidc.enabled"))
-                    ? "OIDC is enabled"
-                    : "OIDC is disabled"
-                }
-                description={
-                  parseBooleanValue(getSetting("oidc.enabled"))
-                    ? "OIDC sign-in swaps the external token for the app's normal session cookie."
-                    : "Enable OIDC to route sign-in through your external identity provider."
-                }
-                isDarkTheme={isDarkTheme}
-              />
-
-              <BooleanSettingField
-                label="Enable OIDC"
-                description={settingMeta("oidc.enabled").description}
-                source={settingMeta("oidc.enabled").source}
-                readOnly={settingMeta("oidc.enabled").readOnly}
-                value={parseBooleanValue(getSetting("oidc.enabled"))}
-                onSave={(value) =>
-                  handleSaveSetting(
-                    "oidc.enabled",
-                    value ? "true" : "false",
-                    false,
-                    "BOOLEAN",
-                  )
-                }
-              />
-
-              <SettingField
-                label="Discovery URL"
-                {...settingMeta("oidc.discovery_url")}
-                onSave={(value) =>
-                  handleSaveSetting("oidc.discovery_url", value)
-                }
-                placeholder="https://idp.example.com/.well-known/openid-configuration"
-              />
-
-              <SettingField
-                label="Client ID"
-                {...settingMeta("oidc.client_id")}
-                onSave={(value) => handleSaveSetting("oidc.client_id", value)}
-                placeholder="intercept-backend"
-              />
-
-              <SettingField
-                label="Client Secret"
-                {...settingMeta("oidc.client_secret")}
-                onSave={(value) =>
-                  handleSaveSetting("oidc.client_secret", value, true)
-                }
-                placeholder="Client secret"
-                isSecret
-              />
-
-              <SettingField
-                label="Scopes"
-                {...settingMeta("oidc.scopes")}
-                onSave={(value) => handleSaveSetting("oidc.scopes", value)}
-                placeholder="openid email profile"
-              />
-
-              <SettingField
-                label="Provider Name"
-                {...settingMeta("oidc.provider_name")}
-                onSave={(value) =>
-                  handleSaveSetting("oidc.provider_name", value)
-                }
-                placeholder="SSO"
-              />
-
-              <BooleanSettingField
-                label="Just-In-Time Provisioning"
-                description={settingMeta("oidc.jit_provisioning").description}
-                source={settingMeta("oidc.jit_provisioning").source}
-                readOnly={settingMeta("oidc.jit_provisioning").readOnly}
-                value={parseBooleanValue(getSetting("oidc.jit_provisioning"))}
-                onSave={(value) =>
-                  handleSaveSetting(
-                    "oidc.jit_provisioning",
-                    value ? "true" : "false",
-                    false,
-                    "BOOLEAN",
-                  )
-                }
-              />
-
-              <SettingField
-                label="Default Role"
-                {...settingMeta("oidc.default_role")}
-                onSave={(value) =>
-                  handleSaveSetting("oidc.default_role", value)
-                }
-                placeholder="ANALYST"
-              />
-
-              <SettingField
-                label="Role Claim Path"
-                {...settingMeta("oidc.role_claim_path")}
-                onSave={(value) =>
-                  handleSaveSetting("oidc.role_claim_path", value)
-                }
-                placeholder="realm_access.roles"
-              />
-
-              <SettingField
-                label="Role Mapping JSON"
-                {...settingMeta("oidc.role_mapping")}
-                onSave={(value) =>
-                  handleSaveSetting("oidc.role_mapping", value, false, "JSON")
-                }
-                placeholder='{"idp-admins":"ADMIN","idp-auditors":"AUDITOR"}'
-              />
-
-              <TagsSettingField
-                label="Password Login Bypass Users"
-                description={`${settingMeta("oidc.sso_bypass_users").description} Admin users are always allowed.`}
-                source={settingMeta("oidc.sso_bypass_users").source}
-                readOnly={settingMeta("oidc.sso_bypass_users").readOnly}
-                value={getSetting("oidc.sso_bypass_users")}
-                onSave={(tags) =>
-                  handleSaveSetting(
-                    "oidc.sso_bypass_users",
-                    JSON.stringify(tags),
-                    false,
-                    "JSON",
-                  )
-                }
-              />
-
-              <div className="flex flex-col gap-2 border-t border-neutral-border pt-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-body-bold font-body-bold text-default-font">
-                      Test Discovery
-                    </span>
-                    <p className="text-caption font-caption text-subtext-color">
-                      Validate the provider discovery document and required
-                      endpoints.
-                    </p>
-                  </div>
-                  <Button
-                    variant="neutral-tertiary"
-                    onClick={testOidcDiscovery}
-                    disabled={testingOidcDiscovery}
-                  >
-                    {testingOidcDiscovery ? "Testing..." : "Test Discovery"}
-                  </Button>
-                </div>
-                {oidcDiscoveryStatus && (
-                  <StatusCallout
-                    variant={oidcDiscoveryStatus.success ? "success" : "error"}
-                    title={
-                      oidcDiscoveryStatus.success
-                        ? "OIDC discovery succeeded"
-                        : "OIDC discovery failed"
-                    }
-                    description={oidcDiscoveryStatus.message}
-                    isDarkTheme={isDarkTheme}
-                  />
-                )}
-              </div>
-              </section>
-            </div>
-
-            <div className="flex flex-col gap-8">
-              <h2 className="text-heading-2 font-heading-2 text-default-font">
-                Artificial Intelligence
-              </h2>
-            {/* LangFlow Settings Section */}
-            <section
-              id="langflow-settings"
-              className="scroll-mt-24 flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6"
-            >
-              <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
-                <Settings className="text-[20px] text-subtext-color" />
-                <h3 className="text-heading-3 font-heading-3 text-default-font">
-                  LangFlow Settings
-                </h3>
-              </div>
-
-              {/* LangFlow API Base URL */}
-              <SettingField
-                label="LangFlow API Base URL"
-                {...settingMeta("langflow.base_url")}
-                onSave={(value) =>
-                  handleSaveSetting("langflow.base_url", value)
-                }
-                placeholder="http://langflow/api/v1"
-              />
-
-              {/* API Key */}
-              <SettingField
-                label="API Key"
-                {...settingMeta("langflow.api_key")}
-                onSave={(value) =>
-                  handleSaveSetting("langflow.api_key", value, true)
-                }
-                placeholder="sk-..."
-                isSecret
-              />
-
-              {/* Default Flow ID */}
-              <SettingField
-                label="Default Flow ID"
-                {...settingMeta("langflow.default_flow_id")}
-                onSave={(value) =>
-                  handleSaveSetting("langflow.default_flow_id", value)
-                }
-                placeholder="flow-123"
-              />
-
-              {/* Alert Triage Flow ID */}
-              <SettingField
-                label="Alert Triage Flow ID"
-                {...settingMeta("langflow.alert_triage_flow_id")}
-                onSave={(value) =>
-                  handleSaveSetting("langflow.alert_triage_flow_id", value)
-                }
-                placeholder="flow-456"
-              />
-
-              {/* Case Detail Flow ID */}
-              <SettingField
-                label="Case Detail Flow ID"
-                {...settingMeta("langflow.case_detail_flow_id")}
-                onSave={(value) =>
-                  handleSaveSetting("langflow.case_detail_flow_id", value)
-                }
-                placeholder="flow-789"
-              />
-
-              {/* Task Detail Flow ID */}
-              <SettingField
-                label="Task Detail Flow ID"
-                {...settingMeta("langflow.task_detail_flow_id")}
-                onSave={(value) =>
-                  handleSaveSetting("langflow.task_detail_flow_id", value)
-                }
-                placeholder="flow-abc"
-              />
-
-              {/* Timeout */}
-              <SettingField
-                label="Request Timeout (seconds)"
-                {...settingMeta("langflow.timeout")}
-                onSave={(value) => handleSaveSetting("langflow.timeout", value)}
-                placeholder="30"
-              />
-
-              {/* Test Connection */}
-              <div className="flex flex-col gap-2 border-t border-neutral-border pt-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-body-bold font-body-bold text-default-font">
-                      Test Connection
-                    </span>
-                    <p className="text-caption font-caption text-subtext-color">
-                      Verify LangFlow is reachable with current settings
-                    </p>
-                  </div>
-                  <Button
-                    variant="neutral-tertiary"
-                    onClick={testConnection}
-                    disabled={testingConnection}
-                  >
-                    {testingConnection ? "Testing..." : "Test Connection"}
-                  </Button>
-                </div>
-                {connectionStatus && (
-                  <StatusCallout
-                    variant={connectionStatus.success ? "success" : "error"}
-                    title={
-                      connectionStatus.success
-                        ? "Connectivity test passed"
-                        : "Connectivity test failed"
-                    }
-                    description={connectionStatus.message}
-                    isDarkTheme={isDarkTheme}
-                  />
-                )}
-              </div>
-            </section>
-
-              <section
-                id="ai-triage-settings"
-                className="scroll-mt-24 flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6"
-              >
-                <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
-                  <Sparkles className="text-[20px] text-subtext-color" />
-                  <h3 className="text-heading-3 font-heading-3 text-default-font">
-                    AI Triage Settings
-                  </h3>
-                </div>
-
-                <div className="flex flex-col gap-1">
-                  <label className="text-body-bold font-body-bold text-default-font">
-                    AI-Assisted Alert Triage
-                  </label>
-                  <p className="text-caption font-caption text-subtext-color">
-                    Allow AI to analyse new alerts and suggest triage actions.
-                  </p>
-                  <StatusCallout
-                    variant={
-                      getSetting("langflow.alert_triage_flow_id")
-                        ? "success"
-                        : "warning"
-                    }
-                    title={
-                      getSetting("langflow.alert_triage_flow_id")
-                        ? "AI Triage is enabled"
-                        : "AI Triage is disabled"
-                    }
-                    description={
-                      getSetting("langflow.alert_triage_flow_id")
-                        ? "Alert Triage Flow ID is configured."
-                        : "Set Alert Triage Flow ID above to enable AI triage."
-                    }
-                    isDarkTheme={isDarkTheme}
-                  />
-                </div>
-
-                <BooleanSettingField
-                  label="Auto-enqueue on Alert Creation"
-                  description={settingMeta("triage.auto_enqueue").description}
-                  source={settingMeta("triage.auto_enqueue").source}
-                  readOnly={settingMeta("triage.auto_enqueue").readOnly}
-                  value={parseBooleanValue(getSetting("triage.auto_enqueue"))}
-                  onSave={(value) =>
-                    handleSaveSetting(
-                      "triage.auto_enqueue",
-                      value ? "true" : "false",
-                      false,
-                      "BOOLEAN",
-                    )
-                  }
-                  disabled={!getSetting("langflow.alert_triage_flow_id")}
-                />
-              </section>
-            </div>
-
-            <div className="flex flex-col gap-8">
-              <h2 className="text-heading-2 font-heading-2 text-default-font">
-                Enrichment Integrations
-              </h2>
-
-              <section
-                id="directory-enrichment-settings"
-                className="scroll-mt-24 flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6"
-              >
-                <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
-                  <Globe2 className="text-[20px] text-subtext-color" />
-                  <h2 className="text-heading-3 font-heading-3 text-default-font">
-                    Directory Enrichment
+                <div
+                  id="case-closure-settings"
+                  className="scroll-mt-24 flex flex-col gap-6"
+                >
+                  <h2 className="text-heading-2 font-heading-2 text-default-font">
+                    General
                   </h2>
+                  <section className="flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6">
+                    <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
+                      <Settings className="text-[20px] text-subtext-color" />
+                      <h3 className="text-heading-3 font-heading-3 text-default-font">
+                        Case Closure Settings
+                      </h3>
+                    </div>
+
+                    <TagsSettingField
+                      label="Recommended Closure Tags"
+                      description={
+                        settingMeta("case_closure.recommended_tags").description
+                      }
+                      source={
+                        settingMeta("case_closure.recommended_tags").source
+                      }
+                      readOnly={
+                        settingMeta("case_closure.recommended_tags").readOnly
+                      }
+                      value={getSetting("case_closure.recommended_tags")}
+                      fallbackTags={DEFAULT_CASE_CLOSURE_RECOMMENDED_TAGS}
+                      onSave={(tags) =>
+                        handleSaveSetting(
+                          "case_closure.recommended_tags",
+                          JSON.stringify(tags),
+                          false,
+                          "JSON",
+                        )
+                      }
+                    />
+                  </section>
                 </div>
 
-                <StatusCallout
-                  variant={
-                    !anyDirectoryEnabled
-                      ? "warning"
-                      : entraConfigured ||
-                          googleWorkspaceConfigured ||
-                          ldapConfigured
-                        ? "success"
-                        : "warning"
-                  }
-                  title={
-                    anyDirectoryEnabled
-                      ? "Directory enrichment providers are available"
-                      : "Directory enrichment is disabled"
-                  }
-                  description={
-                    anyDirectoryEnabled
-                      ? "Enable the provider you want to use, then complete its configuration to enrich internal actors from enterprise directories."
-                      : "Turn on Entra ID, Google Workspace, or LDAP to enrich internal actors with directory metadata and aliases."
-                  }
-                  isDarkTheme={isDarkTheme}
-                />
+                <div
+                  id="attachment-limits-settings"
+                  className="scroll-mt-24 flex flex-col gap-6"
+                >
+                  <h2 className="text-heading-2 font-heading-2 text-default-font">
+                    System
+                  </h2>
+                  <section className="flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6">
+                    <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
+                      <Upload className="text-[20px] text-subtext-color" />
+                      <h3 className="text-heading-3 font-heading-3 text-default-font">
+                        Attachment Limits
+                      </h3>
+                    </div>
 
-                <div className="flex flex-col gap-4">
-                  <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-neutral-50 p-4">
-                    <BooleanSettingField
-                      label="Microsoft Entra ID"
-                      description="Use Microsoft Graph to enrich internal actors by UPN, email, or samAccountName."
-                      source={settingMeta("enrichment.entra_id.enabled").source}
-                      readOnly={
-                        settingMeta("enrichment.entra_id.enabled").readOnly
-                      }
-                      value={entraEnabled}
+                    <SettingField
+                      label="Maximum Upload Size (MB)"
+                      {...settingMeta("storage.max_upload_size_mb")}
                       onSave={(value) =>
                         handleSaveSetting(
-                          "enrichment.entra_id.enabled",
+                          "storage.max_upload_size_mb",
+                          value,
+                          false,
+                          "NUMBER",
+                        )
+                      }
+                      placeholder="50"
+                      inputType="number"
+                      inputMode="numeric"
+                      min={1}
+                      step={1}
+                    />
+
+                    <SettingField
+                      label="Maximum Image Preview Size (MB)"
+                      {...settingMeta("storage.max_image_preview_size_mb")}
+                      onSave={(value) =>
+                        handleSaveSetting(
+                          "storage.max_image_preview_size_mb",
+                          value,
+                          false,
+                          "NUMBER",
+                        )
+                      }
+                      placeholder="5"
+                      inputType="number"
+                      inputMode="numeric"
+                      min={1}
+                      step={1}
+                    />
+
+                    <SettingField
+                      label="Maximum Text Preview Size (MB)"
+                      {...settingMeta("storage.max_text_preview_size_mb")}
+                      onSave={(value) =>
+                        handleSaveSetting(
+                          "storage.max_text_preview_size_mb",
+                          value,
+                          false,
+                          "NUMBER",
+                        )
+                      }
+                      placeholder="1"
+                      inputType="number"
+                      inputMode="numeric"
+                      min={1}
+                      step={1}
+                    />
+                  </section>
+                </div>
+
+                <div
+                  id="oidc-settings"
+                  className="scroll-mt-24 flex flex-col gap-6"
+                >
+                  <h2 className="text-heading-2 font-heading-2 text-default-font">
+                    Identity Providers
+                  </h2>
+                  <section className="flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6">
+                    <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
+                      <Settings className="text-[20px] text-subtext-color" />
+                      <h3 className="text-heading-3 font-heading-3 text-default-font">
+                        OIDC / Single Sign-On
+                      </h3>
+                    </div>
+
+                    <StatusCallout
+                      variant={
+                        parseBooleanValue(getSetting("oidc.enabled"))
+                          ? getSetting("oidc.discovery_url") &&
+                            getSetting("oidc.client_id")
+                            ? "success"
+                            : "warning"
+                          : "warning"
+                      }
+                      title={
+                        parseBooleanValue(getSetting("oidc.enabled"))
+                          ? "OIDC is enabled"
+                          : "OIDC is disabled"
+                      }
+                      description={
+                        parseBooleanValue(getSetting("oidc.enabled"))
+                          ? "OIDC sign-in swaps the external token for the app's normal session cookie."
+                          : "Enable OIDC to route sign-in through your external identity provider."
+                      }
+                      isDarkTheme={isDarkTheme}
+                    />
+
+                    <BooleanSettingField
+                      label="Enable OIDC"
+                      description={settingMeta("oidc.enabled").description}
+                      source={settingMeta("oidc.enabled").source}
+                      readOnly={settingMeta("oidc.enabled").readOnly}
+                      value={parseBooleanValue(getSetting("oidc.enabled"))}
+                      onSave={(value) =>
+                        handleSaveSetting(
+                          "oidc.enabled",
                           value ? "true" : "false",
                           false,
                           "BOOLEAN",
@@ -1472,98 +1275,65 @@ function AdminSettings() {
                       }
                     />
 
-                    {entraEnabled ? (
-                      <>
-                        <StatusCallout
-                          variant={entraConfigured ? "success" : "warning"}
-                          title={
-                            entraConfigured
-                              ? "Entra ID is configured"
-                              : "Entra ID needs credentials"
-                          }
-                          description={
-                            entraConfigured
-                              ? "Client credentials are present and ready for Graph lookups."
-                              : "Provide tenant ID, client ID, and client secret to enable lookups and bulk sync."
-                          }
-                          isDarkTheme={isDarkTheme}
-                        />
-                        <SettingField
-                          label="Tenant ID"
-                          {...settingMeta("enrichment.entra_id.tenant_id")}
-                          onSave={(value) =>
-                            handleSaveSetting(
-                              "enrichment.entra_id.tenant_id",
-                              value,
-                            )
-                          }
-                          placeholder="contoso.onmicrosoft.com or GUID"
-                        />
-                        <SettingField
-                          label="Client ID"
-                          {...settingMeta("enrichment.entra_id.client_id")}
-                          onSave={(value) =>
-                            handleSaveSetting(
-                              "enrichment.entra_id.client_id",
-                              value,
-                            )
-                          }
-                          placeholder="Application client ID"
-                        />
-                        <SettingField
-                          label="Client Secret"
-                          {...settingMeta("enrichment.entra_id.client_secret")}
-                          onSave={(value) =>
-                            handleSaveSetting(
-                              "enrichment.entra_id.client_secret",
-                              value,
-                              true,
-                            )
-                          }
-                          placeholder="Client secret"
-                          isSecret
-                        />
-                        <SettingField
-                          label="Enrichment TTL (seconds)"
-                          {...settingMeta("enrichment.entra_id.ttl_seconds")}
-                          onSave={(value) =>
-                            handleSaveSetting(
-                              "enrichment.entra_id.ttl_seconds",
-                              value,
-                              false,
-                              "NUMBER",
-                            )
-                          }
-                          placeholder="86400"
-                        />
-                        <BulkSyncScheduleFields
-                          providerId="entra_id"
-                          providerLabel="Microsoft Entra ID"
-                          configured={entraConfigured}
-                          isDarkTheme={isDarkTheme}
-                          getSetting={getSetting}
-                          settingMeta={settingMeta}
-                          onSave={handleSaveSetting}
-                        />
-                      </>
-                    ) : null}
-                  </div>
+                    <SettingField
+                      label="Discovery URL"
+                      {...settingMeta("oidc.discovery_url")}
+                      onSave={(value) =>
+                        handleSaveSetting("oidc.discovery_url", value)
+                      }
+                      placeholder="https://idp.example.com/.well-known/openid-configuration"
+                    />
 
-                  <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-neutral-50 p-4">
+                    <SettingField
+                      label="Client ID"
+                      {...settingMeta("oidc.client_id")}
+                      onSave={(value) =>
+                        handleSaveSetting("oidc.client_id", value)
+                      }
+                      placeholder="intercept-backend"
+                    />
+
+                    <SettingField
+                      label="Client Secret"
+                      {...settingMeta("oidc.client_secret")}
+                      onSave={(value) =>
+                        handleSaveSetting("oidc.client_secret", value, true)
+                      }
+                      placeholder="Client secret"
+                      isSecret
+                    />
+
+                    <SettingField
+                      label="Scopes"
+                      {...settingMeta("oidc.scopes")}
+                      onSave={(value) =>
+                        handleSaveSetting("oidc.scopes", value)
+                      }
+                      placeholder="openid email profile"
+                    />
+
+                    <SettingField
+                      label="Provider Name"
+                      {...settingMeta("oidc.provider_name")}
+                      onSave={(value) =>
+                        handleSaveSetting("oidc.provider_name", value)
+                      }
+                      placeholder="SSO"
+                    />
+
                     <BooleanSettingField
-                      label="Google Workspace"
-                      description="Use a delegated service account to enrich internal actors from the Admin Directory API."
-                      source={
-                        settingMeta("enrichment.google_workspace.enabled").source
+                      label="Just-In-Time Provisioning"
+                      description={
+                        settingMeta("oidc.jit_provisioning").description
                       }
-                      readOnly={
-                        settingMeta("enrichment.google_workspace.enabled")
-                          .readOnly
-                      }
-                      value={googleWorkspaceEnabled}
+                      source={settingMeta("oidc.jit_provisioning").source}
+                      readOnly={settingMeta("oidc.jit_provisioning").readOnly}
+                      value={parseBooleanValue(
+                        getSetting("oidc.jit_provisioning"),
+                      )}
                       onSave={(value) =>
                         handleSaveSetting(
-                          "enrichment.google_workspace.enabled",
+                          "oidc.jit_provisioning",
                           value ? "true" : "false",
                           false,
                           "BOOLEAN",
@@ -1571,769 +1341,1472 @@ function AdminSettings() {
                       }
                     />
 
-                    {googleWorkspaceEnabled ? (
-                      <>
+                    <SettingField
+                      label="Default Role"
+                      {...settingMeta("oidc.default_role")}
+                      onSave={(value) =>
+                        handleSaveSetting("oidc.default_role", value)
+                      }
+                      placeholder="ANALYST"
+                    />
+
+                    <SettingField
+                      label="Role Claim Path"
+                      {...settingMeta("oidc.role_claim_path")}
+                      onSave={(value) =>
+                        handleSaveSetting("oidc.role_claim_path", value)
+                      }
+                      placeholder="realm_access.roles"
+                    />
+
+                    <SettingField
+                      label="Role Mapping JSON"
+                      {...settingMeta("oidc.role_mapping")}
+                      onSave={(value) =>
+                        handleSaveSetting(
+                          "oidc.role_mapping",
+                          value,
+                          false,
+                          "JSON",
+                        )
+                      }
+                      placeholder='{"idp-admins":"ADMIN","idp-auditors":"AUDITOR"}'
+                    />
+
+                    <TagsSettingField
+                      label="Password Login Bypass Users"
+                      description={`${settingMeta("oidc.sso_bypass_users").description} Admin users are always allowed.`}
+                      source={settingMeta("oidc.sso_bypass_users").source}
+                      readOnly={settingMeta("oidc.sso_bypass_users").readOnly}
+                      value={getSetting("oidc.sso_bypass_users")}
+                      onSave={(tags) =>
+                        handleSaveSetting(
+                          "oidc.sso_bypass_users",
+                          JSON.stringify(tags),
+                          false,
+                          "JSON",
+                        )
+                      }
+                    />
+
+                    <div className="flex flex-col gap-2 border-t border-neutral-border pt-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="text-body-bold font-body-bold text-default-font">
+                            Test Discovery
+                          </span>
+                          <p className="text-caption font-caption text-subtext-color">
+                            Validate the provider discovery document and
+                            required endpoints.
+                          </p>
+                        </div>
+                        <Button
+                          variant="neutral-tertiary"
+                          onClick={testOidcDiscovery}
+                          disabled={testingOidcDiscovery}
+                        >
+                          {testingOidcDiscovery
+                            ? "Testing..."
+                            : "Test Discovery"}
+                        </Button>
+                      </div>
+                      {oidcDiscoveryStatus && (
                         <StatusCallout
                           variant={
-                            googleWorkspaceConfigured ? "success" : "warning"
+                            oidcDiscoveryStatus.success ? "success" : "error"
                           }
                           title={
-                            googleWorkspaceConfigured
-                              ? "Google Workspace is configured"
-                              : googleWorkspaceUsingLegacyBlob
-                                ? "Google Workspace is using legacy JSON storage"
-                                : "Google Workspace needs credentials"
+                            oidcDiscoveryStatus.success
+                              ? "OIDC discovery succeeded"
+                              : "OIDC discovery failed"
                           }
-                          description={
-                            googleWorkspaceConfigured
-                              ? "Discrete Google credential fields and the delegated admin email are configured."
-                              : googleWorkspaceUsingLegacyBlob
-                                ? "The provider can still run from the older stored JSON blob. Save the fields below once to migrate away from blob storage."
-                                : "Upload a service account JSON file, then add the delegated admin email and optional directory domain, or enter the fields manually below."
-                          }
+                          description={oidcDiscoveryStatus.message}
                           isDarkTheme={isDarkTheme}
                         />
+                      )}
+                    </div>
+                  </section>
+                </div>
 
-                        <div className="flex flex-col gap-3">
-                          <div className="flex items-center justify-between gap-4">
-                            <div>
-                              <span className="text-body-bold font-body-bold text-default-font">
-                                Service Account Import
-                              </span>
-                              <p className="text-caption font-caption text-subtext-color">
-                                Drop a service account JSON file here, choose one
-                                from disk, or paste the JSON below to populate the
-                                stored Google credential fields.
-                              </p>
-                            </div>
-                            <input
-                              ref={googleServiceAccountFileInputRef}
-                              type="file"
-                              accept="application/json,.json,text/json"
-                              className="hidden"
-                              onChange={(
-                                event: React.ChangeEvent<HTMLInputElement>,
-                              ) => {
-                                loadGoogleServiceAccountFile(
-                                  event.target.files?.[0] ?? null,
-                                );
-                                event.target.value = "";
-                              }}
-                            />
-                            <Button
-                              variant="neutral-tertiary"
-                              onClick={() =>
-                                googleServiceAccountFileInputRef.current?.click()
-                              }
-                              icon={<FileText className="text-[16px]" />}
-                            >
-                              Choose File
-                            </Button>
-                          </div>
+                <div className="flex flex-col gap-8">
+                  <h2 className="text-heading-2 font-heading-2 text-default-font">
+                    Artificial Intelligence
+                  </h2>
+                  {/* LangFlow Settings Section */}
+                  <section
+                    id="langflow-settings"
+                    className="scroll-mt-24 flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6"
+                  >
+                    {/* LangFlow Setup Wizard */}
+                    <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
+                      <Settings className="text-[20px] text-subtext-color" />
+                      <h3 className="text-heading-3 font-heading-3 text-default-font">
+                        LangFlow Settings
+                      </h3>
+                    </div>
 
-                          <div
-                            className={cn(
-                              "flex min-h-[120px] cursor-pointer flex-col items-center justify-center gap-3 rounded-md border-2 border-dashed px-6 py-8 transition-colors",
-                              isGoogleWorkspaceDragging
-                                ? "border-focus-border bg-neutral-100"
-                                : "border-neutral-border bg-default-background hover:border-neutral-400",
-                            )}
-                            onClick={() =>
-                              googleServiceAccountFileInputRef.current?.click()
-                            }
-                            onDragOver={(
-                              event: React.DragEvent<HTMLDivElement>,
-                            ) => {
-                              event.preventDefault();
-                              setIsGoogleWorkspaceDragging(true);
-                            }}
-                            onDragLeave={(
-                              event: React.DragEvent<HTMLDivElement>,
-                            ) => {
-                              event.preventDefault();
-                              setIsGoogleWorkspaceDragging(false);
-                            }}
-                            onDrop={(event: React.DragEvent<HTMLDivElement>) => {
-                              event.preventDefault();
-                              setIsGoogleWorkspaceDragging(false);
-                              loadGoogleServiceAccountFile(
-                                event.dataTransfer.files?.[0] ?? null,
-                              );
-                            }}
-                          >
-                            <Upload className="text-[24px] text-subtext-color" />
-                            <div className="flex flex-col items-center gap-1 text-center">
-                              <span className="text-body-bold font-body-bold text-default-font">
-                                Drop service account JSON here
-                              </span>
-                              <span className="text-caption font-caption text-subtext-color">
-                                The uploaded JSON is only used to extract the
-                                required Google Workspace credential fields.
-                              </span>
-                            </div>
-                          </div>
-
-                          <TextArea
-                            label="Service account JSON"
-                            helpText="Paste the full service account credential JSON to extract the required settings. The textarea is cleared after import."
-                          >
-                            <TextArea.Input
-                              value={googleServiceAccountText}
-                              onChange={(
-                                event: React.ChangeEvent<HTMLTextAreaElement>,
-                              ) => {
-                                setGoogleServiceAccountText(event.target.value);
-                              }}
-                              placeholder='{"type":"service_account","client_email":"..."}'
-                            />
-                          </TextArea>
-
-                          <div className="flex items-center gap-3">
-                            <Button
-                              variant="brand-primary"
-                              onClick={() => {
-                                void submitGoogleServiceAccount();
-                              }}
-                              disabled={!googleServiceAccountText.trim()}
-                              icon={<Save className="text-[16px]" />}
-                            >
-                              Import Required Fields
-                            </Button>
-                            <Button
-                              variant="neutral-secondary"
-                              onClick={() => setGoogleServiceAccountText("")}
-                              disabled={!googleServiceAccountText.trim()}
-                            >
-                              Clear
-                            </Button>
-                          </div>
-
-                          {googleWorkspaceImportStatus ? (
-                            <StatusCallout
-                              variant={googleWorkspaceImportStatus.variant}
-                              title={googleWorkspaceImportStatus.title}
-                              description={
-                                googleWorkspaceImportStatus.description
-                              }
-                              isDarkTheme={isDarkTheme}
-                            />
-                          ) : null}
+                    <div className="flex flex-col gap-3 rounded-md border border-neutral-border bg-default-background p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex flex-col gap-1">
+                          <span className="text-body-bold font-body-bold text-default-font">
+                            Setup Langflow for Intercept
+                          </span>
+                          <p className="text-caption font-caption text-subtext-color">
+                            Automatically configure Langflow for Intercept - and
+                            vice versa.
+                          </p>
                         </div>
+                        <Button
+                          variant="neutral-secondary"
+                          onClick={openLangflowSetupModal}
+                        >
+                          Open Wizard
+                        </Button>
+                      </div>
+                    </div>
 
-                        <SettingField
-                          label="Service Account Client Email"
-                          {...settingMeta(
-                            "enrichment.google_workspace.client_email",
-                          )}
-                          onSave={(value) =>
-                            handleSaveSetting(
-                              "enrichment.google_workspace.client_email",
-                              value,
-                            )
-                          }
-                          placeholder="service-account@project.iam.gserviceaccount.com"
-                        />
-                        <TextAreaSettingField
-                          label="Service Account Private Key"
-                          {...settingMeta(
-                            "enrichment.google_workspace.private_key",
-                          )}
-                          onSave={(value) => {
-                            void saveGoogleWorkspacePrivateKey(value);
-                          }}
-                          placeholder="-----BEGIN PRIVATE KEY-----"
-                          isSecret
-                          rows={6}
-                        />
-                        <SettingField
-                          label="Token URI"
-                          {...settingMeta(
-                            "enrichment.google_workspace.token_uri",
-                          )}
-                          onSave={(value) =>
-                            handleSaveSetting(
-                              "enrichment.google_workspace.token_uri",
-                              value,
-                            )
-                          }
-                          placeholder="https://oauth2.googleapis.com/token"
-                        />
-                        <SettingField
-                          label="Private Key ID"
-                          {...settingMeta(
-                            "enrichment.google_workspace.private_key_id",
-                          )}
-                          onSave={(value) =>
-                            handleSaveSetting(
-                              "enrichment.google_workspace.private_key_id",
-                              value,
-                            )
-                          }
-                          placeholder="Optional private key ID"
-                        />
-                        <SettingField
-                          label="Delegated Admin Email"
-                          {...settingMeta(
-                            "enrichment.google_workspace.admin_email",
-                          )}
-                          onSave={(value) =>
-                            handleSaveSetting(
-                              "enrichment.google_workspace.admin_email",
-                              value,
-                            )
-                          }
-                          placeholder="admin@example.com"
-                        />
-                        <SettingField
-                          label="Workspace Domain"
-                          {...settingMeta("enrichment.google_workspace.domain")}
-                          onSave={(value) =>
-                            handleSaveSetting(
-                              "enrichment.google_workspace.domain",
-                              value,
-                            )
-                          }
-                          placeholder="example.com"
-                        />
-                        <SettingField
-                          label="Enrichment TTL (seconds)"
-                          {...settingMeta(
-                            "enrichment.google_workspace.ttl_seconds",
-                          )}
-                          onSave={(value) =>
-                            handleSaveSetting(
-                              "enrichment.google_workspace.ttl_seconds",
-                              value,
-                              false,
-                              "NUMBER",
-                            )
-                          }
-                          placeholder="86400"
-                        />
-                        <BulkSyncScheduleFields
-                          providerId="google_workspace"
-                          providerLabel="Google Workspace"
-                          configured={googleWorkspaceConfigured}
+                    {/* Test Connection */}
+                    <div className="flex flex-col gap-3 rounded-md border border-neutral-border bg-default-background p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex flex-col gap-1">
+                          <span className="text-body-bold font-body-bold text-default-font">
+                            Test Connection
+                          </span>
+                          <p className="text-caption font-caption text-subtext-color">
+                            Verify LangFlow health, list flows, and validate
+                            configured flow IDs with current settings
+                          </p>
+                        </div>
+                        <Button
+                          variant="neutral-secondary"
+                          onClick={testConnection}
+                          disabled={testingConnection}
+                        >
+                          {testingConnection ? "Testing..." : "Test Connection"}
+                        </Button>
+                      </div>
+                      {connectionStatus && (
+                        <LangflowConnectionStatus
+                          status={connectionStatus}
                           isDarkTheme={isDarkTheme}
-                          getSetting={getSetting}
-                          settingMeta={settingMeta}
-                          onSave={handleSaveSetting}
                         />
-                      </>
-                    ) : null}
-                  </div>
+                      )}
+                    </div>
 
-                  <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-neutral-50 p-4">
-                    <BooleanSettingField
-                      label="LDAP / Active Directory"
-                      description="Connect directly to LDAP or LDAPS for internal actor lookup and directory sync."
-                      source={settingMeta("enrichment.ldap.enabled").source}
-                      readOnly={settingMeta("enrichment.ldap.enabled").readOnly}
-                      value={ldapEnabled}
+                    {/* LangFlow API Base URL */}
+                    <SettingField
+                      label="LangFlow API Base URL"
+                      {...settingMeta("langflow.base_url")}
+                      onSave={(value) =>
+                        handleSaveSetting("langflow.base_url", value)
+                      }
+                      placeholder="http://langflow/api/v1"
+                    />
+
+                    {/* API Key */}
+                    <SettingField
+                      label="API Key"
+                      {...settingMeta("langflow.api_key")}
+                      onSave={(value) =>
+                        handleSaveSetting("langflow.api_key", value, true)
+                      }
+                      placeholder="sk-..."
+                      isSecret
+                    />
+
+                    {/* Default Flow ID */}
+                    <SettingField
+                      label="Default Flow ID"
+                      {...settingMeta("langflow.default_flow_id")}
+                      onSave={(value) =>
+                        handleSaveSetting("langflow.default_flow_id", value)
+                      }
+                      placeholder="flow-123"
+                    />
+
+                    {/* Alert Triage Flow ID */}
+                    <SettingField
+                      label="Alert Triage Flow ID"
+                      {...settingMeta("langflow.alert_triage_flow_id")}
                       onSave={(value) =>
                         handleSaveSetting(
-                          "enrichment.ldap.enabled",
+                          "langflow.alert_triage_flow_id",
+                          value,
+                        )
+                      }
+                      placeholder="flow-456"
+                    />
+
+                    {/* Case Detail Flow ID */}
+                    <SettingField
+                      label="Case Detail Flow ID"
+                      {...settingMeta("langflow.case_detail_flow_id")}
+                      onSave={(value) =>
+                        handleSaveSetting("langflow.case_detail_flow_id", value)
+                      }
+                      placeholder="flow-789"
+                    />
+
+                    {/* Task Detail Flow ID */}
+                    <SettingField
+                      label="Task Detail Flow ID"
+                      {...settingMeta("langflow.task_detail_flow_id")}
+                      onSave={(value) =>
+                        handleSaveSetting("langflow.task_detail_flow_id", value)
+                      }
+                      placeholder="flow-abc"
+                    />
+
+                    {/* Timeout */}
+                    <SettingField
+                      label="Request Timeout (seconds)"
+                      {...settingMeta("langflow.timeout")}
+                      onSave={(value) =>
+                        handleSaveSetting("langflow.timeout", value)
+                      }
+                      placeholder="30"
+                    />
+                  </section>
+
+                  <section
+                    id="ai-triage-settings"
+                    className="scroll-mt-24 flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6"
+                  >
+                    <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
+                      <Sparkles className="text-[20px] text-subtext-color" />
+                      <h3 className="text-heading-3 font-heading-3 text-default-font">
+                        AI Triage Settings
+                      </h3>
+                    </div>
+
+                    <div className="flex flex-col gap-1">
+                      <label className="text-body-bold font-body-bold text-default-font">
+                        AI-Assisted Alert Triage
+                      </label>
+                      <p className="text-caption font-caption text-subtext-color">
+                        Allow AI to analyse new alerts and suggest triage
+                        actions.
+                      </p>
+                      <StatusCallout
+                        variant={
+                          getSetting("langflow.alert_triage_flow_id")
+                            ? "success"
+                            : "warning"
+                        }
+                        title={
+                          getSetting("langflow.alert_triage_flow_id")
+                            ? "AI Triage is enabled"
+                            : "AI Triage is disabled"
+                        }
+                        description={
+                          getSetting("langflow.alert_triage_flow_id")
+                            ? "Alert Triage Flow ID is configured."
+                            : "Set Alert Triage Flow ID above to enable AI triage."
+                        }
+                        isDarkTheme={isDarkTheme}
+                      />
+                    </div>
+
+                    <BooleanSettingField
+                      label="Auto-enqueue on Alert Creation"
+                      description={
+                        settingMeta("triage.auto_enqueue").description
+                      }
+                      source={settingMeta("triage.auto_enqueue").source}
+                      readOnly={settingMeta("triage.auto_enqueue").readOnly}
+                      value={parseBooleanValue(
+                        getSetting("triage.auto_enqueue"),
+                      )}
+                      onSave={(value) =>
+                        handleSaveSetting(
+                          "triage.auto_enqueue",
                           value ? "true" : "false",
                           false,
                           "BOOLEAN",
                         )
                       }
+                      disabled={!getSetting("langflow.alert_triage_flow_id")}
+                    />
+                  </section>
+                </div>
+
+                <div className="flex flex-col gap-8">
+                  <h2 className="text-heading-2 font-heading-2 text-default-font">
+                    Enrichment Integrations
+                  </h2>
+
+                  <section
+                    id="directory-enrichment-settings"
+                    className="scroll-mt-24 flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6"
+                  >
+                    <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
+                      <Globe2 className="text-[20px] text-subtext-color" />
+                      <h2 className="text-heading-3 font-heading-3 text-default-font">
+                        Directory Enrichment
+                      </h2>
+                    </div>
+
+                    <StatusCallout
+                      variant={
+                        !anyDirectoryEnabled
+                          ? "warning"
+                          : entraConfigured ||
+                              googleWorkspaceConfigured ||
+                              ldapConfigured
+                            ? "success"
+                            : "warning"
+                      }
+                      title={
+                        anyDirectoryEnabled
+                          ? "Directory enrichment providers are available"
+                          : "Directory enrichment is disabled"
+                      }
+                      description={
+                        anyDirectoryEnabled
+                          ? "Enable the provider you want to use, then complete its configuration to enrich internal actors from enterprise directories."
+                          : "Turn on Entra ID, Google Workspace, or LDAP to enrich internal actors with directory metadata and aliases."
+                      }
+                      isDarkTheme={isDarkTheme}
                     />
 
-                    {ldapEnabled ? (
-                      <>
-                        <StatusCallout
-                          variant={ldapConfigured ? "success" : "warning"}
-                          title={
-                            ldapConfigured
-                              ? "LDAP is configured"
-                              : "LDAP needs connection details"
-                          }
-                          description={
-                            ldapConfigured
-                              ? "LDAP connection settings are present for lookup and sync operations."
-                              : "Provide server URL, bind DN, bind password, and search base to enable LDAP lookups."
-                          }
-                          isDarkTheme={isDarkTheme}
-                        />
-                        <SettingField
-                          label="Server URL"
-                          {...settingMeta("enrichment.ldap.url")}
-                          onSave={(value) =>
-                            handleSaveSetting("enrichment.ldap.url", value)
-                          }
-                          placeholder="ldaps://directory.example.com"
-                        />
-                        <SettingField
-                          label="Bind DN"
-                          {...settingMeta("enrichment.ldap.bind_dn")}
-                          onSave={(value) =>
-                            handleSaveSetting("enrichment.ldap.bind_dn", value)
-                          }
-                          placeholder="cn=svc,dc=example,dc=com"
-                        />
-                        <SettingField
-                          label="Bind Password"
-                          {...settingMeta("enrichment.ldap.bind_password")}
-                          onSave={(value) =>
-                            handleSaveSetting(
-                              "enrichment.ldap.bind_password",
-                              value,
-                              true,
-                            )
-                          }
-                          placeholder="Bind password"
-                          isSecret
-                        />
-                        <SettingField
-                          label="Search Base"
-                          {...settingMeta("enrichment.ldap.search_base")}
-                          onSave={(value) =>
-                            handleSaveSetting(
-                              "enrichment.ldap.search_base",
-                              value,
-                            )
-                          }
-                          placeholder="dc=example,dc=com"
-                        />
+                    <div className="flex flex-col gap-4">
+                      <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-neutral-50 p-4">
                         <BooleanSettingField
-                          label="Use SSL / TLS"
-                          description={
-                            settingMeta("enrichment.ldap.use_ssl").description
+                          label="Microsoft Entra ID"
+                          description="Use Microsoft Graph to enrich internal actors by UPN, email, or samAccountName."
+                          source={
+                            settingMeta("enrichment.entra_id.enabled").source
                           }
-                          source={settingMeta("enrichment.ldap.use_ssl").source}
                           readOnly={
-                            settingMeta("enrichment.ldap.use_ssl").readOnly
+                            settingMeta("enrichment.entra_id.enabled").readOnly
                           }
-                          value={parseBooleanValue(
-                            getSetting("enrichment.ldap.use_ssl") || "true",
-                          )}
+                          value={entraEnabled}
                           onSave={(value) =>
                             handleSaveSetting(
-                              "enrichment.ldap.use_ssl",
+                              "enrichment.entra_id.enabled",
                               value ? "true" : "false",
                               false,
                               "BOOLEAN",
                             )
                           }
                         />
-                        <SettingField
-                          label="User Search Filter"
-                          {...settingMeta("enrichment.ldap.user_search_filter")}
-                          onSave={(value) =>
-                            handleSaveSetting(
-                              "enrichment.ldap.user_search_filter",
-                              value,
-                            )
+
+                        {entraEnabled ? (
+                          <>
+                            <StatusCallout
+                              variant={entraConfigured ? "success" : "warning"}
+                              title={
+                                entraConfigured
+                                  ? "Entra ID is configured"
+                                  : "Entra ID needs credentials"
+                              }
+                              description={
+                                entraConfigured
+                                  ? "Client credentials are present and ready for Graph lookups."
+                                  : "Provide tenant ID, client ID, and client secret to enable lookups and bulk sync."
+                              }
+                              isDarkTheme={isDarkTheme}
+                            />
+                            <SettingField
+                              label="Tenant ID"
+                              {...settingMeta("enrichment.entra_id.tenant_id")}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.entra_id.tenant_id",
+                                  value,
+                                )
+                              }
+                              placeholder="contoso.onmicrosoft.com or GUID"
+                            />
+                            <SettingField
+                              label="Client ID"
+                              {...settingMeta("enrichment.entra_id.client_id")}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.entra_id.client_id",
+                                  value,
+                                )
+                              }
+                              placeholder="Application client ID"
+                            />
+                            <SettingField
+                              label="Client Secret"
+                              {...settingMeta(
+                                "enrichment.entra_id.client_secret",
+                              )}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.entra_id.client_secret",
+                                  value,
+                                  true,
+                                )
+                              }
+                              placeholder="Client secret"
+                              isSecret
+                            />
+                            <SettingField
+                              label="Enrichment TTL (seconds)"
+                              {...settingMeta(
+                                "enrichment.entra_id.ttl_seconds",
+                              )}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.entra_id.ttl_seconds",
+                                  value,
+                                  false,
+                                  "NUMBER",
+                                )
+                              }
+                              placeholder="86400"
+                            />
+                            <BulkSyncScheduleFields
+                              providerId="entra_id"
+                              providerLabel="Microsoft Entra ID"
+                              configured={entraConfigured}
+                              isDarkTheme={isDarkTheme}
+                              getSetting={getSetting}
+                              settingMeta={settingMeta}
+                              onSave={handleSaveSetting}
+                            />
+                          </>
+                        ) : null}
+                      </div>
+
+                      <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-neutral-50 p-4">
+                        <BooleanSettingField
+                          label="Google Workspace"
+                          description="Use a delegated service account to enrich internal actors from the Admin Directory API."
+                          source={
+                            settingMeta("enrichment.google_workspace.enabled")
+                              .source
                           }
-                          placeholder="(|(sAMAccountName={uid})(userPrincipalName={uid})(mail={uid}))"
-                        />
-                        <SettingField
-                          label="Enrichment TTL (seconds)"
-                          {...settingMeta("enrichment.ldap.ttl_seconds")}
+                          readOnly={
+                            settingMeta("enrichment.google_workspace.enabled")
+                              .readOnly
+                          }
+                          value={googleWorkspaceEnabled}
                           onSave={(value) =>
                             handleSaveSetting(
-                              "enrichment.ldap.ttl_seconds",
-                              value,
+                              "enrichment.google_workspace.enabled",
+                              value ? "true" : "false",
                               false,
-                              "NUMBER",
+                              "BOOLEAN",
                             )
                           }
-                          placeholder="86400"
                         />
-                        <BulkSyncScheduleFields
-                          providerId="ldap"
-                          providerLabel="LDAP / Active Directory"
-                          configured={ldapConfigured}
-                          isDarkTheme={isDarkTheme}
-                          getSetting={getSetting}
-                          settingMeta={settingMeta}
-                          onSave={handleSaveSetting}
+
+                        {googleWorkspaceEnabled ? (
+                          <>
+                            <StatusCallout
+                              variant={
+                                googleWorkspaceConfigured
+                                  ? "success"
+                                  : "warning"
+                              }
+                              title={
+                                googleWorkspaceConfigured
+                                  ? "Google Workspace is configured"
+                                  : googleWorkspaceUsingLegacyBlob
+                                    ? "Google Workspace is using legacy JSON storage"
+                                    : "Google Workspace needs credentials"
+                              }
+                              description={
+                                googleWorkspaceConfigured
+                                  ? "Discrete Google credential fields and the delegated admin email are configured."
+                                  : googleWorkspaceUsingLegacyBlob
+                                    ? "The provider can still run from the older stored JSON blob. Save the fields below once to migrate away from blob storage."
+                                    : "Upload a service account JSON file, then add the delegated admin email and optional directory domain, or enter the fields manually below."
+                              }
+                              isDarkTheme={isDarkTheme}
+                            />
+
+                            <div className="flex flex-col gap-3">
+                              <div className="flex items-center justify-between gap-4">
+                                <div>
+                                  <span className="text-body-bold font-body-bold text-default-font">
+                                    Service Account Import
+                                  </span>
+                                  <p className="text-caption font-caption text-subtext-color">
+                                    Drop a service account JSON file here,
+                                    choose one from disk, or paste the JSON
+                                    below to populate the stored Google
+                                    credential fields.
+                                  </p>
+                                </div>
+                                <input
+                                  ref={googleServiceAccountFileInputRef}
+                                  type="file"
+                                  accept="application/json,.json,text/json"
+                                  className="hidden"
+                                  onChange={(
+                                    event: React.ChangeEvent<HTMLInputElement>,
+                                  ) => {
+                                    loadGoogleServiceAccountFile(
+                                      event.target.files?.[0] ?? null,
+                                    );
+                                    event.target.value = "";
+                                  }}
+                                />
+                                <Button
+                                  variant="neutral-tertiary"
+                                  onClick={() =>
+                                    googleServiceAccountFileInputRef.current?.click()
+                                  }
+                                  icon={<FileText className="text-[16px]" />}
+                                >
+                                  Choose File
+                                </Button>
+                              </div>
+
+                              <div
+                                className={cn(
+                                  "flex min-h-[120px] cursor-pointer flex-col items-center justify-center gap-3 rounded-md border-2 border-dashed px-6 py-8 transition-colors",
+                                  isGoogleWorkspaceDragging
+                                    ? "border-focus-border bg-neutral-100"
+                                    : "border-neutral-border bg-default-background hover:border-neutral-400",
+                                )}
+                                onClick={() =>
+                                  googleServiceAccountFileInputRef.current?.click()
+                                }
+                                onDragOver={(
+                                  event: React.DragEvent<HTMLDivElement>,
+                                ) => {
+                                  event.preventDefault();
+                                  setIsGoogleWorkspaceDragging(true);
+                                }}
+                                onDragLeave={(
+                                  event: React.DragEvent<HTMLDivElement>,
+                                ) => {
+                                  event.preventDefault();
+                                  setIsGoogleWorkspaceDragging(false);
+                                }}
+                                onDrop={(
+                                  event: React.DragEvent<HTMLDivElement>,
+                                ) => {
+                                  event.preventDefault();
+                                  setIsGoogleWorkspaceDragging(false);
+                                  loadGoogleServiceAccountFile(
+                                    event.dataTransfer.files?.[0] ?? null,
+                                  );
+                                }}
+                              >
+                                <Upload className="text-[24px] text-subtext-color" />
+                                <div className="flex flex-col items-center gap-1 text-center">
+                                  <span className="text-body-bold font-body-bold text-default-font">
+                                    Drop service account JSON here
+                                  </span>
+                                  <span className="text-caption font-caption text-subtext-color">
+                                    The uploaded JSON is only used to extract
+                                    the required Google Workspace credential
+                                    fields.
+                                  </span>
+                                </div>
+                              </div>
+
+                              <TextArea
+                                label="Service account JSON"
+                                helpText="Paste the full service account credential JSON to extract the required settings. The textarea is cleared after import."
+                              >
+                                <TextArea.Input
+                                  value={googleServiceAccountText}
+                                  onChange={(
+                                    event: React.ChangeEvent<HTMLTextAreaElement>,
+                                  ) => {
+                                    setGoogleServiceAccountText(
+                                      event.target.value,
+                                    );
+                                  }}
+                                  placeholder='{"type":"service_account","client_email":"..."}'
+                                />
+                              </TextArea>
+
+                              <div className="flex items-center gap-3">
+                                <Button
+                                  variant="brand-primary"
+                                  onClick={() => {
+                                    void submitGoogleServiceAccount();
+                                  }}
+                                  disabled={!googleServiceAccountText.trim()}
+                                  icon={<Save className="text-[16px]" />}
+                                >
+                                  Import Required Fields
+                                </Button>
+                                <Button
+                                  variant="neutral-secondary"
+                                  onClick={() =>
+                                    setGoogleServiceAccountText("")
+                                  }
+                                  disabled={!googleServiceAccountText.trim()}
+                                >
+                                  Clear
+                                </Button>
+                              </div>
+
+                              {googleWorkspaceImportStatus ? (
+                                <StatusCallout
+                                  variant={googleWorkspaceImportStatus.variant}
+                                  title={googleWorkspaceImportStatus.title}
+                                  description={
+                                    googleWorkspaceImportStatus.description
+                                  }
+                                  isDarkTheme={isDarkTheme}
+                                />
+                              ) : null}
+                            </div>
+
+                            <SettingField
+                              label="Service Account Client Email"
+                              {...settingMeta(
+                                "enrichment.google_workspace.client_email",
+                              )}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.google_workspace.client_email",
+                                  value,
+                                )
+                              }
+                              placeholder="service-account@project.iam.gserviceaccount.com"
+                            />
+                            <TextAreaSettingField
+                              label="Service Account Private Key"
+                              {...settingMeta(
+                                "enrichment.google_workspace.private_key",
+                              )}
+                              onSave={(value) => {
+                                void saveGoogleWorkspacePrivateKey(value);
+                              }}
+                              placeholder="-----BEGIN PRIVATE KEY-----"
+                              isSecret
+                              rows={6}
+                            />
+                            <SettingField
+                              label="Token URI"
+                              {...settingMeta(
+                                "enrichment.google_workspace.token_uri",
+                              )}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.google_workspace.token_uri",
+                                  value,
+                                )
+                              }
+                              placeholder="https://oauth2.googleapis.com/token"
+                            />
+                            <SettingField
+                              label="Private Key ID"
+                              {...settingMeta(
+                                "enrichment.google_workspace.private_key_id",
+                              )}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.google_workspace.private_key_id",
+                                  value,
+                                )
+                              }
+                              placeholder="Optional private key ID"
+                            />
+                            <SettingField
+                              label="Delegated Admin Email"
+                              {...settingMeta(
+                                "enrichment.google_workspace.admin_email",
+                              )}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.google_workspace.admin_email",
+                                  value,
+                                )
+                              }
+                              placeholder="admin@example.com"
+                            />
+                            <SettingField
+                              label="Workspace Domain"
+                              {...settingMeta(
+                                "enrichment.google_workspace.domain",
+                              )}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.google_workspace.domain",
+                                  value,
+                                )
+                              }
+                              placeholder="example.com"
+                            />
+                            <SettingField
+                              label="Enrichment TTL (seconds)"
+                              {...settingMeta(
+                                "enrichment.google_workspace.ttl_seconds",
+                              )}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.google_workspace.ttl_seconds",
+                                  value,
+                                  false,
+                                  "NUMBER",
+                                )
+                              }
+                              placeholder="86400"
+                            />
+                            <BulkSyncScheduleFields
+                              providerId="google_workspace"
+                              providerLabel="Google Workspace"
+                              configured={googleWorkspaceConfigured}
+                              isDarkTheme={isDarkTheme}
+                              getSetting={getSetting}
+                              settingMeta={settingMeta}
+                              onSave={handleSaveSetting}
+                            />
+                          </>
+                        ) : null}
+                      </div>
+
+                      <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-neutral-50 p-4">
+                        <BooleanSettingField
+                          label="LDAP / Active Directory"
+                          description="Connect directly to LDAP or LDAPS for internal actor lookup and directory sync."
+                          source={settingMeta("enrichment.ldap.enabled").source}
+                          readOnly={
+                            settingMeta("enrichment.ldap.enabled").readOnly
+                          }
+                          value={ldapEnabled}
+                          onSave={(value) =>
+                            handleSaveSetting(
+                              "enrichment.ldap.enabled",
+                              value ? "true" : "false",
+                              false,
+                              "BOOLEAN",
+                            )
+                          }
                         />
-                      </>
-                    ) : null}
-                  </div>
-                </div>
-              </section>
 
-              <section
-                id="maxmind-geoip-settings"
-                className="scroll-mt-24 flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6"
-              >
-              <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
-                <Globe2 className="text-[20px] text-subtext-color" />
-                <h2 className="text-heading-3 font-heading-3 text-default-font">
-                  MaxMind GeoIP
-                </h2>
-              </div>
+                        {ldapEnabled ? (
+                          <>
+                            <StatusCallout
+                              variant={ldapConfigured ? "success" : "warning"}
+                              title={
+                                ldapConfigured
+                                  ? "LDAP is configured"
+                                  : "LDAP needs connection details"
+                              }
+                              description={
+                                ldapConfigured
+                                  ? "LDAP connection settings are present for lookup and sync operations."
+                                  : "Provide server URL, bind DN, bind password, and search base to enable LDAP lookups."
+                              }
+                              isDarkTheme={isDarkTheme}
+                            />
+                            <SettingField
+                              label="Server URL"
+                              {...settingMeta("enrichment.ldap.url")}
+                              onSave={(value) =>
+                                handleSaveSetting("enrichment.ldap.url", value)
+                              }
+                              placeholder="ldaps://directory.example.com"
+                            />
+                            <SettingField
+                              label="Bind DN"
+                              {...settingMeta("enrichment.ldap.bind_dn")}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.ldap.bind_dn",
+                                  value,
+                                )
+                              }
+                              placeholder="cn=svc,dc=example,dc=com"
+                            />
+                            <SettingField
+                              label="Bind Password"
+                              {...settingMeta("enrichment.ldap.bind_password")}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.ldap.bind_password",
+                                  value,
+                                  true,
+                                )
+                              }
+                              placeholder="Bind password"
+                              isSecret
+                            />
+                            <SettingField
+                              label="Search Base"
+                              {...settingMeta("enrichment.ldap.search_base")}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.ldap.search_base",
+                                  value,
+                                )
+                              }
+                              placeholder="dc=example,dc=com"
+                            />
+                            <BooleanSettingField
+                              label="Use SSL / TLS"
+                              description={
+                                settingMeta("enrichment.ldap.use_ssl")
+                                  .description
+                              }
+                              source={
+                                settingMeta("enrichment.ldap.use_ssl").source
+                              }
+                              readOnly={
+                                settingMeta("enrichment.ldap.use_ssl").readOnly
+                              }
+                              value={parseBooleanValue(
+                                getSetting("enrichment.ldap.use_ssl") || "true",
+                              )}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.ldap.use_ssl",
+                                  value ? "true" : "false",
+                                  false,
+                                  "BOOLEAN",
+                                )
+                              }
+                            />
+                            <SettingField
+                              label="User Search Filter"
+                              {...settingMeta(
+                                "enrichment.ldap.user_search_filter",
+                              )}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.ldap.user_search_filter",
+                                  value,
+                                )
+                              }
+                              placeholder="(|(sAMAccountName={uid})(userPrincipalName={uid})(mail={uid}))"
+                            />
+                            <SettingField
+                              label="Enrichment TTL (seconds)"
+                              {...settingMeta("enrichment.ldap.ttl_seconds")}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.ldap.ttl_seconds",
+                                  value,
+                                  false,
+                                  "NUMBER",
+                                )
+                              }
+                              placeholder="86400"
+                            />
+                            <BulkSyncScheduleFields
+                              providerId="ldap"
+                              providerLabel="LDAP / Active Directory"
+                              configured={ldapConfigured}
+                              isDarkTheme={isDarkTheme}
+                              getSetting={getSetting}
+                              settingMeta={settingMeta}
+                              onSave={handleSaveSetting}
+                            />
+                          </>
+                        ) : null}
+                      </div>
+                    </div>
+                  </section>
 
-              <StatusCallout
-                variant={maxMindConfigured ? "success" : "warning"}
-                title={
-                  maxMindConfigured
-                    ? "MaxMind is configured"
-                    : "MaxMind is not configured"
-                }
-                description={
-                  maxMindConfigured
-                    ? "Workers will use MMDB databases stored in blob storage for IP enrichment."
-                    : "Import a GeoIP.conf file or populate the MaxMind settings below to enable database downloads."
-                }
-                isDarkTheme={isDarkTheme}
-              />
-
-              <div className="flex flex-col gap-3">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <span className="text-body-bold font-body-bold text-default-font">
-                      GeoIP.conf Import
-                    </span>
-                    <p className="text-caption font-caption text-subtext-color">
-                      Drop a GeoIP.conf file here, select one from disk, or
-                      paste its contents below to preconfigure MaxMind
-                      downloads.
-                    </p>
-                  </div>
-                  <input
-                    ref={geoipConfFileInputRef}
-                    type="file"
-                    accept=".conf,text/plain"
-                    className="hidden"
-                    onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
-                      loadGeoIpConfFile(event.target.files?.[0] ?? null);
-                      event.target.value = "";
-                    }}
-                  />
-                  <Button
-                    variant="neutral-tertiary"
-                    onClick={() => geoipConfFileInputRef.current?.click()}
-                    icon={<FileText className="text-[16px]" />}
+                  <section
+                    id="maxmind-geoip-settings"
+                    className="scroll-mt-24 flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-6"
                   >
-                    Choose File
-                  </Button>
-                </div>
+                    <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
+                      <Globe2 className="text-[20px] text-subtext-color" />
+                      <h2 className="text-heading-3 font-heading-3 text-default-font">
+                        MaxMind GeoIP
+                      </h2>
+                    </div>
 
-                <div
-                  className={cn(
-                    "flex min-h-[120px] cursor-pointer flex-col items-center justify-center gap-3 rounded-md border-2 border-dashed px-6 py-8 transition-colors",
-                    isMaxMindDragging
-                      ? "border-focus-border bg-neutral-100"
-                      : "border-neutral-border bg-default-background hover:border-neutral-400",
-                  )}
-                  onClick={() => geoipConfFileInputRef.current?.click()}
-                  onDragOver={(event: React.DragEvent<HTMLDivElement>) => {
-                    event.preventDefault();
-                    setIsMaxMindDragging(true);
-                  }}
-                  onDragLeave={(event: React.DragEvent<HTMLDivElement>) => {
-                    event.preventDefault();
-                    setIsMaxMindDragging(false);
-                  }}
-                  onDrop={(event: React.DragEvent<HTMLDivElement>) => {
-                    event.preventDefault();
-                    setIsMaxMindDragging(false);
-                    loadGeoIpConfFile(event.dataTransfer.files?.[0] ?? null);
-                  }}
-                >
-                  <Upload className="text-[24px] text-subtext-color" />
-                  <div className="flex flex-col items-center gap-1 text-center">
-                    <span className="text-body-bold font-body-bold text-default-font">
-                      Drop GeoIP.conf here
-                    </span>
-                    <span className="text-caption font-caption text-subtext-color">
-                      The file contents will be parsed and saved into the
-                      MaxMind admin settings.
-                    </span>
-                  </div>
-                </div>
+                    <StatusCallout
+                      variant={maxMindConfigured ? "success" : "warning"}
+                      title={
+                        maxMindConfigured
+                          ? "MaxMind is configured"
+                          : "MaxMind is not configured"
+                      }
+                      description={
+                        maxMindConfigured
+                          ? "Workers will use MMDB databases stored in blob storage for IP enrichment."
+                          : "Import a GeoIP.conf file or populate the MaxMind settings below to enable database downloads."
+                      }
+                      isDarkTheme={isDarkTheme}
+                    />
 
-                <TextArea
-                  label="GeoIP.conf contents"
-                  helpText="Paste the file contents exactly as provided by MaxMind. The import saves AccountID, LicenseKey, and EditionIDs."
-                >
-                  <TextArea.Input
-                    value={geoipConfText}
-                    onChange={(
-                      event: React.ChangeEvent<HTMLTextAreaElement>,
-                    ) => {
-                      setGeoipConfText(event.target.value);
-                    }}
-                    placeholder="# Paste GeoIP.conf here"
-                  />
-                </TextArea>
+                    <div className="flex flex-col gap-3">
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <span className="text-body-bold font-body-bold text-default-font">
+                            GeoIP.conf Import
+                          </span>
+                          <p className="text-caption font-caption text-subtext-color">
+                            Drop a GeoIP.conf file here, select one from disk,
+                            or paste its contents below to preconfigure MaxMind
+                            downloads.
+                          </p>
+                        </div>
+                        <input
+                          ref={geoipConfFileInputRef}
+                          type="file"
+                          accept=".conf,text/plain"
+                          className="hidden"
+                          onChange={(
+                            event: React.ChangeEvent<HTMLInputElement>,
+                          ) => {
+                            loadGeoIpConfFile(event.target.files?.[0] ?? null);
+                            event.target.value = "";
+                          }}
+                        />
+                        <Button
+                          variant="neutral-tertiary"
+                          onClick={() => geoipConfFileInputRef.current?.click()}
+                          icon={<FileText className="text-[16px]" />}
+                        >
+                          Choose File
+                        </Button>
+                      </div>
 
-                <div className="flex items-center gap-3">
-                  <Button
-                    variant="brand-primary"
-                    onClick={submitGeoIpConf}
-                    disabled={maxMindConfigureMutation.isPending}
-                    icon={<Save className="text-[16px]" />}
-                  >
-                    {maxMindConfigureMutation.isPending
-                      ? "Importing..."
-                      : "Import GeoIP.conf"}
-                  </Button>
-                  <Button
-                    variant="neutral-secondary"
-                    onClick={() => setGeoipConfText("")}
-                    disabled={
-                      maxMindConfigureMutation.isPending ||
-                      !geoipConfText.trim()
-                    }
-                  >
-                    Clear
-                  </Button>
-                </div>
-
-                {maxMindConfigureStatus && (
-                  <StatusCallout
-                    variant={maxMindConfigureStatus.variant}
-                    title={maxMindConfigureStatus.title}
-                    description={maxMindConfigureStatus.description}
-                    isDarkTheme={isDarkTheme}
-                  />
-                )}
-              </div>
-
-              <BooleanSettingField
-                label="Enable MaxMind Enrichment"
-                description={
-                  settingMeta("enrichment.maxmind.enabled").description
-                }
-                source={settingMeta("enrichment.maxmind.enabled").source}
-                readOnly={settingMeta("enrichment.maxmind.enabled").readOnly}
-                value={parseBooleanValue(
-                  getSetting("enrichment.maxmind.enabled"),
-                )}
-                onSave={(value) =>
-                  handleSaveSetting(
-                    "enrichment.maxmind.enabled",
-                    value ? "true" : "false",
-                    false,
-                    "BOOLEAN",
-                  )
-                }
-              />
-
-              <SettingField
-                label="Account ID"
-                {...settingMeta("enrichment.maxmind.account_id")}
-                onSave={(value) =>
-                  handleSaveSetting("enrichment.maxmind.account_id", value)
-                }
-                placeholder="1313424"
-              />
-
-              <SettingField
-                label="License Key"
-                {...settingMeta("enrichment.maxmind.license_key")}
-                onSave={(value) =>
-                  handleSaveSetting(
-                    "enrichment.maxmind.license_key",
-                    value,
-                    true,
-                  )
-                }
-                placeholder="License key"
-                isSecret
-              />
-
-              <TagsSettingField
-                label="Edition IDs"
-                description={
-                  settingMeta("enrichment.maxmind.edition_ids").description
-                }
-                source={settingMeta("enrichment.maxmind.edition_ids").source}
-                readOnly={
-                  settingMeta("enrichment.maxmind.edition_ids").readOnly
-                }
-                value={getSetting("enrichment.maxmind.edition_ids")}
-                onSave={(tags) =>
-                  handleSaveSetting(
-                    "enrichment.maxmind.edition_ids",
-                    JSON.stringify(tags),
-                    false,
-                    "JSON",
-                  )
-                }
-              />
-
-              <SettingField
-                label="Update Frequency (hours)"
-                {...settingMeta("enrichment.maxmind.update_frequency_hours")}
-                onSave={(value) =>
-                  handleSaveSetting(
-                    "enrichment.maxmind.update_frequency_hours",
-                    value,
-                    false,
-                    "NUMBER",
-                  )
-                }
-                placeholder="24"
-              />
-
-              <SettingField
-                label="Enrichment TTL (seconds)"
-                {...settingMeta("enrichment.maxmind.ttl_seconds")}
-                onSave={(value) =>
-                  handleSaveSetting(
-                    "enrichment.maxmind.ttl_seconds",
-                    value,
-                    false,
-                    "NUMBER",
-                  )
-                }
-                placeholder="604800"
-              />
-
-              <div className="flex flex-col gap-4 border-t border-neutral-border pt-4">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <span className="text-body-bold font-body-bold text-default-font">
-                      Database Status
-                    </span>
-                    <p className="text-caption font-caption text-subtext-color">
-                      Shows which MMDB editions are present in blob storage and
-                      currently loaded on this node.
-                    </p>
-                  </div>
-                  <Button
-                    variant="neutral-tertiary"
-                    onClick={() => maxMindUpdateMutation.mutate()}
-                    disabled={
-                      maxMindUpdateMutation.isPending || !maxMindConfigured
-                    }
-                    icon={
-                      <RefreshCw
+                      <div
                         className={cn(
-                          "text-[16px]",
-                          maxMindUpdateMutation.isPending && "animate-spin",
+                          "flex min-h-[120px] cursor-pointer flex-col items-center justify-center gap-3 rounded-md border-2 border-dashed px-6 py-8 transition-colors",
+                          isMaxMindDragging
+                            ? "border-focus-border bg-neutral-100"
+                            : "border-neutral-border bg-default-background hover:border-neutral-400",
                         )}
-                      />
-                    }
-                  >
-                    {maxMindUpdateMutation.isPending
-                      ? "Queueing..."
-                      : "Check for Updates"}
-                  </Button>
-                </div>
+                        onClick={() => geoipConfFileInputRef.current?.click()}
+                        onDragOver={(
+                          event: React.DragEvent<HTMLDivElement>,
+                        ) => {
+                          event.preventDefault();
+                          setIsMaxMindDragging(true);
+                        }}
+                        onDragLeave={(
+                          event: React.DragEvent<HTMLDivElement>,
+                        ) => {
+                          event.preventDefault();
+                          setIsMaxMindDragging(false);
+                        }}
+                        onDrop={(event: React.DragEvent<HTMLDivElement>) => {
+                          event.preventDefault();
+                          setIsMaxMindDragging(false);
+                          loadGeoIpConfFile(
+                            event.dataTransfer.files?.[0] ?? null,
+                          );
+                        }}
+                      >
+                        <Upload className="text-[24px] text-subtext-color" />
+                        <div className="flex flex-col items-center gap-1 text-center">
+                          <span className="text-body-bold font-body-bold text-default-font">
+                            Drop GeoIP.conf here
+                          </span>
+                          <span className="text-caption font-caption text-subtext-color">
+                            The file contents will be parsed and saved into the
+                            MaxMind admin settings.
+                          </span>
+                        </div>
+                      </div>
 
-                {maxMindUpdateStatus && (
-                  <StatusCallout
-                    variant={maxMindUpdateStatus.variant}
-                    title={maxMindUpdateStatus.title}
-                    description={maxMindUpdateStatus.description}
-                    isDarkTheme={isDarkTheme}
-                  />
-                )}
+                      <TextArea
+                        label="GeoIP.conf contents"
+                        helpText="Paste the file contents exactly as provided by MaxMind. The import saves AccountID, LicenseKey, and EditionIDs."
+                      >
+                        <TextArea.Input
+                          value={geoipConfText}
+                          onChange={(
+                            event: React.ChangeEvent<HTMLTextAreaElement>,
+                          ) => {
+                            setGeoipConfText(event.target.value);
+                          }}
+                          placeholder="# Paste GeoIP.conf here"
+                        />
+                      </TextArea>
 
-                <div className="overflow-x-auto rounded-md border border-neutral-border">
-                  <table className="min-w-full divide-y divide-neutral-border">
-                    <thead className="bg-neutral-50">
-                      <tr>
-                        <th className="px-4 py-3 text-left text-caption-bold font-caption-bold text-default-font">
-                          Edition
-                        </th>
-                        <th className="px-4 py-3 text-left text-caption-bold font-caption-bold text-default-font">
-                          Storage
-                        </th>
-                        <th className="px-4 py-3 text-left text-caption-bold font-caption-bold text-default-font">
-                          Loaded
-                        </th>
-                        <th className="px-4 py-3 text-left text-caption-bold font-caption-bold text-default-font">
-                          Size
-                        </th>
-                        <th className="px-4 py-3 text-left text-caption-bold font-caption-bold text-default-font">
-                          Last Updated
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-neutral-border bg-default-background">
-                      {maxMindDatabasesLoading ? (
-                        <tr>
-                          <td
-                            colSpan={5}
-                            className="px-4 py-6 text-body text-subtext-color"
-                          >
-                            Loading database status...
-                          </td>
-                        </tr>
-                      ) : maxMindDatabases.length === 0 ? (
-                        <tr>
-                          <td
-                            colSpan={5}
-                            className="px-4 py-6 text-body text-subtext-color"
-                          >
-                            No MaxMind editions configured yet.
-                          </td>
-                        </tr>
-                      ) : (
-                        maxMindDatabases.map(
-                          (database: MaxMindDatabaseStatus) => (
-                            <tr key={database.edition_id}>
-                              <td className="px-4 py-3 text-body text-default-font">
-                                {database.edition_id}
-                              </td>
-                              <td className="px-4 py-3 text-body text-default-font">
-                                <StatusPill
-                                  active={!!database.available_in_storage}
-                                  activeLabel="Stored"
-                                  inactiveLabel="Missing"
-                                />
-                              </td>
-                              <td className="px-4 py-3 text-body text-default-font">
-                                <StatusPill
-                                  active={!!database.loaded}
-                                  activeLabel="Loaded"
-                                  inactiveLabel="Idle"
-                                />
-                              </td>
-                              <td className="px-4 py-3 text-body text-subtext-color">
-                                {formatFileSize(database.file_size_bytes)}
-                              </td>
-                              <td className="px-4 py-3 text-body text-subtext-color">
-                                {formatTimestamp(database.last_updated)}
-                              </td>
-                            </tr>
-                          ),
-                        )
+                      <div className="flex items-center gap-3">
+                        <Button
+                          variant="brand-primary"
+                          onClick={submitGeoIpConf}
+                          disabled={maxMindConfigureMutation.isPending}
+                          icon={<Save className="text-[16px]" />}
+                        >
+                          {maxMindConfigureMutation.isPending
+                            ? "Importing..."
+                            : "Import GeoIP.conf"}
+                        </Button>
+                        <Button
+                          variant="neutral-secondary"
+                          onClick={() => setGeoipConfText("")}
+                          disabled={
+                            maxMindConfigureMutation.isPending ||
+                            !geoipConfText.trim()
+                          }
+                        >
+                          Clear
+                        </Button>
+                      </div>
+
+                      {maxMindConfigureStatus && (
+                        <StatusCallout
+                          variant={maxMindConfigureStatus.variant}
+                          title={maxMindConfigureStatus.title}
+                          description={maxMindConfigureStatus.description}
+                          isDarkTheme={isDarkTheme}
+                        />
                       )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-              </section>
-            </div>
+                    </div>
 
-            <hr className="my-6 border-neutral-border" />
-            {/* Advanced Settings — auto-generated from registry */}
-            {advancedByCategory.length > 0 && (
-              <section
-                id="advanced-settings"
-                className="scroll-mt-24 flex flex-col gap-4 rounded-lg border border-neutral-border bg-default-background p-6"
-              >
-                <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
-                  <Settings className="text-[20px] text-subtext-color" />
-                  <h2 className="text-heading-3 font-heading-3 text-default-font">
-                    Advanced Settings
-                  </h2>
+                    <BooleanSettingField
+                      label="Enable MaxMind Enrichment"
+                      description={
+                        settingMeta("enrichment.maxmind.enabled").description
+                      }
+                      source={settingMeta("enrichment.maxmind.enabled").source}
+                      readOnly={
+                        settingMeta("enrichment.maxmind.enabled").readOnly
+                      }
+                      value={parseBooleanValue(
+                        getSetting("enrichment.maxmind.enabled"),
+                      )}
+                      onSave={(value) =>
+                        handleSaveSetting(
+                          "enrichment.maxmind.enabled",
+                          value ? "true" : "false",
+                          false,
+                          "BOOLEAN",
+                        )
+                      }
+                    />
+
+                    <SettingField
+                      label="Account ID"
+                      {...settingMeta("enrichment.maxmind.account_id")}
+                      onSave={(value) =>
+                        handleSaveSetting(
+                          "enrichment.maxmind.account_id",
+                          value,
+                        )
+                      }
+                      placeholder="1313424"
+                    />
+
+                    <SettingField
+                      label="License Key"
+                      {...settingMeta("enrichment.maxmind.license_key")}
+                      onSave={(value) =>
+                        handleSaveSetting(
+                          "enrichment.maxmind.license_key",
+                          value,
+                          true,
+                        )
+                      }
+                      placeholder="License key"
+                      isSecret
+                    />
+
+                    <TagsSettingField
+                      label="Edition IDs"
+                      description={
+                        settingMeta("enrichment.maxmind.edition_ids")
+                          .description
+                      }
+                      source={
+                        settingMeta("enrichment.maxmind.edition_ids").source
+                      }
+                      readOnly={
+                        settingMeta("enrichment.maxmind.edition_ids").readOnly
+                      }
+                      value={getSetting("enrichment.maxmind.edition_ids")}
+                      onSave={(tags) =>
+                        handleSaveSetting(
+                          "enrichment.maxmind.edition_ids",
+                          JSON.stringify(tags),
+                          false,
+                          "JSON",
+                        )
+                      }
+                    />
+
+                    <SettingField
+                      label="Update Frequency (hours)"
+                      {...settingMeta(
+                        "enrichment.maxmind.update_frequency_hours",
+                      )}
+                      onSave={(value) =>
+                        handleSaveSetting(
+                          "enrichment.maxmind.update_frequency_hours",
+                          value,
+                          false,
+                          "NUMBER",
+                        )
+                      }
+                      placeholder="24"
+                    />
+
+                    <SettingField
+                      label="Enrichment TTL (seconds)"
+                      {...settingMeta("enrichment.maxmind.ttl_seconds")}
+                      onSave={(value) =>
+                        handleSaveSetting(
+                          "enrichment.maxmind.ttl_seconds",
+                          value,
+                          false,
+                          "NUMBER",
+                        )
+                      }
+                      placeholder="604800"
+                    />
+
+                    <div className="flex flex-col gap-4 border-t border-neutral-border pt-4">
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <span className="text-body-bold font-body-bold text-default-font">
+                            Database Status
+                          </span>
+                          <p className="text-caption font-caption text-subtext-color">
+                            Shows which MMDB editions are present in blob
+                            storage and currently loaded on this node.
+                          </p>
+                        </div>
+                        <Button
+                          variant="neutral-tertiary"
+                          onClick={() => maxMindUpdateMutation.mutate()}
+                          disabled={
+                            maxMindUpdateMutation.isPending ||
+                            !maxMindConfigured
+                          }
+                          icon={
+                            <RefreshCw
+                              className={cn(
+                                "text-[16px]",
+                                maxMindUpdateMutation.isPending &&
+                                  "animate-spin",
+                              )}
+                            />
+                          }
+                        >
+                          {maxMindUpdateMutation.isPending
+                            ? "Queueing..."
+                            : "Check for Updates"}
+                        </Button>
+                      </div>
+
+                      {maxMindUpdateStatus && (
+                        <StatusCallout
+                          variant={maxMindUpdateStatus.variant}
+                          title={maxMindUpdateStatus.title}
+                          description={maxMindUpdateStatus.description}
+                          isDarkTheme={isDarkTheme}
+                        />
+                      )}
+
+                      <div className="overflow-x-auto rounded-md border border-neutral-border">
+                        <table className="min-w-full divide-y divide-neutral-border">
+                          <thead className="bg-neutral-50">
+                            <tr>
+                              <th className="px-4 py-3 text-left text-caption-bold font-caption-bold text-default-font">
+                                Edition
+                              </th>
+                              <th className="px-4 py-3 text-left text-caption-bold font-caption-bold text-default-font">
+                                Storage
+                              </th>
+                              <th className="px-4 py-3 text-left text-caption-bold font-caption-bold text-default-font">
+                                Loaded
+                              </th>
+                              <th className="px-4 py-3 text-left text-caption-bold font-caption-bold text-default-font">
+                                Size
+                              </th>
+                              <th className="px-4 py-3 text-left text-caption-bold font-caption-bold text-default-font">
+                                Last Updated
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-neutral-border bg-default-background">
+                            {maxMindDatabasesLoading ? (
+                              <tr>
+                                <td
+                                  colSpan={5}
+                                  className="px-4 py-6 text-body text-subtext-color"
+                                >
+                                  Loading database status...
+                                </td>
+                              </tr>
+                            ) : maxMindDatabases.length === 0 ? (
+                              <tr>
+                                <td
+                                  colSpan={5}
+                                  className="px-4 py-6 text-body text-subtext-color"
+                                >
+                                  No MaxMind editions configured yet.
+                                </td>
+                              </tr>
+                            ) : (
+                              maxMindDatabases.map(
+                                (database: MaxMindDatabaseStatus) => (
+                                  <tr key={database.edition_id}>
+                                    <td className="px-4 py-3 text-body text-default-font">
+                                      {database.edition_id}
+                                    </td>
+                                    <td className="px-4 py-3 text-body text-default-font">
+                                      <StatusPill
+                                        active={!!database.available_in_storage}
+                                        activeLabel="Stored"
+                                        inactiveLabel="Missing"
+                                      />
+                                    </td>
+                                    <td className="px-4 py-3 text-body text-default-font">
+                                      <StatusPill
+                                        active={!!database.loaded}
+                                        activeLabel="Loaded"
+                                        inactiveLabel="Idle"
+                                      />
+                                    </td>
+                                    <td className="px-4 py-3 text-body text-subtext-color">
+                                      {formatFileSize(database.file_size_bytes)}
+                                    </td>
+                                    <td className="px-4 py-3 text-body text-subtext-color">
+                                      {formatTimestamp(database.last_updated)}
+                                    </td>
+                                  </tr>
+                                ),
+                              )
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </section>
                 </div>
 
-                {advancedByCategory.map(([category, catSettings]) => (
-                  <AdvancedCategorySection
-                    key={category}
-                    category={category}
-                    settings={catSettings}
-                    onSave={(key, value) => handleSaveSetting(key, value)}
-                  />
-                ))}
-              </section>
-            )}
+                <hr className="my-6 border-neutral-border" />
+                {/* Advanced Settings — auto-generated from registry */}
+                {advancedByCategory.length > 0 && (
+                  <section
+                    id="advanced-settings"
+                    className="scroll-mt-24 flex flex-col gap-4 rounded-lg border border-neutral-border bg-default-background p-6"
+                  >
+                    <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
+                      <Settings className="text-[20px] text-subtext-color" />
+                      <h2 className="text-heading-3 font-heading-3 text-default-font">
+                        Advanced Settings
+                      </h2>
+                    </div>
+
+                    {advancedByCategory.map(([category, catSettings]) => (
+                      <AdvancedCategorySection
+                        key={category}
+                        category={category}
+                        settings={catSettings}
+                        onSave={(key, value) => handleSaveSetting(key, value)}
+                      />
+                    ))}
+                  </section>
+                )}
               </div>
             </div>
           </div>
         )}
       </div>
+
+      {showLangflowSetupModal && (
+        <ModalShell
+          panelClassName="max-w-3xl max-h-[calc(100vh-2rem)] overflow-hidden"
+          contentClassName="h-full min-h-0"
+        >
+          <div className="flex w-full items-start justify-between gap-3">
+            <div className="flex grow flex-col gap-1">
+              <span className="text-heading-2 font-heading-2 text-default-font">
+                Setup Langflow for Intercept
+              </span>
+              <span className="text-body font-body text-subtext-color">
+                {langflowSetupPage === "overview"
+                  ? "Here's what the wizard will set up for you."
+                  : langflowSetupPage === "configure"
+                    ? "Review the setup inputs before provisioning."
+                    : "Review the provisioning result and rerun if you need to change anything."}
+              </span>
+            </div>
+            <Sparkles className="text-[24px] text-default-font" />
+          </div>
+
+          <div className="min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-neutral-border bg-default-background p-4">
+            {langflowSetupPage === "overview" ? (
+              <div className="flex w-full flex-col gap-4">
+                <div className="flex flex-col border border-neutral-border">
+                  <div className="flex items-center justify-between border-b border-neutral-border bg-neutral-100 px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <Shield className={`h-4 w-4 ${isDarkTheme ? "text-brand-primary" : "text-brand-700"}`} />
+                      <span className="text-caption font-body font-semibold uppercase tracking-wider text-default-font">
+                        Intercept
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-caption font-body font-semibold uppercase tracking-wider text-default-font">
+                        Langflow
+                      </span>
+                      <Workflow className={`h-4 w-4 ${isDarkTheme ? "text-accent-1-primary" : "text-accent-1-700"}`} />
+                    </div>
+                  </div>
+                  <div className="flex flex-col divide-y divide-neutral-border p-3">
+                  {[
+                    {
+                      n: 1,
+                      system: "intercept" as const,
+                      title: "Create NHI account",
+                      desc: "Provision a dedicated non-human identity for automation.",
+                    },
+                    {
+                      n: 2,
+                      system: "intercept" as const,
+                      title: "Issue API key",
+                      desc: "Generate a credential for Langflow to authenticate.",
+                    },
+                    {
+                      n: 3,
+                      system: "langflow" as const,
+                      title: "Store API key",
+                      desc: (
+                        <>
+                          Save as the{" "}
+                          <span className="bg-neutral-100 px-1 py-0.5 font-mono text-[13px]">
+                            intercept_api_key
+                          </span>{" "}
+                          Global Variable.
+                        </>
+                      ),
+                    },
+                    {
+                      n: 4,
+                      system: "langflow" as const,
+                      title: "Register MCP server",
+                      desc: (
+                        <>
+                          Configure the{" "}
+                          <span className="bg-neutral-100 px-1 py-0.5 font-mono text-[13px]">
+                            intercept
+                          </span>{" "}
+                          MCP server for write-back.
+                        </>
+                      ),
+                    },
+                    {
+                      n: 5,
+                      system: "langflow" as const,
+                      title: "Provision default flows",
+                      desc: "Upload Intercept starter flows. Create only - leaves existing flows intact.",
+                    },
+                    {
+                      n: 6,
+                      system: "intercept" as const,
+                      title: "Link flow IDs",
+                      desc: "Update Intercept settings to reference the provisioned flows.",
+                    },
+                  ].map((step) => {
+                    const isLangflow = step.system === "langflow";
+                    return (
+                      <div
+                        key={step.n}
+                        className="w-full px-3 py-3 first:pt-1 last:pb-1"
+                      >
+                        <div
+                          className={`flex items-start gap-3 ${isLangflow ? "ml-auto w-[85%] flex-row-reverse text-right" : "mr-auto w-[85%]"}`}
+                        >
+                        <span className={`flex h-5 w-5 shrink-0 items-center justify-center border bg-default-background text-[10px] font-semibold tabular-nums ${isLangflow ? (isDarkTheme ? "border-accent-1-primary text-accent-1-primary" : "border-accent-1-700 text-accent-1-700") : (isDarkTheme ? "border-brand-primary text-brand-primary" : "border-brand-700 text-brand-700")}`}>
+                          {step.n}
+                        </span>
+                        <div className="flex min-w-0 flex-1 flex-col">
+                          <p className="text-body font-body font-medium leading-5 text-default-font">
+                            {step.title}
+                          </p>
+                          <p className="text-caption font-body text-subtext-color">
+                            {step.desc}
+                          </p>
+                        </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  </div>
+                </div>
+              </div>
+            ) : langflowSetupPage === "configure" ? (
+              <div className="flex w-full flex-col gap-4">
+                <TextField
+                  className="h-auto w-full flex-none"
+                  label="Intercept MCP SSE URL"
+                  helpText="This is automatically detected from the backend URL. Override it in advanced use cases, but leave it as is if you're not sure."
+                >
+                  <TextField.Input
+                    placeholder={defaultLangflowMcpUrl}
+                    value={langflowSetupMcpUrl}
+                    onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+                      setLangflowSetupMcpUrl(event.target.value)
+                    }
+                  />
+                </TextField>
+
+                <TextField
+                  className="h-auto w-full flex-none"
+                  label="Automation username"
+                  helpText="This is the user that actions taken by the AI agent are attributed to. Keep it meaningful and obvious, as you'll see this in timelines when the AI agent takes action."
+                >
+                  <TextField.Input
+                    placeholder={LANGFLOW_SETUP_DEFAULT_USERNAME}
+                    value={langflowSetupUsername}
+                    onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+                      setLangflowSetupUsername(event.target.value)
+                    }
+                  />
+                </TextField>
+              </div>
+            ) : (
+              <div className="flex w-full flex-col gap-4">
+                {langflowSetupStatus && (
+                  <LangflowSetupStatus
+                    status={langflowSetupStatus}
+                    isDarkTheme={isDarkTheme}
+                  />
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="flex w-full items-center justify-end gap-2">
+            {langflowSetupPage !== "results" && (
+              <Button
+                variant="neutral-secondary"
+                onClick={closeLangflowSetupModal}
+                disabled={langflowSetupMutation.isPending}
+              >
+                Close
+              </Button>
+            )}
+            {langflowSetupPage === "configure" && (
+              <Button
+                variant="neutral-secondary"
+                onClick={goToLangflowSetupOverview}
+                disabled={langflowSetupMutation.isPending}
+              >
+                Back
+              </Button>
+            )}
+            {langflowSetupPage === "overview" && (
+              <Button onClick={goToLangflowSetupConfiguration}>
+                Continue
+              </Button>
+            )}
+            {langflowSetupPage === "configure" && (
+              <Button
+                onClick={runLangflowSetup}
+                loading={langflowSetupMutation.isPending}
+                disabled={
+                  !langflowSetupUsername.trim() || !langflowSetupMcpUrl.trim()
+                }
+              >
+                Run Setup
+              </Button>
+            )}
+            {langflowSetupPage === "results" && (
+              <Button onClick={closeLangflowSetupModal}>
+                Close
+              </Button>
+            )}
+          </div>
+        </ModalShell>
+      )}
     </AdminPageLayout>
   );
 }
@@ -2940,7 +3413,11 @@ function BulkSyncScheduleFields({
     <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-default-background p-4">
       <StatusCallout
         variant={configured ? "success" : "warning"}
-        title={configured ? "Bulk sync scheduling is available" : "Bulk sync scheduling needs provider configuration"}
+        title={
+          configured
+            ? "Bulk sync scheduling is available"
+            : "Bulk sync scheduling needs provider configuration"
+        }
         description={
           configured
             ? `Schedule a daily UTC directory sync for ${providerLabel} using pgqueuer recurring schedules.`
