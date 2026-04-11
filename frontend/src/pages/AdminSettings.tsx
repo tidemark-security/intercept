@@ -446,7 +446,7 @@ function AdminSettings() {
         response.message,
         response.success
           ? response.warnings?.length
-            ? "warning"
+            ? "neutral"
             : "success"
           : "error",
       );
