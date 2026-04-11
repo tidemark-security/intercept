@@ -113,6 +113,8 @@ services:
   langflow:
     image: langflowai/langflow:1.8.3
     user: root
+    env_file:
+      - .env
     environment:
       LANGFLOW_DATABASE_URL: postgresql://langflow_user:langflow_password@postgres:5432/langflow
       LANGFLOW_CONFIG_DIR: /app/langflow
