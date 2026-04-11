@@ -4,6 +4,7 @@ commit = true
 tag = true
 tag_name = "v{new_version}"
 commit_message = "release: v{new_version}"
+pre_commit_hooks = ["cd frontend && npm install --package-lock-only"]
 
 [[tool.bumpversion.files]]
 filename = "VERSION"
@@ -12,13 +13,3 @@ filename = "VERSION"
 filename = "frontend/package.json"
 search = "\"version\": \"{current_version}\""
 replace = "\"version\": \"{new_version}\""
-
-[[tool.bumpversion.files]]
-filename = "frontend/package-lock.json"
-search = "\"version\": \"{current_version}\""
-replace = "\"version\": \"{new_version}\""
-
-[[tool.bumpversion.files]]
-filename = "docs/quickstart/docker-compose.yml"
-search = "${{TAG:-{current_version}}}"
-replace = "${{TAG:-{new_version}}}"
