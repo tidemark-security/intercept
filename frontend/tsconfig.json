@@ -20,7 +20,7 @@
     /* Linting */
     "strict": true,
     "noFallthroughCasesInSwitch": true,
-    "types": ["vitest/globals", "vite/client"],
+    "types": ["vitest/globals", "vite/client", "react-syntax-highlighter"],
     /* Import aliases */
     "paths": {
       "@/*": [
