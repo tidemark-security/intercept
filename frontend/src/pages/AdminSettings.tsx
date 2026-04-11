@@ -11,6 +11,7 @@ import { useTheme } from "@/contexts/ThemeContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
 import { cn } from "@/utils/cn";
+import { LangflowConnectionStatus } from "@/components/admin/LangflowConnectionStatus";
 
 import { useSession } from "../contexts/sessionContext";
 import { ApiError } from "../types/generated/core/ApiError";
@@ -22,6 +23,7 @@ import type {
   MaxMindConfigureResponse,
   MaxMindDatabaseStatus,
 } from "../types/generated";
+import type { TestConnectionResponse } from "../types/generated/models/TestConnectionResponse";
 import type { SettingType } from "../types/generated/models/SettingType";
 import {
   useSettings,
@@ -235,10 +237,8 @@ function AdminSettings() {
   const googleServiceAccountFileInputRef = useRef<HTMLInputElement>(null);
 
   const [testingConnection, setTestingConnection] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState<{
-    success: boolean;
-    message: string;
-  } | null>(null);
+  const [connectionStatus, setConnectionStatus] =
+    useState<TestConnectionResponse | null>(null);
   const [testingOidcDiscovery, setTestingOidcDiscovery] = useState(false);
   const [oidcDiscoveryStatus, setOidcDiscoveryStatus] = useState<{
     success: boolean;
@@ -406,6 +406,7 @@ function AdminSettings() {
       setConnectionStatus({
         success: false,
         message: err instanceof Error ? err.message : "Connection test failed",
+        checks: [],
       });
     } finally {
       setTestingConnection(false);
@@ -1330,7 +1331,7 @@ function AdminSettings() {
                       Test Connection
                     </span>
                     <p className="text-caption font-caption text-subtext-color">
-                      Verify LangFlow is reachable with current settings
+                      Verify LangFlow health, list flows, and validate configured flow IDs with current settings
                     </p>
                   </div>
                   <Button
@@ -1342,14 +1343,8 @@ function AdminSettings() {
                   </Button>
                 </div>
                 {connectionStatus && (
-                  <StatusCallout
-                    variant={connectionStatus.success ? "success" : "error"}
-                    title={
-                      connectionStatus.success
-                        ? "Connectivity test passed"
-                        : "Connectivity test failed"
-                    }
-                    description={connectionStatus.message}
+                  <LangflowConnectionStatus
+                    status={connectionStatus}
                     isDarkTheme={isDarkTheme}
                   />
                 )}

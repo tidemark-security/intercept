@@ -8,6 +8,7 @@ Provides a wrapper around LangFlow API for:
 - Error handling and retry logic
 """
 import logging
+from dataclasses import dataclass
 from typing import Optional, Dict, Any, AsyncGenerator
 from uuid import UUID
 import httpx
@@ -16,6 +17,24 @@ from datetime import datetime, timezone
 from app.services.settings_service import SettingsService
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class LangFlowCheckResult:
+    """Represents the outcome of a LangFlow environment validation check."""
+
+    check_id: str
+    label: str
+    success: bool
+    message: str
+
+
+@dataclass(frozen=True)
+class LangFlowSummaryResult:
+    """Represents a successful LangFlow API read plus the returned flow metadata."""
+
+    check_result: LangFlowCheckResult
+    flows: list[dict[str, Any]]
 
 
 class LangFlowError(Exception):
@@ -75,6 +94,12 @@ class LangFlowService:
     async def close(self):
         """Close the HTTP client."""
         await self.client.aclose()
+
+    def _get_health_url(self) -> str:
+        """Return the root health endpoint URL for the configured LangFlow host."""
+        scheme = self.client.base_url.scheme.decode() if isinstance(self.client.base_url.scheme, bytes) else self.client.base_url.scheme
+        netloc = self.client.base_url.netloc.decode() if isinstance(self.client.base_url.netloc, bytes) else self.client.base_url.netloc
+        return f"{scheme}://{netloc}/health"
     
     async def send_message(
         self,
@@ -265,29 +290,215 @@ class LangFlowService:
         Returns:
             True if connection successful, False otherwise
         """
+        result = await self.run_connectivity_check()
+        return result.success
+
+    async def run_connectivity_check(self) -> LangFlowCheckResult:
+        """Validate basic network connectivity to the LangFlow health endpoint."""
         try:
-            # Health endpoint is at root of LangFlow, not under API path
-            # httpx URL properties return bytes, so decode them
-            scheme = self.client.base_url.scheme.decode() if isinstance(self.client.base_url.scheme, bytes) else self.client.base_url.scheme
-            netloc = self.client.base_url.netloc.decode() if isinstance(self.client.base_url.netloc, bytes) else self.client.base_url.netloc
-            health_url = f"{scheme}://{netloc}/health"
+            health_url = self._get_health_url()
             response = await self.client.get(health_url)            
             # Validate both status code and response content
             # LangFlow returns {"status":"ok"} for health endpoint
             # Invalid endpoints may redirect to home page with 200 status
             if response.status_code != 200:
-                return False
+                return LangFlowCheckResult(
+                    check_id="connectivity",
+                    label="Connectivity",
+                    success=False,
+                    message=f"LangFlow health endpoint returned HTTP {response.status_code}",
+                )
             
             try:
                 data = response.json()
-                return data.get("status") == "ok"
+                if data.get("status") == "ok":
+                    return LangFlowCheckResult(
+                        check_id="connectivity",
+                        label="Connectivity",
+                        success=True,
+                        message="Connected to the LangFlow health endpoint",
+                    )
+
+                return LangFlowCheckResult(
+                    check_id="connectivity",
+                    label="Connectivity",
+                    success=False,
+                    message="LangFlow health endpoint did not return the expected status payload",
+                )
             except Exception:
                 # Response is not valid JSON or doesn't have expected format
                 logger.warning("LangFlow health response is not valid JSON: %s", response.text[:100])
-                return False
+                return LangFlowCheckResult(
+                    check_id="connectivity",
+                    label="Connectivity",
+                    success=False,
+                    message="LangFlow health endpoint returned an unexpected response body",
+                )
         except Exception as e:
             logger.warning(f"LangFlow health check failed: {e}")
-            return False
+            return LangFlowCheckResult(
+                check_id="connectivity",
+                label="Connectivity",
+                success=False,
+                message=f"LangFlow health check failed: {str(e)}",
+            )
+
+    def _extract_flow_items(self, payload: Any) -> Optional[list[dict[str, Any]]]:
+        """Normalize LangFlow flow-list payloads across supported response shapes."""
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+
+        if isinstance(payload, dict):
+            items = payload.get("items")
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+
+        return None
+
+    async def list_flows(self) -> LangFlowSummaryResult:
+        """Read flows from LangFlow using the configured API key."""
+        if not self.api_key:
+            return LangFlowSummaryResult(
+                check_result=LangFlowCheckResult(
+                    check_id="flow_listing",
+                    label="Authenticated flow listing",
+                    success=False,
+                    message="LangFlow API key not configured",
+                ),
+                flows=[],
+            )
+
+        try:
+            response = await self.client.get(
+                "/flows/",
+                params={
+                    "remove_example_flows": "false",
+                    "components_only": "false",
+                    "get_all": "true",
+                    "header_flows": "false",
+                    "page": 1,
+                    "size": 100,
+                },
+            )
+            if response.status_code == 200:
+                payload = response.json()
+                flows = self._extract_flow_items(payload)
+                if not isinstance(flows, list):
+                    return LangFlowSummaryResult(
+                        check_result=LangFlowCheckResult(
+                            check_id="flow_listing",
+                            label="Authenticated flow listing",
+                            success=False,
+                            message="LangFlow flow listing returned an unexpected response body",
+                        ),
+                        flows=[],
+                    )
+
+                return LangFlowSummaryResult(
+                    check_result=LangFlowCheckResult(
+                        check_id="flow_listing",
+                        label="Authenticated flow listing",
+                        success=True,
+                        message=f"Authenticated LangFlow API returned {len(flows)} flows",
+                    ),
+                    flows=flows,
+                )
+
+            if response.status_code in {401, 403}:
+                return LangFlowSummaryResult(
+                    check_result=LangFlowCheckResult(
+                        check_id="flow_listing",
+                        label="Authenticated flow listing",
+                        success=False,
+                        message="LangFlow rejected the configured API key",
+                    ),
+                    flows=[],
+                )
+
+            return LangFlowSummaryResult(
+                check_result=LangFlowCheckResult(
+                    check_id="flow_listing",
+                    label="Authenticated flow listing",
+                    success=False,
+                    message=f"LangFlow flow listing returned HTTP {response.status_code}",
+                ),
+                flows=[],
+            )
+        except httpx.ConnectError as e:
+            logger.warning("LangFlow flow listing failed to connect: %s", e)
+            return LangFlowSummaryResult(
+                check_result=LangFlowCheckResult(
+                    check_id="flow_listing",
+                    label="Authenticated flow listing",
+                    success=False,
+                    message=f"Unable to connect to LangFlow flows API: {str(e)}",
+                ),
+                flows=[],
+            )
+        except httpx.TimeoutException as e:
+            logger.warning("LangFlow flow listing timed out: %s", e)
+            return LangFlowSummaryResult(
+                check_result=LangFlowCheckResult(
+                    check_id="flow_listing",
+                    label="Authenticated flow listing",
+                    success=False,
+                    message=f"LangFlow flow listing request timed out after {self.timeout} seconds",
+                ),
+                flows=[],
+            )
+        except Exception as e:
+            logger.warning("LangFlow flow listing failed: %s", e)
+            return LangFlowSummaryResult(
+                check_result=LangFlowCheckResult(
+                    check_id="flow_listing",
+                    label="Authenticated flow listing",
+                    success=False,
+                    message=f"LangFlow flow listing failed: {str(e)}",
+                ),
+                flows=[],
+            )
+
+    def validate_configured_flows(
+        self,
+        configured_flows: dict[str, str],
+        flows: list[dict[str, Any]],
+    ) -> LangFlowCheckResult:
+        """Validate that every configured flow reference matches a known LangFlow flow."""
+        if not configured_flows:
+            return LangFlowCheckResult(
+                check_id="configured_flows",
+                label="Configured flow existence",
+                success=True,
+                message="No LangFlow flow IDs are configured",
+            )
+
+        known_identifiers: set[str] = set()
+        for flow in flows:
+            for key in ("id", "endpoint_name", "name"):
+                value = flow.get(key)
+                if isinstance(value, str) and value.strip():
+                    known_identifiers.add(value.strip())
+
+        missing = [
+            f"{label} ({flow_id})"
+            for label, flow_id in configured_flows.items()
+            if flow_id not in known_identifiers
+        ]
+
+        if missing:
+            return LangFlowCheckResult(
+                check_id="configured_flows",
+                label="Configured flow existence",
+                success=False,
+                message="Missing configured LangFlow flows: " + ", ".join(missing),
+            )
+
+        return LangFlowCheckResult(
+            check_id="configured_flows",
+            label="Configured flow existence",
+            success=True,
+            message=f"Validated {len(configured_flows)} configured LangFlow flow references",
+        )
     
     @staticmethod
     async def from_settings(settings_service: SettingsService) -> "LangFlowService":

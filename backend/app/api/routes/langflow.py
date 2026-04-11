@@ -32,6 +32,7 @@ from app.models.models import (
 )
 from app.models.enums import SessionStatus, MessageRole, MessageFeedback, UserRole
 from app.services.langflow_service import (
+    LangFlowCheckResult,
     LangFlowService,
     LangFlowConfigurationError,
     LangFlowConnectionError,
@@ -77,6 +78,16 @@ class SessionWithMessages(BaseModel):
 
 class TestConnectionResponse(BaseModel):
     """Response from connection test."""
+    checks: List["LangFlowConnectionCheck"] = Field(default_factory=list)
+    success: bool
+    message: str
+
+
+class LangFlowConnectionCheck(BaseModel):
+    """Single LangFlow environment validation result."""
+
+    id: str
+    label: str
     success: bool
     message: str
 
@@ -644,29 +655,110 @@ async def test_langflow_connection(
     """
     try:
         langflow_service = await get_langflow_service(db)
-        success = await langflow_service.test_connection()
-        await langflow_service.close()
-        
-        if success:
-            return TestConnectionResponse(
-                success=True,
-                message="Successfully connected to LangFlow"
+        settings_service = SettingsService(db)  # type: ignore[arg-type]
+        try:
+            configured_flow_settings = [
+                ("Default flow", "langflow.default_flow_id"),
+                ("Case detail flow", "langflow.case_detail_flow_id"),
+                ("Task detail flow", "langflow.task_detail_flow_id"),
+                ("Alert triage flow", "langflow.alert_triage_flow_id"),
+            ]
+            configured_flows = {}
+            for label, setting_key in configured_flow_settings:
+                value = await settings_service.get_typed_value(setting_key)
+                if isinstance(value, str) and value.strip():
+                    configured_flows[label] = value.strip()
+
+            flow_summary = await langflow_service.list_flows()
+            check_results = [
+                await langflow_service.run_connectivity_check(),
+                flow_summary.check_result,
+                langflow_service.validate_configured_flows(
+                    configured_flows=configured_flows,
+                    flows=flow_summary.flows,
+                ) if flow_summary.check_result.success else LangFlowCheckResult(
+                    check_id="configured_flows",
+                    label="Configured flow existence",
+                    success=False,
+                    message="Unable to validate configured flows because LangFlow flow listing failed",
+                ),
+            ]
+        finally:
+            await langflow_service.close()
+
+        checks = [
+            LangFlowConnectionCheck(
+                id=result.check_id,
+                label=result.label,
+                success=result.success,
+                message=result.message,
             )
-        else:
-            return TestConnectionResponse(
-                success=False,
-                message="LangFlow is not responding to health checks"
-            )
+            for result in check_results
+        ]
+        success = all(check.success for check in checks)
+        passed_checks = sum(1 for check in checks if check.success)
+        total_checks = len(checks)
+
+        return TestConnectionResponse(
+            success=success,
+            message=(
+                "LangFlow connectivity, flow listing, and configured flow checks passed"
+                if success
+                else f"{passed_checks} of {total_checks} LangFlow checks passed"
+            ),
+            checks=checks,
+        )
     except LangFlowConfigurationError as e:
+        message = str(e)
         return TestConnectionResponse(
             success=False,
-            message=str(e)
+            message=message,
+            checks=[
+                LangFlowConnectionCheck(
+                    id="connectivity",
+                    label="Connectivity",
+                    success=False,
+                    message=message,
+                ),
+                LangFlowConnectionCheck(
+                    id="flow_listing",
+                    label="Authenticated flow listing",
+                    success=False,
+                    message=message,
+                ),
+                LangFlowConnectionCheck(
+                    id="configured_flows",
+                    label="Configured flow existence",
+                    success=False,
+                    message=message,
+                ),
+            ],
         )
     except Exception as e:
         logger.error(f"Connection test error: {e}")
         return TestConnectionResponse(
             success=False,
-            message=f"Connection test failed: {str(e)}"
+            message=f"Connection test failed: {str(e)}",
+            checks=[
+                LangFlowConnectionCheck(
+                    id="connectivity",
+                    label="Connectivity",
+                    success=False,
+                    message=f"Connection test failed: {str(e)}",
+                ),
+                LangFlowConnectionCheck(
+                    id="flow_listing",
+                    label="Authenticated flow listing",
+                    success=False,
+                    message=f"Connection test failed: {str(e)}",
+                ),
+                LangFlowConnectionCheck(
+                    id="configured_flows",
+                    label="Configured flow existence",
+                    success=False,
+                    message=f"Connection test failed: {str(e)}",
+                ),
+            ],
         )
 
 

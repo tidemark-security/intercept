@@ -81,6 +81,7 @@ export type { FeatureFlags } from './models/FeatureFlags';
 export type { ForensicArtifactItem } from './models/ForensicArtifactItem';
 export type { HTTPValidationError } from './models/HTTPValidationError';
 export type { InternalActorItem } from './models/InternalActorItem';
+export type { LangFlowConnectionCheck } from './models/LangFlowConnectionCheck';
 export type { LangFlowMessageRead } from './models/LangFlowMessageRead';
 export type { LangFlowSessionCreate } from './models/LangFlowSessionCreate';
 export type { LangFlowSessionRead } from './models/LangFlowSessionRead';
