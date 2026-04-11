@@ -9,6 +9,8 @@ Provides endpoints for:
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -16,11 +18,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, col
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import httpx
 
-from app.api.routes.admin_auth import require_authenticated_user
+from app.api.routes.admin_auth import require_admin_user, require_authenticated_user
 from app.core.database import get_db
 from app.models.models import (
+    ApiKeyRead,
+    AppSettingCreate,
+    AppSettingUpdate,
     LangFlowSession,
     LangFlowSessionCreate,
     LangFlowSessionUpdate,
@@ -30,14 +36,25 @@ from app.models.models import (
     LangFlowMessageRead,
     UserAccount,
 )
-from app.models.enums import SessionStatus, MessageRole, MessageFeedback, UserRole
+from app.models.enums import (
+    AccountType,
+    MessageFeedback,
+    MessageRole,
+    SettingType,
+    SessionStatus,
+    UserRole,
+    UserStatus,
+)
 from app.services.langflow_service import (
     LangFlowCheckResult,
+    LangFlowProvisioningResult,
     LangFlowService,
     LangFlowConfigurationError,
     LangFlowConnectionError,
     LangFlowError,
 )
+from app.services.api_key_service import api_key_service
+from app.services.audit_service import AuditContext
 from app.services.settings_service import SettingsService
 from app.services.sse_service import get_sse_service
 import logging
@@ -45,6 +62,41 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/langflow", tags=["langflow"])
+
+LANGFLOW_SETUP_SERVER_NAME = "intercept"
+LANGFLOW_SETUP_VARIABLE_NAME = "intercept_api_key"
+LANGFLOW_SETUP_DEFAULT_NHI_USERNAME = "tidemark_ai"
+LANGFLOW_SETUP_DEFAULT_API_KEY_NAME = "Intercept Langflow MCP"
+LANGFLOW_SETUP_NHI_DESCRIPTION = "Dedicated Langflow MCP automation account"
+LANGFLOW_SETUP_PROJECT_NAME = "Intercept"
+LANGFLOW_SETUP_PROJECT_DESCRIPTION = "Bundled Intercept flows and MCP setup assets"
+LANGFLOW_BUNDLED_FLOW_ASSETS = (
+    {
+        "asset_name": "tmi_general_purpose.json",
+        "label": "General purpose flow",
+        "setting_key": "langflow.default_flow_id",
+    },
+    {
+        "asset_name": "tmi_case_agent.json",
+        "label": "Case detail flow",
+        "setting_key": "langflow.case_detail_flow_id",
+    },
+    {
+        "asset_name": "tmi_task_agent.json",
+        "label": "Task detail flow",
+        "setting_key": "langflow.task_detail_flow_id",
+    },
+    {
+        "asset_name": "tmi_alert_triage.json",
+        "label": "Alert triage flow",
+        "setting_key": "langflow.alert_triage_flow_id",
+    },
+    {
+        "asset_name": "tmi_rag_confluence.json",
+        "label": "Confluence ingest flow",
+        "setting_key": None,
+    },
+)
 
 
 # Request/Response Models
@@ -92,6 +144,60 @@ class LangFlowConnectionCheck(BaseModel):
     message: str
 
 
+def _default_langflow_api_key_expires_at() -> datetime:
+    return datetime.now(timezone.utc) + timedelta(days=365)
+
+
+class LangFlowSetupRequest(BaseModel):
+    """Admin request to provision the Intercept MCP server in LangFlow."""
+
+    backend_api_base_url: str = Field(
+        min_length=1,
+        description="Intercept backend API base URL, used to derive the /mcp/sse endpoint",
+    )
+    nhi_username: str = Field(
+        default=LANGFLOW_SETUP_DEFAULT_NHI_USERNAME,
+        min_length=3,
+        max_length=1024,
+        description="Username for the dedicated LangFlow automation NHI account",
+    )
+    api_key_name: str = Field(
+        default=LANGFLOW_SETUP_DEFAULT_API_KEY_NAME,
+        min_length=1,
+        max_length=100,
+        description="Display name for the generated NHI API key",
+    )
+    api_key_expires_at: datetime = Field(
+        default_factory=_default_langflow_api_key_expires_at,
+        description="Expiration timestamp for the generated NHI API key",
+    )
+
+
+class LangFlowSetupStep(BaseModel):
+    """Single step result for the LangFlow setup wizard."""
+
+    id: str
+    label: str
+    status: str
+    message: str
+
+
+class LangFlowSetupResponse(BaseModel):
+    """Structured result for LangFlow MCP setup orchestration."""
+
+    success: bool
+    message: str
+    steps: List[LangFlowSetupStep] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    nhi_user_id: Optional[UUID] = None
+    nhi_username: Optional[str] = None
+    api_key: Optional[ApiKeyRead] = None
+    mcp_server_name: Optional[str] = None
+    mcp_server_url: Optional[str] = None
+    variable_name: Optional[str] = None
+    flow_assignments: Dict[str, str] = Field(default_factory=dict)
+
+
 class MessageFeedbackRequest(BaseModel):
     """Request to set feedback on a message."""
     feedback: MessageFeedback = Field(description="Feedback type (POSITIVE or NEGATIVE)")
@@ -109,6 +215,198 @@ async def get_langflow_service(db: AsyncSession) -> LangFlowService:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(e)
         )
+
+
+def _build_audit_context(request: Request) -> AuditContext:
+    client_host: Optional[str] = None
+    if request.client:
+        client_host = request.client.host
+    return AuditContext(
+        ip_address=client_host,
+        user_agent=request.headers.get("user-agent"),
+        correlation_id=request.headers.get("x-request-id"),
+    )
+
+
+def _record_setup_step(
+    steps: list[LangFlowSetupStep],
+    *,
+    step_id: str,
+    label: str,
+    step_status: str,
+    message: str,
+) -> None:
+    steps.append(
+        LangFlowSetupStep(
+            id=step_id,
+            label=label,
+            status=step_status,
+            message=message,
+        )
+    )
+
+
+def _get_langflow_asset_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "static" / "langflow"
+
+
+def _derive_intercept_mcp_sse_url(api_base_url: str) -> str:
+    normalized = api_base_url.strip()
+    if not normalized:
+        raise ValueError("backend_api_base_url must not be blank")
+
+    parsed = httpx.URL(normalized)
+    if not parsed.scheme or not parsed.host:
+        raise ValueError("backend_api_base_url must be an absolute URL")
+
+    normalized_path = parsed.path.rstrip("/")
+    for suffix in ("/api/v1", "/api"):
+        if normalized_path.endswith(suffix):
+            normalized_path = normalized_path[: -len(suffix)]
+            break
+
+    root_path = normalized_path or "/"
+    root_url = str(parsed.copy_with(path=root_path, query=None, fragment=None)).rstrip("/")
+    return f"{root_url}/mcp/sse"
+
+
+def _replace_cached_intercept_mcp_server_url(payload: Any, mcp_server_url: str) -> Any:
+    if isinstance(payload, dict):
+        value = payload.get("value")
+        if (
+            isinstance(value, dict)
+            and value.get("name") == LANGFLOW_SETUP_SERVER_NAME
+            and isinstance(value.get("config"), dict)
+            and isinstance(value["config"].get("url"), str)
+        ):
+            return {
+                **payload,
+                "value": {
+                    **value,
+                    "config": {
+                        **value["config"],
+                        "url": mcp_server_url,
+                    },
+                },
+            }
+
+        return {
+            key: _replace_cached_intercept_mcp_server_url(value, mcp_server_url)
+            for key, value in payload.items()
+        }
+
+    if isinstance(payload, list):
+        return [
+            _replace_cached_intercept_mcp_server_url(item, mcp_server_url)
+            for item in payload
+        ]
+
+    return payload
+
+
+async def _ensure_langflow_nhi_account(
+    db: AsyncSession,
+    username: str,
+) -> tuple[UserAccount, str]:
+    normalized_username = username.strip().lower()
+    result = await db.execute(
+        select(UserAccount).where(col(UserAccount.username) == normalized_username)
+    )
+    existing = result.scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+
+    if existing is not None:
+        if existing.account_type != AccountType.NHI:
+            raise LangFlowError(
+                f"Username '{normalized_username}' already belongs to a human account"
+            )
+        if existing.status != UserStatus.ACTIVE:
+            raise LangFlowError(
+                f"NHI account '{normalized_username}' is not active"
+            )
+
+        updated = False
+        if existing.role != UserRole.ANALYST:
+            existing.role = UserRole.ANALYST
+            updated = True
+        if existing.description != LANGFLOW_SETUP_NHI_DESCRIPTION:
+            existing.description = LANGFLOW_SETUP_NHI_DESCRIPTION
+            updated = True
+
+        if updated:
+            existing.updated_at = now
+            await db.flush()
+            return existing, "updated"
+
+        return existing, "reused"
+
+    nhi_account = UserAccount(
+        username=normalized_username,
+        role=UserRole.ANALYST,
+        description=LANGFLOW_SETUP_NHI_DESCRIPTION,
+        account_type=AccountType.NHI,
+        status=UserStatus.ACTIVE,
+        must_change_password=False,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(nhi_account)
+    await db.flush()
+    return nhi_account, "created"
+
+
+def _build_api_key_response(api_key) -> ApiKeyRead:
+    return ApiKeyRead(
+        id=api_key.id,
+        user_id=api_key.user_id,
+        name=api_key.name,
+        prefix=api_key.prefix,
+        expires_at=api_key.expires_at,
+        last_used_at=api_key.last_used_at,
+        revoked_at=api_key.revoked_at,
+        created_at=api_key.created_at,
+    )
+
+
+async def _upsert_setting_value(
+    settings_service: SettingsService,
+    *,
+    key: str,
+    value: str,
+    performed_by: Optional[str],
+    audit_context: Optional[AuditContext],
+) -> None:
+    try:
+        await settings_service.update_setting(
+            key,
+            AppSettingUpdate(value=value),
+            performed_by=performed_by,
+            audit_context=audit_context,
+        )
+    except ValueError as exc:
+        if "not found" not in str(exc):
+            raise
+
+        await settings_service.create_setting(
+            AppSettingCreate(
+                key=key,
+                value=value,
+                value_type=SettingType.STRING,
+                is_secret=False,
+                description=key,
+                category="langflow",
+            ),
+            performed_by=performed_by,
+            audit_context=audit_context,
+        )
+
+
+def _describe_provisioning_action(result: LangFlowProvisioningResult, noun: str) -> str:
+    return {
+        "created": f"Created {noun}",
+        "updated": f"Updated {noun}",
+        "reused": f"Reused existing {noun}",
+    }.get(result.action, f"Processed {noun}")
 
 
 async def verify_session_access(
@@ -182,6 +480,265 @@ async def resolve_target_chat_user(
         )
 
     return target_user
+
+
+@router.post("/admin/setup-intercept-mcp", response_model=LangFlowSetupResponse)
+async def setup_intercept_mcp_server(
+    payload: LangFlowSetupRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_admin_user),
+):
+    """Provision the Intercept MCP server, credential variable, and bundled flows in LangFlow."""
+    steps: list[LangFlowSetupStep] = []
+    warnings: list[str] = []
+    flow_assignments: dict[str, str] = {}
+    audit_context = _build_audit_context(request)
+    api_key_response: Optional[ApiKeyRead] = None
+    nhi_user: Optional[UserAccount] = None
+    mcp_server_url: Optional[str] = None
+    langflow_project_id: Optional[str] = None
+    langflow_service: Optional[LangFlowService] = None
+
+    try:
+        mcp_server_url = _derive_intercept_mcp_sse_url(payload.backend_api_base_url)
+        _record_setup_step(
+            steps,
+            step_id="mcp_url",
+            label="Intercept MCP URL",
+            step_status="reused",
+            message=f"Derived Intercept MCP SSE URL: {mcp_server_url}",
+        )
+
+        langflow_service = await get_langflow_service(db)
+
+        nhi_user, nhi_action = await _ensure_langflow_nhi_account(db, payload.nhi_username)
+        _record_setup_step(
+            steps,
+            step_id="nhi_account",
+            label="Automation NHI account",
+            step_status=nhi_action,
+            message=(
+                f"Created NHI account '{nhi_user.username}'"
+                if nhi_action == "created"
+                else f"Prepared NHI account '{nhi_user.username}'"
+            ),
+        )
+
+        api_key, raw_key = await api_key_service.create_api_key(
+            db,
+            user_id=nhi_user.id,
+            name=payload.api_key_name,
+            expires_at=payload.api_key_expires_at,
+            created_by_user_id=current_user.id,
+            context=audit_context,
+        )
+        api_key_response = _build_api_key_response(api_key)
+        _record_setup_step(
+            steps,
+            step_id="api_key",
+            label="NHI API key",
+            step_status="created",
+            message=f"Created API key '{api_key.name}' for '{nhi_user.username}'",
+        )
+
+        variable_result = await langflow_service.upsert_credential_variable(
+            name=LANGFLOW_SETUP_VARIABLE_NAME,
+            value=raw_key,
+        )
+        _record_setup_step(
+            steps,
+            step_id="langflow_variable",
+            label="Langflow credential variable",
+            step_status=variable_result.action,
+            message=(
+                f"{_describe_provisioning_action(variable_result, 'credential variable')} "
+                f"'{LANGFLOW_SETUP_VARIABLE_NAME}'"
+            ),
+        )
+
+        server_result = await langflow_service.upsert_mcp_server(
+            server_name=LANGFLOW_SETUP_SERVER_NAME,
+            url=mcp_server_url,
+            api_key_variable_name=LANGFLOW_SETUP_VARIABLE_NAME,
+        )
+        _record_setup_step(
+            steps,
+            step_id="mcp_server",
+            label="Langflow MCP server",
+            step_status=server_result.action,
+            message=(
+                f"{_describe_provisioning_action(server_result, 'MCP server')} "
+                f"'{LANGFLOW_SETUP_SERVER_NAME}'"
+            ),
+        )
+
+        project_result = await langflow_service.ensure_project(
+            name=LANGFLOW_SETUP_PROJECT_NAME,
+            description=LANGFLOW_SETUP_PROJECT_DESCRIPTION,
+        )
+        project_id = project_result.payload.get("id")
+        if not isinstance(project_id, str) or not project_id.strip():
+            raise LangFlowError("LangFlow project provisioning did not return a usable id")
+        langflow_project_id = project_id.strip()
+        _record_setup_step(
+            steps,
+            step_id="langflow_project",
+            label="Langflow project",
+            step_status=project_result.action,
+            message=(
+                f"{_describe_provisioning_action(project_result, 'project')} "
+                f"'{LANGFLOW_SETUP_PROJECT_NAME}'"
+            ),
+        )
+
+        settings_service = SettingsService(db)  # type: ignore[arg-type]
+        flow_summary = await langflow_service.list_flows()
+        if not flow_summary.check_result.success:
+            raise LangFlowError(flow_summary.check_result.message)
+
+        flows_by_endpoint: dict[str, dict[str, Any]] = {}
+        for flow in flow_summary.flows:
+            endpoint_name = flow.get("endpoint_name")
+            if isinstance(endpoint_name, str) and endpoint_name.strip():
+                flows_by_endpoint[endpoint_name.strip()] = flow
+
+        for flow_def in LANGFLOW_BUNDLED_FLOW_ASSETS:
+            asset_path = _get_langflow_asset_dir() / flow_def["asset_name"]
+            try:
+                raw_payload = json.loads(asset_path.read_text(encoding="utf-8"))
+            except FileNotFoundError as e:
+                raise LangFlowError(f"Missing bundled Langflow asset: {flow_def['asset_name']}") from e
+
+            if not isinstance(raw_payload, dict):
+                raise LangFlowError(
+                    f"Bundled Langflow asset '{flow_def['asset_name']}' did not contain a JSON object"
+                )
+
+            raw_payload = _replace_cached_intercept_mcp_server_url(raw_payload, mcp_server_url)
+            sanitized_payload = langflow_service.sanitize_flow_payload(raw_payload)
+            sanitized_payload["folder_id"] = langflow_project_id
+            endpoint_name = sanitized_payload.get("endpoint_name")
+            if not isinstance(endpoint_name, str) or not endpoint_name.strip():
+                raise LangFlowError(
+                    f"Bundled Langflow asset '{flow_def['asset_name']}' is missing endpoint_name"
+                )
+
+            existing_flow = flows_by_endpoint.get(endpoint_name)
+            provisioned_flow: dict[str, Any]
+            step_status = "created"
+            if existing_flow is None:
+                provisioned_flow = await langflow_service.create_flow(sanitized_payload)
+                flows_by_endpoint[endpoint_name] = provisioned_flow
+                step_message = f"Created bundled flow '{flow_def['label']}'"
+            else:
+                provisioned_flow = existing_flow
+                existing_flow_id = existing_flow.get("id")
+                if not isinstance(existing_flow_id, str) or not existing_flow_id.strip():
+                    raise LangFlowError(
+                        f"Existing Langflow flow '{flow_def['label']}' did not return a usable id"
+                    )
+
+                project_assignment_updated = False
+                if existing_flow.get("folder_id") != langflow_project_id:
+                    provisioned_flow = await langflow_service.update_flow(
+                        existing_flow_id,
+                        {"folder_id": langflow_project_id},
+                    )
+                    flows_by_endpoint[endpoint_name] = provisioned_flow
+                    project_assignment_updated = True
+
+                if langflow_service.flow_matches_expected(existing_flow, sanitized_payload):
+                    if project_assignment_updated:
+                        step_status = "updated"
+                        step_message = (
+                            f"Reused existing bundled flow '{flow_def['label']}' and assigned it to "
+                            f"project '{LANGFLOW_SETUP_PROJECT_NAME}'"
+                        )
+                    else:
+                        step_status = "reused"
+                        step_message = f"Reused existing bundled flow '{flow_def['label']}'"
+                else:
+                    step_status = "warning"
+                    step_message = (
+                        f"Existing flow '{flow_def['label']}' differs from the bundled asset and was not overwritten"
+                    )
+                    if project_assignment_updated:
+                        step_message = (
+                            f"{step_message}; updated its project assignment to '{LANGFLOW_SETUP_PROJECT_NAME}'"
+                        )
+                    warnings.append(step_message)
+
+            flow_id = provisioned_flow.get("id")
+            if flow_def["setting_key"] is not None:
+                if not isinstance(flow_id, str) or not flow_id.strip():
+                    raise LangFlowError(
+                        f"Langflow flow '{flow_def['label']}' did not return a usable id"
+                    )
+
+                await _upsert_setting_value(
+                    settings_service,
+                    key=flow_def["setting_key"],
+                    value=flow_id,
+                    performed_by=current_user.username,
+                    audit_context=audit_context,
+                )
+                flow_assignments[flow_def["setting_key"]] = flow_id
+                step_message = f"{step_message}; updated {flow_def['setting_key']}"
+
+            _record_setup_step(
+                steps,
+                step_id=f"flow:{endpoint_name}",
+                label=flow_def["label"],
+                step_status=step_status,
+                message=step_message,
+            )
+
+        success_message = "Intercept MCP server setup completed"
+        if warnings:
+            success_message = f"{success_message} with warnings"
+
+        return LangFlowSetupResponse(
+            success=True,
+            message=success_message,
+            steps=steps,
+            warnings=warnings,
+            nhi_user_id=nhi_user.id if nhi_user else None,
+            nhi_username=nhi_user.username if nhi_user else None,
+            api_key=api_key_response,
+            mcp_server_name=LANGFLOW_SETUP_SERVER_NAME,
+            mcp_server_url=mcp_server_url,
+            variable_name=LANGFLOW_SETUP_VARIABLE_NAME,
+            flow_assignments=flow_assignments,
+        )
+    except LangFlowConfigurationError as e:
+        message = str(e)
+    except (LangFlowError, ValueError) as e:
+        message = str(e)
+    except Exception as e:
+        logger.exception("Intercept MCP setup failed")
+        message = f"Intercept MCP setup failed: {str(e)}"
+
+    _record_setup_step(
+        steps,
+        step_id="setup_failed",
+        label="Setup failed",
+        step_status="failed",
+        message=message,
+    )
+    return LangFlowSetupResponse(
+        success=False,
+        message=message,
+        steps=steps,
+        warnings=warnings,
+        nhi_user_id=nhi_user.id if nhi_user else None,
+        nhi_username=nhi_user.username if nhi_user else None,
+        api_key=api_key_response,
+        mcp_server_name=LANGFLOW_SETUP_SERVER_NAME,
+        mcp_server_url=mcp_server_url,
+        variable_name=LANGFLOW_SETUP_VARIABLE_NAME,
+        flow_assignments=flow_assignments,
+    )
 
 
 # Endpoints

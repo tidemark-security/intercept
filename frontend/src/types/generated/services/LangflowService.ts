@@ -8,6 +8,8 @@ import type { LangFlowMessageRead } from '../models/LangFlowMessageRead';
 import type { LangFlowSessionCreate } from '../models/LangFlowSessionCreate';
 import type { LangFlowSessionRead } from '../models/LangFlowSessionRead';
 import type { LangFlowSessionUpdate } from '../models/LangFlowSessionUpdate';
+import type { LangFlowSetupRequest } from '../models/LangFlowSetupRequest';
+import type { LangFlowSetupResponse } from '../models/LangFlowSetupResponse';
 import type { MessageFeedbackRequest } from '../models/MessageFeedbackRequest';
 import type { StreamChatRequest } from '../models/StreamChatRequest';
 import type { TestConnectionResponse } from '../models/TestConnectionResponse';
@@ -15,6 +17,27 @@ import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
 import { request as __request } from '../core/request';
 export class LangflowService {
+    /**
+     * Setup Intercept Mcp Server
+     * Provision the Intercept MCP server, credential variable, and bundled flows in LangFlow.
+     * @returns LangFlowSetupResponse Successful Response
+     * @throws ApiError
+     */
+    public static setupInterceptMcpServerApiV1LangflowAdminSetupInterceptMcpPost({
+        requestBody,
+    }: {
+        requestBody: LangFlowSetupRequest,
+    }): CancelablePromise<LangFlowSetupResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/langflow/admin/setup-intercept-mcp',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
     /**
      * Create Session
      * Create a new LangFlow chat session.

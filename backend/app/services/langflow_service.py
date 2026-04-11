@@ -37,6 +37,14 @@ class LangFlowSummaryResult:
     flows: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class LangFlowProvisioningResult:
+    """Represents the result of creating, updating, or reusing a LangFlow resource."""
+
+    action: str
+    payload: dict[str, Any]
+
+
 class LangFlowError(Exception):
     """Base exception for LangFlow-related errors."""
     pass
@@ -94,6 +102,23 @@ class LangFlowService:
     async def close(self):
         """Close the HTTP client."""
         await self.client.aclose()
+
+    def _get_api_root(self) -> str:
+        """Return the scheme/host prefix for versioned LangFlow API routes."""
+        parsed = httpx.URL(self.base_url)
+        normalized_path = parsed.path.rstrip("/")
+        for suffix in ("/api/v1", "/api/v2"):
+            if normalized_path.endswith(suffix):
+                normalized_path = normalized_path[: -len(suffix)]
+                break
+
+        root_path = normalized_path or "/"
+        return str(parsed.copy_with(path=root_path, query=None, fragment=None)).rstrip("/")
+
+    def _build_versioned_url(self, api_version: str, path: str) -> str:
+        """Build an absolute LangFlow API URL for endpoints outside the configured base path."""
+        normalized_path = path if path.startswith("/") else f"/{path}"
+        return f"{self._get_api_root()}/api/{api_version}{normalized_path}"
 
     def _get_health_url(self) -> str:
         """Return the root health endpoint URL for the configured LangFlow host."""
@@ -354,6 +379,322 @@ class LangFlowService:
                 return [item for item in items if isinstance(item, dict)]
 
         return None
+
+    def sanitize_flow_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Reduce exported flow JSON to the fields accepted by LangFlow create endpoints."""
+        allowed_keys = (
+            "name",
+            "description",
+            "icon",
+            "icon_bg_color",
+            "gradient",
+            "data",
+            "is_component",
+            "webhook",
+            "endpoint_name",
+            "tags",
+            "locked",
+            "mcp_enabled",
+            "folder_id",
+        )
+        sanitized = {
+            key: payload.get(key)
+            for key in allowed_keys
+            if key in payload
+        }
+
+        if "locked" not in sanitized:
+            sanitized["locked"] = None
+
+        return sanitized
+
+    def flow_matches_expected(self, existing_flow: dict[str, Any], expected_flow: dict[str, Any]) -> bool:
+        """Compare a live LangFlow flow against the bundled import payload we would create."""
+        comparable_keys = (
+            "name",
+            "description",
+            "icon",
+            "icon_bg_color",
+            "gradient",
+            "data",
+            "is_component",
+            "webhook",
+            "endpoint_name",
+            "tags",
+            "locked",
+            "mcp_enabled",
+        )
+        for key in comparable_keys:
+            if expected_flow.get(key) != existing_flow.get(key):
+                return False
+        return True
+
+    async def list_variables(self) -> list[dict[str, Any]]:
+        """List LangFlow global variables using the hidden variables API."""
+        try:
+            response = await self.client.get(self._build_versioned_url("v1", "/variables/"))
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise LangFlowError(
+                f"LangFlow variables API returned error {e.response.status_code}"
+            ) from e
+        except httpx.HTTPError as e:
+            raise LangFlowError(f"Unable to query LangFlow variables API: {str(e)}") from e
+
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise LangFlowError("LangFlow variables API returned an unexpected response body")
+
+        return [item for item in payload if isinstance(item, dict)]
+
+    async def upsert_credential_variable(
+        self,
+        *,
+        name: str,
+        value: str,
+    ) -> LangFlowProvisioningResult:
+        """Create or update a credential variable used by LangFlow MCP headers."""
+        variables = await self.list_variables()
+        existing = next(
+            (
+                item for item in variables
+                if isinstance(item.get("name"), str) and item["name"] == name
+            ),
+            None,
+        )
+        payload = {
+            "name": name,
+            "value": value,
+            "type": "Credential",
+            "default_fields": [],
+        }
+
+        try:
+            if existing is None:
+                response = await self.client.post(
+                    self._build_versioned_url("v1", "/variables/"),
+                    json=payload,
+                )
+                response.raise_for_status()
+                return LangFlowProvisioningResult(action="created", payload=response.json())
+
+            variable_id = existing.get("id")
+            payload["id"] = variable_id
+            response = await self.client.patch(
+                self._build_versioned_url("v1", f"/variables/{variable_id}"),
+                json=payload,
+            )
+            response.raise_for_status()
+            return LangFlowProvisioningResult(action="updated", payload=response.json())
+        except httpx.HTTPStatusError as e:
+            raise LangFlowError(
+                f"LangFlow variable upsert returned error {e.response.status_code}"
+            ) from e
+        except httpx.HTTPError as e:
+            raise LangFlowError(f"Unable to upsert LangFlow variable '{name}': {str(e)}") from e
+
+    async def get_mcp_server(self, server_name: str) -> Optional[dict[str, Any]]:
+        """Return an MCP server config by name, if it exists."""
+        try:
+            response = await self.client.get(
+                self._build_versioned_url("v2", f"/mcp/servers/{server_name}")
+            )
+        except httpx.HTTPError as e:
+            raise LangFlowError(
+                f"Unable to query LangFlow MCP server '{server_name}': {str(e)}"
+            ) from e
+
+        if response.status_code == 404:
+            return None
+
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise LangFlowError(
+                f"LangFlow MCP server lookup returned error {e.response.status_code}"
+            ) from e
+
+        payload = response.json()
+        if payload is None:
+            return None
+
+        if not isinstance(payload, dict):
+            raise LangFlowError("LangFlow MCP server lookup returned an unexpected response body")
+
+        return payload
+
+    def _mcp_server_matches_expected(
+        self,
+        existing_server: dict[str, Any],
+        expected_payload: dict[str, Any],
+    ) -> bool:
+        existing_headers = existing_server.get("headers")
+        if not isinstance(existing_headers, dict):
+            existing_headers = {}
+
+        return (
+            existing_server.get("url") == expected_payload.get("url")
+            and existing_headers == expected_payload.get("headers")
+        )
+
+    async def upsert_mcp_server(
+        self,
+        *,
+        server_name: str,
+        url: str,
+        api_key_variable_name: str,
+    ) -> LangFlowProvisioningResult:
+        """Create or update the Intercept MCP server definition in LangFlow."""
+        desired_payload = {
+            "url": url,
+            "headers": {
+                "x-api-key": api_key_variable_name,
+            },
+        }
+        existing = await self.get_mcp_server(server_name)
+        if existing is not None and self._mcp_server_matches_expected(existing, desired_payload):
+            return LangFlowProvisioningResult(action="reused", payload=existing)
+
+        try:
+            if existing is None:
+                response = await self.client.post(
+                    self._build_versioned_url("v2", f"/mcp/servers/{server_name}"),
+                    json=desired_payload,
+                )
+                response.raise_for_status()
+                return LangFlowProvisioningResult(action="created", payload=response.json())
+
+            response = await self.client.patch(
+                self._build_versioned_url("v2", f"/mcp/servers/{server_name}"),
+                json=desired_payload,
+            )
+            response.raise_for_status()
+            return LangFlowProvisioningResult(action="updated", payload=response.json())
+        except httpx.HTTPStatusError as e:
+            raise LangFlowError(
+                f"LangFlow MCP server upsert returned error {e.response.status_code}"
+            ) from e
+        except httpx.HTTPError as e:
+            raise LangFlowError(
+                f"Unable to upsert LangFlow MCP server '{server_name}': {str(e)}"
+            ) from e
+
+    async def create_flow(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Create a new flow from a sanitized flow payload."""
+        try:
+            response = await self.client.post(
+                self._build_versioned_url("v1", "/flows/"),
+                json=payload,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise LangFlowError(
+                f"LangFlow flow creation returned error {e.response.status_code}"
+            ) from e
+        except httpx.HTTPError as e:
+            raise LangFlowError(f"Unable to create LangFlow flow: {str(e)}") from e
+
+        created_flow = response.json()
+        if not isinstance(created_flow, dict):
+            raise LangFlowError("LangFlow flow creation returned an unexpected response body")
+
+        return created_flow
+
+    async def update_flow(self, flow_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Patch an existing flow with a partial update payload."""
+        try:
+            response = await self.client.patch(
+                self._build_versioned_url("v1", f"/flows/{flow_id}"),
+                json=payload,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise LangFlowError(
+                f"LangFlow flow update returned error {e.response.status_code}"
+            ) from e
+        except httpx.HTTPError as e:
+            raise LangFlowError(f"Unable to update LangFlow flow '{flow_id}': {str(e)}") from e
+
+        updated_flow = response.json()
+        if not isinstance(updated_flow, dict):
+            raise LangFlowError("LangFlow flow update returned an unexpected response body")
+
+        return updated_flow
+
+    async def list_projects(self) -> list[dict[str, Any]]:
+        """List LangFlow projects."""
+        try:
+            response = await self.client.get(self._build_versioned_url("v1", "/projects/"))
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise LangFlowError(
+                f"LangFlow projects API returned error {e.response.status_code}"
+            ) from e
+        except httpx.HTTPError as e:
+            raise LangFlowError(f"Unable to query LangFlow projects API: {str(e)}") from e
+
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise LangFlowError("LangFlow projects API returned an unexpected response body")
+
+        return [item for item in payload if isinstance(item, dict)]
+
+    async def create_project(
+        self,
+        *,
+        name: str,
+        description: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Create a LangFlow project."""
+        project_payload: dict[str, Any] = {"name": name}
+        if description is not None:
+            project_payload["description"] = description
+
+        try:
+            response = await self.client.post(
+                self._build_versioned_url("v1", "/projects/"),
+                json=project_payload,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise LangFlowError(
+                f"LangFlow project creation returned error {e.response.status_code}"
+            ) from e
+        except httpx.HTTPError as e:
+            raise LangFlowError(f"Unable to create LangFlow project '{name}': {str(e)}") from e
+
+        created_project = response.json()
+        if not isinstance(created_project, dict):
+            raise LangFlowError("LangFlow project creation returned an unexpected response body")
+
+        return created_project
+
+    async def ensure_project(
+        self,
+        *,
+        name: str,
+        description: Optional[str] = None,
+    ) -> LangFlowProvisioningResult:
+        """Return an existing LangFlow project by name or create it."""
+        normalized_name = name.strip().casefold()
+        if not normalized_name:
+            raise LangFlowError("LangFlow project name must not be blank")
+
+        projects = await self.list_projects()
+        existing = next(
+            (
+                item
+                for item in projects
+                if isinstance(item.get("name"), str)
+                and item["name"].strip().casefold() == normalized_name
+            ),
+            None,
+        )
+        if existing is not None:
+            return LangFlowProvisioningResult(action="reused", payload=existing)
+
+        created = await self.create_project(name=name.strip(), description=description)
+        return LangFlowProvisioningResult(action="created", payload=created)
 
     async def list_flows(self) -> LangFlowSummaryResult:
         """Read flows from LangFlow using the configured API key."""
