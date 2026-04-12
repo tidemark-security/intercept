@@ -58,7 +58,7 @@ services:
       LANGFLOW__BASE_URL: http://localhost:7860/api/v1
       LANGFLOW__API_KEY: ${LANGFLOW_API_KEY:-dev-langflow-api-key}
       SECRET_KEY: dev-secret-key-change-in-production
-      CORS_ORIGINS: '["*"]'
+      CORS_ORIGINS: '["http://localhost:5173", "http://localhost:8000"]'
     volumes:
       - ../backend:/app
     depends_on:
