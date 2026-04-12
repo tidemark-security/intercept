@@ -163,9 +163,8 @@ export const SessionProvider = ({ children }: SessionProviderProps) => {
         dispatch({ type: "START_AUTH" });
         try {
           if (!browserSupportsPasskeys()) {
-            dispatch({ type: "SET_ERROR", payload: "Passkey sign-in is unavailable on this browser." });
             dispatch({ type: "SET_UNAUTHENTICATED" });
-            return "failed";
+            return "password_required";
           }
 
           const begin = await AuthenticationService.beginPasskeyAuthenticationApiV1AuthPasskeysAuthenticateOptionsPost({
