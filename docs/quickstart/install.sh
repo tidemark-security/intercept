@@ -102,7 +102,7 @@ MINIO_ROOT_PASSWORD=$(generate_secret 24)
 # --- Langflow auth -----------------------------------------------------------
 LANGFLOW_SUPERUSER=admin
 LANGFLOW_SUPERUSER_PASSWORD=$(generate_secret 24)
-LANGFLOW_SECRET_KEY=$(generate_secret 44)
+LANGFLOW_SECRET_KEY=$(generate_fernet_key)
 LANGFLOW_API_KEY=$(generate_secret 44)
 
 # --- Image version -----------------------------------------------------------
