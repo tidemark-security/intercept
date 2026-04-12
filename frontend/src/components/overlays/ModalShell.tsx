@@ -1,26 +1,49 @@
 import React from "react";
 
+import { Dialog } from "@tidemark-security/ux";
+import * as VisuallyHidden from "@radix-ui/react-visually-hidden";
+
 import { cn } from "@/utils/cn";
 
 interface ModalShellProps {
   children: React.ReactNode;
+  title: string;
+  description?: string;
   panelClassName?: string;
   contentClassName?: string;
+  onClose?: () => void;
 }
 
 export function ModalShell({
   children,
+  title,
+  description,
   panelClassName,
   contentClassName,
+  onClose,
 }: ModalShellProps) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black bg-opacity-50 p-4">
-      <div
+    <Dialog
+      open={true}
+      onOpenChange={(open) => {
+        if (!open) onClose?.();
+      }}
+      className="p-4"
+    >
+      <Dialog.Content
         className={cn(
-          "flex max-h-full w-full flex-col rounded-md bg-neutral-100 px-6 py-6",
+          "w-full bg-neutral-100 px-6 py-6",
           panelClassName,
         )}
       >
+        <VisuallyHidden.Root asChild>
+          <Dialog.Title>{title}</Dialog.Title>
+        </VisuallyHidden.Root>
+        {description && (
+          <VisuallyHidden.Root asChild>
+            <Dialog.Description>{description}</Dialog.Description>
+          </VisuallyHidden.Root>
+        )}
         <div
           className={cn(
             "flex min-h-0 w-full flex-col items-start gap-6",
@@ -29,7 +52,7 @@ export function ModalShell({
         >
           {children}
         </div>
-      </div>
-    </div>
+      </Dialog.Content>
+    </Dialog>
   );
 }

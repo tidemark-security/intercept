@@ -1149,15 +1149,30 @@ function Reports() {
           />
         </div>
 
-        {/* Tab Navigation */}
-        <div className="flex w-full border-b border-neutral-border">
+        {/* Tab Navigation — mobile: select dropdown, desktop: tab bar */}
+        <div className="w-full lg:hidden">
+          <Select
+            value={activeTab}
+            onValueChange={(val) => setActiveTab(val as TabType)}
+          >
+            {tabs.map((tab) => {
+              if (tab.adminOnly && !isAdmin) return null;
+              return (
+                <Select.Item key={tab.id} value={tab.id}>
+                  {tab.label}{tab.adminOnly ? ' (Admin)' : ''}
+                </Select.Item>
+              );
+            })}
+          </Select>
+        </div>
+        <div className="hidden lg:flex w-full border-b border-neutral-border">
           {tabs.map((tab) => {
             if (tab.adminOnly && !isAdmin) return null;
             return (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
                   activeTab === tab.id
                     ? `border-brand-primary ${isDarkTheme ? 'text-brand-primary' : 'text-brand-700'}`
                     : 'border-transparent text-subtext-color hover:text-default-font hover:border-neutral-300'

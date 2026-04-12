@@ -3,6 +3,7 @@ import { Badge } from "@/components/data-display/Badge";
 import { Button } from "@/components/buttons/Button";
 import { DropdownMenu } from "@/components/overlays/DropdownMenu";
 import { IconButton } from "@/components/buttons/IconButton";
+import { ModalShell } from "@/components/overlays";
 import { Table } from "@/components/data-display/Table";
 import { TextField } from "@/components/forms/TextField";
 import { Toast } from "@/components/feedback/Toast";
@@ -388,9 +389,12 @@ function AdminLinkTemplates() {
 
       {/* Create/Edit Modal */}
       {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-md bg-neutral-100 px-6 py-6">
-            <div className="flex w-full flex-col items-start gap-6">
+        <ModalShell
+          title={isEditing ? "Edit Link Template" : "Create Link Template"}
+          description="Configure contextual action links for timeline items"
+          panelClassName="max-w-2xl max-h-[90vh] overflow-y-auto"
+          onClose={closeModal}
+        >
               {/* Modal Header */}
               <div className="flex w-full items-center gap-2">
                 <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
@@ -597,9 +601,7 @@ function AdminLinkTemplates() {
                   {isEditing ? "Save Changes" : "Create Template"}
                 </Button>
               </div>
-            </div>
-          </div>
-        </div>
+        </ModalShell>
       )}
 
       {/* Toast Notifications */}

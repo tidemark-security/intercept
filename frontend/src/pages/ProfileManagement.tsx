@@ -828,7 +828,11 @@ function ProfileManagement() {
       </div>
 
       {showPasskeyModal && (
-        <ModalShell>
+        <ModalShell
+          title={passkeyModalMode === "register" ? "Register Passkey" : "Rename Passkey"}
+          description={passkeyModalMode === "register" ? "Choose a descriptive name for your new passkey" : "Update the display name for this passkey"}
+          onClose={closePasskeyModal}
+        >
           <div className="flex w-full items-center gap-2">
             <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
               <span className="text-heading-2 font-heading-2 text-default-font">
@@ -899,7 +903,7 @@ function ProfileManagement() {
       )}
 
       {showCreateApiKeyModal && (
-        <ModalShell>
+        <ModalShell title="Create API Key" description="Generate a new API key for programmatic access" onClose={closeCreateApiKeyModal}>
           <CreateApiKeyModalContent
             keyName={apiKeyNameInput}
             expiresAt={apiKeyExpiresAtInput}
@@ -914,7 +918,7 @@ function ProfileManagement() {
       )}
 
       {createdApiKey && (
-        <ModalShell>
+        <ModalShell title="API Key Created" description="Copy your new API key before closing this dialog" onClose={closeCreatedApiKeyModal}>
           <ApiKeyCreatedContent
             createdApiKey={createdApiKey}
             showValue={showCreatedApiKeyValue}
