@@ -80,6 +80,8 @@ services:
     volumes:
       - ../frontend:/app
       - /app/node_modules
+      # Comment the following line out if you don't want to mount the local UX package - this requires cloning the UX repository.
+      - ../../ux:/app/node_modules/@tidemark-security/ux 
     depends_on:
       - backend
     command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
