@@ -121,8 +121,10 @@ EOF
 
   # Start it up
   echo ""
+  info "Pulling latest images …"
+  docker compose pull
   info "Starting Tidemark Intercept …"
-  docker compose up -d
+  docker compose up -d --remove-orphans
 
   echo ""
   echo -e "${GREEN}  ┌──────────────────────────────────────────┐${NC}"
