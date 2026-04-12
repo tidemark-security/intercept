@@ -688,7 +688,7 @@ function AdminUsers() {
   };
 
   const renderCreatedKeyModal = ({ key, onDone }: UnifiedCreatedKeyData) => (
-    <ModalShell>
+    <ModalShell title="API Key Created" description="Copy your new API key before closing this dialog" onClose={onDone}>
       <ApiKeyCreatedContent
         createdApiKey={key}
         showValue={showKeyValue}
@@ -1187,7 +1187,7 @@ function AdminUsers() {
 
       {/* Create User Modal */}
       {showCreateModal && !createdNhiResponse && !resetLinkModalData && (
-        <ModalShell>
+        <ModalShell title="Create New User" description="Create a new user or service account" onClose={closeCreateUserModal}>
           {/* Modal Header */}
           <div className="flex w-full items-center gap-2">
             <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
@@ -1378,7 +1378,7 @@ function AdminUsers() {
 
       {/* Edit User Modal */}
       {editingUser && (
-        <ModalShell>
+        <ModalShell title="Edit User" description="Update user account details and role" onClose={closeEditUserModal}>
           <div className="flex w-full items-center gap-2">
             <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
               <span className="text-heading-2 font-heading-2 text-default-font">
@@ -1504,7 +1504,7 @@ function AdminUsers() {
 
       {/* Create API Key Modal */}
       {showCreateApiKeyModal && !newlyCreatedKey && (
-        <ModalShell>
+        <ModalShell title="Create API Key" description="Generate a new API key for programmatic access" onClose={closeCreateApiKeyModal}>
           <CreateApiKeyModalContent
             keyName={createApiKeyFormData.name}
             expiresAt={createApiKeyFormData.expiresAt}
@@ -1522,7 +1522,7 @@ function AdminUsers() {
       {createdKeyModalData && renderCreatedKeyModal(createdKeyModalData)}
 
       {resetLinkModalData && (
-        <ModalShell>
+        <ModalShell title={resetLinkModalData.title} description="Copy this URL now — it will not be shown again" onClose={closeResetLinkModal}>
           <div className="flex w-full items-center gap-2">
             <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
               <span className="text-heading-2 font-heading-2 text-default-font flex items-center gap-2">
