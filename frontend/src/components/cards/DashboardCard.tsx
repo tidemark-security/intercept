@@ -1,6 +1,3 @@
-
-/* eslint-disable react-refresh/only-export-components */
-
 import React from "react";
 import { Link } from "@/components/navigation/Link";
 import { IconWithBackground } from "@/components/misc/IconWithBackground";

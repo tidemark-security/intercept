@@ -8,8 +8,6 @@
  * - Error handling
  */
 
-/* eslint-disable react-refresh/only-export-components */
-
 import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 import * as langflowApi from '../services/langflowApi';
 

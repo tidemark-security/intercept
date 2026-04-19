@@ -203,7 +203,7 @@ function UnifiedTimelineInner({
       }
     });
     return taskIdSet.size;
-  }, [entityDetail?.timeline_items, entityType]);
+  }, [entityDetail, entityType]);
 
   const caseTags = useMemo(() => {
     if (entityType !== 'case') {
@@ -257,7 +257,7 @@ function UnifiedTimelineInner({
     });
 
     return sorted;
-  }, [entityDetail?.timeline_items, selectedType, sortBy, sortDirection]);
+  }, [entityDetail, selectedType, sortBy, sortDirection]);
 
   // Helper function to calculate reply depth for a timeline item
   const calculateReplyDepth = (item: TimelineItem, items: TimelineItem[]): number => {
@@ -321,7 +321,7 @@ function UnifiedTimelineInner({
     
     // Enter reply mode with the ROOT parent ID (so all replies are siblings under the same parent)
     enterReplyMode(rootParent.id || itemId, depth);
-  }, [entityDetail?.timeline_items, enterReplyMode, isReadOnly]);
+  }, [entityDetail, enterReplyMode, isReadOnly]);
   
   // Reply submission handler (wraps existing onQuickTerminalSubmit)
   const handleReplySubmit = React.useCallback(async (text: string) => {

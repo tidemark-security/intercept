@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+staged_files="$(git diff --cached --name-only --diff-filter=ACMR)"
+
+if [[ -z "$staged_files" ]]; then
+  exit 0
+fi
+
+if ! grep -Eq '^(frontend/|package\.json$|package-lock\.json$|\.githooks/pre-commit$|scripts/install-git-hooks\.sh$)' <<<"$staged_files"; then
+  exit 0
+fi
+
+echo "pre-commit: running frontend lint"
+npm --prefix frontend run lint

@@ -1,5 +1,3 @@
-/* eslint-disable react-refresh/only-export-components */
-
 import React, { createContext, useContext, ReactNode } from 'react';
 import type { TimelineItemType } from '@/types/drafts';
 
