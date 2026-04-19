@@ -16,7 +16,7 @@ The MCP server provides **7 intentionally designed tools** (not auto-generated f
 | `get_item` | Content | Yes | Retrieve full content |
 | `validate_mermaid` | Validation | Yes | Validate Mermaid diagram syntax using Mermaid CLI |
 
-**MCP URL**: `http://localhost:8000/mcp/sse`
+**MCP URL**: `http://localhost:8000/mcp/streamable/`
 
 ---
 

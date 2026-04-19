@@ -8,7 +8,7 @@ The MCP server provides **7 purpose-built tools** designed for AI agent workflow
 - Read operations: `get_summary`, `list_work`, `find_related`, `get_item`, `validate_mermaid`
 - Write operations: `record_triage_decision`, `add_timeline_item`
 
-**MCP URL**: `http://localhost:8000/mcp/sse`
+**MCP URL**: `http://localhost:8000/mcp/streamable/`
 
 ## Prerequisites
 
@@ -80,7 +80,7 @@ Add to your Claude Desktop configuration:
 {
   "mcpServers": {
     "intercept": {
-      "url": "http://localhost:8000/mcp/sse",
+      "url": "http://localhost:8000/mcp/streamable/",
       "headers": {
         "Authorization": "Bearer int_your_api_key_here"
       }
@@ -94,9 +94,11 @@ Restart Claude Desktop after updating the configuration.
 #### Other MCP Clients
 
 Any MCP-compatible client can connect using:
-- **URL**: `http://localhost:8000/mcp/sse`
-- **Transport**: SSE (Server-Sent Events)
+- **URL**: `http://localhost:8000/mcp/streamable/`
+- **Transport**: Streamable HTTP
 - **Authentication**: `Authorization: Bearer <api_key>` header
+
+Legacy SSE clients can continue using `/mcp/sse`.
 
 ## Available Tools
 

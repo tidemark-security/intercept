@@ -258,7 +258,7 @@ async def test_langflow_setup_endpoint_provisions_nhi_key_server_and_flow_settin
     assert payload["nhi_username"] == "tidemark_ai"
     assert payload["variable_name"] == "intercept_api_key"
     assert payload["mcp_server_name"] == "intercept"
-    assert payload["mcp_server_url"] == "http://localhost:8000/mcp/sse"
+    assert payload["mcp_server_url"] == "http://localhost:8000/mcp/streamable/"
     assert payload["api_key"]["prefix"]
     assert "key" not in payload["api_key"]
     assert payload["warnings"] == []
@@ -275,16 +275,16 @@ async def test_langflow_setup_endpoint_provisions_nhi_key_server_and_flow_settin
     project_id = fake_service.created_projects[0]["id"]
     assert all(flow["folder_id"] == project_id for flow in fake_service.created_flows)
     assert not any(
-        _find_string_values(flow, "http://host.docker.internal:8000/mcp/sse")
+        _find_string_values(flow, "http://host.docker.internal:8000/mcp/streamable/")
         for flow in fake_service.created_flows
     )
     assert any(
-        _find_string_values(flow, "http://localhost:8000/mcp/sse")
+        _find_string_values(flow, "http://localhost:8000/mcp/streamable/")
         for flow in fake_service.created_flows
     )
     assert fake_service.server_payloads == {
         "intercept": {
-            "url": "http://localhost:8000/mcp/sse",
+            "url": "http://localhost:8000/mcp/streamable/",
             "headers": {"x-api-key": "intercept_api_key"},
         }
     }
@@ -425,7 +425,7 @@ async def test_langflow_setup_endpoint_assigns_existing_matching_flow_to_interce
     raw_asset = json.loads(asset_path.read_text(encoding="utf-8"))
     transformed_asset = langflow_routes._replace_cached_intercept_mcp_server_url(
         raw_asset,
-        "http://localhost:8000/mcp/sse",
+        "http://localhost:8000/mcp/streamable/",
     )
 
     fake_service = FakeLangFlowSetupService(

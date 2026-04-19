@@ -4,7 +4,7 @@
 
 This guide covers configuration options for the Tidemark Intercept MCP server, including environment variables, deployment options, and security settings.
 
-The MCP server provides 7 purpose-built tools for AI agent integration, using Server-Sent Events (SSE) transport at `/mcp/sse`.
+The MCP server provides 7 purpose-built tools for AI agent integration. The preferred transport is Streamable HTTP at `/mcp/streamable/`, with legacy SSE still available at `/mcp/sse`.
 
 ## MCP Server Architecture
 
@@ -57,12 +57,13 @@ CORS_ORIGINS=["http://localhost:3000","http://localhost:8000"]
 
 ## MCP Endpoints
 
-The MCP server exposes two endpoints:
+The MCP server exposes both the preferred streamable transport and the legacy SSE transport:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/mcp/sse` | GET | SSE connection for MCP protocol |
-| `/mcp/messages` | POST | Message endpoint for MCP requests |
+| `/mcp/streamable/` | GET, POST | Preferred Streamable HTTP endpoint for modern MCP clients and Langflow |
+| `/mcp/sse` | GET | Legacy SSE connection endpoint |
+| `/mcp/messages` | POST | Legacy SSE message endpoint |
 
 All requests require API key authentication via `Authorization: Bearer <key>` or `X-API-Key` header.
 
@@ -149,7 +150,7 @@ MCP requests are logged with:
 
 **Example Log Entry**:
 ```
-2026-01-12 10:30:15 - INFO - MCP auth success: user=automation_bot, user_id=abc-123, path=/mcp/sse, ip=10.0.0.1
+2026-01-12 10:30:15 - INFO - MCP auth success: user=automation_bot, user_id=abc-123, path=/mcp/streamable/, ip=10.0.0.1
 ```
 
 ### Metrics
