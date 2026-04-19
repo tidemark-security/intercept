@@ -146,8 +146,8 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
   };
 
   return (
-    <div className={cn("w-full min-w-0 [overflow-wrap:anywhere]", className)}>
-      <ReactMarkdown className="text-default-font w-full min-w-0 leading-[1.6] [overflow-wrap:anywhere]"
+    <div className={cn("text-default-font w-full min-w-0 leading-[1.6] [overflow-wrap:anywhere]", className)}>
+      <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[[rehypeSanitize, sanitizeConfig]]}
         components={{

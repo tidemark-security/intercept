@@ -32,7 +32,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const wsRef = useRef<WebSocket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const reconnectDelayRef = useRef(INITIAL_RECONNECT_DELAY);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pendingSubscriptions = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
 
