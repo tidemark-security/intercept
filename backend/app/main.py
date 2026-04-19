@@ -230,10 +230,19 @@ add_pagination(app)
 # Part of T014 (Phase 2: MCP Server Skeleton)
 from app.mcp.server import mcp
 
-# Create the MCP ASGI app
-# FastMCP 3.x requires routed paths to start with '/'; when mounted at /mcp,
-# this still exposes the SSE endpoints under that prefix.
-mcp_app = mcp.http_app(path="/", transport="sse")
+# Create the MCP ASGI apps.
+#
+# SSE remains on the legacy Intercept contract:
+#   - /mcp/sse
+#   - /mcp/messages
+#
+# Streamable HTTP is exposed as a separate explicit mount at:
+#   - /mcp/streamable/
+#
+# Mounting it directly keeps the public path contract simple and avoids
+# custom path rewriting between nested ASGI apps.
+mcp_sse_app = mcp.http_app(path="/sse", transport="sse")
+mcp_streamable_app = mcp.http_app(path="/", transport="streamable-http")
 
 
 # ---------------------------------------------------------------------------
@@ -359,8 +368,9 @@ class MCPApiKeyAuthMiddleware:
         await self.app(scope, receive, send)
 
 
-# Wrap MCP app with auth middleware
-authenticated_mcp_app = MCPApiKeyAuthMiddleware(mcp_app)
+# Wrap MCP transport apps with shared auth middleware
+authenticated_mcp_sse_app = MCPApiKeyAuthMiddleware(mcp_sse_app)
+authenticated_mcp_streamable_app = MCPApiKeyAuthMiddleware(mcp_streamable_app)
 
 
 # Combine app and MCP lifespans
@@ -368,15 +378,19 @@ authenticated_mcp_app = MCPApiKeyAuthMiddleware(mcp_app)
 async def combined_lifespan(app: FastAPI):
     """Combined lifespan manager for app and MCP server."""
     async with app_lifespan(app):
-        async with mcp_app.lifespan(app):
-            yield
+        async with mcp_sse_app.lifespan(app):
+            async with mcp_streamable_app.lifespan(app):
+                yield
 
 
 # Set the combined lifespan on the app
 app.router.lifespan_context = combined_lifespan
 
-# Mount the authenticated MCP server at /mcp
-app.mount("/mcp", authenticated_mcp_app)
+# Mount the authenticated MCP servers.
+# Mount the more specific streamable endpoint first so it is not shadowed by
+# the broader /mcp SSE mount.
+app.mount("/mcp/streamable", authenticated_mcp_streamable_app)
+app.mount("/mcp", authenticated_mcp_sse_app)
 
 
 @app.get("/")

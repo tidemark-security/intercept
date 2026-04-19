@@ -153,7 +153,7 @@ class LangFlowSetupRequest(BaseModel):
 
     backend_api_base_url: str = Field(
         min_length=1,
-        description="Intercept backend API base URL, used to derive the /mcp/sse endpoint",
+        description="Intercept backend API base URL, used to derive the /mcp/streamable/ endpoint",
     )
     nhi_username: str = Field(
         default=LANGFLOW_SETUP_DEFAULT_NHI_USERNAME,
@@ -250,7 +250,7 @@ def _get_langflow_asset_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "static" / "langflow"
 
 
-def _derive_intercept_mcp_sse_url(api_base_url: str) -> str:
+def _derive_intercept_mcp_streamable_url(api_base_url: str) -> str:
     normalized = api_base_url.strip()
     if not normalized:
         raise ValueError("backend_api_base_url must not be blank")
@@ -267,7 +267,7 @@ def _derive_intercept_mcp_sse_url(api_base_url: str) -> str:
 
     root_path = normalized_path or "/"
     root_url = str(parsed.copy_with(path=root_path, query=None, fragment=None)).rstrip("/")
-    return f"{root_url}/mcp/sse"
+    return f"{root_url}/mcp/streamable/"
 
 
 def _replace_cached_intercept_mcp_server_url(payload: Any, mcp_server_url: str) -> Any:
@@ -501,13 +501,13 @@ async def setup_intercept_mcp_server(
     langflow_service: Optional[LangFlowService] = None
 
     try:
-        mcp_server_url = _derive_intercept_mcp_sse_url(payload.backend_api_base_url)
+        mcp_server_url = _derive_intercept_mcp_streamable_url(payload.backend_api_base_url)
         _record_setup_step(
             steps,
             step_id="mcp_url",
             label="Intercept MCP URL",
             step_status="reused",
-            message=f"Derived Intercept MCP SSE URL: {mcp_server_url}",
+            message=f"Derived Intercept MCP streamable HTTP URL: {mcp_server_url}",
         )
 
         langflow_service = await get_langflow_service(db)

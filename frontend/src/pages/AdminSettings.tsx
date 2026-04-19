@@ -227,7 +227,7 @@ const extractApiErrorMessage = (err: unknown, fallback: string): string => {
   return fallback;
 };
 
-const deriveLangflowMcpSseUrl = (apiBaseUrl: string): string => {
+const deriveLangflowMcpStreamableUrl = (apiBaseUrl: string): string => {
   const fallbackOrigin =
     typeof window !== "undefined" ? window.location.origin : apiBaseUrl;
 
@@ -240,24 +240,26 @@ const deriveLangflowMcpSseUrl = (apiBaseUrl: string): string => {
       parsed.pathname = normalizedPath.slice(0, -4) || "/";
     }
 
-    return `${parsed.toString().replace(/\/$/, "")}/mcp/sse`;
+    return `${parsed.toString().replace(/\/$/, "")}/mcp/streamable/`;
   } catch {
-    return `${fallbackOrigin.replace(/\/$/, "")}/mcp/sse`;
+    return `${fallbackOrigin.replace(/\/$/, "")}/mcp/streamable/`;
   }
 };
 
-const deriveBackendApiBaseUrlFromMcpSseUrl = (
-  mcpSseUrl: string,
+const deriveBackendApiBaseUrlFromMcpUrl = (
+  mcpUrl: string,
   fallbackApiBaseUrl: string,
 ): string => {
   const fallbackOrigin =
     typeof window !== "undefined" ? window.location.origin : fallbackApiBaseUrl;
 
   try {
-    const parsed = new URL(mcpSseUrl || fallbackOrigin);
+    const parsed = new URL(mcpUrl || fallbackOrigin);
     const normalizedPath = parsed.pathname.replace(/\/$/, "");
 
-    if (normalizedPath.endsWith("/mcp/sse")) {
+    if (normalizedPath.endsWith("/mcp/streamable")) {
+      parsed.pathname = normalizedPath.slice(0, -15) || "/";
+    } else if (normalizedPath.endsWith("/mcp/sse")) {
       parsed.pathname = normalizedPath.slice(0, -8) || "/";
     }
 
@@ -335,7 +337,7 @@ function AdminSettings() {
       ? window.location.origin
       : "http://localhost:8000");
   const defaultLangflowMcpUrl = useMemo(
-    () => deriveLangflowMcpSseUrl(backendApiBaseUrl),
+    () => deriveLangflowMcpStreamableUrl(backendApiBaseUrl),
     [backendApiBaseUrl],
   );
 
@@ -410,16 +412,16 @@ function AdminSettings() {
   const langflowSetupMutation = useMutation({
     mutationFn: ({
       nhiUsername,
-      mcpSseUrl,
+      mcpUrl,
     }: {
       nhiUsername: string;
-      mcpSseUrl: string;
+      mcpUrl: string;
     }) =>
       LangflowService.setupInterceptMcpServerApiV1LangflowAdminSetupInterceptMcpPost(
         {
           requestBody: {
-            backend_api_base_url: deriveBackendApiBaseUrlFromMcpSseUrl(
-              mcpSseUrl,
+            backend_api_base_url: deriveBackendApiBaseUrlFromMcpUrl(
+              mcpUrl,
               backendApiBaseUrl,
             ),
             nhi_username: nhiUsername.trim() || LANGFLOW_SETUP_DEFAULT_USERNAME,
@@ -566,7 +568,7 @@ function AdminSettings() {
     setLangflowSetupStatus(null);
     await langflowSetupMutation.mutateAsync({
       nhiUsername: langflowSetupUsername,
-      mcpSseUrl: langflowSetupMcpUrl,
+      mcpUrl: langflowSetupMcpUrl,
     });
   };
 
@@ -2732,8 +2734,8 @@ function AdminSettings() {
               <div className="flex w-full flex-col gap-4">
                 <TextField
                   className="h-auto w-full flex-none"
-                  label="Intercept MCP SSE URL"
-                  helpText="This is automatically detected from the backend URL. Override it in advanced use cases, but leave it as is if you're not sure."
+                  label="Intercept MCP Streamable HTTP URL"
+                  helpText="This is automatically detected from the backend URL and defaults to /mcp/streamable/. Override it in advanced use cases, but leave it as is if you're not sure."
                 >
                   <TextField.Input
                     placeholder={defaultLangflowMcpUrl}

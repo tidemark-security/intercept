@@ -7,7 +7,7 @@
  */
 export type LangFlowSetupRequest = {
     /**
-     * Intercept backend API base URL, used to derive the /mcp/sse endpoint
+     * Intercept backend API base URL, used to derive the /mcp/streamable/ endpoint
      */
     backend_api_base_url: string;
     /**
