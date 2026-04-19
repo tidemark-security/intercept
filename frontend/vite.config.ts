@@ -1,6 +1,7 @@
 import { defineConfig, type PluginOption } from "vite"
 import react from "@vitejs/plugin-react"
 import svgr from "vite-plugin-svgr"
+import { visualizer } from "rollup-plugin-visualizer"
 import { resolve } from "node:path"
 
 async function analyzePlugin(): Promise<PluginOption[]> {
