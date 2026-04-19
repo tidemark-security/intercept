@@ -1,11 +1,28 @@
-import { defineConfig } from "vite"
+import { defineConfig, type PluginOption } from "vite"
 import react from "@vitejs/plugin-react"
 import svgr from "vite-plugin-svgr"
 import { resolve } from "node:path"
 
+async function analyzePlugin(): Promise<PluginOption[]> {
+  if (!process.env.ANALYZE) return [];
+  const { visualizer } = await import("rollup-plugin-visualizer");
+  return [
+    visualizer({
+      filename: "dist/stats.html",
+      template: "treemap",
+      gzipSize: true,
+      brotliSize: true,
+    }),
+  ];
+}
+
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react(), svgr()],
+  plugins: [
+    react(),
+    svgr(),
+    analyzePlugin(),
+  ],
   resolve: {
     alias: {
       "@": resolve(__dirname, "./src"),
@@ -20,6 +37,30 @@ export default defineConfig({
       ),
       "react-router": resolve(__dirname, "node_modules/react-router"),
       "react-router-dom": resolve(__dirname, "node_modules/react-router-dom"),
+    },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ['react', 'react-dom', 'react-router-dom'],
+          radix: [
+            '@radix-ui/react-checkbox',
+            '@radix-ui/react-collapsible',
+            '@radix-ui/react-context-menu',
+            '@radix-ui/react-dialog',
+            '@radix-ui/react-dropdown-menu',
+            '@radix-ui/react-hover-card',
+            '@radix-ui/react-popover',
+            '@radix-ui/react-select',
+            '@radix-ui/react-slider',
+            '@radix-ui/react-switch',
+            '@radix-ui/react-tooltip',
+          ],
+          query: ['@tanstack/react-query'],
+          markdown: ['react-markdown', 'rehype-raw', 'rehype-sanitize', 'remark-gfm'],
+        },
+      },
     },
   },
   // @ts-expect-error - Vitest configuration is supported via plugin but not typed in Vite's config schema yet.
