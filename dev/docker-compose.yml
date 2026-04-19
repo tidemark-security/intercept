@@ -118,7 +118,7 @@ services:
       "
 
   langflow:
-    image: langflowai/langflow:1.8.3
+    image: langflowai/langflow:1.9.0
     user: root
     environment:
       LANGFLOW_DATABASE_URL: postgresql://langflow_user:langflow_password@postgres:5432/langflow

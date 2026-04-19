@@ -198,7 +198,7 @@ interface SessionItemProps {
     isEditing: boolean;
     isDeleting: boolean;
     editTitle: string;
-    editInputRef: React.RefObject<HTMLInputElement>;
+    editInputRef: React.RefObject<HTMLInputElement | null>;
     onEditTitleChange: (title: string) => void;
     onStartEdit: (e: React.MouseEvent) => void;
     onSaveEdit: (e: React.MouseEvent) => void;
@@ -387,7 +387,7 @@ export function ChatHistoryList({
 
     // Session interaction state (edit/delete modes)
     const [interaction, dispatch] = useReducer(sessionInteractionReducer, { mode: 'idle' });
-    const editInputRef = useRef<HTMLInputElement>(null);
+    const editInputRef = useRef<HTMLInputElement | null>(null);
     
     // Clear all modal state
     const [showClearAllModal, setShowClearAllModal] = useState(false);
