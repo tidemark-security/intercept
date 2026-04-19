@@ -1,30 +1,32 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import { SessionProvider } from './contexts/SessionProvider'
 import { ToastProvider } from './contexts/ToastProvider'
 import { BreakpointProvider } from './contexts/BreakpointContext'
 import { WebSocketProvider } from './contexts/WebSocketContext'
 import { ProtectedRoute } from './components/auth/ProtectedRoute'
-import Alerts from "./pages/Alerts"
-import Admin from "./pages/Admin"
-import AdminAuditTrail from "./pages/AdminAuditTrail"
-import AdminUsers from "./pages/AdminUsers"
-import AdminLinkTemplates from "./pages/AdminLinkTemplates"
-import AdminSettings from "./pages/AdminSettings"
-import AdminQueueStatus from "./pages/AdminQueueStatus"
-import { AIChat } from "./pages/AIChat"
-import Home from "./pages/Home"
-import Login from "./pages/Login"
-import SetPasswordPage from './pages/SetPasswordPage'
-import CasesListPage from './pages/CaseList'
-import CaseDetailPage from './pages/CaseDetail'
-import Logout from './pages/Logout'
-import SelfPasswordChange from './pages/SelfPasswordChange'
-import ProfileManagement from './pages/ProfileManagement'
-import TasksListPage from './pages/TaskList'
-import TaskDetailPage from './pages/TaskDetail'
-import Reports from './pages/Reports'
-import AITriageDetails from './pages/AITriageDetails'
-import SearchPage from './pages/SearchPage'
+
+const Alerts = lazy(() => import("./pages/Alerts"))
+const Admin = lazy(() => import("./pages/Admin"))
+const AdminAuditTrail = lazy(() => import("./pages/AdminAuditTrail"))
+const AdminUsers = lazy(() => import("./pages/AdminUsers"))
+const AdminLinkTemplates = lazy(() => import("./pages/AdminLinkTemplates"))
+const AdminSettings = lazy(() => import("./pages/AdminSettings"))
+const AdminQueueStatus = lazy(() => import("./pages/AdminQueueStatus"))
+const AIChat = lazy(() => import("./pages/AIChat").then(m => ({ default: m.AIChat })))
+const Home = lazy(() => import("./pages/Home"))
+const Login = lazy(() => import("./pages/Login"))
+const SetPasswordPage = lazy(() => import("./pages/SetPasswordPage"))
+const CasesListPage = lazy(() => import("./pages/CaseList"))
+const CaseDetailPage = lazy(() => import("./pages/CaseDetail"))
+const Logout = lazy(() => import("./pages/Logout"))
+const SelfPasswordChange = lazy(() => import("./pages/SelfPasswordChange"))
+const ProfileManagement = lazy(() => import("./pages/ProfileManagement"))
+const TasksListPage = lazy(() => import("./pages/TaskList"))
+const TaskDetailPage = lazy(() => import("./pages/TaskDetail"))
+const Reports = lazy(() => import("./pages/Reports"))
+const AITriageDetails = lazy(() => import("./pages/AITriageDetails"))
+const SearchPage = lazy(() => import("./pages/SearchPage"))
 
 export default function App() {
   return (
@@ -33,6 +35,7 @@ export default function App() {
         <WebSocketProvider>
         <ToastProvider>
           <Router>
+          <Suspense fallback={null}>
           <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/reset-password" element={<SetPasswordPage />} />
@@ -190,6 +193,7 @@ export default function App() {
           />
           <Route path="/logout" element={<Logout />} />
         </Routes>
+          </Suspense>
       </Router>
       </ToastProvider>
     </WebSocketProvider>
