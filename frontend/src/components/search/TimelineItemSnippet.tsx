@@ -19,8 +19,6 @@
  * ```
  */
 
-/* eslint-disable react-refresh/only-export-components */
-
 import React from 'react';
 import { BaseCard } from '@/components/cards/BaseCard';
 import { createTimelineCard, type CardConfig } from '@/components/timeline/TimelineCardFactory';

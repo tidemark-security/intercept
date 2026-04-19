@@ -231,8 +231,9 @@ add_pagination(app)
 from app.mcp.server import mcp
 
 # Create the MCP ASGI app
-# Note: path="" so that when mounted at /mcp, routes become /mcp/sse and /mcp/messages
-mcp_app = mcp.http_app(path="", transport="sse")
+# FastMCP 3.x requires routed paths to start with '/'; when mounted at /mcp,
+# this still exposes the SSE endpoints under that prefix.
+mcp_app = mcp.http_app(path="/", transport="sse")
 
 
 # ---------------------------------------------------------------------------

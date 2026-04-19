@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { Button } from "@/components/buttons/Button";
@@ -37,7 +37,7 @@ function Login() {
   const [loadingOidcConfig, setLoadingOidcConfig] = useState(true);
   const [oidcError, setOidcError] = useState<string | null>(null);
   const passwordInputRef = React.useRef<HTMLInputElement>(null);
-  const searchParams = new URLSearchParams(location.search);
+  const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const noSso = searchParams.get("no_sso") === "true";
   const isLoading = status === "authenticating";
   const loginLogo = resolvedTheme === "dark" ? interceptLogo : interceptLogoDark;
@@ -67,7 +67,7 @@ function Login() {
       return;
     }
     setOidcError(null);
-  }, [location.search]);
+  }, [searchParams]);
 
   useEffect(() => {
     let cancelled = false;

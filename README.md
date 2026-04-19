@@ -69,6 +69,16 @@ intercept/
 
 ## Development
 
+### Git Hooks
+
+Install the tracked Git hooks for this clone:
+
+```bash
+./scripts/install-git-hooks.sh
+```
+
+The pre-commit hook runs `frontend` lint when staged changes affect the frontend or lint hook setup. This is intended as a fast local check before CI.
+
 ### After Changing Backend Models
 
 Regenerate TypeScript types to keep frontend in sync:

@@ -297,7 +297,6 @@ export const CommandInput = forwardRef<CommandInputRef, CommandInputProps>(
         slashCommands,
         allowShiftEnter,
         submitOnEnter,
-        onSlashCommand,
         executeSlashCommand,
         onSubmit,
         onChange,
