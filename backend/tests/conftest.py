@@ -1,4 +1,3 @@
-import asyncio
 import os
 import shutil
 import subprocess
@@ -93,15 +92,6 @@ def _download_maxmind_test_data(target_dir: Path) -> None:
             )
             response.raise_for_status()
             target_path.write_bytes(response.content)
-
-
-@pytest.fixture(scope="session")
-def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
-    loop = asyncio.new_event_loop()
-    try:
-        yield loop
-    finally:
-        loop.close()
 
 
 @pytest.fixture(scope="session")
