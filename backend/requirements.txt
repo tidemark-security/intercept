@@ -12,7 +12,7 @@ geoip2==5.2.0
 httpx==0.28.1
 ldap3==2.9.1
 mitreattack-python==5.4.4
-psycopg2-binary==2.9.11
+psycopg2-binary==2.9.12
 pydantic-settings==2.12.0
 python-dotenv==1.2.2
 PyJWT[crypto]>=2.12.0
