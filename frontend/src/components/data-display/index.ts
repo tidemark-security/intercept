@@ -1,7 +1,7 @@
 export { ActivityItem } from './ActivityItem';
 export { Avatar } from './Avatar';
 export { Badge } from '@/components/data-display/Badge';
-export { BarChart } from './BarChart';
+export { BarChart } from '@tidemark-security/ux';
 export { CopyableTimestamp } from './CopyableTimestamp';
 export { EntityList } from './EntityList';
 export type { EntityListProps } from './EntityList.types';
@@ -11,7 +11,7 @@ export { default as MarkdownContent } from './MarkdownContent';
 export { default as MermaidRenderer } from './MermaidRenderer';
 export { RelativeTime } from './RelativeTime';
 export { ReferenceBadge } from './ReferenceBadge';
-export { SemiDonutChart } from './SemiDonutChart';
+export { SemiDonutChart } from '@tidemark-security/ux';
 export { Table } from './Table';
 export { Tag } from './Tag';
 export { TreeView } from './TreeView';

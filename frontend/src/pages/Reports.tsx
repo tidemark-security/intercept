@@ -6,9 +6,9 @@ import { DefaultPageLayout } from '@/components/layout/DefaultPageLayout';
 import { Loader } from '@/components/feedback/Loader';
 import { Badge } from '@/components/data-display/Badge';
 import { Table } from '@/components/data-display/Table';
-import { SemiDonutChart } from '@/components/data-display/SemiDonutChart';
 import { Button } from '@/components/buttons/Button';
 import { ToggleGroup } from '@/components/buttons/ToggleGroup';
+import { BarChart, ScatterPlotChart, SemiDonutChart, TimeSeriesChart } from '@tidemark-security/ux';
 
 import { StatCard } from '@/components/cards/StatCard';
 import { Select } from '@/components/forms/Select';
@@ -22,20 +22,6 @@ import { useReportsURLState, ReportTabType } from '@/hooks/useReportsURLState';
 import { formatAbsoluteTime } from '@/utils/dateFormatters';
 import { Activity, AlertTriangle, Bot, CheckCircle, ChevronLeft, ChevronRight, Clock, ExternalLink, MessageSquare, ThumbsDown, ThumbsUp, TrendingUp, Users } from 'lucide-react';
 import type { ChatFeedbackMessageDetail, MessageFeedback } from '@/types/generated';
-import { ScatterChart, Scatter } from 'recharts';
-import {
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-} from 'recharts';
 
 type TabType = ReportTabType;
 type AlertGroupBy = 'source' | 'title' | 'tag';
@@ -340,18 +326,19 @@ function Reports() {
           {/* Volume Over Time */}
           <div className="lg:col-span-2 rounded-lg border border-neutral-border bg-default-background p-6">
             <h3 className="text-heading-3 font-heading-3 text-default-font mb-4">Activity Over Time</h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={socChartData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="time" tick={{ fontSize: 12 }} />
-                <YAxis tick={{ fontSize: 12 }} />
-                <Tooltip formatter={formatChartTooltipLabel} />
-                <Legend formatter={formatChartLegendLabel} />
-                <Line type="monotone" dataKey="alerts" stroke={CHART_COLORS.alerts} name="Alerts" strokeWidth={2} animationDuration={CHART_ANIMATION_DURATION_MS} />
-                <Line type="monotone" dataKey="cases" stroke={CHART_COLORS.cases} name="Cases" strokeWidth={2} animationDuration={CHART_ANIMATION_DURATION_MS} />
-                <Line type="monotone" dataKey="alertsClosed" stroke={CHART_COLORS.tp} name="Closed" strokeWidth={2} animationDuration={CHART_ANIMATION_DURATION_MS} />
-              </LineChart>
-            </ResponsiveContainer>
+            <TimeSeriesChart
+              data={socChartData}
+              xAxisKey="time"
+              series={[
+                { dataKey: 'alerts', color: CHART_COLORS.alerts, name: 'Alerts' },
+                { dataKey: 'cases', color: CHART_COLORS.cases, name: 'Cases' },
+                { dataKey: 'alertsClosed', color: CHART_COLORS.tp, name: 'Closed' },
+              ]}
+              height={300}
+              animationDuration={CHART_ANIMATION_DURATION_MS}
+              tooltipFormatter={formatChartTooltipLabel}
+              legendFormatter={formatChartLegendLabel}
+            />
           </div>
 
           {/* Disposition Pie */}
@@ -434,17 +421,20 @@ function Reports() {
         {/* Team MTTT Comparison */}
         <div className="rounded-lg border border-neutral-border bg-default-background p-6">
           <h3 className="text-heading-3 font-heading-3 text-default-font mb-4">Analyst Performance Comparison</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={(analystData.analysts ?? []).slice(0, 10)} layout="vertical">
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis type="number" />
-              <YAxis type="category" dataKey="analyst" width={100} tick={{ fontSize: 12 }} />
-              <Tooltip formatter={formatChartTooltipLabel} />
-              <Legend formatter={formatChartLegendLabel} />
-              <Bar dataKey="total_alerts_triaged" fill={CHART_COLORS.alerts} name="Alerts Triaged" animationDuration={CHART_ANIMATION_DURATION_MS} />
-              <Bar dataKey="total_cases_closed" fill={CHART_COLORS.cases} name="Cases Closed" animationDuration={CHART_ANIMATION_DURATION_MS} />
-            </BarChart>
-          </ResponsiveContainer>
+          <BarChart
+            data={(analystData.analysts ?? []).slice(0, 10)}
+            layout="vertical"
+            yAxisKey="analyst"
+            series={[
+              { dataKey: 'total_alerts_triaged', name: 'Alerts Triaged', color: CHART_COLORS.alerts },
+              { dataKey: 'total_cases_closed', name: 'Cases Closed', color: CHART_COLORS.cases },
+            ]}
+            xAxisProps={{ type: 'number' }}
+            yAxisProps={{ type: 'category', width: 100, tick: { fontSize: 12 } }}
+            tooltipFormatter={formatChartTooltipLabel}
+            legendFormatter={formatChartLegendLabel}
+            barRadius={4}
+          />
         </div>
 
         {/* Analyst Table */}
@@ -522,15 +512,16 @@ function Reports() {
         {/* Hourly Distribution */}
         <div className="rounded-lg border border-neutral-border bg-default-background p-6">
           <h3 className="text-heading-3 font-heading-3 text-default-font mb-4">Alert Volume by Hour of Day</h3>
-          <ResponsiveContainer width="100%" height={250}>
-            <BarChart data={hourlyData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="hour" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 12 }} />
-              <Tooltip formatter={formatChartTooltipLabel} />
-              <Bar dataKey="count" fill={CHART_COLORS.alerts} name="Total Alerts" animationDuration={CHART_ANIMATION_DURATION_MS} />
-            </BarChart>
-          </ResponsiveContainer>
+          <BarChart
+            data={hourlyData}
+            series={[{ dataKey: 'count', name: 'Total Alerts', color: CHART_COLORS.alerts }]}
+            xAxisKey="hour"
+            height={250}
+            xAxisProps={{ tick: { fontSize: 11 } }}
+            yAxisProps={{ tick: { fontSize: 12 } }}
+            tooltipFormatter={formatChartTooltipLabel}
+            showLegend={false}
+          />
         </div>
 
         {/* By Dimension Table with Pivot Selector */}
@@ -736,19 +727,23 @@ function Reports() {
           <div className="rounded-lg border border-neutral-border bg-default-background p-6">
             <h3 className="text-heading-3 font-heading-3 text-default-font mb-4">Weekly Acceptance Trend</h3>
             {weeklyChartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={weeklyChartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="week" tick={{ fontSize: 12 }} />
-                  <YAxis yAxisId="left" tick={{ fontSize: 12 }} />
-                  <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tick={{ fontSize: 12 }} unit="%" />
-                  <Tooltip formatter={formatChartTooltipLabel} />
-                  <Legend formatter={formatChartLegendLabel} />
-                  <Line yAxisId="left" type="monotone" dataKey="accepted" stroke={CHART_COLORS.tp} name="Accepted" strokeWidth={2} animationDuration={CHART_ANIMATION_DURATION_MS} />
-                  <Line yAxisId="left" type="monotone" dataKey="rejected" stroke={CHART_COLORS.fp} name="Rejected" strokeWidth={2} animationDuration={CHART_ANIMATION_DURATION_MS} />
-                  <Line yAxisId="right" type="monotone" dataKey="rate" stroke={CHART_COLORS.alerts} name="Rate %" strokeWidth={2} strokeDasharray="5 5" animationDuration={CHART_ANIMATION_DURATION_MS} />
-                </LineChart>
-              </ResponsiveContainer>
+              <TimeSeriesChart
+                data={weeklyChartData}
+                xAxisKey="week"
+                yAxes={[
+                  { id: 'left', orientation: 'left' },
+                  { id: 'right', orientation: 'right', domain: [0, 100], unit: '%' },
+                ]}
+                series={[
+                  { dataKey: 'accepted', color: CHART_COLORS.tp, name: 'Accepted', yAxisId: 'left' },
+                  { dataKey: 'rejected', color: CHART_COLORS.fp, name: 'Rejected', yAxisId: 'left' },
+                  { dataKey: 'rate', color: CHART_COLORS.alerts, name: 'Rate %', yAxisId: 'right', strokeDasharray: '5 5' },
+                ]}
+                height={300}
+                animationDuration={CHART_ANIMATION_DURATION_MS}
+                tooltipFormatter={formatChartTooltipLabel}
+                legendFormatter={formatChartLegendLabel}
+              />
             ) : (
               <div className="flex items-center justify-center h-[300px] text-subtext-color">
                 No trend data available
@@ -812,27 +807,27 @@ function Reports() {
               )}
             </div>
             {dispositionChartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart 
-                  data={dispositionChartData} 
-                  layout="vertical"
-                  onClick={(data) => {
-                    const payload = (data as { activePayload?: Array<{ payload?: { rawDisposition?: string } }> })?.activePayload;
-                    if (payload?.[0]?.payload?.rawDisposition) {
-                      handleDispositionClick(payload[0].payload.rawDisposition);
-                    }
-                  }}
-                  style={{ cursor: isAdmin ? 'pointer' : 'default' }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis type="number" />
-                  <YAxis type="category" dataKey="disposition" width={100} tick={{ fontSize: 12 }} />
-                  <Tooltip formatter={formatChartTooltipLabel} />
-                  <Legend formatter={formatChartLegendLabel} />
-                  <Bar dataKey="accepted" stackId="a" fill={CHART_COLORS.tp} name="Accepted" animationDuration={CHART_ANIMATION_DURATION_MS} />
-                  <Bar dataKey="rejected" stackId="a" fill={CHART_COLORS.fp} name="Rejected" animationDuration={CHART_ANIMATION_DURATION_MS} />
-                </BarChart>
-              </ResponsiveContainer>
+              <BarChart
+                data={dispositionChartData}
+                layout="vertical"
+                yAxisKey="disposition"
+                series={[
+                  { dataKey: 'accepted', name: 'Accepted', color: CHART_COLORS.tp, stackId: 'a' },
+                  { dataKey: 'rejected', name: 'Rejected', color: CHART_COLORS.fp, stackId: 'a' },
+                ]}
+                height={250}
+                xAxisProps={{ type: 'number' }}
+                yAxisProps={{ type: 'category', width: 100, tick: { fontSize: 12 } }}
+                tooltipFormatter={formatChartTooltipLabel}
+                legendFormatter={formatChartLegendLabel}
+                onChartClick={isAdmin ? (entry: Record<string, unknown>) => {
+                  const rawDisposition = entry.rawDisposition;
+                  if (typeof rawDisposition === 'string') {
+                    handleDispositionClick(rawDisposition);
+                  }
+                } : undefined}
+                className={isAdmin ? 'cursor-pointer' : undefined}
+              />
             ) : (
               <div className="flex items-center justify-center h-[250px] text-subtext-color">
                 No disposition data available
@@ -844,39 +839,30 @@ function Reports() {
           <div className="rounded-lg border border-neutral-border bg-default-background p-6">
             <h3 className="text-heading-3 font-heading-3 text-default-font mb-4">Confidence vs Acceptance Rate</h3>
             {confidenceData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={250}>
-                <ScatterChart margin={{ top: 5, right: 10, left: 28, bottom: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis
-                    type="number"
-                    dataKey="confidence"
-                    name="Confidence"
-                    domain={[0, 100]}
-                    unit="%"
-                    tick={{ fontSize: 12 }}
-                    label={{ value: 'Confidence (%)', position: 'insideBottom', offset: -8 }}
-                  />
-                  <YAxis
-                    type="number"
-                    dataKey="acceptanceRate"
-                    name="Acceptance"
-                    domain={[0, 100]}
-                    unit="%"
-                    tick={{ fontSize: 12 }}
-                    width={56}
-                    label={{ value: 'Acceptance Rate (%)', angle: -90, position: 'insideBottomLeft', dy: -10 }}
-                  />
-                  <Tooltip
-                    cursor={{ strokeDasharray: '3 3' }}
-                    formatter={(value, name) => [`${Number(value ?? 0).toFixed(1)}%`, formatChartLegendLabel(name)]}
-                  />
-                  <Scatter name="Buckets" data={confidenceData} fill={CHART_COLORS.alerts} animationDuration={CHART_ANIMATION_DURATION_MS}>
-                    {confidenceData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={CHART_COLORS.alerts} />
-                    ))}
-                  </Scatter>
-                </ScatterChart>
-              </ResponsiveContainer>
+              <ScatterPlotChart
+                data={confidenceData}
+                xAxisKey="confidence"
+                yAxisKey="acceptanceRate"
+                seriesName="Buckets"
+                pointColor={CHART_COLORS.alerts}
+                height={250}
+                margin={{ top: 5, right: 10, left: 28, bottom: 10 }}
+                animationDuration={CHART_ANIMATION_DURATION_MS}
+                xAxisProps={{
+                  domain: [0, 100],
+                  unit: '%',
+                  tick: { fontSize: 12 },
+                  label: { value: 'Confidence (%)', position: 'insideBottom', offset: -8 },
+                }}
+                yAxisProps={{
+                  domain: [0, 100],
+                  unit: '%',
+                  tick: { fontSize: 12 },
+                  width: 56,
+                  label: { value: 'Acceptance Rate (%)', angle: -90, position: 'insideBottomLeft', dy: -10 },
+                }}
+                tooltipFormatter={(value, name) => [`${Number(value ?? 0).toFixed(1)}%`, formatChartLegendLabel(name)]}
+              />
             ) : (
               <div className="flex items-center justify-center h-[250px] text-subtext-color">
                 No confidence data available
@@ -942,19 +928,23 @@ function Reports() {
         <div className="rounded-lg border border-neutral-border bg-default-background p-6">
           <h3 className="text-heading-3 font-heading-3 text-default-font mb-4">Weekly Feedback Trend</h3>
           {weeklyChartData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={350}>
-              <LineChart data={weeklyChartData}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="week" tick={{ fontSize: 12 }} />
-                <YAxis yAxisId="left" tick={{ fontSize: 12 }} />
-                <YAxis yAxisId="right" orientation="right" domain={[0, 100]} tick={{ fontSize: 12 }} unit="%" />
-                <Tooltip formatter={formatChartTooltipLabel} />
-                <Legend formatter={formatChartLegendLabel} />
-                <Line yAxisId="left" type="monotone" dataKey="positive" stroke={CHART_COLORS.tp} name="Positive" strokeWidth={2} animationDuration={CHART_ANIMATION_DURATION_MS} />
-                <Line yAxisId="left" type="monotone" dataKey="negative" stroke={CHART_COLORS.fp} name="Negative" strokeWidth={2} animationDuration={CHART_ANIMATION_DURATION_MS} />
-                <Line yAxisId="right" type="monotone" dataKey="satisfactionRate" stroke={CHART_COLORS.alerts} name="Satisfaction %" strokeWidth={2} strokeDasharray="5 5" animationDuration={CHART_ANIMATION_DURATION_MS} />
-              </LineChart>
-            </ResponsiveContainer>
+            <TimeSeriesChart
+              data={weeklyChartData}
+              xAxisKey="week"
+              yAxes={[
+                { id: 'left', orientation: 'left' },
+                { id: 'right', orientation: 'right', domain: [0, 100], unit: '%' },
+              ]}
+              series={[
+                { dataKey: 'positive', color: CHART_COLORS.tp, name: 'Positive', yAxisId: 'left' },
+                { dataKey: 'negative', color: CHART_COLORS.fp, name: 'Negative', yAxisId: 'left' },
+                { dataKey: 'satisfactionRate', color: CHART_COLORS.alerts, name: 'Satisfaction %', yAxisId: 'right', strokeDasharray: '5 5' },
+              ]}
+              height={350}
+              animationDuration={CHART_ANIMATION_DURATION_MS}
+              tooltipFormatter={formatChartTooltipLabel}
+              legendFormatter={formatChartLegendLabel}
+            />
           ) : (
             <div className="flex items-center justify-center h-[350px] text-subtext-color">
               No trend data available

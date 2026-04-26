@@ -232,7 +232,6 @@ function SessionItem({
 
     return (
         <MenuCardBase
-            isDarkTheme={isDarkTheme}
             variant={variant}
             className="flex-row flex-nowrap items-center justify-between gap-3"
             onClick={onClick}

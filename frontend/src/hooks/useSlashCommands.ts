@@ -19,7 +19,7 @@ export interface UseSlashCommandsOptions {
 export interface UseSlashCommandsReturn {
   /** Filtered commands based on input */
   filteredCommands: SlashCommand[];
-  /** Currently selected command index */
+  /** Currently selected command index, or -1 when no command has been keyboard-selected */
   selectedIndex: number;
   /** Whether autocomplete should be visible */
   showAutocomplete: boolean;
@@ -60,7 +60,7 @@ export function useSlashCommands({
   onSlashCommand,
 }: UseSlashCommandsOptions): UseSlashCommandsReturn {
   const [filteredCommands, setFilteredCommands] = useState<SlashCommand[]>([]);
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [selectedIndex, setSelectedIndex] = useState(-1);
   const [showAutocomplete, setShowAutocomplete] = useState(false);
 
   // Helper to check if an item type is available
@@ -80,10 +80,11 @@ export function useSlashCommands({
       );
       setFilteredCommands(filtered);
       setShowAutocomplete(filtered.length > 0);
-      setSelectedIndex(0);
+      setSelectedIndex(-1);
     } else {
       setShowAutocomplete(false);
       setFilteredCommands([]);
+      setSelectedIndex(-1);
     }
   }, [inputValue, isItemTypeAvailable]);
 
@@ -111,7 +112,7 @@ export function useSlashCommands({
       } else if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         if (filteredCommands.length > 0) {
-          const selectedCommand = filteredCommands[selectedIndex];
+          const selectedCommand = filteredCommands[selectedIndex >= 0 ? selectedIndex : 0];
           onSlashCommand(selectedCommand.type);
           setShowAutocomplete(false);
         }

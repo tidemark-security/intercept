@@ -99,7 +99,6 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
 
     return (
       <MenuCardBase
-        isDarkTheme={isDarkTheme}
         variant={variant}
         className={className}
         ref={ref}

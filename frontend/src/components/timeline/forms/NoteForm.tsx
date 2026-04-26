@@ -103,7 +103,7 @@ export function NoteForm({ initialData }: NoteFormProps) {
           }
         }}
         variant="default"
-        className="grow"
+        className="h-full min-h-0"
         autoFocus={!editMode}
       />
 
