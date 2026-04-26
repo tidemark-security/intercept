@@ -120,9 +120,9 @@ export function AddProcessForm({ initialData }: AddProcessFormProps) {
         />
       </TextField>
 
-      <div className="flex w-full gap-4">
+      <div className="flex w-full min-w-0 gap-4">
         <TextField
-          className="h-auto w-full flex-none"
+          className="h-auto min-w-0 flex-1"
           label="Process ID (optional)"
           helpText="PID"
         >
@@ -137,7 +137,7 @@ export function AddProcessForm({ initialData }: AddProcessFormProps) {
         </TextField>
 
         <TextField
-          className="h-auto w-full flex-none"
+          className="h-auto min-w-0 flex-1"
           label="Parent PID (optional)"
           helpText="Parent process ID"
         >

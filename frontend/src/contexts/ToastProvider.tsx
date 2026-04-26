@@ -11,6 +11,14 @@ interface ToastProviderProps {
 export function ToastProvider({ children }: ToastProviderProps) {
   const [toasts, setToasts] = useState<ToastData[]>([]);
 
+  const getToastDisplayVariant = (variant: ToastVariant): "neutral" | "error" | "success" => {
+    if (variant === "brand") {
+      return "neutral";
+    }
+
+    return variant;
+  };
+
   const showToast = useCallback((
     title: string,
     description?: string,
@@ -62,7 +70,7 @@ export function ToastProvider({ children }: ToastProviderProps) {
           {toasts.map((toast) => (
             <div key={toast.id} className="animate-in slide-in-from-right">
               <Toast
-                variant={toast.variant}
+                variant={getToastDisplayVariant(toast.variant || "neutral")}
                 icon={getIcon(toast.variant || "neutral")}
                 title={toast.title}
                 description={toast.description}

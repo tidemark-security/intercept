@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App.tsx";
 import "./index.css";
 import "@tidemark-security/ux/tokens.css";
+import "@tidemark-security/ux/ux.css";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { TimezoneProvider } from "./contexts/TimezoneContext";
 import { VisualFilterProvider } from "./contexts/VisualFilterContext";

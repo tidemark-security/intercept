@@ -2,6 +2,7 @@
 
 import React from "react";
 import type { SlashCommand } from "@/utils/slashCommands";
+import { cn } from "@/utils/cn";
 
 export interface SlashCommandAutocompleteProps {
   /** List of filtered commands to display */
@@ -45,25 +46,27 @@ export function SlashCommandAutocomplete({
 
   return (
     <div 
-      className="absolute bottom-full left-0 mb-2 w-full max-w-md shadow-lg z-50 bg-default-background border border-solid border-neutral-border rounded-md"
+      className="absolute bottom-full left-0 z-[var(--z-popover)] mb-2 flex w-full max-w-md flex-col items-start rounded-md border border-solid border-neutral-200 bg-neutral-50 px-1 py-1 shadow-neutral-200-shadow-medium"
       role="listbox"
       aria-label="Slash command suggestions"
     >
-      <div className="flex flex-col py-1">
+      <div className="flex w-full flex-col items-start">
         {commands.map((cmd, index) => (
           <button
             key={cmd.command}
             onClick={() => onSelect(cmd)}
-            className={`flex items-start gap-3 px-4 py-2 text-left transition-colors ${
-              index === selectedIndex
-                ? "bg-brand-primary bg-opacity-10"
-                : "hover:bg-brand-primary hover:bg-opacity-5"
-            }`}
+            className="group/slash-command flex w-full cursor-pointer items-center gap-2 outline-none"
             role="option"
             aria-selected={index === selectedIndex}
             id={`slash-command-${cmd.command}`}
           >
-            <div className="flex flex-col items-start gap-0.5">
+            <div
+              className={cn(
+                "flex w-full flex-none flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left",
+                "hover:bg-neutral-100 focus:bg-neutral-100 active:bg-neutral-50",
+                index === selectedIndex && "bg-neutral-100",
+              )}
+            >
               <span className="text-body-bold font-body-bold text-default-font">
                 {cmd.label}
               </span>

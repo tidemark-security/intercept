@@ -1,7 +1,7 @@
 import React, { lazy, Suspense } from 'react';
 
 const LazyEditor = lazy(() =>
-  import('./MarkdownInputEditor').then(m => ({ default: m.MarkdownInput }))
+  import('@tidemark-security/ux').then(m => ({ default: m.MarkdownInput }))
 );
 
 /**
