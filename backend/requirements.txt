@@ -23,7 +23,7 @@ webauthn==2.7.1
 uvicorn[standard]==0.44.0
 
 # MCP
-fastmcp>=3.2.0
+fastmcp>=3.2.4
 
 # File upload dependencies
 minio==7.2.20
