@@ -64,3 +64,34 @@ body {
 ::-webkit-scrollbar-thumb {
   background-color: rgb(var(--color-scrollbar-thumb));
 }
+
+.timeline-graph-flow .react-flow__attribution {
+  background: rgb(var(--color-default-background) / 0.8);
+  color: rgb(var(--color-subtext-color));
+}
+
+.timeline-graph-flow .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid rgb(var(--color-neutral-border));
+  border-radius: 0;
+}
+
+.timeline-graph-flow .react-flow__controls-button {
+  border-color: rgb(var(--color-neutral-border));
+  background: rgb(var(--color-neutral-50));
+  color: rgb(var(--color-default-font));
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.timeline-graph-flow .react-flow__controls-button:hover,
+.timeline-graph-flow .react-flow__controls-button:focus-visible {
+  background: rgb(var(--color-neutral-100));
+  color: rgb(var(--color-focus-border));
+}
+
+.timeline-graph-flow .react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid rgb(var(--color-neutral-border));
+  border-radius: 0;
+  background: rgb(var(--color-neutral-50));
+}

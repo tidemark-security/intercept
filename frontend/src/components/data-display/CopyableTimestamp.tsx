@@ -22,6 +22,8 @@ interface CopyableTimestampProps {
   label?: string;
   /** Whether to show the full ISO8601 timestamp with relative time in brackets (default: true) */
   showFull?: boolean;
+  /** Whether relative time appears inline or beneath the timestamp (default: inline) */
+  relativePlacement?: 'inline' | 'below';
   /** Visual variant controlling color and icon placement (default: "accent-1-left") */
   variant?: 'accent-1-left' | 'accent-1-right' | 'default-left' | 'default-right';
   /** Additional CSS classes */
@@ -32,6 +34,7 @@ export function CopyableTimestamp({
   value,
   label,
   showFull = true,
+  relativePlacement = 'inline',
   variant = 'default-right',
   className,
 }: CopyableTimestampProps) {
@@ -100,6 +103,41 @@ export function CopyableTimestamp({
   ) : (
     <Copy className={iconClasses} />
   );
+
+  if (relativePlacement === 'below') {
+    return (
+      <div
+        className={cn(
+          "flex items-start gap-1 cursor-pointer group/timestamp",
+          className
+        )}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        onClick={handleCopyTimestamp}
+        title={`Click to copy: ${displayTime}`}
+      >
+        {!isRightVariant && icon}
+        <div className="flex min-w-0 flex-col items-end gap-0 text-right">
+          <span className="flex min-w-0 items-center gap-1">
+            {label && (
+              <span className="text-caption font-caption text-subtext-color">
+                {label}:
+              </span>
+            )}
+            <span className={timestampClasses}>
+              {displayTime}
+            </span>
+          </span>
+          {showFull && (
+            <span className="text-caption font-caption text-subtext-color">
+              {relativeTime}
+            </span>
+          )}
+        </div>
+        {isRightVariant && icon}
+      </div>
+    );
+  }
 
   return (
     <div

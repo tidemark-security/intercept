@@ -72,6 +72,7 @@ async def add_timeline_item_and_commit(
         event_type=RealtimeEventType.TIMELINE_ITEM_ADDED,
         performed_by=performed_by,
         item_id=item_dict.get("id"),
+        item_type=item_dict.get("type"),
     )
 
     await db.commit()
@@ -160,6 +161,7 @@ async def update_timeline_item_and_commit(
         event_type=RealtimeEventType.TIMELINE_ITEM_UPDATED,
         performed_by=performed_by,
         item_id=item_id,
+        item_type=updated_item.get("type", previous_item.get("type")),
     )
 
     await db.commit()

@@ -33,6 +33,65 @@ from app.models.enums import (
     RealtimeEventType,
 )
 
+TimelineGraphEntityType = Literal["case", "task"]
+TimelineGraphEdgeMarker = Literal["none", "forward", "reverse", "bidirectional"]
+TimelineGraphOperationType = Literal[
+    "add_node",
+    "add_group",
+    "move_node",
+    "resize_node",
+    "update_node_metadata",
+    "remove_node",
+    "add_edge",
+    "reconnect_edge",
+    "remove_edge",
+    "update_edge_label",
+    "update_edge_metadata",
+]
+
+
+class TimelineGraphDocument(SQLModel):
+    nodes: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    edges: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+
+
+class TimelineGraphOperation(SQLModel):
+    type: TimelineGraphOperationType
+    node_id: Optional[str] = None
+    edge_id: Optional[str] = None
+    item_id: Optional[str] = None
+    position: Optional[Dict[str, float]] = None
+    width: Optional[float] = None
+    height: Optional[float] = None
+    parent_node_id: Optional[str] = None
+    source: Optional[str] = None
+    target: Optional[str] = None
+    source_handle: Optional[str] = None
+    target_handle: Optional[str] = None
+    label: Optional[str] = None
+    marker: Optional[TimelineGraphEdgeMarker] = None
+
+
+class TimelineGraphPatch(SQLModel):
+    base_revision: int = Field(ge=0)
+    operations: List[TimelineGraphOperation] = Field(default_factory=list)
+
+
+class TimelineGraphRead(SQLModel):
+    entity_type: TimelineGraphEntityType
+    entity_id: int
+    graph: TimelineGraphDocument = Field(default_factory=TimelineGraphDocument)
+    revision: int
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    created_by: Optional[str] = None
+    updated_by: Optional[str] = None
+
+
+class TimelineGraphConflictRead(SQLModel):
+    graph: TimelineGraphRead
+    conflicting_operation_indexes: List[int] = Field(default_factory=list)
+
 
 USERNAME_REGEX = re.compile(r"^[a-z0-9._@-]{3,1024}$")
 PASSWORD_POLICY_REGEX = re.compile(
@@ -691,6 +750,26 @@ class CaseRead(CaseBase):
     @property
     def human_id(self) -> str:
         return f"CAS-{self.id:07d}"
+
+class TimelineGraph(SQLModel, table=True):
+    """Shared timeline graph layout and link state for cases and tasks."""
+
+    __tablename__ = "timeline_graphs"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint("entity_type", "entity_id", name="uq_timeline_graphs_entity"),
+        Index("ix_timeline_graphs_entity", "entity_type", "entity_id"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    entity_type: str = Field(max_length=20, sa_column=Column(String(20), nullable=False))
+    entity_id: int = Field(nullable=False)
+    graph: Dict[str, Any] = Field(default_factory=lambda: {"nodes": {}, "edges": {}}, sa_column=Column(JSONB, nullable=False))
+    graph_meta: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB, nullable=False))
+    revision: int = Field(default=0, nullable=False)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
+    created_by: Optional[str] = Field(default=None, max_length=100)
+    updated_by: Optional[str] = Field(default=None, max_length=100)
 
 
 # Alert models

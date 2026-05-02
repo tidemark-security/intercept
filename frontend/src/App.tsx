@@ -32,8 +32,8 @@ export default function App() {
   return (
     <BreakpointProvider>
       <SessionProvider>
-        <WebSocketProvider>
         <ToastProvider>
+        <WebSocketProvider>
           <Router>
           <Suspense fallback={null}>
           <Routes>
@@ -195,8 +195,8 @@ export default function App() {
         </Routes>
           </Suspense>
       </Router>
+        </WebSocketProvider>
       </ToastProvider>
-    </WebSocketProvider>
     </SessionProvider>
     </BreakpointProvider>
   )

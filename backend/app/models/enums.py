@@ -108,6 +108,7 @@ class RealtimeEventType(str, Enum):
     TIMELINE_ITEM_ADDED = "timeline_item_added"
     TIMELINE_ITEM_UPDATED = "timeline_item_updated"
     TIMELINE_ITEM_DELETED = "timeline_item_deleted"
+    TIMELINE_GRAPH_UPDATED = "timeline_graph_updated"
     ENTITY_UPDATED = "entity_updated"
     TRIAGE_COMPLETED = "triage_completed"
 

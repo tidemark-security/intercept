@@ -27,6 +27,7 @@ interface ActivityItemRootProps extends React.HTMLAttributes<HTMLDivElement> {
   icon?: React.ReactNode;
   contents?: React.ReactNode;
   replies?: React.ReactNode;
+  hideRail?: boolean;
   readOnly?: boolean;
   variant?: "default" | "primary" | "accent-1" | "accent-2" | "accent-3";
   flagged?: boolean;
@@ -67,6 +68,7 @@ const ActivityItemRoot = React.forwardRef<
     icon = <MessageSquare />,
     contents,
     replies,
+    hideRail = false,
     readOnly = false,
     variant = "default",
     flagged = false,
@@ -186,6 +188,7 @@ const ActivityItemRoot = React.forwardRef<
     <div
       className={cn(
         "flex w-full items-start gap-4 hover:bg-neutral-0",
+        hideRail && "min-h-full gap-0 self-stretch",
         {
           "bg-[image:repeating-linear-gradient(45deg,theme('colors.accent-1-primary-blush'),theme('colors.accent-1-primary-blush')_10px,transparent_10px,transparent_20px)]":
             highlighted,
@@ -197,91 +200,96 @@ const ActivityItemRoot = React.forwardRef<
       ref={ref}
       {...otherProps}
     >
-      <div
-        className={cn(
-          "flex w-8 flex-none flex-col items-center self-stretch",
-          {
-            [isDarkTheme ? "bg-accent-1-900" : "bg-accent-1-100"]:
-              highlighted,
-            [isDarkTheme ? "bg-accent-2-900" : "bg-accent-2-100"]: flagged,
-          }
-        )}
-      >
-        <div className="flex flex-col items-start">
-          <div className="bg-default-background">
-            <IconWithBackground
-              variant={
-                highlighted
-                  ? "accent-1"
-                  : flagged
-                  ? "error"
-                  : variant === "accent-3"
-                  ? "accent-3"
-                  : variant === "accent-2"
-                  ? "accent-2"
-                  : variant === "accent-1"
-                  ? "accent-1"
-                  : variant === "primary"
-                  ? "brand"
-                  : "neutral"
-              }
-              size="small"
-              icon={icon}
-              bevel={true}
-            />
-          </div>
-          <IconWithBackground
-            className={cn("hidden", {
-              flex: highlighted,
-            })}
-            variant={highlighted ? "accent-1" : "neutral"}
-            size="small"
-            icon={
-              highlighted ? <Highlighter /> : <MessageSquare />
-            }
-            bevel={false}
-          />
-          <IconWithBackground
-            className={cn("hidden", { flex: flagged })}
-            variant={flagged ? "error" : "neutral"}
-            size="small"
-            icon={flagged ? <Flag /> : <MessageSquare />}
-            bevel={false}
-          />
-        </div>
+      {!hideRail ? (
         <div
           className={cn(
-            "flex w-0.5 grow shrink-0 basis-0 flex-col items-start gap-2",
+            "flex w-8 flex-none flex-col items-center self-stretch",
             {
-              hidden: end,
-              "bg-brand-primary": isDarkTheme,
-              "bg-neutral-1000": !isDarkTheme,
-              "bg-accent-1-300": highlighted,
-              "bg-error-300": flagged,
+              [isDarkTheme ? "bg-accent-1-900" : "bg-accent-1-100"]:
+                highlighted,
+              [isDarkTheme ? "bg-accent-2-900" : "bg-accent-2-100"]: flagged,
             }
           )}
-        />
-      </div>
+        >
+          <div className="flex flex-col items-start">
+            <div className="bg-default-background">
+              <IconWithBackground
+                variant={
+                  highlighted
+                    ? "accent-1"
+                    : flagged
+                    ? "error"
+                    : variant === "accent-3"
+                    ? "accent-3"
+                    : variant === "accent-2"
+                    ? "accent-2"
+                    : variant === "accent-1"
+                    ? "accent-1"
+                    : variant === "primary"
+                    ? "brand"
+                    : "neutral"
+                }
+                size="small"
+                icon={icon}
+                bevel={true}
+              />
+            </div>
+            <IconWithBackground
+              className={cn("hidden", {
+                flex: highlighted,
+              })}
+              variant={highlighted ? "accent-1" : "neutral"}
+              size="small"
+              icon={
+                highlighted ? <Highlighter /> : <MessageSquare />
+              }
+              bevel={false}
+            />
+            <IconWithBackground
+              className={cn("hidden", { flex: flagged })}
+              variant={flagged ? "error" : "neutral"}
+              size="small"
+              icon={flagged ? <Flag /> : <MessageSquare />}
+              bevel={false}
+            />
+          </div>
+          <div
+            className={cn(
+              "flex w-0.5 grow shrink-0 basis-0 flex-col items-start gap-2",
+              {
+                hidden: end,
+                "bg-brand-primary": isDarkTheme,
+                "bg-neutral-1000": !isDarkTheme,
+                "bg-accent-1-300": highlighted,
+                "bg-error-300": flagged,
+              }
+            )}
+          />
+        </div>
+      ) : null}
       <div
         className={cn(
           "flex grow shrink-0 basis-0 flex-col items-start self-stretch",
+          hideRail && "min-h-full",
           { "bg-transparent": flagged }
         )}
       >
         <div
           className={cn(
-            "flex w-full grow shrink-0 basis-0 flex-col items-start gap-0 border-r-2 border-solid border-neutral-200 pr-4",
+            "flex w-full grow shrink-0 basis-0 flex-col items-start gap-0",
+            hideRail && "min-h-full",
+            hideRail ? "pr-0" : "border-r-2 border-solid border-neutral-200 pr-4",
             {
               "border-r-2 border-solid border-accent-3-primary":
-                variant === "accent-3",
+                !hideRail && variant === "accent-3",
               "border-r-2 border-solid border-accent-2-primary":
-                variant === "accent-2",
+                !hideRail && variant === "accent-2",
               "border-r-2 border-solid border-accent-1-primary":
-                variant === "accent-1",
+                !hideRail && variant === "accent-1",
               "border-r-2 border-solid border-brand-primary":
-                variant === "primary",
-              "border-accent-1-900": highlighted,
-              "border-accent-2-900": flagged,
+                !hideRail && variant === "primary",
+              "border-accent-1-900": !hideRail && highlighted,
+              "border-accent-2-900": !hideRail && flagged,
             }
           )}
           onMouseEnter={() => {
@@ -300,72 +308,74 @@ const ActivityItemRoot = React.forwardRef<
             }
           }}
         >
-          <div className="flex w-full flex-wrap items-start gap-2 pt-2">
-            <div className="flex grow shrink-0 basis-0 flex-wrap items-start gap-1">
-              {username ? (
-                <span className="text-body-bold font-body-bold text-default-font">
-                  {username}
-                </span>
-              ) : null}
-              {action ? (
-                <span className="text-body font-body text-subtext-color">
-                  {action}
-                </span>
-              ) : null}
-            </div>
-            <div className="flex flex-wrap items-start justify-center gap-4 pt-0.5 pb-3">
-              {displayItemId && !isMobile && (
-                <div 
-                  className="flex items-center gap-1 cursor-pointer"
-                  onMouseEnter={() => setIsItemIdHovered(true)}
-                  onMouseLeave={() => setIsItemIdHovered(false)}
-                  onClick={handleCopyItemId}
-                >
-                  {isItemIdCopied ? (
-                    <Check 
-                      className="h-3 w-3 text-neutral-400 transition-opacity opacity-100"
-                    />
-                  ) : (
-                    <Copy 
-                      className={cn(
-                        "h-3 w-3 text-neutral-400 transition-opacity",
-                        { "opacity-0": !isItemIdHovered, "opacity-100": isItemIdHovered }
-                      )}
-                    />
-                  )}
-                  <span
-                    className={cn(
-                      "text-caption font-mono",
-                      isDarkTheme ? "text-neutral-400 hover:text-neutral-500" : "text-neutral-600 hover:text-neutral-700"
-                    )}
+          {!hideRail ? (
+            <div className="flex w-full flex-wrap items-start gap-2 pt-2">
+              <div className="flex grow shrink-0 basis-0 flex-wrap items-start gap-1">
+                {username ? (
+                  <span className="text-body-bold font-body-bold text-default-font">
+                    {username}
+                  </span>
+                ) : null}
+                {action ? (
+                  <span className="text-body font-body text-subtext-color">
+                    {action}
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap items-start justify-center gap-4 pt-0.5 pb-3">
+                {displayItemId && !isMobile && (
+                  <div 
+                    className="flex items-center gap-1 cursor-pointer"
+                    onMouseEnter={() => setIsItemIdHovered(true)}
+                    onMouseLeave={() => setIsItemIdHovered(false)}
+                    onClick={handleCopyItemId}
                   >
-                    {displayItemId}
-                  </span>
-                </div>
-              )}
-              {displayTimestamp ? (
-                <div className="flex items-center gap-2">
-                  <CopyableTimestamp value={displayTimestampValue} showFull={false} variant="accent-1-left" />
-                  <span className="text-caption font-caption text-subtext-color w-24 text-right shrink-0">
-                    {displayTimestamp}
-                  </span>
-                  {edited ? (
-                    <span className="text-caption font-caption text-subtext-color shrink-0">
-                      (edited)
+                    {isItemIdCopied ? (
+                      <Check 
+                        className="h-3 w-3 text-neutral-400 transition-opacity opacity-100"
+                      />
+                    ) : (
+                      <Copy 
+                        className={cn(
+                          "h-3 w-3 text-neutral-400 transition-opacity",
+                          { "opacity-0": !isItemIdHovered, "opacity-100": isItemIdHovered }
+                        )}
+                      />
+                    )}
+                    <span
+                      className={cn(
+                        "text-caption font-mono",
+                        isDarkTheme ? "text-neutral-400 hover:text-neutral-500" : "text-neutral-600 hover:text-neutral-700"
+                      )}
+                    >
+                      {displayItemId}
                     </span>
-                  ) : null}
-                </div>
-              ) : null}
+                  </div>
+                )}
+                {displayTimestamp ? (
+                  <div className="flex items-center gap-2">
+                    <CopyableTimestamp value={displayTimestampValue} showFull={false} variant="accent-1-left" />
+                    <span className="text-caption font-caption text-subtext-color w-24 text-right shrink-0">
+                      {displayTimestamp}
+                    </span>
+                    {edited ? (
+                      <span className="text-caption font-caption text-subtext-color shrink-0">
+                        (edited)
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
             </div>
-          </div>
+          ) : null}
           {contents ? (
-            <div className="flex w-full flex-col items-start">{contents}</div>
+            <div className={cn("flex w-full flex-col items-start", hideRail && "min-h-full flex-1")}>{contents}</div>
           ) : null}
           <div
             className={cn(
               "h-8",
                 {
-                  "hidden": !readOnly
+                  "hidden": !readOnly || hideRail
                 },
                 {
                   "hidden": !!replies

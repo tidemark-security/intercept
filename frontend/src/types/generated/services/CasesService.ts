@@ -13,6 +13,8 @@ import type { Page_CaseRead_ } from '../models/Page_CaseRead_';
 import type { PresignedDownloadResponse } from '../models/PresignedDownloadResponse';
 import type { PresignedUploadRequest } from '../models/PresignedUploadRequest';
 import type { PresignedUploadResponse } from '../models/PresignedUploadResponse';
+import type { TimelineGraphPatch } from '../models/TimelineGraphPatch';
+import type { TimelineGraphRead } from '../models/TimelineGraphRead';
 import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
 import { request as __request } from '../core/request';
@@ -183,6 +185,54 @@ export class CasesService {
             path: {
                 'case_id': caseId,
             },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Get Timeline Graph
+     * Get the shared timeline graph document for a case.
+     * @returns TimelineGraphRead Successful Response
+     * @throws ApiError
+     */
+    public static getTimelineGraphApiV1CasesCaseIdTimelineGraphGet({
+        caseId,
+    }: {
+        caseId: number,
+    }): CancelablePromise<TimelineGraphRead> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/cases/{case_id}/timeline-graph',
+            path: {
+                'case_id': caseId,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Patch Timeline Graph
+     * Patch the shared timeline graph document for a case.
+     * @returns TimelineGraphRead Successful Response
+     * @throws ApiError
+     */
+    public static patchTimelineGraphApiV1CasesCaseIdTimelineGraphPatch({
+        caseId,
+        requestBody,
+    }: {
+        caseId: number,
+        requestBody: TimelineGraphPatch,
+    }): CancelablePromise<TimelineGraphRead> {
+        return __request(OpenAPI, {
+            method: 'PATCH',
+            url: '/api/v1/cases/{case_id}/timeline-graph',
+            path: {
+                'case_id': caseId,
+            },
+            body: requestBody,
+            mediaType: 'application/json',
             errors: {
                 422: `Validation Error`,
             },

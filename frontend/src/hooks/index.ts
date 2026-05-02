@@ -8,4 +8,6 @@ export { useFeatureFlags } from './useFeatureFlags';
 export { useEnqueueTriage } from './useEnqueueTriage';
 export { queryKeys, getEntityQueryKey, getEntityListQueryKey } from './queryKeys';
 export type { EntityType, DetailQueryOptions } from './queryKeys';
+export { useTimelineGraph, usePatchTimelineGraph } from './useTimelineGraph';
+export type { TimelineGraphEntityType } from './useTimelineGraph';
 export { useEnrichmentAliases } from './useEnrichmentAliases';
