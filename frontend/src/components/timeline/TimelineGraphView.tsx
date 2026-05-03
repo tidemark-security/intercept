@@ -34,7 +34,6 @@ import {
   type OnReconnect,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Button } from '@/components/buttons/Button';
 import { IconButton } from '@/components/buttons/IconButton';
 import { CopyableTimestamp } from '@/components/data-display/CopyableTimestamp';
 import { Tooltip } from '@/components/overlays/Tooltip';
@@ -52,7 +51,7 @@ import type { LinkTemplate } from '@/utils/linkTemplates';
 import type { TimelineItem } from '@/types/timeline';
 import type { TimelineGraphOperation } from '@/types/generated/models/TimelineGraphOperation';
 import type { TimelineGraphRead } from '@/types/generated/models/TimelineGraphRead';
-import { ArrowLeft, ArrowLeftRight, ArrowRight, Flag, GitBranch, Group, Highlighter, Magnet, Minus, Pencil, Search, Trash, Trash2, X } from 'lucide-react';
+import { ArrowLeft, ArrowLeftRight, ArrowRight, Check, Clock, ClockAlert, ClockPlus, Copy, Flag, GitBranch, Group, Highlighter, IdCard, Magnet, Minus, Pencil, Search, Trash, Trash2, X } from 'lucide-react';
 
 interface TimelineGraphViewProps {
   items: TimelineItem[];
@@ -96,6 +95,69 @@ function GraphNodeActionButton({
     </Tooltip.Root>
   );
 }
+
+function CopyableGraphMetadataValue({ value }: { value: string }) {
+  const [isHovered, setIsHovered] = useState(false);
+  const [isCopied, setIsCopied] = useState(false);
+
+  const handleCopyValue = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    navigator.clipboard.writeText(value)
+      .then(() => {
+        setIsCopied(true);
+        setTimeout(() => setIsCopied(false), 2000);
+      })
+      .catch((error) => {
+        console.error('Failed to copy graph metadata value:', error);
+      });
+  }, [value]);
+
+  const iconClasses = cn(
+    'h-3 w-3 shrink-0 text-default-font transition-opacity',
+    { 'opacity-0': !isHovered && !isCopied, 'opacity-100': isHovered || isCopied },
+  );
+
+  const actionIcon = isCopied ? <Check className={iconClasses} /> : <Copy className={iconClasses} />;
+
+  return (
+    <button
+      type="button"
+      className="flex w-fit max-w-full items-center gap-1 rounded-sm text-left"
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      onClick={handleCopyValue}
+      title={`Click to copy: ${value}`}
+    >
+      <span className="min-w-0 truncate font-monospace-body text-caption text-default-font">{value}</span>
+      {actionIcon}
+    </button>
+  );
+}
+
+function GraphMetadataLabelIcon({
+  label,
+  icon,
+}: {
+  label: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger asChild>
+        <span
+          aria-label={label}
+          className="inline-flex h-4 w-4 items-center justify-center text-subtext-color"
+        >
+          {icon}
+        </span>
+      </Tooltip.Trigger>
+      <Tooltip.Content side="top" align="center" sideOffset={4}>
+        {label}
+      </Tooltip.Content>
+    </Tooltip.Root>
+  );
+}
+
 type NodeHandle = 'north' | 'east' | 'south' | 'west';
 type EdgeMarkerMode = 'none' | 'forward' | 'reverse' | 'bidirectional';
 
@@ -774,6 +836,7 @@ type TimelineGraphActions = {
   onRemoveEdge: (edgeId: string) => void;
   onEdgeLabelCommit: (edgeId: string, label: string) => void;
   onEdgeMarkerChange: (edgeId: string, marker: EdgeMarkerMode) => void;
+  onSelectItem?: (itemId: string) => void;
   onFlagItem?: (itemId: string) => void;
   onHighlightItem?: (itemId: string) => void;
   onDeleteItem?: (itemId: string) => void;
@@ -1328,6 +1391,16 @@ function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, heigh
               />
             ) : null}
             <div className="mx-1 h-4 w-px bg-neutral-border" />
+            {graphActions?.onSelectItem ? (
+              <GraphNodeActionButton
+                label="Find in Timeline"
+                icon={<Search />}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  graphActions.onSelectItem?.(data.itemId);
+                }}
+              />
+            ) : null}
             <GraphNodeActionButton
               label="Remove from Graph"
               icon={<X />}
@@ -2452,6 +2525,7 @@ function TimelineGraphViewInner({
     onRemoveEdge: handleRemoveEdge,
     onEdgeLabelCommit: handleEdgeLabelCommit,
     onEdgeMarkerChange: handleEdgeMarkerChange,
+    onSelectItem,
     onFlagItem,
     onHighlightItem,
     onDeleteItem,
@@ -2466,6 +2540,7 @@ function TimelineGraphViewInner({
     onRemoveEdge: (edgeId) => latestGraphActionsRef.current?.onRemoveEdge(edgeId),
     onEdgeLabelCommit: (edgeId, label) => latestGraphActionsRef.current?.onEdgeLabelCommit(edgeId, label),
     onEdgeMarkerChange: (edgeId, marker) => latestGraphActionsRef.current?.onEdgeMarkerChange(edgeId, marker),
+    ...(onSelectItem ? { onSelectItem: (itemId: string) => latestGraphActionsRef.current?.onSelectItem?.(itemId) } : {}),
     ...(onFlagItem ? { onFlagItem: (itemId: string) => latestGraphActionsRef.current?.onFlagItem?.(itemId) } : {}),
     ...(onHighlightItem ? { onHighlightItem: (itemId: string) => latestGraphActionsRef.current?.onHighlightItem?.(itemId) } : {}),
     ...(onDeleteItem ? { onDeleteItem: (itemId: string) => latestGraphActionsRef.current?.onDeleteItem?.(itemId) } : {}),
@@ -2475,6 +2550,7 @@ function TimelineGraphViewInner({
     onDeleteItem,
     onEditItem,
     onFlagItem,
+    onSelectItem,
     onHighlightItem,
   ]);
 
@@ -2547,6 +2623,56 @@ function TimelineGraphViewInner({
             </div>
           )}
         </div>
+        {selectedItem ? (
+          <Tooltip.Provider>
+            <div className="flex flex-none flex-col gap-2 border-t border-solid border-neutral-border px-3 py-3">
+              <span className="text-caption-bold font-caption-bold uppercase text-subtext-color">
+                {selectedNode?.type === 'timelineItem' ? 'Selected node' : 'Selected item'}
+              </span>
+              <div className="grid grid-cols-[auto,minmax(0,1fr)] gap-x-2 gap-y-1 text-caption font-caption text-subtext-color">
+                <GraphMetadataLabelIcon label="Timeline ID" icon={<IdCard className="h-3.5 w-3.5" />} />
+                {selectedItem.id ? (
+                  <CopyableGraphMetadataValue value={selectedItem.id} />
+                ) : (
+                  <span>Not recorded</span>
+                )}
+                <GraphMetadataLabelIcon label="Timestamp" icon={<Clock className="h-3.5 w-3.5" />} />
+                {(selectedItem as any).timestamp ? (
+                  <CopyableTimestamp
+                    value={(selectedItem as any).timestamp || null}
+                    showFull={false}
+                    variant="default-right"
+                    className="min-w-0"
+                  />
+                ) : (
+                  <span>Not recorded</span>
+                )}
+                <GraphMetadataLabelIcon label="Created At" icon={<ClockPlus className="h-3.5 w-3.5" />} />
+                {selectedItem.created_at ? (
+                  <CopyableTimestamp
+                    value={selectedItem.created_at || null}
+                    showFull={false}
+                    variant="default-right"
+                    className="min-w-0"
+                  />
+                ) : (
+                  <span>Not recorded</span>
+                )}
+                <GraphMetadataLabelIcon label="Modified At" icon={<ClockAlert className="h-3.5 w-3.5" />} />
+                {selectedItemModifiedAt ? (
+                  <CopyableTimestamp
+                    value={selectedItemModifiedAt}
+                    showFull={false}
+                    variant="default-right"
+                    className="min-w-0"
+                  />
+                ) : (
+                  <span>Not recorded</span>
+                )}
+              </div>
+            </div>
+          </Tooltip.Provider>
+        ) : null}
         <div
           role="separator"
           aria-label="Resize timeline items pane"
@@ -2674,19 +2800,19 @@ function TimelineGraphViewInner({
           </TimelineGraphActionsContext.Provider>
         </div>
 
-        <section
-          className="relative flex flex-none flex-col gap-4 overflow-hidden border-t border-solid border-neutral-border p-4 mobile:!h-96"
-          style={{ height: graphLayout.detailPaneHeight }}
-        >
-          <div
-            role="separator"
-            aria-label="Resize graph detail pane"
-            aria-orientation="horizontal"
-            tabIndex={0}
-            className="absolute left-0 top-[-4px] z-10 h-2 w-full cursor-row-resize bg-transparent outline-none transition-colors hover:bg-brand-primary/20 focus:bg-brand-primary/20 mobile:hidden"
-            onPointerDown={handleDetailPaneResizeStart}
-          />
-          {selectedEdge ? (
+        {selectedEdge ? (
+          <section
+            className="relative flex flex-none flex-col gap-4 overflow-hidden border-t border-solid border-neutral-border p-4 mobile:!h-96"
+            style={{ height: graphLayout.detailPaneHeight }}
+          >
+            <div
+              role="separator"
+              aria-label="Resize graph detail pane"
+              aria-orientation="horizontal"
+              tabIndex={0}
+              className="absolute left-0 top-[-4px] z-10 h-2 w-full cursor-row-resize bg-transparent outline-none transition-colors hover:bg-brand-primary/20 focus:bg-brand-primary/20 mobile:hidden"
+              onPointerDown={handleDetailPaneResizeStart}
+            />
             <div className="flex min-h-0 flex-col gap-3 overflow-auto">
               <span className="text-caption-bold font-caption-bold uppercase text-subtext-color">Selected link</span>
               <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-caption font-caption text-subtext-color mobile:grid-cols-1">
@@ -2698,69 +2824,8 @@ function TimelineGraphViewInner({
               </div>
               <span className="text-body font-body text-subtext-color">Use the edge toolbar on the canvas to label, mark, reconnect, or remove this link.</span>
             </div>
-          ) : selectedItem ? (
-            <div className="flex min-h-0 grow flex-col gap-4 overflow-auto">
-              <div className="flex flex-col gap-2">
-                <span className="text-caption-bold font-caption-bold uppercase text-subtext-color">
-                  {selectedNode?.type === 'timelineItem' ? 'Selected node' : 'Selected item'}
-                </span>
-                <span className="text-heading-3 font-heading-3 text-default-font">{getNodeTitle(selectedItem)}</span>
-                <span className="text-body font-body text-subtext-color">{getNodeSubtitle(selectedItem)}</span>
-              </div>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-caption font-caption text-subtext-color mobile:grid-cols-1">
-                <span>ID: {selectedItem.id || 'Not recorded'}</span>
-                <span>Type: {getTimelineItemLabel(selectedItem.type || 'note')}</span>
-                <div className="flex min-w-0 items-center gap-1">
-                  <span className="shrink-0">Timestamp:</span>
-                  {(selectedItem as any).timestamp ? (
-                    <CopyableTimestamp
-                      value={(selectedItem as any).timestamp || null}
-                      showFull
-                      variant="default-left"
-                      className="min-w-0"
-                    />
-                  ) : (
-                    <span>Not recorded</span>
-                  )}
-                </div>
-                <div className="flex min-w-0 items-center gap-1">
-                  <span className="shrink-0">Created:</span>
-                  {selectedItem.created_at ? (
-                    <CopyableTimestamp
-                      value={selectedItem.created_at || null}
-                      showFull
-                      variant="default-left"
-                      className="min-w-0"
-                    />
-                  ) : (
-                    <span>Not recorded</span>
-                  )}
-                </div>
-                <div className="flex min-w-0 items-center gap-1">
-                  <span className="shrink-0">Modified:</span>
-                  {selectedItemModifiedAt ? (
-                    <CopyableTimestamp
-                      value={selectedItemModifiedAt}
-                      showFull
-                      variant="default-left"
-                      className="min-w-0"
-                    />
-                  ) : (
-                    <span>Not recorded</span>
-                  )}
-                </div>
-                <span>Created by: {selectedItem.created_by || 'System'}</span>
-              </div>
-              <div className="mt-auto flex flex-wrap gap-2">
-                <Button variant="neutral-secondary" size="small" icon={<Search />} onClick={() => selectedItem.id && onSelectItem?.(selectedItem.id)}>
-                  Find in timeline
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <span className="text-body font-body text-subtext-color">No graph selection</span>
-          )}
-        </section>
+          </section>
+        ) : null}
       </div>
     </div>
   );
