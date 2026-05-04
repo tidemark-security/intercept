@@ -31,6 +31,7 @@ import { isAlertItem, isDeletedItem, isNoteItem, isTaskItem } from '@/types/time
 import type { CaseItem } from '@/types/generated/models/CaseItem';
 import { convertNumericToAlertId, convertNumericToHumanId } from '@/utils/caseHelpers';
 import { useEnqueueItemEnrichment } from '@/hooks/useEnqueueItemEnrichment';
+import { cn } from '@/utils/cn';
 
 import { Button } from '@/components/buttons/Button';
 import { IconButton } from '@/components/buttons/IconButton';
@@ -263,6 +264,9 @@ export interface TimelineItemRendererProps {
   
   /** Link templates from API for auto-generating link buttons */
   linkTemplates?: LinkTemplate[];
+
+  /** Hide timeline rail/icon chrome for compact embedded previews. */
+  compactPreview?: boolean;
 }
 
 /**
@@ -325,6 +329,7 @@ export function TimelineItemRenderer({
   onReply,
   sortBy = 'created_at',
   linkTemplates,
+  compactPreview = false,
 }: TimelineItemRendererProps) {
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === 'dark';
@@ -380,11 +385,12 @@ export function TimelineItemRenderer({
         username={item.original_created_by || 'System'}
         icon={<DeletedIcon />}
         action={`deleted ${item.original_type}`}
-        displayItemId={item.id}
+        displayItemId={compactPreview ? undefined : item.id}
         timestampValue={item.deleted_at || null}
         createdAtValue={item.original_created_at || null}
         sortBy={sortBy}
         readOnly={true}
+        hideRail={compactPreview}
         end={index === total - 1}
         contents={null}
       />
@@ -431,9 +437,11 @@ export function TimelineItemRenderer({
       baseCardProps.size = 'x-large';
     }
 
-    if (isGrouped) {
-      baseCardProps.className = `${baseCardProps.className || ''} flex-1 self-stretch${isCurrentItemLinked ? ' min-w-40' : ''}`;
-    }
+    baseCardProps.className = cn(
+      baseCardProps.className,
+      compactPreview && 'min-h-full max-w-none !border-0 !bg-transparent',
+      isGrouped && `flex-1 self-stretch${isCurrentItemLinked ? ' min-w-40' : ''}`,
+    );
 
     baseCardProps.enableCopyInteractions = !isAlertItem(timelineCurrentItem) && !isTaskItem(timelineCurrentItem) && !isCaseItem(timelineCurrentItem);
 
@@ -558,7 +566,16 @@ export function TimelineItemRenderer({
     }
 
     return (
-      <Link key={itemKey} to={itemHref} className={`block w-full no-underline${isGrouped ? ' flex-1 self-stretch' : ''}${isGrouped && isCurrentItemLinked ? ' min-w-[512px]' : ''}`}>
+      <Link
+        key={itemKey}
+        to={itemHref}
+        className={cn(
+          'w-full no-underline',
+          compactPreview ? 'flex min-h-full flex-1 flex-col' : 'block',
+          isGrouped && 'flex-1 self-stretch',
+          isGrouped && isCurrentItemLinked && 'min-w-[512px]',
+        )}
+      >
         {baseCardElement}
       </Link>
     );
@@ -684,14 +701,14 @@ export function TimelineItemRenderer({
     const isNote = isNoteItem(item);
     
     contents = (
-      <div className="flex w-full flex-col items-start gap-3">
+      <div className={cn("flex w-full flex-col items-start gap-3", compactPreview && "min-h-full flex-1")}>
         {/* Render description as markdown for grouped notes */}
         {isNote && hasDescription && (
           <MarkdownContent content={itemDescription} />
         )}
         
         {/* Render cards below description for non-note items */}
-        <div className="flex w-full flex-wrap items-stretch gap-3">
+        <div className={cn("flex w-full flex-wrap items-stretch gap-3", compactPreview && "min-h-full flex-1")}>
           {itemsToRender.map((currentItem, cardIndex) => renderTopLevelCard(currentItem, cardIndex))}
         </div>
       </div>
@@ -779,12 +796,13 @@ export function TimelineItemRenderer({
             flagged={reply.flagged}
             highlighted={reply.highlighted}
             action={replyAction}
-            displayItemId={reply.id}
+            displayItemId={compactPreview ? undefined : reply.id}
             timestampValue={reply.timestamp || null}
             createdAtValue={reply.created_at || null}
             sortBy={sortBy}
             edited={reply.audit?.edited === true}
             readOnly={isReplyReadOnly}
+            hideRail={compactPreview}
             end={isLastReply}
             replyEnabled={isLastReply && !isReplyReadOnly} // Only allow reply on the last flattened reply (not source/injected items)
             contents={replyContents}
@@ -812,13 +830,14 @@ export function TimelineItemRenderer({
       flagged={item.flagged}
       highlighted={item.highlighted}
       action={action}
-      displayItemId={item.id}
+      displayItemId={compactPreview ? undefined : item.id}
       timestampValue={item.timestamp || null}
       createdAtValue={item.created_at || null}
       sortBy={sortBy}
       edited={item.audit?.edited === true}
       replyEnabled={!hasVisibleChildren} // Only show reply button if no replies/source items exist
       readOnly={readOnly}
+      hideRail={compactPreview}
       variant={variant}
       end={index === total - 1 && !hasVisibleChildren} // Don't end if there are children
       contents={contents}

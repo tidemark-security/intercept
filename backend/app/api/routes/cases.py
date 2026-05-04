@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Any, Dict, List, Optional
 from fastapi_pagination import Page
@@ -11,6 +12,7 @@ from app.models.models import (
     CaseReadWithAlerts, CaseTimelineItem, UserAccount,
     PresignedUploadRequest, PresignedUploadResponse,
     AttachmentStatusUpdate, PresignedDownloadResponse,
+    TimelineGraphPatch, TimelineGraphRead,
 )
 from app.models.enums import CaseStatus
 from app.api.route_utils import (
@@ -22,6 +24,7 @@ from app.api.route_utils import (
     handle_generate_download_url,
 )
 from app.api.routes.admin_auth import require_authenticated_user, require_non_auditor_user
+from app.services.timeline_graph_service import TimelineGraphConflict, timeline_graph_service
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +110,48 @@ async def get_case(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching case: {str(e)}")
+
+
+@router.get("/{case_id}/timeline-graph", response_model=TimelineGraphRead)
+@handle_human_id()
+async def get_timeline_graph(
+    case_id: int,
+    request: Request, # pylint: disable=unused-argument
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the shared timeline graph document for a case."""
+    try:
+        return await timeline_graph_service.get_graph(db, "case", case_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Case not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching timeline graph: {str(e)}")
+
+
+@router.patch("/{case_id}/timeline-graph", response_model=TimelineGraphRead)
+@handle_human_id()
+async def patch_timeline_graph(
+    case_id: int,
+    request: Request, # pylint: disable=unused-argument
+    patch: TimelineGraphPatch,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_non_auditor_user),
+):
+    """Patch the shared timeline graph document for a case."""
+    try:
+        return await timeline_graph_service.patch_graph(db, "case", case_id, patch, current_user.username)
+    except TimelineGraphConflict as conflict:
+        raise HTTPException(status_code=409, detail=jsonable_encoder(conflict.conflict))
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Case not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error patching timeline graph: {str(e)}")
 
 
 @router.put("/{case_id}", response_model=CaseRead)

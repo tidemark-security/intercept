@@ -529,6 +529,7 @@ class TaskService:
                 event_type=RealtimeEventType.TIMELINE_ITEM_DELETED,
                 performed_by=removed_by,
                 item_id=item_id,
+                item_type=item_to_remove.get("type"),
             )
 
             await db.commit()

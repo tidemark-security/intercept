@@ -3,11 +3,10 @@
 import React, { useMemo, RefObject } from "react";
 import { useScrollHide } from "@/hooks/useScrollHide";
 import { useTheme } from "@/contexts/ThemeContext";
-// import { cn } from "@/utils/cn";
+import { cn } from "@/utils/cn";
 import { Button } from "@/components/buttons/Button";
 import { IconButton } from "@/components/buttons/IconButton";
 import { DropdownMenu, DropdownMenuRoot, DropdownMenuTrigger, DropdownMenuContent } from "@/components/overlays/DropdownMenu";
-import { ToggleGroup } from "@/components/buttons/ToggleGroup";
 import { Priority } from "@/components/misc/Priority";
 import { AssigneeSelector } from "@/components/forms/AssigneeSelector";
 import { TimelineFilter } from "@/components/timeline/TimelineFilter";
@@ -20,12 +19,13 @@ import type { Priority as PriorityType } from "@/types/generated/models/Priority
 import type { TimelineItem } from "@/types/timeline";
 import type { UIState } from "@/utils/statusHelpers";
 
-import { ArrowRight, ArrowUp, Check, CheckCircle, ChevronLeft, Copy, Edit2, HelpCircle, Link, Link2Off, X, XCircle } from 'lucide-react';
+import { ArrowRight, ArrowUp, Check, CheckCircle, ChevronLeft, Copy, Edit2, HelpCircle, Link, Link2Off, List, Network, Users, X, XCircle } from 'lucide-react';
 // Unified status type that works for alerts, cases, and tasks (API format: UPPERCASE)
 export type EntityStatus = AlertStatus | CaseStatus | TaskStatus;
 
 // Entity type to determine UI behavior
 export type EntityType = 'alert' | 'case' | 'task';
+export type TimelineViewMode = 'timeline' | 'graph';
 
 // Timeline filter types
 export type SortOption = 'created_at' | 'timestamp';
@@ -58,6 +58,7 @@ interface EntityHeaderRootProps
   isLoadingUsers?: boolean;
   // Mutation state
   isUpdating?: boolean;
+  presenceText?: string | null;
   // Mode: 'editable' shows full controls, 'readonly' is preview mode (assignment works, close/reopen hidden)
   mode?: 'editable' | 'readonly';
   // Callbacks
@@ -75,6 +76,11 @@ interface EntityHeaderRootProps
   onLinkToCase?: () => void;
   onUnlinkFromCase?: () => void;
   onEdit?: () => void;
+  // Timeline view toggle props
+  showTimelineViewToggle?: boolean;
+  timelineViewMode?: TimelineViewMode;
+  onTimelineViewModeChange?: (viewMode: TimelineViewMode) => void;
+  graphViewDisabled?: boolean;
   // Timeline filter props
   showTimelineFilter?: boolean;
   timelineItems?: TimelineItem[];
@@ -114,6 +120,7 @@ const EntityHeaderRoot = React.forwardRef<
     users = [],
     isLoadingUsers = false,
     isUpdating = false,
+    presenceText,
     mode = 'editable',
     onAssignToMe,
     onAssignToUser,
@@ -125,6 +132,10 @@ const EntityHeaderRoot = React.forwardRef<
     onLinkToCase,
     onUnlinkFromCase,
     onEdit,
+    showTimelineViewToggle = false,
+    timelineViewMode = 'timeline',
+    onTimelineViewModeChange,
+    graphViewDisabled = false,
     showTimelineFilter = false,
     timelineItems = [],
     selectedType,
@@ -195,6 +206,10 @@ const EntityHeaderRoot = React.forwardRef<
 
   const buttonSize = isMobile ? "small" : "medium";
   const assigneeSize = isMobile ? "small" : "medium";
+  const shouldShowTimelineViewToggle = showTimelineViewToggle && Boolean(onTimelineViewModeChange);
+  const viewToggleItemClassName = buttonSize === "medium"
+    ? "min-w-[112px] justify-center self-stretch"
+    : "h-8 flex-1 justify-center";
 
   // Determine button labels based on entity type
   const closeButtonLabel = isTask 
@@ -264,6 +279,39 @@ const EntityHeaderRoot = React.forwardRef<
         </div>
         {/* Action Buttons */}
         <div className={`flex h-9 mobile:h-8 items-center justify-end gap-2 mobile:w-full mobile:justify-stretch mobile:transition-all mobile:duration-300 ${!isVisible ? 'mobile:opacity-0 mobile:pointer-events-none mobile:h-0 mobile:overflow-hidden' : 'mobile:opacity-100'}`}>
+          {shouldShowTimelineViewToggle && (
+            <div className="flex h-full self-stretch rounded-md border border-solid border-neutral-border bg-default-background p-0.5 mobile:flex-1">
+              <button
+                type="button"
+                className={cn(
+                  'flex h-full cursor-pointer items-center gap-2 rounded-md border border-solid px-2 text-caption-bold font-caption-bold disabled:cursor-default disabled:opacity-50',
+                  viewToggleItemClassName,
+                  timelineViewMode === 'timeline'
+                    ? 'border-brand-700 bg-brand-primary text-black'
+                    : 'border-transparent bg-transparent text-subtext-color hover:bg-neutral-100 hover:text-default-font'
+                )}
+                onClick={() => onTimelineViewModeChange?.('timeline')}
+              >
+                <List className="h-4 w-4 flex-none" />
+                Timeline
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  'flex h-full cursor-pointer items-center gap-2 rounded-md border border-solid px-2 text-caption-bold font-caption-bold disabled:cursor-default disabled:opacity-50',
+                  viewToggleItemClassName,
+                  timelineViewMode === 'graph'
+                    ? 'border-brand-700 bg-brand-primary text-black'
+                    : 'border-transparent bg-transparent text-subtext-color hover:bg-neutral-100 hover:text-default-font'
+                )}
+                disabled={graphViewDisabled}
+                onClick={() => onTimelineViewModeChange?.('graph')}
+              >
+                <Network className="h-4 w-4 flex-none" />
+                Graph
+              </button>
+            </div>
+          )}
           {/* Unlink from Case button - shown for escalated alerts */}
           {isAlert && isEscalated && onUnlinkFromCase && (
             <Button
@@ -424,17 +472,19 @@ const EntityHeaderRoot = React.forwardRef<
           )}
         </div>
       </div>
-      <div className="hidden desktop:flex w-full items-start gap-4">
-        {createdDate ? (
-          <span className="text-caption-bold font-caption-bold text-subtext-color">
-            {createdDate}
-          </span>
-        ) : null}
-        {updatedDate ? (
-          <span className="text-caption-bold font-caption-bold text-subtext-color">
-            {updatedDate}
-          </span>
-        ) : null}
+      <div className="hidden desktop:flex w-full items-start justify-between gap-4">
+        <div className="flex min-w-0 flex-wrap items-start gap-4">
+          {createdDate ? (
+            <span className="text-caption-bold font-caption-bold text-subtext-color">
+              {createdDate}
+            </span>
+          ) : null}
+          {updatedDate ? (
+            <span className="text-caption-bold font-caption-bold text-subtext-color">
+              {updatedDate}
+            </span>
+          ) : null}
+        </div>
       </div>
       
       {/* Timeline Filter - Only shown when showTimelineFilter is true */}
@@ -451,6 +501,12 @@ const EntityHeaderRoot = React.forwardRef<
             onGroupSimilarChange={onGroupSimilarChange}
             buttonSize={buttonSize === "medium" ? "medium" : "small"}
             disabled={timelineItems.length === 0}
+            rightContent={presenceText ? (
+              <div className="flex max-w-[38rem] items-center gap-1.5 text-right text-caption-bold font-caption-bold text-subtext-color" aria-live="polite">
+                <Users className="h-3.5 w-3.5 flex-none" />
+                <span className="min-w-0 truncate">{presenceText}</span>
+              </div>
+            ) : null}
           />
         </div>
       )}

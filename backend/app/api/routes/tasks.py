@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from fastapi_pagination import Page
@@ -16,6 +17,8 @@ from app.models.models import (
     PresignedUploadResponse,
     AttachmentStatusUpdate,
     PresignedDownloadResponse,
+    TimelineGraphPatch,
+    TimelineGraphRead,
 )
 from app.models.enums import TaskStatus
 from app.api.route_utils import (
@@ -27,6 +30,7 @@ from app.api.route_utils import (
     handle_generate_download_url,
 )
 from app.api.routes.admin_auth import require_authenticated_user, require_non_auditor_user
+from app.services.timeline_graph_service import TimelineGraphConflict, timeline_graph_service
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +124,50 @@ async def get_task(
     except Exception as e:
         logger.error(f"Error fetching task: {e}")
         raise HTTPException(status_code=500, detail=f"Error fetching task: {str(e)}")
+
+
+@router.get("/{task_id}/timeline-graph", response_model=TimelineGraphRead)
+@handle_human_id()
+async def get_timeline_graph(
+    task_id: int,
+    request: Request,  # pylint: disable=unused-argument
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the shared timeline graph document for a task."""
+    try:
+        return await timeline_graph_service.get_graph(db, "task", task_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Task not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching timeline graph: {e}")
+        raise HTTPException(status_code=500, detail=f"Error fetching timeline graph: {str(e)}")
+
+
+@router.patch("/{task_id}/timeline-graph", response_model=TimelineGraphRead)
+@handle_human_id()
+async def patch_timeline_graph(
+    task_id: int,
+    request: Request,  # pylint: disable=unused-argument
+    patch: TimelineGraphPatch,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_non_auditor_user),
+):
+    """Patch the shared timeline graph document for a task."""
+    try:
+        return await timeline_graph_service.patch_graph(db, "task", task_id, patch, current_user.username)
+    except TimelineGraphConflict as conflict:
+        raise HTTPException(status_code=409, detail=jsonable_encoder(conflict.conflict))
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Task not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error patching timeline graph: {e}")
+        raise HTTPException(status_code=500, detail=f"Error patching timeline graph: {str(e)}")
 
 
 @router.put("/{task_id}", response_model=TaskRead)

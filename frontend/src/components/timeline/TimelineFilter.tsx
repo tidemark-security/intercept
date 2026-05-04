@@ -42,6 +42,9 @@ export interface TimelineFilterProps {
   /** Additional className for the container */
   className?: string;
 
+  /** Optional content pinned to the right side of the filter row */
+  rightContent?: React.ReactNode;
+
   /** Whether the filter controls are disabled */
   disabled?: boolean;
 }
@@ -67,6 +70,7 @@ export function TimelineFilter({
   onGroupSimilarChange,
   buttonSize = 'small',
   className,
+  rightContent,
   disabled = false,
 }: TimelineFilterProps) {
   const { resolvedTheme } = useTheme();
@@ -117,56 +121,16 @@ export function TimelineFilter({
   return (
     <Tooltip.Provider>
       <div className={`flex w-full items-center mobile:justify-center gap-2 flex-wrap mobile:border-0 border-t border-solid border-neutral-border pt-2 ${className || ''}`}>
-        {/* Sort Field Toggle */}
-        <Tooltip.Root>
-          <Tooltip.Trigger asChild>
-            <IconButton
-              disabled={disabled}
-              size={buttonSize}
-              variant={neutralControlVariant}
-              icon={sortBy === 'created_at' ? <Calendar /> : <Clock />}
-              onClick={handleSortToggle}
-            />
-          </Tooltip.Trigger>
-          <Tooltip.Content
-            side="bottom"
-            align="center"
-            sideOffset={4}
-          >
-            Sort by: {sortLabel}
-          </Tooltip.Content>
-        </Tooltip.Root>
-
-        {/* Sort Direction Toggle */}
-        <Tooltip.Root>
-          <Tooltip.Trigger asChild>
-            <IconButton
-              disabled={disabled}
-              size={buttonSize}
-              variant={neutralControlVariant}
-              icon={sortDirection === 'asc' ? <ArrowUp /> : <ArrowDown />}
-              onClick={toggleSortDirection}
-            />
-          </Tooltip.Trigger>
-          <Tooltip.Content
-            side="bottom"
-            align="center"
-            sideOffset={4}
-          >
-            {sortDirection === 'asc' ? 'Oldest First' : 'Newest First'}
-          </Tooltip.Content>
-        </Tooltip.Root>
-
-        {/* Group Similar Toggle Button */}
-        {onGroupSimilarChange && (
+        <div className="flex min-w-0 flex-wrap items-center justify-start gap-2 mobile:justify-center">
+          {/* Sort Field Toggle */}
           <Tooltip.Root>
             <Tooltip.Trigger asChild>
               <IconButton
                 disabled={disabled}
                 size={buttonSize}
-                variant={groupSimilarVariant}
-                icon={<Layers />}
-                onClick={() => onGroupSimilarChange(!groupSimilar)}
+                variant={neutralControlVariant}
+                icon={sortBy === 'created_at' ? <Calendar /> : <Clock />}
+                onClick={handleSortToggle}
               />
             </Tooltip.Trigger>
             <Tooltip.Content
@@ -174,42 +138,89 @@ export function TimelineFilter({
               align="center"
               sideOffset={4}
             >
-              Group Similar Items
+              Sort by: {sortLabel}
             </Tooltip.Content>
           </Tooltip.Root>
-        )}
 
-        {/* Type Filter Toggle Group - Horizontal */}
-        <ToggleGroup 
-          value={selectedType || 'all'} 
-          className="border rounded-md border-neutral-border"
-          onValueChange={(value: string) => {
-            onTypeChange(value === 'all' ? undefined : value);
-          }}
-        >
-          {/* All option - always present */}
-          <ToggleGroup.Item disabled={disabled} icon={null} value="all" className='w-auto'>
-            All
-          </ToggleGroup.Item>
-          
-          {/* Dynamic options based on actual timeline items */}
-          {availableTypes.map((type) => {
-            const Icon = getTimelineItemIcon(type);
-            const label = getTimelineItemLabel(type);
-            
-            return (
-              <ToggleGroup.Item 
+          {/* Sort Direction Toggle */}
+          <Tooltip.Root>
+            <Tooltip.Trigger asChild>
+              <IconButton
                 disabled={disabled}
-                key={type} 
-                icon={<Icon />} 
-                value={type}
-                className='w-auto'
+                size={buttonSize}
+                variant={neutralControlVariant}
+                icon={sortDirection === 'asc' ? <ArrowUp /> : <ArrowDown />}
+                onClick={toggleSortDirection}
+              />
+            </Tooltip.Trigger>
+            <Tooltip.Content
+              side="bottom"
+              align="center"
+              sideOffset={4}
+            >
+              {sortDirection === 'asc' ? 'Oldest First' : 'Newest First'}
+            </Tooltip.Content>
+          </Tooltip.Root>
+
+          {/* Group Similar Toggle Button */}
+          {onGroupSimilarChange && (
+            <Tooltip.Root>
+              <Tooltip.Trigger asChild>
+                <IconButton
+                  disabled={disabled}
+                  size={buttonSize}
+                  variant={groupSimilarVariant}
+                  icon={<Layers />}
+                  onClick={() => onGroupSimilarChange(!groupSimilar)}
+                />
+              </Tooltip.Trigger>
+              <Tooltip.Content
+                side="bottom"
+                align="center"
+                sideOffset={4}
               >
-                {label}
-              </ToggleGroup.Item>
-            );
-          })}
-        </ToggleGroup>
+                Group Similar Items
+              </Tooltip.Content>
+            </Tooltip.Root>
+          )}
+
+          {/* Type Filter Toggle Group - Horizontal */}
+          <ToggleGroup 
+            value={selectedType || 'all'} 
+            className="border rounded-md border-neutral-border"
+            onValueChange={(value: string) => {
+              onTypeChange(value === 'all' ? undefined : value);
+            }}
+          >
+            {/* All option - always present */}
+            <ToggleGroup.Item disabled={disabled} icon={null} value="all" className='w-auto'>
+              All
+            </ToggleGroup.Item>
+            
+            {/* Dynamic options based on actual timeline items */}
+            {availableTypes.map((type) => {
+              const Icon = getTimelineItemIcon(type);
+              const label = getTimelineItemLabel(type);
+              
+              return (
+                <ToggleGroup.Item 
+                  disabled={disabled}
+                  key={type} 
+                  icon={<Icon />} 
+                  value={type}
+                  className='w-auto'
+                >
+                  {label}
+                </ToggleGroup.Item>
+              );
+            })}
+          </ToggleGroup>
+        </div>
+        {rightContent ? (
+          <div className="ml-auto flex min-w-0 items-center justify-end mobile:ml-0 mobile:w-full mobile:justify-center">
+            {rightContent}
+          </div>
+        ) : null}
       </div>
     </Tooltip.Provider>
   );
