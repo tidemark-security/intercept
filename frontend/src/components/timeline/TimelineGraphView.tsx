@@ -28,6 +28,7 @@ import {
   type EdgeProps,
   type EdgeTypes,
   type Node,
+  type NodeChange,
   type NodeProps,
   type NodeTypes,
   type OnConnect,
@@ -161,6 +162,7 @@ function GraphMetadataLabelIcon({
 
 type NodeHandle = 'north' | 'east' | 'south' | 'west';
 type EdgeMarkerMode = 'none' | 'forward' | 'reverse' | 'bidirectional';
+type GraphPosition = { x: number; y: number };
 
 interface TimelineGraphNodeData extends Record<string, unknown> {
   itemId: string;
@@ -744,40 +746,6 @@ function removeNodesFromGraphState(
   };
 }
 
-function getMinimumGroupSize(groupId: string, allNodes: TimelineFlowNode[]): { width: number; height: number } {
-  const childNodes = allNodes.filter((node) => node.parentId === groupId);
-
-  if (childNodes.length === 0) {
-    return { width: NODE_MIN_WIDTH, height: NODE_MIN_HEIGHT };
-  }
-
-  return {
-    width: Math.max(
-      NODE_MIN_WIDTH,
-      ...childNodes.map((node) => node.position.x + getNodeSize(node).width + GRID_SIZE),
-    ),
-    height: Math.max(
-      NODE_MIN_HEIGHT,
-      ...childNodes.map((node) => node.position.y + getNodeSize(node).height + GRID_SIZE),
-    ),
-  };
-}
-
-function getResizedNodeDimensions(node: TimelineFlowNode, width: number, height: number, allNodes: TimelineFlowNode[]): { width: number; height: number } {
-  if (node.type !== 'timelineGroup') {
-    return {
-      width: getNodeDimension(width, NODE_WIDTH, NODE_MIN_WIDTH, NODE_MAX_WIDTH),
-      height: getNodeDimension(height, NODE_HEIGHT, NODE_MIN_HEIGHT, NODE_MAX_HEIGHT),
-    };
-  }
-
-  const minimumGroupSize = getMinimumGroupSize(node.id, allNodes);
-  return {
-    width: getNodeDimension(width, NODE_WIDTH * 1.4, minimumGroupSize.width, NODE_MAX_WIDTH * 2),
-    height: getNodeDimension(height, NODE_HEIGHT * 1.2, minimumGroupSize.height, NODE_MAX_HEIGHT * 2),
-  };
-}
-
 function hasEdgeBetween(edges: TimelineGraphEdge[], firstNodeId: string, secondNodeId: string): boolean {
   return edges.some((edge) => (
     (edge.source === firstNodeId && edge.target === secondNodeId) ||
@@ -931,7 +899,6 @@ const graphThemeStyle = {
 type TimelineGraphActions = {
   connectorsVisible: boolean;
   onRemoveNode: (nodeId: string) => void;
-  onResizeNode: (nodeId: string, width: number, height: number) => void;
   onGroupLabelCommit: (nodeId: string, label: string) => void;
   onRemoveEdge: (edgeId: string) => void;
   onEdgeLabelCommit: (edgeId: string, label: string) => void;
@@ -1006,7 +973,6 @@ function getAutoNodeFallbackSize(item: TimelineItem): { width: number; height: n
       !['id', 'type', 'created_by', 'created_at', 'updated_at', 'modified_at'].includes(key)
     ))
     .map(([, value]) => (value as string).trim().length);
-  const replyCount = getTimelineItems({ timeline_items: item.replies ?? null }).length;
   const longestPreviewLine = Math.max(titleLength, subtitleLength, ...textFieldLengths.map((length) => Math.min(length, 120)));
   const previewTextWeight = Math.min(
     textFieldLengths.reduce((total, length) => total + Math.min(length, 420), 0),
@@ -1016,7 +982,7 @@ function getAutoNodeFallbackSize(item: TimelineItem): { width: number; height: n
 
   return {
     width: snapToGridSize(clampSize(286 + longestPreviewLine * 2.4, NODE_MIN_WIDTH, NODE_MAX_WIDTH)),
-    height: snapToGridSize(clampSize(210 + previewTextWeight * 0.08 + replyCount * 36 + structuredPreviewOffset, NODE_MIN_HEIGHT, NODE_MAX_HEIGHT)),
+    height: snapToGridSize(clampSize(210 + previewTextWeight * 0.08 + structuredPreviewOffset, NODE_MIN_HEIGHT, NODE_MAX_HEIGHT)),
   };
 }
 
@@ -1401,7 +1367,7 @@ function GraphNodePreviewScroller({
   );
 }
 
-function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, height }: NodeProps<TimelineGraphNode>) {
+function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, height, positionAbsoluteX, positionAbsoluteY }: NodeProps<TimelineGraphNode>) {
   const { resolvedTheme } = useTheme();
   const Icon = getTimelineItemIcon(data.itemIconType || 'note');
   const graphActions = React.useContext(TimelineGraphActionsContext);
@@ -1432,6 +1398,8 @@ function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, heigh
         height: data.height ?? NODE_HEIGHT,
       } satisfies React.CSSProperties
     : { width: nodeWidth, height: nodeHeight } satisfies React.CSSProperties;
+  void positionAbsoluteX;
+  void positionAbsoluteY;
 
   return (
     <div
@@ -1451,12 +1419,8 @@ function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, heigh
         minHeight={NODE_MIN_HEIGHT}
         maxWidth={NODE_MAX_WIDTH}
         maxHeight={NODE_MAX_HEIGHT}
-        autoScale={false}
         handleStyle={resizeHandleStyle}
         lineStyle={resizeLineStyle}
-        onResizeEnd={(_, params) => {
-          graphActions?.onResizeNode(id, params.width, params.height);
-        }}
       />
       {NODE_HANDLES.map((handle) => (
         <React.Fragment key={handle}>
@@ -1516,6 +1480,7 @@ function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, heigh
                 sortBy={data.sortBy}
                 linkTemplates={data.linkTemplates}
                 compactPreview
+                hideReplies
               />
             </div>
           </GraphNodePreviewScroller>
@@ -1591,7 +1556,7 @@ function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, heigh
   );
 }
 
-function TimelineGraphGroupCard({ id, data, selected, width, height }: NodeProps<TimelineGraphGroupNode>) {
+function TimelineGraphGroupCard({ id, data, selected, width, height, positionAbsoluteX, positionAbsoluteY }: NodeProps<TimelineGraphGroupNode>) {
   const { resolvedTheme } = useTheme();
   const graphActions = React.useContext(TimelineGraphActionsContext);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -1601,6 +1566,8 @@ function TimelineGraphGroupCard({ id, data, selected, width, height }: NodeProps
   const groupWidth = getNodeDimension(width, data.width, NODE_MIN_WIDTH, NODE_MAX_WIDTH * 2);
   const groupHeight = getNodeDimension(height, data.height, NODE_MIN_HEIGHT, NODE_MAX_HEIGHT * 2);
   const isLightTheme = resolvedTheme === 'light';
+  void positionAbsoluteX;
+  void positionAbsoluteY;
 
   useEffect(() => {
     if (!isEditingLabel) {
@@ -1651,12 +1618,8 @@ function TimelineGraphGroupCard({ id, data, selected, width, height }: NodeProps
         minHeight={NODE_MIN_HEIGHT}
         maxWidth={NODE_MAX_WIDTH * 2}
         maxHeight={NODE_MAX_HEIGHT * 2}
-        autoScale={false}
         handleStyle={resizeHandleStyle}
         lineStyle={resizeLineStyle}
-        onResizeEnd={(_, params) => {
-          graphActions?.onResizeNode(id, params.width, params.height);
-        }}
       />
       <div className="nodrag nopan relative inline-flex max-w-[calc(100%-2rem)] items-center">
         {isEditingLabel ? (
@@ -1925,6 +1888,10 @@ function TimelineGraphViewInner({
   const patchGraphMutation = usePatchTimelineGraph(entityType, entityId);
   const [nodes, setNodes, onNodesChange] = useNodesState<TimelineFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<TimelineGraphEdge>([]);
+  const nodesRef = useRef<TimelineFlowNode[]>([]);
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -2484,31 +2451,47 @@ function TimelineGraphViewInner({
     ]);
   }, [nodes, selectedNodeIds, sendGraphPatch, setNodes, showToast]);
 
-  const handleResizeNode = useCallback((nodeId: string, width: number, height: number) => {
-    const nodeToResize = nodes.find((node) => node.id === nodeId);
-    if (!nodeToResize) {
+  const handleNodesChange = useCallback((changes: NodeChange<TimelineFlowNode>[]) => {
+    onNodesChange(changes);
+
+    // React Flow signals resize-end with a `dimensions` change carrying
+    // `resizing: false`. Persist the new dimensions plus the node's final
+    // position (which has already been applied via prior position changes
+    // in the same drag).
+    const resizeEndChanges = changes.filter(
+      (c): c is Extract<NodeChange<TimelineFlowNode>, { type: 'dimensions' }> =>
+        c.type === 'dimensions' && c.resizing === false && Boolean(c.dimensions),
+    );
+    if (resizeEndChanges.length === 0) {
       return;
     }
-
-    const { width: nextWidth, height: nextHeight } = getResizedNodeDimensions(nodeToResize, width, height, nodes);
-    const resizedNodes = nodes.map((node) => (
-      node.id === nodeId
-        ? {
-            ...node,
-            width: nextWidth,
-            height: nextHeight,
-            data: { ...node.data, width: nextWidth, height: nextHeight, autoSize: false },
-          } as TimelineFlowNode
-        : node
-    ));
-    const resolvedGraph = resolveNodeCollisions(resizedNodes, nodeId);
-
-    setNodes(resolvedGraph.nodes);
-    void sendGraphPatch([
-      { type: 'resize_node', node_id: nodeId, width: nextWidth, height: nextHeight },
-      ...buildMoveOperations(resolvedGraph.movedNodes),
-    ]);
-  }, [nodes, sendGraphPatch, setNodes]);
+    const ops: TimelineGraphOperation[] = [];
+    for (const change of resizeEndChanges) {
+      if (!change.dimensions) continue;
+      const node = nodesRef.current.find((n) => n.id === change.id);
+      if (!node) continue;
+      ops.push({ type: 'move_node', node_id: node.id, position: node.position });
+      ops.push({
+        type: 'resize_node',
+        node_id: node.id,
+        width: change.dimensions.width,
+        height: change.dimensions.height,
+      });
+      // When a group/parent resizes from the top or left, React Flow
+      // re-positions child nodes (relative coordinates) so they stay
+      // anchored in absolute space. Persist those compensated positions
+      // too — otherwise the backend keeps the old child positions and
+      // the children visually shift when the cache reloads.
+      for (const childNode of nodesRef.current) {
+        if (childNode.parentId === change.id) {
+          ops.push({ type: 'move_node', node_id: childNode.id, position: childNode.position });
+        }
+      }
+    }
+    if (ops.length > 0) {
+      void sendGraphPatch(ops);
+    }
+  }, [onNodesChange, sendGraphPatch]);
 
   const handleGroupLabelCommit = useCallback((nodeId: string, label: string) => {
     const nextLabel = label.trim() || 'Group';
@@ -2706,7 +2689,6 @@ function TimelineGraphViewInner({
   latestGraphActionsRef.current = {
     connectorsVisible,
     onRemoveNode: handleRemoveNode,
-    onResizeNode: handleResizeNode,
     onGroupLabelCommit: handleGroupLabelCommit,
     onRemoveEdge: handleRemoveEdge,
     onEdgeLabelCommit: handleEdgeLabelCommit,
@@ -2721,7 +2703,6 @@ function TimelineGraphViewInner({
   const graphActions = useMemo<TimelineGraphActions>(() => ({
     connectorsVisible,
     onRemoveNode: (nodeId) => latestGraphActionsRef.current?.onRemoveNode(nodeId),
-    onResizeNode: (nodeId, width, height) => latestGraphActionsRef.current?.onResizeNode(nodeId, width, height),
     onGroupLabelCommit: (nodeId, label) => latestGraphActionsRef.current?.onGroupLabelCommit(nodeId, label),
     onRemoveEdge: (edgeId) => latestGraphActionsRef.current?.onRemoveEdge(edgeId),
     onEdgeLabelCommit: (edgeId, label) => latestGraphActionsRef.current?.onEdgeLabelCommit(edgeId, label),
@@ -2883,7 +2864,7 @@ function TimelineGraphViewInner({
               connectionMode={ConnectionMode.Loose}
               snapToGrid
               snapGrid={SNAP_GRID}
-              onNodesChange={onNodesChange}
+              onNodesChange={handleNodesChange}
               onEdgesChange={onEdgesChange}
               onNodeDragStart={handleNodeDragStart}
               onNodeDrag={handleNodeDrag}
