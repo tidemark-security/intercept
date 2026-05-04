@@ -141,6 +141,24 @@ async def _delete_timeline_item(
     return body
 
 
+async def _update_timeline_item(
+    client: AsyncClient,
+    task_id: int,
+    item_id: str,
+    payload: dict[str, Any],
+    session_cookie: str,
+) -> dict[str, Any]:
+    response = await client.put(
+        f"/api/v1/tasks/{task_id}/timeline/{item_id}",
+        json=payload,
+        cookies={"intercept_session": session_cookie},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    body["timeline_items"] = _timeline_values(body.get("timeline_items"))
+    return body
+
+
 # ---------------------------------------------------------------------------
 # Simple (non-variant) item types
 # ---------------------------------------------------------------------------
@@ -202,6 +220,39 @@ async def test_delete_task_timeline_item_returns_tombstone_when_timeline_is_empt
     assert tombstone["original_timestamp"].startswith("2026-01-02T14:00:00")
     assert tombstone["original_created_at"].startswith("2026-01-02T14:00:01")
     assert tombstone["deleted_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_update_task_timeline_reply_description(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+    task_id = await _create_task(client, session_cookie)
+    parent_payload = make_note("parent-update-t1")
+    reply_payload = make_note("reply-update-t1")
+    reply_payload["parent_id"] = "parent-update-t1"
+
+    await _add_timeline_item(client, task_id, parent_payload, session_cookie)
+    await _add_timeline_item(client, task_id, reply_payload, session_cookie)
+
+    update_payload = make_note("reply-update-t1")
+    update_payload["parent_id"] = "parent-update-t1"
+    update_payload["description"] = "Edited task reply"
+    body = await _update_timeline_item(
+        client,
+        task_id,
+        "reply-update-t1",
+        update_payload,
+        session_cookie,
+    )
+
+    parent = next(item for item in body["timeline_items"] if item["id"] == "parent-update-t1")
+    reply = parent["replies"][0]
+    assert reply["id"] == "reply-update-t1"
+    assert reply["parent_id"] == "parent-update-t1"
+    assert reply["description"] == "Edited task reply"
 
 
 @pytest.mark.asyncio
