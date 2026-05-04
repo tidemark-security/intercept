@@ -15,7 +15,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.core.database import async_session_factory
 from app.core.settings_registry import get_local
-from app.services.auth_service import auth_service, SessionNotFoundError
+from app.services.auth_service import LoginResult, auth_service, SessionNotFoundError
 from app.services.realtime_service import connection_manager, HEARTBEAT_INTERVAL
 
 logger = logging.getLogger(__name__)
@@ -25,8 +25,8 @@ router = APIRouter()
 VALID_ENTITY_TYPES = {"alert", "case", "task"}
 
 
-async def _authenticate(ws: WebSocket) -> str | None:
-    """Validate the session cookie and return the token, or None."""
+async def _authenticate(ws: WebSocket) -> LoginResult | None:
+    """Validate the session cookie and return login details, or None."""
     cookie_name = get_local("auth.session.cookie_name")
     session_token = ws.cookies.get(cookie_name)
     if not session_token:
@@ -34,9 +34,9 @@ async def _authenticate(ws: WebSocket) -> str | None:
 
     try:
         async with async_session_factory() as db:
-            await auth_service.validate_session(db, session_token=session_token)
+            login_result = await auth_service.validate_session(db, session_token=session_token)
             await db.commit()
-        return session_token
+        return login_result
     except SessionNotFoundError:
         return None
     except Exception:
@@ -61,13 +61,13 @@ async def _revalidate_session(session_token: str) -> bool:
 @router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     # --- Authenticate on handshake ---
-    session_token = await _authenticate(ws)
-    if not session_token:
+    login_result = await _authenticate(ws)
+    if not login_result:
         await ws.close(code=4001, reason="Unauthorized")
         return
 
     await ws.accept()
-    await connection_manager.connect(ws, session_token)
+    await connection_manager.connect(ws, login_result.session_token, login_result.user.username)
     logger.info("WebSocket connected (active: %d)", connection_manager.active_connections)
 
     # Background heartbeat + session re-validation

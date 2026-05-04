@@ -88,6 +88,10 @@ export const queryKeys = {
      * @param id - Case ID
      */
     detailBase: (id: number) => ['case', id] as const,
+
+    graph: (id: number | null) => ['timeline-graph', 'case', id] as const,
+
+    graphBase: (id: number) => ['timeline-graph', 'case', id] as const,
     
     /**
      * Query key for case list with optional filters
@@ -116,6 +120,10 @@ export const queryKeys = {
      * @param id - Task ID
      */
     detailBase: (id: number | string) => ['task', id] as const,
+
+    graph: (id: number | null) => ['timeline-graph', 'task', id] as const,
+
+    graphBase: (id: number) => ['timeline-graph', 'task', id] as const,
     
     /**
      * Query key for task list with optional filters

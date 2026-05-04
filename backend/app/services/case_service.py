@@ -710,6 +710,7 @@ class CaseService:
                 event_type=RealtimeEventType.TIMELINE_ITEM_DELETED,
                 performed_by=deleted_by,
                 item_id=item_id,
+                item_type=item_to_remove.get("type"),
             )
 
             await db.commit()

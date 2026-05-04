@@ -1,10 +1,12 @@
 import React, { useState, useMemo, useRef } from 'react';
-import { EntityHeader, type SortOption, type SortDirection } from '@/components/entities/EntityHeader';
+import { EntityHeader, type SortOption, type SortDirection, type TimelineViewMode } from '@/components/entities/EntityHeader';
 import { QuickTerminal } from '@/components/forms/QuickTerminal';
 import { TimelineItemRenderer } from '@/components/timeline/TimelineItemRenderer';
+import { TimelineGraphView } from '@/components/timeline/TimelineGraphView';
 import { InlineReplyTerminal } from '@/components/timeline/InlineReplyTerminal';
 import { ReplyProvider } from '@/contexts/ReplyProvider';
 import { useReplyMode } from '@/contexts/ReplyContext';
+import { usePresence } from '@/contexts/WebSocketContext';
 import { useAutoScrollToTimelineItem, groupTimelineItems } from '@/components/timeline/timelineUtils';
 import { useLinkTemplates } from '@/hooks/useLinkTemplates';
 import { TriageRecommendationCard } from '@/components/triage/TriageRecommendationCard';
@@ -24,9 +26,17 @@ import { Dialog } from "@/components/overlays/Dialog";
 import { findTimelineItem } from "@/utils/timelineUtils";
 import { getTimelineItems } from "@/utils/timelineHelpers";
 import { useTheme } from '@/contexts/ThemeContext';
+import { cn } from '@/utils/cn';
+import { formatPresenceText } from '@/utils/presenceText';
 
 
-import { ArrowRight, Plus } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
+
+const TIMELINE_VIEW_STORAGE_KEY = 'intercept.timeline-view';
+
+function getTimelineViewStorageKey(entityType: 'case' | 'task', entityId: number): string {
+  return `${TIMELINE_VIEW_STORAGE_KEY}.${entityType}.${entityId}`;
+}
 /**
  * UnifiedTimeline - Displays entity details, timeline items, and quick terminal
  * 
@@ -94,6 +104,7 @@ function UnifiedTimelineInner({
   users,
   usersLoading,
   isUpdating,
+  presenceText,
   isOverlayOpen = false,
   mode = 'editable',
   onFlagItem,
@@ -136,6 +147,11 @@ function UnifiedTimelineInner({
 }: UnifiedTimelineProps) {
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === 'dark';
+  const presenceViewers = usePresence(entityType, selectedEntityId);
+  const resolvedPresenceText = useMemo(
+    () => presenceText ?? formatPresenceText(presenceViewers, entityType, currentUser),
+    [currentUser, entityType, presenceText, presenceViewers],
+  );
   const logoSrc = isDarkTheme ? InterceptLogo : InterceptLogoBlack;
 
   // Access reply context
@@ -212,16 +228,57 @@ function UnifiedTimelineInner({
     return entityDetail?.tags || [];
   }, [entityDetail?.tags, entityType]);
 
+  const supportsGraphView = entityType === 'case' || entityType === 'task';
+
   // Timeline filter and sort state - defaults: Timestamp / Ascending / All / Grouped
   const [selectedType, setSelectedType] = useState<string | undefined>(undefined);
   const [sortBy, setSortBy] = useState<SortOption>('timestamp');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [groupSimilar, setGroupSimilar] = useState<boolean>(true);
+  const [timelineViewMode, setTimelineViewMode] = useState<TimelineViewMode>('timeline');
+
+  const updateTimelineViewMode = React.useCallback((nextMode: TimelineViewMode) => {
+    setTimelineViewMode(nextMode);
+
+    if (!supportsGraphView || selectedEntityId === null || typeof window === 'undefined') {
+      return;
+    }
+
+    window.localStorage.setItem(
+      getTimelineViewStorageKey(entityType, selectedEntityId),
+      nextMode,
+    );
+  }, [entityType, selectedEntityId, supportsGraphView]);
+
+  React.useEffect(() => {
+    if (!supportsGraphView || selectedEntityId === null || typeof window === 'undefined') {
+      setTimelineViewMode('timeline');
+      return;
+    }
+
+    const persistedMode = window.localStorage.getItem(
+      getTimelineViewStorageKey(entityType, selectedEntityId),
+    );
+
+    setTimelineViewMode(persistedMode === 'graph' ? 'graph' : 'timeline');
+  }, [entityType, selectedEntityId, supportsGraphView]);
 
   const handleSortChange = (newSortBy: SortOption, newDirection: SortDirection) => {
     setSortBy(newSortBy);
     setSortDirection(newDirection);
   };
+
+  const handleGraphSelectItem = React.useCallback((itemId: string) => {
+    onScrollToTimelineItem?.(itemId);
+    updateTimelineViewMode('timeline');
+
+    window.setTimeout(() => {
+      document.getElementById(`timeline-item-${itemId}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    }, 0);
+  }, [onScrollToTimelineItem, updateTimelineViewMode]);
 
   // Filter and sort timeline items
   const filteredAndSortedItems = useMemo(() => {
@@ -509,6 +566,7 @@ function UnifiedTimelineInner({
           users={users}
           isLoadingUsers={usersLoading}
           isUpdating={isUpdating}
+          presenceText={resolvedPresenceText}
           onAssignToMe={onAssignToMe}
           onAssignToUser={onAssignToUser}
           onUnassign={onUnassign}
@@ -519,6 +577,10 @@ function UnifiedTimelineInner({
           onUnlinkFromCase={onUnlinkFromCase}
           onPrimaryAction={onOpenEntity}
           onEdit={onEditEntity}
+          showTimelineViewToggle={supportsGraphView}
+          timelineViewMode={timelineViewMode}
+          onTimelineViewModeChange={updateTimelineViewMode}
+          graphViewDisabled={getTimelineItems(entityDetail).length === 0}
           linkedCaseAlerts={linkedCaseAlerts}
           linkedTaskCount={linkedTaskCount}
           caseTags={caseTags}
@@ -539,7 +601,15 @@ function UnifiedTimelineInner({
 
       
       {/* Timeline Items */}
-      <div ref={timelineScrollRef} className="flex w-full grow shrink-0 basis-0 flex-col items-start overflow-auto p-6 mobile:p-2">
+      <div
+        ref={timelineScrollRef}
+        className={cn(
+          'flex w-full grow shrink-0 basis-0 flex-col items-start',
+          timelineViewMode === 'graph'
+            ? 'min-h-0 overflow-hidden p-0'
+            : 'overflow-auto p-6 mobile:p-2'
+        )}
+      >
         {isLoading ? (
           <div className="flex w-full h-full items-center justify-center">
             <span className="text-body font-body text-subtext-color">Loading {entityType} details...</span>
@@ -549,8 +619,22 @@ function UnifiedTimelineInner({
             <span className="text-body font-body text-error-color">Error loading {entityType} details</span>
           </div>
         ) : entityDetail ? (
-          <>
-            {(() => {
+          supportsGraphView && timelineViewMode === 'graph' ? (
+            <TimelineGraphView
+              items={filteredAndSortedItems}
+              entityId={selectedEntityId}
+              entityType={entityType as 'case' | 'task'}
+              sortBy={sortBy}
+              linkTemplates={linkTemplates}
+              onSelectItem={handleGraphSelectItem}
+              onFlagItem={isEditable ? onFlagItem : undefined}
+              onHighlightItem={isEditable ? onHighlightItem : undefined}
+              onEditItem={isEditable ? onEditItem : undefined}
+              onDeleteItem={isEditable ? handleInternalDelete : undefined}
+            />
+          ) : (
+            <>
+              {(() => {
               const timelineItems = getTimelineItems(entityDetail);
               const hasTimelineItems = timelineItems.length > 0;
               
@@ -661,7 +745,8 @@ function UnifiedTimelineInner({
                 </div>
               );
             })()}
-          </>
+            </>
+          )
         ) : (
           <div className="flex w-full h-full items-center justify-center">
             <span className="text-body font-body text-subtext-color">No {entityType} data available</span>

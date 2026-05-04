@@ -11,6 +11,8 @@ import type { TaskCreate } from '../models/TaskCreate';
 import type { TaskRead } from '../models/TaskRead';
 import type { TaskStatus } from '../models/TaskStatus';
 import type { TaskUpdate } from '../models/TaskUpdate';
+import type { TimelineGraphPatch } from '../models/TimelineGraphPatch';
+import type { TimelineGraphRead } from '../models/TimelineGraphRead';
 import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
 import { request as __request } from '../core/request';
@@ -192,6 +194,54 @@ export class TasksService {
             path: {
                 'task_id': taskId,
             },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Get Timeline Graph
+     * Get the shared timeline graph document for a task.
+     * @returns TimelineGraphRead Successful Response
+     * @throws ApiError
+     */
+    public static getTimelineGraphApiV1TasksTaskIdTimelineGraphGet({
+        taskId,
+    }: {
+        taskId: number,
+    }): CancelablePromise<TimelineGraphRead> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/tasks/{task_id}/timeline-graph',
+            path: {
+                'task_id': taskId,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Patch Timeline Graph
+     * Patch the shared timeline graph document for a task.
+     * @returns TimelineGraphRead Successful Response
+     * @throws ApiError
+     */
+    public static patchTimelineGraphApiV1TasksTaskIdTimelineGraphPatch({
+        taskId,
+        requestBody,
+    }: {
+        taskId: number,
+        requestBody: TimelineGraphPatch,
+    }): CancelablePromise<TimelineGraphRead> {
+        return __request(OpenAPI, {
+            method: 'PATCH',
+            url: '/api/v1/tasks/{task_id}/timeline-graph',
+            path: {
+                'task_id': taskId,
+            },
+            body: requestBody,
+            mediaType: 'application/json',
             errors: {
                 422: `Validation Error`,
             },

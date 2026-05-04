@@ -44,6 +44,9 @@ export interface UnifiedTimelineProps {
   /** Whether assignment update is in progress */
   isUpdating?: boolean;
 
+  /** Collaboration presence text for the selected entity */
+  presenceText?: string | null;
+
   /** Whether a page-level overlay (dock/modal/dialog) is currently open */
   isOverlayOpen?: boolean;
   

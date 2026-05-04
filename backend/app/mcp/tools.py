@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from typing import Dict, Any
 
 from app.core.database import async_session_factory
+from app.models.enums import UserRole
 from app.services import mcp_service
 
 # Import FastMCP dependency to access HTTP request for authenticated user
@@ -66,31 +67,50 @@ def _prune_llm_payload(value: Any, *, preserve_empty: bool = False) -> Any:
     return value
 
 
-def _get_authenticated_username() -> str:
-    """Get the authenticated username from the MCP request context.
-    
+def _get_authenticated_user() -> Any | None:
+    """Get the authenticated user from the MCP request context.
+
     The MCPApiKeyAuthMiddleware stores the authenticated user in scope["mcp_user"].
     We access it via the Starlette request object.
-    
+    """
+    if get_http_request is None:
+        return None
+
+    try:
+        request = get_http_request()
+        return request.scope.get("mcp_user")
+    except Exception:
+        return None
+
+
+def _get_authenticated_username() -> str:
+    """Get the authenticated username from the MCP request context.
+
     Returns:
         Username of the authenticated API key user, or "System" if not available.
     """
-    if get_http_request is None:
-        return "System"
-    
-    try:
-        request = get_http_request()
-        # The middleware stores the user object in request.scope["mcp_user"]
-        user = request.scope.get("mcp_user")
-        if user and hasattr(user, "username"):
-            return user.username
-        return "System"
-    except Exception:
-        # If called outside request context, return default
-        return "System"
+    user = _get_authenticated_user()
+    if user and hasattr(user, "username"):
+        return user.username
+    return "System"
+
+
+def _require_mcp_non_auditor_user() -> str:
+    """Require an authenticated non-auditor MCP user for commit operations."""
+    user = _get_authenticated_user()
+    if not user or not hasattr(user, "username"):
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    if getattr(user, "role", None) == UserRole.AUDITOR:
+        raise HTTPException(
+            status_code=403, detail="Auditor accounts have read-only access"
+        )
+
+    return user.username
 
 
 # Phase 3 (User Story 1): get_summary implementation ✅
+
 
 async def get_summary_tool(
     kind: str,
@@ -100,7 +120,7 @@ async def get_summary_tool(
     since: str | None = None,
 ) -> Dict[str, Any]:
     """Get bounded context summary for an alert/case/task.
-    
+
     Phase 3 (User Story 1): get_summary implementation
     """
     async with async_session_factory() as db:
@@ -117,7 +137,6 @@ async def get_summary_tool(
         return pruned_payload if isinstance(pruned_payload, dict) else payload
 
 
-
 async def list_work_tool(
     kind: str,
     statuses: list[str] | None = None,
@@ -130,7 +149,7 @@ async def list_work_tool(
     cursor: str | None = None,
 ) -> Dict[str, Any]:
     """List alerts/cases/tasks with filtering.
-    
+
     Phase 5 (User Story 3): list_work implementation
     """
     async with async_session_factory() as db:
@@ -149,14 +168,13 @@ async def list_work_tool(
         return result.model_dump()
 
 
-
 async def find_related_tool(
     seed_kind: str,
     seed_id: str,
     max_matches: int = 10,
 ) -> Dict[str, Any]:
     """Find related/similar alerts/cases/tasks.
-    
+
     Phase 6 (User Story 4): find_related implementation
     """
     async with async_session_factory() as db:
@@ -167,7 +185,6 @@ async def find_related_tool(
             max_matches=max_matches,
         )
         return result.model_dump()
-
 
 
 async def record_triage_decision_tool(
@@ -185,12 +202,13 @@ async def record_triage_decision_tool(
     commit: bool = False,
 ) -> Dict[str, Any]:
     """Record AI triage recommendation for an alert.
-    
+
     Phase 4 (User Story 2): record_triage_decision implementation
     """
-    # Get authenticated username from request context
-    username = _get_authenticated_username()
-    
+    username = (
+        _require_mcp_non_auditor_user() if commit else _get_authenticated_username()
+    )
+
     async with async_session_factory() as db:
         result = await mcp_service.record_triage_decision(
             db=db,
@@ -211,7 +229,6 @@ async def record_triage_decision_tool(
         return result.model_dump()
 
 
-
 async def add_timeline_item_tool(
     target_kind: str,
     target_id: str,
@@ -221,22 +238,25 @@ async def add_timeline_item_tool(
     created_at: str | None = None,
 ) -> Dict[str, Any]:
     """Add timeline note to alert/case/task.
-    
+
     Phase 7 (User Story 5): add_timeline_item implementation
     """
     from datetime import datetime, timezone
-    
-    # Get authenticated username from request context
-    username = _get_authenticated_username()
-    
+
+    username = (
+        _require_mcp_non_auditor_user() if commit else _get_authenticated_username()
+    )
+
     # Parse created_at if provided
     parsed_created_at = None
     if created_at:
         try:
-            parsed_created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+            parsed_created_at = datetime.fromisoformat(
+                created_at.replace("Z", "+00:00")
+            )
         except ValueError:
             pass  # Will use default (current time)
-    
+
     async with async_session_factory() as db:
         result = await mcp_service.add_timeline_item(
             db=db,
@@ -251,7 +271,6 @@ async def add_timeline_item_tool(
         return result.model_dump()
 
 
-
 async def get_item_tool(
     item_id: str,
     mode: str = "full",
@@ -261,7 +280,7 @@ async def get_item_tool(
     hint_parent_id: str | None = None,
 ) -> Dict[str, Any]:
     """Get full content of truncated timeline item.
-    
+
     Phase 8 (User Story 6): get_item implementation
     """
     async with async_session_factory() as db:
@@ -281,4 +300,3 @@ async def validate_mermaid_tool(diagram: str) -> Dict[str, Any]:
     """Validate Mermaid syntax using the local Mermaid CLI."""
     result = await mcp_service.validate_mermaid(diagram=diagram)
     return result.model_dump()
-
