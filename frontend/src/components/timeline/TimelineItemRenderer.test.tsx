@@ -121,7 +121,7 @@ describe('TimelineItemRenderer enrichments', () => {
       />
     );
 
-    const deletedReply = screen.getByText('deleted note');
+    const deletedReply = screen.getByText('deleted a note');
     const lateReply = screen.getByText('Late reply');
 
     expect(deletedReply).toBeInTheDocument();

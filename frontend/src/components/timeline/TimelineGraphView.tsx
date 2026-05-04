@@ -48,7 +48,7 @@ import {
   getTimelineItemLabel,
 } from '@/utils/timelineMapping';
 import type { LinkTemplate } from '@/utils/linkTemplates';
-import type { TimelineItem } from '@/types/timeline';
+import { isDeletedItem, type TimelineItem } from '@/types/timeline';
 import type { TimelineGraphOperation } from '@/types/generated/models/TimelineGraphOperation';
 import type { TimelineGraphRead } from '@/types/generated/models/TimelineGraphRead';
 import { ArrowLeft, ArrowLeftRight, ArrowRight, Check, Clock, ClockAlert, ClockPlus, Copy, Flag, GitBranch, Group, Highlighter, IdCard, Magnet, Minus, Pencil, Search, Trash, Trash2, X } from 'lucide-react';
@@ -165,6 +165,8 @@ type EdgeMarkerMode = 'none' | 'forward' | 'reverse' | 'bidirectional';
 interface TimelineGraphNodeData extends Record<string, unknown> {
   itemId: string;
   itemType: string;
+  itemIconType: string;
+  itemActionsReadOnly: boolean;
   title: string;
   subtitle: string;
   label: string;
@@ -305,6 +307,59 @@ const edgeMarkerOption = {
   height: 18,
   color: 'rgb(var(--color-subtext-color))',
 };
+
+function isLinkedTimelineItemType(type: string | undefined): boolean {
+  return type === 'alert' || type === 'case' || type === 'task';
+}
+
+function getTimelineTypeDisplayLabel(type: string | undefined): string {
+  if (!type) {
+    return 'Item';
+  }
+
+  const mappedLabel = getTimelineItemLabel(type);
+  if (mappedLabel !== 'Event') {
+    return mappedLabel;
+  }
+
+  const normalizedLabel = type
+    .replace(/^_+/, '')
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+
+  return normalizedLabel || 'Item';
+}
+
+function getIndefiniteArticle(value: string): 'a' | 'an' {
+  return /^[aeiou]/i.test(value.trim()) ? 'an' : 'a';
+}
+
+function getDeletedItemTitle(item: TimelineItem): string {
+  if (!isDeletedItem(item)) {
+    return 'Deleted item';
+  }
+
+  const itemLabel = getTimelineTypeDisplayLabel(item.original_type).toLowerCase();
+  return `${item.deleted_by || 'System'} deleted ${getIndefiniteArticle(itemLabel)} ${itemLabel}`;
+}
+
+function getGraphItemLabel(item: TimelineItem): string {
+  if (isDeletedItem(item)) {
+    return `Deleted ${getTimelineTypeDisplayLabel(item.original_type)}`;
+  }
+
+  return getTimelineItemLabel(item.type || 'note');
+}
+
+function getGraphItemIconType(item: TimelineItem): string {
+  return isDeletedItem(item) ? item.original_type || 'note' : item.type || 'note';
+}
+
+function areGraphItemMutationActionsReadOnly(item: TimelineItem): boolean {
+  return isDeletedItem(item) || isLinkedTimelineItemType(item.type);
+}
 
 function getEdgeMarkerProps(marker: EdgeMarkerMode): Pick<TimelineGraphEdge, 'markerStart' | 'markerEnd'> {
   if (marker === 'none') return { markerStart: undefined, markerEnd: undefined };
@@ -909,6 +964,10 @@ function formatTimestamp(item: TimelineItem, sortBy: 'created_at' | 'timestamp')
 }
 
 function getNodeTitle(item: TimelineItem): string {
+  if (isDeletedItem(item)) {
+    return getDeletedItemTitle(item);
+  }
+
   const itemAny = item as any;
   return itemAny.title || itemAny.name || itemAny.value || item.description || getTimelineItemLabel(item.type || 'note');
 }
@@ -1002,12 +1061,14 @@ function buildNodeData(
   return {
     itemId: item.id || '',
     itemType: item.type || 'note',
+    itemIconType: getGraphItemIconType(item),
+    itemActionsReadOnly: areGraphItemMutationActionsReadOnly(item),
     title: getNodeTitle(item),
     subtitle: getNodeSubtitle(item),
-    label: getTimelineItemLabel(item.type || 'note'),
+    label: getGraphItemLabel(item),
     timestamp: formatTimestamp(item, sortBy),
     timestampValue,
-    createdBy: item.created_by || 'System',
+    createdBy: isDeletedItem(item) ? item.deleted_by || 'System' : item.created_by || 'System',
     createdAtValue: item.created_at || null,
     width: width ?? fallbackSize.width,
     height: height ?? fallbackSize.height,
@@ -1342,12 +1403,20 @@ function GraphNodePreviewScroller({
 
 function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, height }: NodeProps<TimelineGraphNode>) {
   const { resolvedTheme } = useTheme();
-  const Icon = getTimelineItemIcon(data.itemType || 'note');
+  const Icon = getTimelineItemIcon(data.itemIconType || 'note');
   const graphActions = React.useContext(TimelineGraphActionsContext);
   const isAutoSize = data.autoSize === true;
+  const isTombstoneNode = isDeletedItem(data.item);
   const isCompactCardPreview = data.itemType !== 'note';
   const connectorsVisible = graphActions?.connectorsVisible === true;
   const hiddenByFilter = data.hiddenByFilter === true;
+  const showItemMutationActions = !data.itemActionsReadOnly;
+  const hasItemMutationActions = showItemMutationActions && Boolean(
+    graphActions?.onFlagItem ||
+    graphActions?.onHighlightItem ||
+    graphActions?.onDeleteItem ||
+    graphActions?.onEditItem,
+  );
   const connectorClassName = resolvedTheme === 'light'
     ? cn('!h-3.5 !w-3.5 !border !border-solid !border-neutral-1000 !bg-default-background transition-opacity group-hover/graph-node:opacity-100', connectorsVisible ? 'opacity-100' : 'opacity-0')
     : cn('!h-3.5 !w-3.5 !border !border-solid !border-brand-primary !bg-default-background transition-opacity group-hover/graph-node:opacity-100', connectorsVisible ? 'opacity-100' : 'opacity-0');
@@ -1427,26 +1496,36 @@ function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, heigh
         )}
       </div>
       <div className="flex min-h-0 w-full grow flex-col overflow-hidden rounded-md border border-solid border-neutral-border bg-default-background/70">
-        <GraphNodePreviewScroller isCompactCardPreview={isCompactCardPreview}>
-          <div className="flex min-h-full w-full origin-top-left flex-col" style={{ zoom: 0.78 }}>
-            <TimelineItemRenderer
-              item={data.item}
-              index={0}
-              total={1}
-              entityId={data.entityId}
-              entityType={data.entityType}
-              sortBy={data.sortBy}
-              linkTemplates={data.linkTemplates}
-              compactPreview
-            />
+        {isTombstoneNode ? (
+          <div
+            aria-label="Deleted timeline item"
+            className="flex min-h-0 w-full flex-1 items-center justify-center gap-3 p-6 text-subtext-color"
+          >
+            <Trash2 className="h-12 w-12" />
+            <span className="text-body font-body text-subtext-color">This item has been deleted</span>
           </div>
-        </GraphNodePreviewScroller>
+        ) : (
+          <GraphNodePreviewScroller isCompactCardPreview={isCompactCardPreview}>
+            <div className="flex min-h-full w-full origin-top-left flex-col" style={{ zoom: 0.78 }}>
+              <TimelineItemRenderer
+                item={data.item}
+                index={0}
+                total={1}
+                entityId={data.entityId}
+                entityType={data.entityType}
+                sortBy={data.sortBy}
+                linkTemplates={data.linkTemplates}
+                compactPreview
+              />
+            </div>
+          </GraphNodePreviewScroller>
+        )}
       </div>
       <div className="mt-auto flex w-full items-end justify-between gap-3 text-caption font-caption text-subtext-color">
         <span className="min-w-0 truncate">{data.createdBy}</span>
         <Tooltip.Provider>
           <div className="nodrag nopan flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover/graph-node:opacity-100 group-focus-within/graph-node:opacity-100">
-            {graphActions?.onFlagItem ? (
+            {showItemMutationActions && graphActions?.onFlagItem ? (
               <GraphNodeActionButton
                 label={data.flagged ? 'Unflag' : 'Flag'}
                 icon={<Flag />}
@@ -1456,7 +1535,7 @@ function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, heigh
                 }}
               />
             ) : null}
-            {graphActions?.onHighlightItem ? (
+            {showItemMutationActions && graphActions?.onHighlightItem ? (
               <GraphNodeActionButton
                 label={data.highlighted ? 'Remove Highlight' : 'Highlight'}
                 icon={<Highlighter />}
@@ -1466,7 +1545,7 @@ function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, heigh
                 }}
               />
             ) : null}
-            {graphActions?.onDeleteItem ? (
+            {showItemMutationActions && graphActions?.onDeleteItem ? (
               <GraphNodeActionButton
                 label="Delete"
                 icon={<Trash />}
@@ -1476,7 +1555,7 @@ function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, heigh
                 }}
               />
             ) : null}
-            {graphActions?.onEditItem ? (
+            {showItemMutationActions && graphActions?.onEditItem ? (
               <GraphNodeActionButton
                 label="Edit"
                 icon={<Pencil />}
@@ -1486,7 +1565,7 @@ function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, heigh
                 }}
               />
             ) : null}
-            <div className="mx-1 h-4 w-px bg-neutral-border" />
+            {hasItemMutationActions ? <div className="mx-1 h-4 w-px bg-neutral-border" /> : null}
             {graphActions?.onSelectItem ? (
               <GraphNodeActionButton
                 label="Find in Timeline"
@@ -1872,7 +1951,7 @@ function TimelineGraphViewInner({
   const timelineNodeIds = useMemo(() => new Set(nodes.flatMap((node) => (
     node.type === 'timelineItem' ? [node.id] : []
   ))), [nodes]);
-  const stagedItems = useMemo(() => allItems.filter((item) => item.id && !nodeItemIds.has(item.id)), [allItems, nodeItemIds]);
+  const stagedItems = useMemo(() => allItems.filter((item) => item.id && !isDeletedItem(item) && !nodeItemIds.has(item.id)), [allItems, nodeItemIds]);
   const selectedNode = selectedNodeId ? nodes.find((node) => node.id === selectedNodeId) : null;
   const selectedEdge = selectedEdgeId ? edges.find((edge) => edge.id === selectedEdgeId) : null;
   const filteredGraphState = useMemo(

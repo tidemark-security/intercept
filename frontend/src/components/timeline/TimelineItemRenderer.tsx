@@ -100,6 +100,36 @@ function isLinkedTimelineType(type: TimelineItem['type'] | undefined): boolean {
   return type === 'alert' || type === 'case' || type === 'task';
 }
 
+function getTimelineTypeDisplayLabel(type: string | undefined): string {
+  if (!type) {
+    return 'item';
+  }
+
+  const mappedLabel = getTimelineItemLabel(type);
+  if (mappedLabel !== 'Event') {
+    return mappedLabel.toLowerCase();
+  }
+
+  return type
+    .replace(/^_+/, '')
+    .split('_')
+    .filter(Boolean)
+    .join(' ') || 'item';
+}
+
+function getIndefiniteArticle(value: string): 'a' | 'an' {
+  return /^[aeiou]/i.test(value.trim()) ? 'an' : 'a';
+}
+
+function getDeletedItemAction(item: TimelineItem): string {
+  if (!isDeletedItem(item)) {
+    return 'deleted an item';
+  }
+
+  const itemLabel = getTimelineTypeDisplayLabel(item.original_type);
+  return `deleted ${getIndefiniteArticle(itemLabel)} ${itemLabel}`;
+}
+
 function sortRepliesForDisplay(items: TimelineItem[]): TimelineItem[] {
   return items
     .map((item, index) => ({ item, index }))
@@ -443,20 +473,15 @@ export function TimelineItemRenderer({
 
   if (isDeletedItem(item)) {
     const DeletedIcon = getTimelineItemIcon(item.original_type || 'note');
-    // const deletedContents = (
-    //   <div className="rounded-md border border-dashed border-neutral-border bg-neutral-50/40 px-3 py-3 text-body text-subtext-color">
-    //     {`${item.original_type} deleted by ${item.deleted_by}`}
-    //   </div>
-    // );
 
     return (
       <ActivityItem
         key={item.id}
         id={`timeline-item-${item.id}`}
         itemId={item.id || ''}
-        username={item.original_created_by || 'System'}
+        username={item.deleted_by || 'System'}
         icon={<DeletedIcon />}
-        action={`deleted ${item.original_type}`}
+        action={getDeletedItemAction(item)}
         displayItemId={compactPreview ? undefined : item.id}
         timestampValue={getDeletedItemTimestamp(item)}
         createdAtValue={item.original_created_at || getDeletedItemTimestamp(item)}
@@ -829,10 +854,10 @@ export function TimelineItemRenderer({
         const isReplyDeleted = isDeletedItem(reply);
         const ReplyItemIcon = isReplyDeleted ? getTimelineItemIcon(reply.original_type || 'note') : ReplyIcon;
         const replyAction = isReplyDeleted
-          ? `deleted ${reply.original_type}`
+          ? getDeletedItemAction(reply)
           : `${getTimelineItemAction(reply.type || 'note')} ${getTimelineItemLabel(reply.type || 'note')}`;
         
-        const replyUsername = isReplyDeleted ? reply.original_created_by || 'System' : reply.created_by || 'System';
+        const replyUsername = isReplyDeleted ? reply.deleted_by || 'System' : reply.created_by || 'System';
         const isLastReply = replyIndex === flattenedReplies.length - 1;
 
         const replyContents = renderReplyContents(reply);
