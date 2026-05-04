@@ -6,8 +6,16 @@ from typing import Any, Callable
 import pytest
 from httpx import AsyncClient, Response
 
-from app.models.enums import AlertStatus, CaseStatus, Priority, TaskStatus
-from app.models.models import Alert, Case, Task
+from app.models.enums import (
+    AlertStatus,
+    CaseStatus,
+    Priority,
+    RecommendationStatus,
+    RejectionCategory,
+    TaskStatus,
+    TriageDisposition,
+)
+from app.models.models import Alert, Case, Task, TriageRecommendation
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -75,7 +83,10 @@ async def _login_and_get_session_cookie(
 @pytest.mark.parametrize(
     ("path", "payload"),
     [
-        ("/api/v1/alerts", {"title": "Auditor alert", "description": "blocked", "source": "edr"}),
+        (
+            "/api/v1/alerts",
+            {"title": "Auditor alert", "description": "blocked", "source": "edr"},
+        ),
         ("/api/v1/cases", {"title": "Auditor case", "description": "blocked"}),
         ("/api/v1/tasks", {"title": "Auditor task", "description": "blocked"}),
     ],
@@ -87,9 +98,13 @@ async def test_auditor_cannot_create_parent_entities(
     path: str,
     payload: dict[str, Any],
 ) -> None:
-    session_cookie, _ = await _login_and_get_session_cookie(client, session_maker, auditor_user_factory)
+    session_cookie, _ = await _login_and_get_session_cookie(
+        client, session_maker, auditor_user_factory
+    )
 
-    response = await client.post(path, json=payload, cookies={"intercept_session": session_cookie})
+    response = await client.post(
+        path, json=payload, cookies={"intercept_session": session_cookie}
+    )
 
     assert response.status_code == 403
     assert _detail_message(response) == "Auditor accounts have read-only access"
@@ -101,11 +116,21 @@ async def test_auditor_cannot_update_parent_entities(
     session_maker: Any,
     auditor_user_factory,
 ) -> None:
-    session_cookie, _ = await _login_and_get_session_cookie(client, session_maker, auditor_user_factory)
+    session_cookie, _ = await _login_and_get_session_cookie(
+        client, session_maker, auditor_user_factory
+    )
 
     async with session_maker() as session:
-        alert = Alert(title="Alert", description="seed", priority=Priority.MEDIUM, source="edr")
-        case = Case(title="Case", description="seed", priority=Priority.MEDIUM, status=CaseStatus.NEW, created_by="seed-user")
+        alert = Alert(
+            title="Alert", description="seed", priority=Priority.MEDIUM, source="edr"
+        )
+        case = Case(
+            title="Case",
+            description="seed",
+            priority=Priority.MEDIUM,
+            status=CaseStatus.NEW,
+            created_by="seed-user",
+        )
         task = Task(
             title="Task",
             description="seed",
@@ -144,15 +169,58 @@ async def test_auditor_cannot_update_parent_entities(
 
 
 @pytest.mark.asyncio
+async def test_auditor_cannot_bulk_update_cases(
+    client: AsyncClient,
+    session_maker: Any,
+    auditor_user_factory,
+) -> None:
+    session_cookie, _ = await _login_and_get_session_cookie(
+        client, session_maker, auditor_user_factory
+    )
+
+    async with session_maker() as session:
+        case = Case(
+            title="Case",
+            description="seed",
+            priority=Priority.MEDIUM,
+            status=CaseStatus.NEW,
+            created_by="seed-user",
+        )
+        session.add(case)
+        await session.commit()
+        case_id = case.id
+
+    response = await client.post(
+        "/api/v1/cases/bulk-update",
+        json={
+            "case_ids": [str(case_id)],
+            "case_update": {"title": "Blocked bulk edit"},
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 403
+    assert _detail_message(response) == "Auditor accounts have read-only access"
+
+
+@pytest.mark.asyncio
 async def test_auditor_cannot_delete_case_or_task(
     client: AsyncClient,
     session_maker: Any,
     auditor_user_factory,
 ) -> None:
-    session_cookie, _ = await _login_and_get_session_cookie(client, session_maker, auditor_user_factory)
+    session_cookie, _ = await _login_and_get_session_cookie(
+        client, session_maker, auditor_user_factory
+    )
 
     async with session_maker() as session:
-        case = Case(title="Case", description="seed", priority=Priority.MEDIUM, status=CaseStatus.NEW, created_by="seed-user")
+        case = Case(
+            title="Case",
+            description="seed",
+            priority=Priority.MEDIUM,
+            status=CaseStatus.NEW,
+            created_by="seed-user",
+        )
         task = Task(
             title="Task",
             description="seed",
@@ -187,12 +255,20 @@ async def test_auditor_cannot_write_timeline_items(
     session_maker: Any,
     auditor_user_factory,
 ) -> None:
-    session_cookie, _ = await _login_and_get_session_cookie(client, session_maker, auditor_user_factory)
-    existing_case_note = _note_item("seed-user", item_id="case-note-1", description="Original case note")
-    existing_task_note = _note_item("seed-user", item_id="task-note-1", description="Original task note")
+    session_cookie, _ = await _login_and_get_session_cookie(
+        client, session_maker, auditor_user_factory
+    )
+    existing_case_note = _note_item(
+        "seed-user", item_id="case-note-1", description="Original case note"
+    )
+    existing_task_note = _note_item(
+        "seed-user", item_id="task-note-1", description="Original task note"
+    )
 
     async with session_maker() as session:
-        alert = Alert(title="Alert", description="seed", priority=Priority.MEDIUM, source="edr")
+        alert = Alert(
+            title="Alert", description="seed", priority=Priority.MEDIUM, source="edr"
+        )
         case = Case(
             title="Case",
             description="seed",
@@ -218,7 +294,9 @@ async def test_auditor_cannot_write_timeline_items(
 
     add_response = await client.post(
         f"/api/v1/alerts/{alert_id}/timeline",
-        json=_note_item("auditor-user", item_id="alert-note-2", description="Blocked alert note"),
+        json=_note_item(
+            "auditor-user", item_id="alert-note-2", description="Blocked alert note"
+        ),
         cookies={"intercept_session": session_cookie},
     )
     update_response = await client.put(
@@ -237,6 +315,98 @@ async def test_auditor_cannot_write_timeline_items(
 
 
 @pytest.mark.asyncio
+async def test_auditor_cannot_mutate_triage_recommendations(
+    client: AsyncClient,
+    session_maker: Any,
+    auditor_user_factory,
+) -> None:
+    session_cookie, _ = await _login_and_get_session_cookie(
+        client, session_maker, auditor_user_factory
+    )
+
+    async with session_maker() as session:
+        alert = Alert(
+            title="Alert",
+            description="seed",
+            priority=Priority.MEDIUM,
+            source="edr",
+            status=AlertStatus.NEW,
+        )
+        session.add(alert)
+        await session.flush()
+        recommendation = TriageRecommendation(
+            alert_id=alert.id,
+            disposition=TriageDisposition.NEEDS_INVESTIGATION,
+            confidence=0.8,
+            reasoning_bullets=["Needs analyst review"],
+            recommended_actions=[],
+            created_by="test-ai",
+            status=RecommendationStatus.PENDING,
+        )
+        session.add(recommendation)
+        await session.commit()
+        alert_id = alert.id
+
+    responses = [
+        await client.post(
+            f"/api/v1/alerts/{alert_id}/triage-recommendation/enqueue",
+            cookies={"intercept_session": session_cookie},
+        ),
+        await client.post(
+            f"/api/v1/alerts/{alert_id}/triage-recommendation/accept",
+            json={
+                "apply_status": True,
+                "apply_priority": True,
+                "apply_assignee": True,
+                "apply_tags": True,
+            },
+            cookies={"intercept_session": session_cookie},
+        ),
+        await client.post(
+            f"/api/v1/alerts/{alert_id}/triage-recommendation/reject",
+            json={
+                "category": RejectionCategory.MISSING_CONTEXT.value,
+                "reason": "Blocked auditor write",
+            },
+            cookies={"intercept_session": session_cookie},
+        ),
+    ]
+
+    for response in responses:
+        assert response.status_code == 403
+        assert _detail_message(response) == "Auditor accounts have read-only access"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("post", "/api/v1/dummy-data/populate?cases_count=1&alerts_count=1"),
+        ("delete", "/api/v1/dummy-data/clear?confirm=true"),
+        ("post", "/api/v1/dummy-data/generate-cases?count=1"),
+        ("post", "/api/v1/dummy-data/generate-alerts?count=1"),
+    ],
+)
+async def test_auditor_cannot_mutate_dummy_data(
+    client: AsyncClient,
+    session_maker: Any,
+    auditor_user_factory,
+    method: str,
+    path: str,
+) -> None:
+    session_cookie, _ = await _login_and_get_session_cookie(
+        client, session_maker, auditor_user_factory
+    )
+
+    response = await getattr(client, method)(
+        path, cookies={"intercept_session": session_cookie}
+    )
+
+    assert response.status_code == 403
+    assert _detail_message(response) == "Auditor accounts have read-only access"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("entity_type", ["alert", "case", "task"])
 async def test_analyst_can_edit_other_users_timeline_items(
     client: AsyncClient,
@@ -246,9 +416,15 @@ async def test_analyst_can_edit_other_users_timeline_items(
 ) -> None:
     owner = analyst_user_factory(username=f"owner-{entity_type}")
     session_cookie, editor_username = await _login_and_get_session_cookie(
-        client, session_maker, lambda: analyst_user_factory(username=f"editor-{entity_type}")
+        client,
+        session_maker,
+        lambda: analyst_user_factory(username=f"editor-{entity_type}"),
     )
-    original_item = _note_item(owner.username, item_id=f"{entity_type}-note-1", description="Original description")
+    original_item = _note_item(
+        owner.username,
+        item_id=f"{entity_type}-note-1",
+        description="Original description",
+    )
 
     async with session_maker() as session:
         session.add(owner)
@@ -299,5 +475,7 @@ async def test_analyst_can_edit_other_users_timeline_items(
 
     assert response.status_code == 200
     timeline_items = _timeline_values(response.json()["timeline_items"])
-    updated_item = next(item for item in timeline_items if item["id"] == original_item["id"])
+    updated_item = next(
+        item for item in timeline_items if item["id"] == original_item["id"]
+    )
     assert updated_item["description"] == f"Edited by {editor_username}"
