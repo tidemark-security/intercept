@@ -328,6 +328,9 @@ export interface TimelineItemRendererProps {
 
   /** Hide timeline rail/icon chrome for compact embedded previews. */
   compactPreview?: boolean;
+
+  /** Suppress nested reply rendering for embedded previews that only show the selected item. */
+  hideReplies?: boolean;
 }
 
 /**
@@ -391,6 +394,7 @@ export function TimelineItemRenderer({
   sortBy = 'created_at',
   linkTemplates,
   compactPreview = false,
+  hideReplies = false,
 }: TimelineItemRendererProps) {
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
@@ -794,11 +798,12 @@ export function TimelineItemRenderer({
   }
 
   // Render nested replies - flatten multi-level nesting into single-level thread
-  const itemReplies = getTimelineItems({ timeline_items: item.replies ?? null });
+  const shouldRenderReplies = !hideReplies;
+  const itemReplies = shouldRenderReplies ? getTimelineItems({ timeline_items: item.replies ?? null }) : [];
   const hasReplies = itemReplies.length > 0;
   
   // For alert/task items, also include source_timeline_items (timeline from the linked entity)
-  const sourceTimelineItems = getTimelineItems({ timeline_items: (item as any).source_timeline_items ?? null });
+  const sourceTimelineItems = shouldRenderReplies ? getTimelineItems({ timeline_items: (item as any).source_timeline_items ?? null }) : [];
   const hasSourceItems = sourceTimelineItems.length > 0;
   
   // Track IDs of source timeline items (these should be read-only since they belong to the linked entity)
@@ -925,7 +930,7 @@ export function TimelineItemRenderer({
       createdAtValue={item.created_at || null}
       sortBy={sortBy}
       edited={item.audit?.edited === true}
-      replyEnabled={!hasVisibleChildren} // Only show reply button if no replies/source items exist
+      replyEnabled={shouldRenderReplies && !hasVisibleChildren} // Only show reply button if no replies/source items exist
       readOnly={readOnly}
       hideRail={compactPreview}
       variant={variant}
