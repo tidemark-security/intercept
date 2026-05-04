@@ -88,6 +88,21 @@ docker_run_backend_env=(
     -e "LOG_LEVEL=INFO"
 )
 
+get_single_alembic_head() {
+    local image="$1"
+    local heads
+    heads="$(docker run --rm --entrypoint alembic "$image" heads --resolve-dependencies | awk '{print $1}')"
+
+    local head_count
+    head_count="$(printf '%s\n' "$heads" | sed '/^$/d' | wc -l | tr -d ' ')"
+    if [[ "$head_count" != "1" ]]; then
+        printf 'Expected exactly one Alembic head in %s, found %s:\n%s\n' "$image" "$head_count" "$heads" >&2
+        return 1
+    fi
+
+    printf '%s\n' "$heads" | sed '/^$/d'
+}
+
 log "Pulling previous release images for ${N_MINUS_1_TAG}"
 docker pull "$PREVIOUS_POSTGRES_IMAGE"
 docker pull "$PREVIOUS_BACKEND_IMAGE"
@@ -96,6 +111,10 @@ if [[ "$RUN_ROLLBACK_SMOKE" == "true" ]]; then
     docker pull "$PREVIOUS_FRONTEND_IMAGE"
     docker pull "$PREVIOUS_WORKER_IMAGE"
 fi
+
+log "Resolving N-1 Alembic head"
+PREVIOUS_ALEMBIC_HEAD="$(get_single_alembic_head "$PREVIOUS_BACKEND_IMAGE")"
+echo "Using N-1 Alembic head: ${PREVIOUS_ALEMBIC_HEAD}"
 
 log "Extracting N-1 database init scripts from previous backend image"
 docker create --name "$INIT_EXTRACT_CONTAINER" "$PREVIOUS_BACKEND_IMAGE" >/dev/null
@@ -132,13 +151,14 @@ docker exec -e "PGPASSWORD=${POSTGRES_PASSWORD}" "$POSTGRES_CONTAINER" \
     psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 \
     -c "SELECT extname FROM pg_extension WHERE extname = 'pg_cron';"
 
-log "Bootstrapping database with N-1 backend image"
+log "Bootstrapping database to N-1 Alembic head with candidate migration scripts"
 docker run --rm \
     --name "migration-compat-n-minus-1-${RUN_SUFFIX}" \
     --network "$NETWORK_NAME" \
     "${docker_run_backend_env[@]}" \
-    "$PREVIOUS_BACKEND_IMAGE" \
-    python -c "print('N-1 migrations complete')"
+    --entrypoint alembic \
+    "$CANDIDATE_BACKEND_IMAGE" \
+    upgrade "$PREVIOUS_ALEMBIC_HEAD"
 
 log "N-1 Alembic revision"
 docker exec -e "PGPASSWORD=${POSTGRES_PASSWORD}" "$POSTGRES_CONTAINER" \

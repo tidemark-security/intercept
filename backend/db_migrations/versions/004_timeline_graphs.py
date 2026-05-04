@@ -20,6 +20,13 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    inspector = sa.inspect(op.get_bind())
+    if "timeline_graphs" in inspector.get_table_names():
+        existing_indexes = {index["name"] for index in inspector.get_indexes("timeline_graphs")}
+        if "ix_timeline_graphs_entity" not in existing_indexes:
+            op.create_index("ix_timeline_graphs_entity", "timeline_graphs", ["entity_type", "entity_id"], unique=False)
+        return
+
     op.create_table(
         "timeline_graphs",
         sa.Column("id", sa.Integer(), nullable=False),
