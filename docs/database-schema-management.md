@@ -256,6 +256,52 @@ The [`include_object`](../backend/db_migrations/env.py) function in `env.py` pre
 
 When adding new raw SQL indexes or columns, add them to this filter to keep autogenerate clean.
 
+## Migration Compatibility Testing
+
+Pull requests that change migration-sensitive files run the `Migration Compatibility` GitHub Actions workflow. The workflow is intentionally separate from the normal backend test job because the regular test fixtures build tables directly from `SQLModel.metadata.create_all()` and do not exercise the production migration path.
+
+The compatibility workflow tests the production upgrade path from the previous released container images to the PR backend image:
+
+1. Resolve the previous release tag from semver tags on `main`.
+2. Pull `ghcr.io/tidemark-security/intercept-postgres:<tag>` and `ghcr.io/tidemark-security/intercept-backend:<tag>`.
+3. Start the previous released PostgreSQL image with the previous release init scripts extracted from the previous backend image.
+4. Run the previous released backend entrypoint so the database reaches the N-1 Alembic head.
+5. Run the PR backend image so `alembic upgrade head` applies the new migration path.
+6. Run the PR backend image again with `alembic current --check-heads`; this also verifies that a second `alembic upgrade head` is idempotent.
+7. Start the PR backend and call `/health` as a lightweight startup smoke test.
+
+You can run the same harness locally after building a candidate backend image:
+
+```bash
+conda activate intercept
+docker build -t intercept-backend:migration-candidate backend
+N_MINUS_1_TAG=0.4.0 ./scripts/test-migration-compatibility.sh
+```
+
+The workflow is path-filtered to avoid running on unrelated frontend or documentation-only PRs. It runs when migrations, models, init SQL, the backend Dockerfile, the backend entrypoint, or the workflow/harness itself changes.
+
+### Rollback Smoke Testing
+
+The harness also has an opt-in app rollback smoke test:
+
+```bash
+RUN_ROLLBACK_SMOKE=true N_MINUS_1_TAG=0.4.0 ./scripts/test-migration-compatibility.sh
+```
+
+By default this smoke test starts the previous backend image with its entrypoint bypassed (`ROLLBACK_SKIP_MIGRATIONS=true`) because an older Alembic environment generally cannot read a database stamped with a newer migration revision. This checks whether the previous app binary can still start against the upgraded schema, but it is not the same as proving the unmodified previous container entrypoint can be redeployed after a schema upgrade.
+
+If production rollback requires starting old backend images without overriding the entrypoint, add a deployment-supported migration skip mode first, then make the rollback smoke test blocking.
+
+### Migration Author Checklist
+
+Before merging a migration PR:
+
+- Test from the previous released image tag, not only from an empty database.
+- Make new DDL idempotent when it may collide with known live drift or objects created by older bootstrap behavior.
+- Use `IF NOT EXISTS`, `IF EXISTS`, `CREATE OR REPLACE`, or explicit catalog checks for raw SQL objects.
+- Keep data migrations small and deterministic; add representative fixture data to the compatibility harness when a migration transforms existing data.
+- Treat downgrades as best-effort unless the release explicitly promises database rollback. For app rollback, prefer forward-compatible schemas that old app versions can tolerate.
+
 ## Fresh Environment Setup
 
 For a completely fresh environment (no existing data):
