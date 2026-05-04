@@ -15,7 +15,8 @@ import { formatRelativeTime } from '@/utils/dateFormatters';
 import { formatTimestampForPreference } from '@/utils/timezonePreference';
 
 import { Check, Copy } from 'lucide-react';
-interface CopyableTimestampProps {
+
+export interface CopyableTimestampProps {
   /** Raw timestamp value (ISO8601 string or Date-parseable string) */
   value: string | null | undefined;
   /** Optional label to display before the timestamp (e.g., "Created", "Modified") */
