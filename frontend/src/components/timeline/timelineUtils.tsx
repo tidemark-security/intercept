@@ -1,7 +1,9 @@
 import React from 'react';
 import { Tag } from '@/components/data-display/Tag';
 import type { TimelineItem } from '@/types/timeline';
+import { isDeletedItem } from '@/types/timeline';
 import { isEnrichmentStatusActive } from '@/utils/enrichmentState';
+import { getTimelineItemSortValue } from '@/utils/timelineHelpers';
 
 const FAILED_ENRICHMENT_STATUSES = new Set(['failed']);
 
@@ -61,6 +63,15 @@ export function groupTimelineItems(items: TimelineItem[]): TimelineItemGroup[] {
     // Find all items with similar timestamp and description (or same timestamp/type if no descriptions)
     const matchingItems = items.filter((otherItem, otherIndex) => {
       if (otherIndex < index) return false; // Only look ahead
+      const itemIsDeleted = isDeletedItem(item);
+      const otherItemIsDeleted = isDeletedItem(otherItem);
+      if (itemIsDeleted !== otherItemIsDeleted) return false;
+
+      if (itemIsDeleted && otherItemIsDeleted) {
+        return item.original_type === otherItem.original_type
+          && getTimelineItemSortValue(item) === getTimelineItemSortValue(otherItem);
+      }
+
       if (!item.created_at || !otherItem.created_at) return false;
       
       // Calculate timestamp difference in milliseconds

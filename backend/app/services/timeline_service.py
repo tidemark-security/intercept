@@ -41,9 +41,9 @@ class TimelineService:
 
     def _iter_items(self, items: Any) -> Iterable[Dict[str, Any]]:
         if isinstance(items, dict):
-            return items.values()
+            return (item for item in items.values() if isinstance(item, dict))
         if isinstance(items, list):
-            return items
+            return (item for item in items if isinstance(item, dict))
         return ()
 
     def _ensure_item_id(self, item: Dict[str, Any]) -> None:
@@ -192,8 +192,6 @@ class TimelineService:
     ) -> Any:
         """Annotate denormalized timeline items with audit metadata and tombstones."""
         timeline_items = self._response_mapping(getattr(entity, "timeline_items", None))
-        if not timeline_items:
-            return entity
 
         result = await db.execute(
             select(AuditLog)
@@ -273,6 +271,7 @@ class TimelineService:
                 "deleted_at": row.performed_at.isoformat(),
                 "deleted_by": row.performed_by or "system",
                 "original_type": snapshot.get("type", "unknown"),
+                "original_timestamp": snapshot.get("timestamp"),
                 "original_created_at": snapshot.get("created_at"),
                 "original_created_by": snapshot.get("created_by"),
                 "parent_id": snapshot.get("parent_id"),
@@ -304,9 +303,10 @@ class TimelineService:
 
     def _timeline_sort_key(self, item: Dict[str, Any]) -> str:
         return str(
-            item.get("original_created_at")
-            or item.get("created_at")
+            item.get("original_timestamp")
             or item.get("timestamp")
+            or item.get("original_created_at")
+            or item.get("created_at")
             or item.get("deleted_at")
             or ""
         )
@@ -980,7 +980,8 @@ class TimelineService:
         if not items:
             return None
         if isinstance(items, dict) and item_id in items:
-            return items[item_id]
+            item = items[item_id]
+            return item if isinstance(item, dict) else None
         for item in self._iter_items(items):
             if item.get("id") == item_id:
                 return item
@@ -1088,57 +1089,48 @@ class TimelineService:
         
         return False
     
+    def _build_updated_item(self, item: Dict[str, Any], item_id: str, updated: Dict[str, Any]) -> Dict[str, Any]:
+        created_at = item.get("created_at")
+        created_by = item.get("created_by")
+        existing_replies = item.get("replies")
+
+        new_item = {**item, **updated}
+        new_item["id"] = item_id
+        new_item["created_at"] = created_at
+        new_item["created_by"] = created_by
+        if existing_replies is not None:
+            new_item["replies"] = existing_replies
+        self._serialize_datetime_fields(new_item)
+        self._coerce_item_for_storage(new_item)
+        return new_item
+
     def _update_item_recursive(self, items: Any, item_id: str, updated: Dict[str, Any], updated_by: str) -> bool:
         """Recursively search and update a timeline item by ID."""
-        if isinstance(items, dict) and item_id in items:
-            item = items[item_id]
-            created_at = item.get("created_at")
-            created_by = item.get("created_by")
-            existing_replies = item.get("replies")
-
-            new_item = {**item, **updated}
-            new_item["id"] = item_id
-            new_item["created_at"] = created_at
-            new_item["created_by"] = created_by
-            if existing_replies is not None:
-                new_item["replies"] = existing_replies
-            self._serialize_datetime_fields(new_item)
-            self._coerce_item_for_storage(new_item)
-            items[item_id] = new_item
-            return True
-
-        for idx, item in enumerate(items):
-            if item.get("id") == item_id:
-                # Found the item - update it
-                created_at = item.get("created_at")
-                created_by = item.get("created_by")
-                existing_replies = item.get("replies")  # Preserve existing replies
-                
-                new_item = {**item, **updated}
-                new_item["id"] = item_id
-                new_item["created_at"] = created_at
-                new_item["created_by"] = created_by
-                
-                # Preserve existing replies - don't allow updates to overwrite the replies structure
-                # Replies should only be modified through add_timeline_item with parent_id
-                if existing_replies is not None:
-                    new_item["replies"] = existing_replies
-                
-                # Ensure all datetime objects are serialized to ISO format strings
-                for key, value in new_item.items():
-                    if isinstance(value, datetime):
-                        new_item[key] = value.isoformat()
-                self._coerce_item_for_storage(new_item)
-                
-                items[idx] = new_item
+        if isinstance(items, dict):
+            if item_id in items:
+                items[item_id] = self._build_updated_item(items[item_id], item_id, updated)
                 return True
-            
-            # Check nested replies recursively
-            replies = item.get('replies')
-            if replies and isinstance(replies, list):
-                if self._update_item_recursive(replies, item_id, updated, updated_by):
+
+            for item in self._iter_items(items):
+                replies = item.get("replies")
+                if replies and self._update_item_recursive(replies, item_id, updated, updated_by):
                     return True
-        
+
+            return False
+
+        if isinstance(items, list):
+            for idx, item in enumerate(items):
+                if not isinstance(item, dict):
+                    continue
+
+                if item.get("id") == item_id:
+                    items[idx] = self._build_updated_item(item, item_id, updated)
+                    return True
+
+                replies = item.get("replies")
+                if replies and self._update_item_recursive(replies, item_id, updated, updated_by):
+                    return True
+
         return False
 
     def remove_timeline_item(self, entity: Any, item_id: str) -> bool:

@@ -126,6 +126,40 @@ async def _add_timeline_item(
     return body
 
 
+async def _delete_timeline_item(
+    client: AsyncClient,
+    case_id: int,
+    item_id: str,
+    session_cookie: str,
+) -> dict[str, Any]:
+    response = await client.delete(
+        f"/api/v1/cases/{case_id}/timeline/{item_id}",
+        cookies={"intercept_session": session_cookie},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    body["timeline_items"] = _timeline_values(body.get("timeline_items"))
+    return body
+
+
+async def _update_timeline_item(
+    client: AsyncClient,
+    case_id: int,
+    item_id: str,
+    payload: dict[str, Any],
+    session_cookie: str,
+) -> dict[str, Any]:
+    response = await client.put(
+        f"/api/v1/cases/{case_id}/timeline/{item_id}",
+        json=payload,
+        cookies={"intercept_session": session_cookie},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    body["timeline_items"] = _timeline_values(body.get("timeline_items"))
+    return body
+
+
 # ---------------------------------------------------------------------------
 # Simple (non-variant) item types
 # ---------------------------------------------------------------------------
@@ -158,6 +192,181 @@ async def test_add_simple_timeline_item_to_case(
 
     items = body["timeline_items"]
     assert any(i["type"] == item_type for i in items)
+
+
+# ---------------------------------------------------------------------------
+# Tombstones
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_delete_case_timeline_item_returns_tombstone_when_timeline_is_empty(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+    case_id = await _create_case(client, session_cookie)
+    payload = make_note("deleted-note-c1")
+    payload["timestamp"] = "2026-01-02T12:00:00+00:00"
+    payload["created_at"] = "2026-01-02T12:00:01+00:00"
+
+    await _add_timeline_item(client, case_id, payload, session_cookie)
+    body = await _delete_timeline_item(client, case_id, "deleted-note-c1", session_cookie)
+
+    items = body["timeline_items"]
+    assert len(items) == 1
+    tombstone = items[0]
+    assert tombstone["id"] == "deleted-note-c1"
+    assert tombstone["type"] == "_deleted"
+    assert tombstone["original_type"] == "note"
+    assert tombstone["original_timestamp"].startswith("2026-01-02T12:00:00")
+    assert tombstone["original_created_at"].startswith("2026-01-02T12:00:01")
+    assert tombstone["deleted_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_case_timeline_reply_returns_tombstone_under_parent(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+    case_id = await _create_case(client, session_cookie)
+    parent_payload = make_note("parent-note-c1")
+    reply_payload = make_note("deleted-reply-c1")
+    reply_payload["parent_id"] = "parent-note-c1"
+    reply_payload["timestamp"] = "2026-01-02T12:15:00+00:00"
+    reply_payload["created_at"] = "2026-01-02T12:15:01+00:00"
+
+    await _add_timeline_item(client, case_id, parent_payload, session_cookie)
+    await _add_timeline_item(client, case_id, reply_payload, session_cookie)
+    body = await _delete_timeline_item(client, case_id, "deleted-reply-c1", session_cookie)
+
+    parent = next(item for item in body["timeline_items"] if item["id"] == "parent-note-c1")
+    assert len(body["timeline_items"]) == 1
+    assert len(parent["replies"]) == 1
+    tombstone = parent["replies"][0]
+    assert tombstone["id"] == "deleted-reply-c1"
+    assert tombstone["type"] == "_deleted"
+    assert tombstone["parent_id"] == "parent-note-c1"
+    assert tombstone["original_type"] == "note"
+    assert tombstone["original_timestamp"].startswith("2026-01-02T12:15:00")
+
+
+# ---------------------------------------------------------------------------
+# Nested reply updates
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_update_case_timeline_reply_description_preserves_parent_structure(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+    case_id = await _create_case(client, session_cookie)
+    parent_payload = make_note("parent-update-c1")
+    reply_payload = make_note("reply-update-c1")
+    reply_payload["parent_id"] = "parent-update-c1"
+
+    await _add_timeline_item(client, case_id, parent_payload, session_cookie)
+    before_body = await _add_timeline_item(client, case_id, reply_payload, session_cookie)
+    before_parent = next(item for item in before_body["timeline_items"] if item["id"] == "parent-update-c1")
+    before_reply = before_parent["replies"][0]
+
+    update_payload = make_note("reply-update-c1")
+    update_payload["parent_id"] = "parent-update-c1"
+    update_payload["description"] = "Edited nested reply"
+    body = await _update_timeline_item(
+        client,
+        case_id,
+        "reply-update-c1",
+        update_payload,
+        session_cookie,
+    )
+
+    parent = next(item for item in body["timeline_items"] if item["id"] == "parent-update-c1")
+    assert len(body["timeline_items"]) == 1
+    assert len(parent["replies"]) == 1
+    reply = parent["replies"][0]
+    assert reply["id"] == "reply-update-c1"
+    assert reply["parent_id"] == "parent-update-c1"
+    assert reply["description"] == "Edited nested reply"
+    assert reply["created_at"] == before_reply["created_at"]
+    assert reply["created_by"] == before_reply["created_by"]
+
+
+@pytest.mark.asyncio
+async def test_update_case_timeline_reply_flagged_and_highlighted(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+    case_id = await _create_case(client, session_cookie)
+    parent_payload = make_note("parent-flags-c1")
+    reply_payload = make_note("reply-flags-c1")
+    reply_payload["parent_id"] = "parent-flags-c1"
+
+    await _add_timeline_item(client, case_id, parent_payload, session_cookie)
+    await _add_timeline_item(client, case_id, reply_payload, session_cookie)
+
+    update_payload = make_note("reply-flags-c1")
+    update_payload["parent_id"] = "parent-flags-c1"
+    update_payload["flagged"] = True
+    update_payload["highlighted"] = True
+    body = await _update_timeline_item(
+        client,
+        case_id,
+        "reply-flags-c1",
+        update_payload,
+        session_cookie,
+    )
+
+    parent = next(item for item in body["timeline_items"] if item["id"] == "parent-flags-c1")
+    reply = parent["replies"][0]
+    assert parent["flagged"] is False
+    assert parent["highlighted"] is False
+    assert reply["flagged"] is True
+    assert reply["highlighted"] is True
+
+
+@pytest.mark.asyncio
+async def test_update_deeply_nested_case_timeline_reply(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+    case_id = await _create_case(client, session_cookie)
+    parent_payload = make_note("parent-deep-c1")
+    first_reply_payload = make_note("reply-deep-c1")
+    first_reply_payload["parent_id"] = "parent-deep-c1"
+    second_reply_payload = make_note("reply-deep-c2")
+    second_reply_payload["parent_id"] = "reply-deep-c1"
+
+    await _add_timeline_item(client, case_id, parent_payload, session_cookie)
+    await _add_timeline_item(client, case_id, first_reply_payload, session_cookie)
+    await _add_timeline_item(client, case_id, second_reply_payload, session_cookie)
+
+    update_payload = make_note("reply-deep-c2")
+    update_payload["parent_id"] = "reply-deep-c1"
+    update_payload["description"] = "Edited deep nested reply"
+    body = await _update_timeline_item(
+        client,
+        case_id,
+        "reply-deep-c2",
+        update_payload,
+        session_cookie,
+    )
+
+    parent = next(item for item in body["timeline_items"] if item["id"] == "parent-deep-c1")
+    first_reply = parent["replies"][0]
+    second_reply = first_reply["replies"][0]
+    assert first_reply["id"] == "reply-deep-c1"
+    assert second_reply["id"] == "reply-deep-c2"
+    assert second_reply["parent_id"] == "reply-deep-c1"
+    assert second_reply["description"] == "Edited deep nested reply"
 
 
 # ---------------------------------------------------------------------------

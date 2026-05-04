@@ -112,6 +112,30 @@ RETENTION_JOBS = [
 ALL_CRON_JOBS = CRON_JOBS + RETENTION_JOBS
 
 
+BASELINE_TABLE_NAMES = {
+    "actors",
+    "actor_snapshots",
+    "admin_reset_requests",
+    "alerts",
+    "api_keys",
+    "app_settings",
+    "audit_logs",
+    "auth_sessions",
+    "cases",
+    "enrichment_aliases",
+    "enrichment_cache",
+    "langflow_messages",
+    "langflow_sessions",
+    "link_templates",
+    "oidc_auth_requests",
+    "passkey_credentials",
+    "tasks",
+    "triage_recommendations",
+    "user_accounts",
+    "webauthn_challenges",
+}
+
+
 def upgrade() -> None:
     # =========================================================================
     # STEP 1: Create custom PostgreSQL enums BEFORE tables
@@ -169,12 +193,25 @@ def upgrade() -> None:
     """)
     
     # =========================================================================
-    # STEP 2: Create all tables via SQLModel
-    # This is equivalent to SQLModel.metadata.create_all(engine)
+    # STEP 2: Create baseline tables via SQLModel
     # =========================================================================
     
     bind = op.get_bind()
-    SQLModel.metadata.create_all(bind)
+    baseline_table_names = {
+        table.name
+        for table in SQLModel.metadata.sorted_tables
+        if table.name in BASELINE_TABLE_NAMES
+    }
+    missing_baseline_tables = BASELINE_TABLE_NAMES - baseline_table_names
+    if missing_baseline_tables:
+        raise RuntimeError(f"Missing baseline table metadata: {sorted(missing_baseline_tables)}")
+
+    baseline_tables = [
+        table
+        for table in SQLModel.metadata.sorted_tables
+        if table.name in BASELINE_TABLE_NAMES
+    ]
+    SQLModel.metadata.create_all(bind, tables=baseline_tables)
     
     # =========================================================================
     # STEP 3: Create partial unique index for human user emails

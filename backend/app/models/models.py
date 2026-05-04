@@ -241,6 +241,10 @@ class DeletedItem(SQLModel):
     deleted_at: datetime = Field(sa_column=Column(DateTime(timezone=True)))
     deleted_by: str
     original_type: str
+    original_timestamp: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True)),
+    )
     original_created_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True)),

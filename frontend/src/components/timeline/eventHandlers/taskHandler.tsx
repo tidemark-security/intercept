@@ -10,6 +10,7 @@ import type { TimelineItem } from '@/types/timeline';
 import type { TaskItem } from '@/types/generated/models/TaskItem';
 import { getTimelineIcon } from '@/utils/timelineIcons';
 import { formatAbsoluteTime } from '@/utils/dateFormatters';
+import { getTaskDueStatus } from '@/utils/taskDueStatus';
 
 import { Badge } from '@/components/data-display/Badge';
 import type { CardConfig, CardFactoryOptions, ItemCharacteristic } from '../TimelineCardFactory';
@@ -70,17 +71,11 @@ function getTaskCharacteristics(item: TaskItem): Partial<TaskItem> & Record<stri
     return characteristics;
   }
 
-  // Check due date for overdue/due soon
-  if (item.due_date) {
-    const dueDate = new Date(item.due_date);
-    const now = new Date();
-    const oneDayFromNow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-
-    if (dueDate < now) {
-      characteristics.is_overdue = true;
-    } else if (dueDate <= oneDayFromNow) {
-      characteristics.is_due_soon = true;
-    }
+  const dueStatus = getTaskDueStatus(item.due_date, item.status);
+  if (dueStatus === 'overdue') {
+    characteristics.is_overdue = true;
+  } else if (dueStatus === 'due_soon') {
+    characteristics.is_due_soon = true;
   }
 
   return characteristics;

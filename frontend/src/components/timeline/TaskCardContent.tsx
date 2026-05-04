@@ -7,6 +7,8 @@ export interface TaskCardContentProps {
   data: Partial<TaskRead> & { title: string };
   /** Whether data is currently loading (shows skeleton) */
   isLoading?: boolean;
+  /** Whether to render the metadata tag section. Timeline embeds render tags in the shared footer. */
+  showTags?: boolean;
 }
 
 /**
@@ -26,13 +28,14 @@ export interface TaskCardContentProps {
  * <TaskCardContent data={partialData} isLoading={true} />
  * ```
  */
-export function TaskCardContent({ data, isLoading = false }: TaskCardContentProps) {
+export function TaskCardContent({ data, isLoading = false, showTags = true }: TaskCardContentProps) {
   if (isLoading) {
     return (
       <EntityMetadataCard 
         entity={null} 
         entityType="task" 
         isLoading={true} 
+        showTags={showTags}
       />
     );
   }
@@ -42,6 +45,7 @@ export function TaskCardContent({ data, isLoading = false }: TaskCardContentProp
       entity={data as TaskRead}
       entityType="task"
       isLoading={false}
+      showTags={showTags}
     />
   );
 }
