@@ -3,19 +3,19 @@ aiosqlite==0.22.0
 alembic==1.18.4
 argon2-cffi==25.1.0
 asyncpg==0.31.0
-authlib>=1.6.9
-cachetools==5.5.2
+authlib>=1.7.0
+cachetools==7.0.6
 email-validator==2.3.0
 fastapi-pagination==0.15.12
-fastapi==0.135.3
+fastapi==0.136.1
 geoip2==5.2.0
 httpx==0.28.1
 ldap3==2.9.1
-mitreattack-python==5.4.4
-psycopg2-binary==2.9.11
-pydantic-settings==2.12.0
+mitreattack-python==5.4.7
+psycopg2-binary==2.9.12
+pydantic-settings==2.14.0
 python-dotenv==1.2.2
-PyJWT[crypto]>=2.12.0
+PyJWT[crypto]>=2.12.1
 python-multipart>=0.0.22
 sqlakeyset==2.0.1762907931
 sqlmodel==0.0.27
@@ -23,15 +23,15 @@ webauthn==2.7.1
 uvicorn[standard]==0.44.0
 
 # MCP
-fastmcp>=3.2.0
+fastmcp>=3.2.4
 
 # File upload dependencies
 minio==7.2.20
 python-magic==0.4.27
 
 # LangFlow AI Chat dependencies
-sse-starlette==3.3.4
-cryptography>=46.0.6
+sse-starlette==3.4.1
+cryptography>=47.0.0
 pgqueuer==0.26.3
 
 # Worker dependencies

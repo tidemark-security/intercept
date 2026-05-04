@@ -12,8 +12,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@lexical/rich-text": "^0.35.0",
-    "@mdxeditor/editor": "^3.53.1",
+    "@lexical/rich-text": "^0.43.0",
+    "@mdxeditor/editor": "^3.55.0",
     "@radix-ui/react-checkbox": "^1.3.3",
     "@radix-ui/react-collapsible": "^1.1.12",
     "@radix-ui/react-context-menu": "^2.2.16",
@@ -27,7 +27,7 @@
     "@radix-ui/react-switch": "^1.2.6",
     "@radix-ui/react-toggle-group": "^1.1.11",
     "@radix-ui/react-tooltip": "^1.2.8",
-    "@tanstack/react-query": "^5.90.5",
+    "@tanstack/react-query": "^5.100.5",
     "@tidemark-security/ux": "github:tidemark-security/ux#v0.2.0",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@types/uuid": "^10.0.0",
@@ -49,7 +49,7 @@
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.4.0",
-    "uuid": "^13.0.0"
+    "uuid": "^14.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
@@ -67,18 +67,18 @@
     "@vitejs/plugin-react": "^6.0.1",
     "autoprefixer": "^10.4.16",
     "eslint": "^9.0.0",
-    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
-    "globals": "^15.0.0",
-    "jsdom": "^24.0.0",
+    "globals": "^17.5.0",
+    "jsdom": "^29.0.2",
     "openapi-typescript-codegen": "^0.30.0",
-    "postcss": "^8.4.32",
+    "postcss": "^8.5.10",
     "postcss-nesting": "^13.0.2",
     "rollup-plugin-visualizer": "^6.0.11",
     "tailwindcss": "^3.3.6",
     "typescript": "^6.0.2",
     "typescript-eslint": "^8.58.0",
-    "vite": "^8.0.8",
+    "vite": "^8.0.10",
     "vite-plugin-svgr": "^4.5.0",
     "vitest": "^4.1.2"
   },
