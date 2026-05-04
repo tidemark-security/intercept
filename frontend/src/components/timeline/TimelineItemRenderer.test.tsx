@@ -70,6 +70,122 @@ describe('TimelineItemRenderer enrichments', () => {
     expect(screen.getAllByText('Nested reply')).toHaveLength(1);
   });
 
+  it('renders deleted replies as read-only tombstones in original timeline order', () => {
+    const item: RecursiveTimelineItem<NoteItem> = {
+      id: 'note-parent-with-deleted-reply',
+      type: 'note',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      description: 'Parent note',
+      replies: {
+        'late-reply': {
+          id: 'late-reply',
+          type: 'note',
+          created_by: 'analyst',
+          created_at: '2026-03-14T12:50:11.293811Z',
+          timestamp: '2026-03-14T12:50:11.284000Z',
+          tags: [],
+          flagged: false,
+          highlighted: false,
+          description: 'Late reply',
+          replies: null,
+        },
+        'deleted-reply': {
+          id: 'deleted-reply',
+          type: '_deleted',
+          deleted_at: '2026-03-14T13:00:11.293811Z',
+          deleted_by: 'admin',
+          original_type: 'note',
+          original_timestamp: '2026-03-14T12:45:11.284000Z',
+          original_created_at: '2026-03-14T12:45:11.293811Z',
+          original_created_by: 'analyst',
+          parent_id: 'note-parent-with-deleted-reply',
+          replies: null,
+        },
+      },
+    };
+
+    renderWithProviders(
+      <TimelineItemRenderer
+        item={item}
+        index={0}
+        total={1}
+        entityId={38}
+        entityType="case"
+        onDelete={vi.fn()}
+        onReply={vi.fn()}
+      />
+    );
+
+    const deletedReply = screen.getByText('deleted note');
+    const lateReply = screen.getByText('Late reply');
+
+    expect(deletedReply).toBeInTheDocument();
+    expect(lateReply).toBeInTheDocument();
+    expect(deletedReply.compareDocumentPosition(lateReply) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('continues the parent thread when replying from the final deleted reply', () => {
+    const onReply = vi.fn();
+    const item: RecursiveTimelineItem<NoteItem> = {
+      id: 'note-parent-with-final-deleted-reply',
+      type: 'note',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      description: 'Parent note',
+      replies: {
+        'live-reply': {
+          id: 'live-reply',
+          type: 'note',
+          created_by: 'analyst',
+          created_at: '2026-03-14T12:45:11.293811Z',
+          timestamp: '2026-03-14T12:45:11.284000Z',
+          tags: [],
+          flagged: false,
+          highlighted: false,
+          description: 'Live reply',
+          replies: null,
+        },
+        'deleted-final-reply': {
+          id: 'deleted-final-reply',
+          type: '_deleted',
+          deleted_at: '2026-03-14T13:00:11.293811Z',
+          deleted_by: 'admin',
+          original_type: 'note',
+          original_timestamp: '2026-03-14T12:50:11.284000Z',
+          original_created_at: '2026-03-14T12:50:11.293811Z',
+          original_created_by: 'analyst',
+          parent_id: 'note-parent-with-final-deleted-reply',
+          replies: null,
+        },
+      },
+    };
+
+    renderWithProviders(
+      <TimelineItemRenderer
+        item={item}
+        index={0}
+        total={1}
+        entityId={38}
+        entityType="case"
+        onDelete={vi.fn()}
+        onReply={onReply}
+      />
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reply' }).at(-1)!);
+
+    expect(onReply).toHaveBeenCalledWith('note-parent-with-final-deleted-reply');
+  });
+
   it('renders google workspace enrichment content for internal actors', () => {
     const item = {
       id: 'actor-1',
@@ -154,6 +270,140 @@ describe('TimelineItemRenderer enrichments', () => {
     const description = screen.getByText('Bottom description', { selector: 'p' });
 
     expect(enrichmentHeading.compareDocumentPosition(description) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('renders item tags in the shared footer when no description is present', () => {
+    const item = {
+      id: 'actor-tags-1',
+      type: 'internal_actor',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: ['urgent', 'phishing'],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      user_id: 'alice@example.com',
+    } as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="alert" />
+    );
+
+    expect(screen.getByLabelText('Tags')).toBeInTheDocument();
+    expect(screen.getByText('urgent')).toBeInTheDocument();
+    expect(screen.getByText('phishing')).toBeInTheDocument();
+  });
+
+  it('renders linked entity tags in the footer without duplicating metadata tags', () => {
+    const item = {
+      id: 'linked-alert-tags-1',
+      type: 'alert',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      updated_at: '2026-03-14T12:50:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: ['investigate'],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      alert_id: 42,
+      title: 'Suspicious login',
+      status: 'NEW',
+      priority: 'MEDIUM',
+    } as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="case" />
+    );
+
+    expect(screen.getByLabelText('Tags')).toBeInTheDocument();
+    expect(screen.getAllByText('investigate')).toHaveLength(1);
+  });
+
+  it('shows the linked source timeline toggle in full timeline cards', () => {
+    const item = {
+      id: 'linked-alert-source-1',
+      type: 'alert',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      updated_at: '2026-03-14T12:50:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      alert_id: 42,
+      title: 'Suspicious login',
+      status: 'NEW',
+      priority: 'MEDIUM',
+      source_timeline_items: {
+        'source-note-1': {
+          id: 'source-note-1',
+          type: 'note',
+          created_by: 'analyst',
+          created_at: '2026-03-14T12:45:11.293811Z',
+          timestamp: '2026-03-14T12:45:11.284000Z',
+          tags: [],
+          flagged: false,
+          highlighted: false,
+          description: 'Source note',
+          replies: null,
+        },
+      },
+    } as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="case" />
+    );
+
+    expect(screen.getByText('Show alert timeline (1)')).toBeInTheDocument();
+  });
+
+  it('hides the linked source timeline toggle in compact previews', () => {
+    const item = {
+      id: 'linked-alert-source-compact-1',
+      type: 'alert',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      updated_at: '2026-03-14T12:50:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      alert_id: 42,
+      title: 'Suspicious login',
+      status: 'NEW',
+      priority: 'MEDIUM',
+      source_timeline_items: {
+        'source-note-1': {
+          id: 'source-note-1',
+          type: 'note',
+          created_by: 'analyst',
+          created_at: '2026-03-14T12:45:11.293811Z',
+          timestamp: '2026-03-14T12:45:11.284000Z',
+          tags: [],
+          flagged: false,
+          highlighted: false,
+          description: 'Source note',
+          replies: null,
+        },
+      },
+    } as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer
+        item={item}
+        index={0}
+        total={1}
+        entityId={38}
+        entityType="case"
+        compactPreview
+      />
+    );
+
+    expect(screen.queryByText('Show alert timeline (1)')).not.toBeInTheDocument();
   });
 
   it('renders multiple provider blocks through the shared enrichment wrapper', () => {

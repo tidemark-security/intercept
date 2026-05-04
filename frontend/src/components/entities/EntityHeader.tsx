@@ -208,8 +208,8 @@ const EntityHeaderRoot = React.forwardRef<
   const assigneeSize = isMobile ? "small" : "medium";
   const shouldShowTimelineViewToggle = showTimelineViewToggle && Boolean(onTimelineViewModeChange);
   const viewToggleItemClassName = buttonSize === "medium"
-    ? "min-w-[112px] justify-center self-stretch"
-    : "h-8 flex-1 justify-center";
+    ? "min-w-[112px] flex-1 justify-center self-stretch"
+    : "flex-1 justify-center self-stretch";
 
   // Determine button labels based on entity type
   const closeButtonLabel = isTask 
@@ -278,9 +278,9 @@ const EntityHeaderRoot = React.forwardRef<
 
         </div>
         {/* Action Buttons */}
-        <div className={`flex h-9 mobile:h-8 items-center justify-end gap-2 mobile:w-full mobile:justify-stretch mobile:transition-all mobile:duration-300 ${!isVisible ? 'mobile:opacity-0 mobile:pointer-events-none mobile:h-0 mobile:overflow-hidden' : 'mobile:opacity-100'}`}>
+        <div className={`flex min-h-9 flex-wrap items-stretch justify-end gap-2 mobile:w-full mobile:justify-stretch mobile:transition-all mobile:duration-300 ${!isVisible ? 'mobile:opacity-0 mobile:pointer-events-none mobile:h-0 mobile:overflow-hidden' : 'mobile:opacity-100'}`}>
           {shouldShowTimelineViewToggle && (
-            <div className="flex h-full self-stretch rounded-md border border-solid border-neutral-border bg-default-background p-0.5 mobile:flex-1">
+            <div className="flex h-9 w-fit max-w-full flex-none self-stretch rounded-md border border-solid border-neutral-border bg-default-background p-0.5 mobile:h-8 mobile:w-full">
               <button
                 type="button"
                 className={cn(
@@ -327,7 +327,7 @@ const EntityHeaderRoot = React.forwardRef<
           )}
           {/* Assignee Selector - Always shown and functional */}
           {showAssignmentControls && (
-            <div className="flex items-center justify-end gap-2 self-stretch mobile:flex-1">
+            <div className="flex flex-none items-center justify-end gap-2 self-stretch mobile:min-w-[min(100%,10rem)] mobile:flex-1 mobile:basis-40">
               <AssigneeSelector
                 mode="assign"
                 size={assigneeSize}
@@ -345,7 +345,7 @@ const EntityHeaderRoot = React.forwardRef<
           )}
           {/* Close/Reopen and Primary Action Buttons - Only in editable mode or for primary action in preview */}
           {(showCloseReopenButtons || showPrimaryAction) && (
-            <div className="flex items-center justify-end gap-2 self-stretch mobile:flex-1">
+            <div className="flex flex-none items-center justify-end gap-2 self-stretch mobile:min-w-[min(100%,10rem)] mobile:flex-1 mobile:basis-40">
               {onEdit && (
                 <Button
                   className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}

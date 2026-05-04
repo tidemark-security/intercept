@@ -29,6 +29,8 @@ export interface CopyableTimestampProps {
   variant?: 'accent-1-left' | 'accent-1-right' | 'default-left' | 'default-right';
   /** Additional CSS classes */
   className?: string;
+  /** Overrides timestamp, relative-time, label, and icon color classes */
+  textClassName?: string;
 }
 
 export function CopyableTimestamp({
@@ -38,6 +40,7 @@ export function CopyableTimestamp({
   relativePlacement = 'inline',
   variant = 'default-right',
   className,
+  textClassName,
 }: CopyableTimestampProps) {
   const { resolvedTheme } = useTheme();
   const { timezonePreference } = useTimezonePreference();
@@ -84,9 +87,10 @@ export function CopyableTimestamp({
     return null;
   }
 
-  const timestampTextClasses = isDefaultVariant
+  const timestampTextClasses = textClassName || (isDefaultVariant
     ? 'text-default-font'
-    : (isDarkTheme ? 'text-accent-1-600 hover:text-accent-1-500' : 'text-accent-1-800 hover:text-accent-1-700');
+    : (isDarkTheme ? 'text-accent-1-600 hover:text-accent-1-500' : 'text-accent-1-800 hover:text-accent-1-700'));
+  const supportingTextClasses = textClassName || 'text-subtext-color';
 
   const iconClasses = cn(
     'h-3 w-3 transition-opacity',
@@ -121,7 +125,7 @@ export function CopyableTimestamp({
         <div className="flex min-w-0 flex-col items-end gap-0 text-right">
           <span className="flex min-w-0 items-center gap-1">
             {label && (
-              <span className="text-caption font-caption text-subtext-color">
+              <span className={cn("text-caption font-caption", supportingTextClasses)}>
                 {label}:
               </span>
             )}
@@ -130,7 +134,7 @@ export function CopyableTimestamp({
             </span>
           </span>
           {showFull && (
-            <span className="text-caption font-caption text-subtext-color">
+            <span className={cn("text-caption font-caption", supportingTextClasses)}>
               {relativeTime}
             </span>
           )}
@@ -153,7 +157,7 @@ export function CopyableTimestamp({
     >
       {!isRightVariant && icon}
       {label && (
-        <span className="text-caption font-caption text-subtext-color">
+        <span className={cn("text-caption font-caption", supportingTextClasses)}>
           {label}:
         </span>
       )}
@@ -161,7 +165,7 @@ export function CopyableTimestamp({
         {displayTime}
       </span>
       {showFull && (
-        <span className="text-caption font-caption text-subtext-color">
+        <span className={cn("text-caption font-caption", supportingTextClasses)}>
           ({relativeTime})
         </span>
       )}

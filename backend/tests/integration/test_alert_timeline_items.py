@@ -128,6 +128,22 @@ async def _add_timeline_item(
     return body
 
 
+async def _delete_timeline_item(
+    client: AsyncClient,
+    alert_id: int,
+    item_id: str,
+    session_cookie: str,
+) -> dict[str, Any]:
+    response = await client.delete(
+        f"/api/v1/alerts/{alert_id}/timeline/{item_id}",
+        cookies={"intercept_session": session_cookie},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    body["timeline_items"] = _timeline_values(body.get("timeline_items"))
+    return body
+
+
 # ---------------------------------------------------------------------------
 # Simple (non-variant) item types
 # ---------------------------------------------------------------------------
@@ -159,6 +175,36 @@ async def test_add_simple_timeline_item_to_alert(
 
     items = body["timeline_items"]
     assert any(i["type"] == item_type for i in items)
+
+
+# ---------------------------------------------------------------------------
+# Tombstones
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_delete_alert_timeline_item_returns_tombstone_when_timeline_is_empty(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+    alert_id = await _create_alert(client, session_cookie)
+    payload = make_note("deleted-note-a1")
+    payload["timestamp"] = "2026-01-02T13:00:00+00:00"
+    payload["created_at"] = "2026-01-02T13:00:01+00:00"
+
+    await _add_timeline_item(client, alert_id, payload, session_cookie)
+    body = await _delete_timeline_item(client, alert_id, "deleted-note-a1", session_cookie)
+
+    items = body["timeline_items"]
+    assert len(items) == 1
+    tombstone = items[0]
+    assert tombstone["id"] == "deleted-note-a1"
+    assert tombstone["type"] == "_deleted"
+    assert tombstone["original_type"] == "note"
+    assert tombstone["original_timestamp"].startswith("2026-01-02T13:00:00")
+    assert tombstone["original_created_at"].startswith("2026-01-02T13:00:01")
+    assert tombstone["deleted_at"] is not None
 
 
 @pytest.mark.asyncio

@@ -41,9 +41,9 @@ class TimelineService:
 
     def _iter_items(self, items: Any) -> Iterable[Dict[str, Any]]:
         if isinstance(items, dict):
-            return items.values()
+            return (item for item in items.values() if isinstance(item, dict))
         if isinstance(items, list):
-            return items
+            return (item for item in items if isinstance(item, dict))
         return ()
 
     def _ensure_item_id(self, item: Dict[str, Any]) -> None:
@@ -192,8 +192,6 @@ class TimelineService:
     ) -> Any:
         """Annotate denormalized timeline items with audit metadata and tombstones."""
         timeline_items = self._response_mapping(getattr(entity, "timeline_items", None))
-        if not timeline_items:
-            return entity
 
         result = await db.execute(
             select(AuditLog)
@@ -273,6 +271,7 @@ class TimelineService:
                 "deleted_at": row.performed_at.isoformat(),
                 "deleted_by": row.performed_by or "system",
                 "original_type": snapshot.get("type", "unknown"),
+                "original_timestamp": snapshot.get("timestamp"),
                 "original_created_at": snapshot.get("created_at"),
                 "original_created_by": snapshot.get("created_by"),
                 "parent_id": snapshot.get("parent_id"),
@@ -304,9 +303,10 @@ class TimelineService:
 
     def _timeline_sort_key(self, item: Dict[str, Any]) -> str:
         return str(
-            item.get("original_created_at")
-            or item.get("created_at")
+            item.get("original_timestamp")
             or item.get("timestamp")
+            or item.get("original_created_at")
+            or item.get("created_at")
             or item.get("deleted_at")
             or ""
         )
@@ -980,7 +980,8 @@ class TimelineService:
         if not items:
             return None
         if isinstance(items, dict) and item_id in items:
-            return items[item_id]
+            item = items[item_id]
+            return item if isinstance(item, dict) else None
         for item in self._iter_items(items):
             if item.get("id") == item_id:
                 return item

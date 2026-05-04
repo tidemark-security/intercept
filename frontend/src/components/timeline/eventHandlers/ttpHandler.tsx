@@ -124,12 +124,15 @@ export function handleTTPItem(
     </div>
   ) : undefined;
 
-  const analystDescriptionBlock = item.description ? (
-    <TimelineDescriptionBlock actionButtons={options.actionButtons} className="mt-auto">
-      <MarkdownContent
-        content={item.description}
-        className="min-w-0 text-default-font"
-      />
+  const hasTags = !!item.tags?.length;
+  const analystDescriptionBlock = item.description || hasTags || options.actionButtons ? (
+    <TimelineDescriptionBlock actionButtons={options.actionButtons} tags={item.tags} className="mt-auto">
+      {item.description ? (
+        <MarkdownContent
+          content={item.description}
+          className="min-w-0 text-default-font"
+        />
+      ) : null}
     </TimelineDescriptionBlock>
   ) : undefined;
 

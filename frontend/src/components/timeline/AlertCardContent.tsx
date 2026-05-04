@@ -7,6 +7,8 @@ export interface AlertCardContentProps {
   data: Partial<AlertRead> & { title: string };
   /** Whether data is currently loading (shows skeleton) */
   isLoading?: boolean;
+  /** Whether to render the metadata tag section. Timeline embeds render tags in the shared footer. */
+  showTags?: boolean;
 }
 
 /**
@@ -26,13 +28,14 @@ export interface AlertCardContentProps {
  * <AlertCardContent data={partialData} isLoading={true} />
  * ```
  */
-export function AlertCardContent({ data, isLoading = false }: AlertCardContentProps) {
+export function AlertCardContent({ data, isLoading = false, showTags = true }: AlertCardContentProps) {
   if (isLoading) {
     return (
       <EntityMetadataCard 
         entity={null} 
         entityType="alert" 
         isLoading={true} 
+        showTags={showTags}
       />
     );
   }
@@ -42,6 +45,7 @@ export function AlertCardContent({ data, isLoading = false }: AlertCardContentPr
       entity={data as AlertRead}
       entityType="alert"
       isLoading={false}
+      showTags={showTags}
     />
   );
 }

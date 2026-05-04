@@ -24,7 +24,7 @@ import { EntityMetadataCard } from '@/components/cards/EntityMetadataCard';
 import { Button } from '@/components/buttons/Button';
 import { Dialog } from "@/components/overlays/Dialog";
 import { findTimelineItem } from "@/utils/timelineUtils";
-import { getTimelineItems } from "@/utils/timelineHelpers";
+import { compareTimelineItems, getTimelineItems } from "@/utils/timelineHelpers";
 import { useTheme } from '@/contexts/ThemeContext';
 import { cn } from '@/utils/cn';
 import { formatPresenceText } from '@/utils/presenceText';
@@ -280,41 +280,28 @@ function UnifiedTimelineInner({
     }, 0);
   }, [onScrollToTimelineItem, updateTimelineViewMode]);
 
-  // Filter and sort timeline items
-  const filteredAndSortedItems = useMemo(() => {
+  const sortedTimelineItems = useMemo(() => {
     const timelineItems = getTimelineItems(entityDetail);
     if (timelineItems.length === 0) {
       return [];
     }
 
-    // Filter by type
-    let filtered = timelineItems;
-    if (selectedType) {
-      filtered = timelineItems.filter((item) => item.type === selectedType);
-    }
-
-    // Sort items
-    const sorted = [...filtered].sort((a, b) => {
-      let aValue: string | null | undefined;
-      let bValue: string | null | undefined;
-
-      if (sortBy === 'created_at') {
-        aValue = a.created_at;
-        bValue = b.created_at;
-      } else {
-        // Use timestamp field if available, fallback to created_at
-        aValue = (a as any).timestamp || a.created_at;
-        bValue = (b as any).timestamp || b.created_at;
-      }
-
-      if (!aValue || !bValue) return 0;
-
-      const comparison = new Date(aValue).getTime() - new Date(bValue).getTime();
-      return sortDirection === 'asc' ? comparison : -comparison;
-    });
+    const sorted = timelineItems
+      .map((item, index) => ({ item, index }))
+      .sort((a, b) => compareTimelineItems(a.item, b.item, sortBy, sortDirection) || a.index - b.index)
+      .map(({ item }) => item);
 
     return sorted;
-  }, [entityDetail, selectedType, sortBy, sortDirection]);
+  }, [entityDetail, sortBy, sortDirection]);
+
+  // Filter and sort timeline items
+  const filteredAndSortedItems = useMemo(() => {
+    if (!selectedType) {
+      return sortedTimelineItems;
+    }
+
+    return sortedTimelineItems.filter((item) => item.type === selectedType);
+  }, [selectedType, sortedTimelineItems]);
 
   // Helper function to calculate reply depth for a timeline item
   const calculateReplyDepth = (item: TimelineItem, items: TimelineItem[]): number => {
@@ -607,7 +594,7 @@ function UnifiedTimelineInner({
           'flex w-full grow shrink-0 basis-0 flex-col items-start',
           timelineViewMode === 'graph'
             ? 'min-h-0 overflow-hidden p-0'
-            : 'overflow-auto p-6 mobile:p-2'
+            : 'overflow-auto p-0'
         )}
       >
         {isLoading ? (
@@ -621,7 +608,8 @@ function UnifiedTimelineInner({
         ) : entityDetail ? (
           supportsGraphView && timelineViewMode === 'graph' ? (
             <TimelineGraphView
-              items={filteredAndSortedItems}
+              items={sortedTimelineItems}
+              selectedType={selectedType}
               entityId={selectedEntityId}
               entityType={entityType as 'case' | 'task'}
               sortBy={sortBy}
@@ -639,10 +627,10 @@ function UnifiedTimelineInner({
               const hasTimelineItems = timelineItems.length > 0;
               
               return (
-                <div className="flex w-full flex-col items-start gap-4">
+                <div className="flex w-full flex-col items-start">
                   {/* Triage Recommendation Card (Alerts only) */}
                   {entityType === 'alert' && (entityDetail as AlertRead).triage_recommendation && (
-                    <div className="flex w-full">
+                    <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
                       <TriageRecommendationCard
                         recommendation={(entityDetail as AlertRead).triage_recommendation!}
                         onAccept={onAcceptTriageRecommendation || (() => {})}
@@ -662,7 +650,7 @@ function UnifiedTimelineInner({
                    !(entityDetail as AlertRead).triage_recommendation && 
                    isTriageEnabled && 
                    canRequestTriage && (
-                    <div className="flex w-full">
+                    <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
                       <TriageRequestCard
                         onRequestTriage={onRequestTriage}
                         isEnqueuing={isEnqueuingTriage}
@@ -681,7 +669,7 @@ function UnifiedTimelineInner({
                   </div>
 
                   {/* Timeline Items */}
-                  <div className="flex w-full flex-col items-start py-6">
+                  <div className="flex w-full flex-col items-start p-6 mobile:p-2">
                     {hasTimelineItems && filteredAndSortedItems.length > 0 ? (
                     (() => {
                       // Conditionally group timeline items based on groupSimilar toggle

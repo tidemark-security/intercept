@@ -15,6 +15,8 @@ interface AlertCardProps {
    * @deprecated Use `data` prop instead. Fallback data only used when fetch fails.
    */
   fallbackData?: Partial<AlertRead>;
+  /** Whether to render the metadata tag section. Timeline embeds render tags in the shared footer. */
+  showTags?: boolean;
 }
 
 /**
@@ -36,7 +38,7 @@ interface AlertCardProps {
  * <AlertCard alertId={4} />
  * ```
  */
-export function AlertCard({ alertId, data, fallbackData }: AlertCardProps) {
+export function AlertCard({ alertId, data, fallbackData, showTags = true }: AlertCardProps) {
   // If data is provided, use it directly without fetching
   const skipFetch = !!data?.title;
   
@@ -48,7 +50,7 @@ export function AlertCard({ alertId, data, fallbackData }: AlertCardProps) {
   const displayData = data || alertDetail || fallbackData;
 
   if (!skipFetch && isLoading) {
-    return <AlertCardContent data={{ title: 'Loading...' }} isLoading={true} />;
+    return <AlertCardContent data={{ title: 'Loading...' }} isLoading={true} showTags={showTags} />;
   }
 
   if (!displayData?.title) {
@@ -61,5 +63,5 @@ export function AlertCard({ alertId, data, fallbackData }: AlertCardProps) {
     );
   }
 
-  return <AlertCardContent data={displayData as Partial<AlertRead> & { title: string }} />;
+  return <AlertCardContent data={displayData as Partial<AlertRead> & { title: string }} showTags={showTags} />;
 }

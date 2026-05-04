@@ -97,6 +97,9 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
     const line2Text = normalizeClipboardText(line2);
     const line3Text = normalizeClipboardText(line3);
     const line4Text = normalizeClipboardText(line4);
+    const hasLineContent = Boolean(
+      line1 || line1Icon || line2 || line2Icon || line3 || line3Icon || line4 || line4Icon
+    );
 
     const isCopyEnabled = useCallback(
       (target: CopyTarget, text: string) =>
@@ -310,56 +313,58 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
             )
           ) : null}
         </div>
-        <div className="flex w-full flex-col items-start gap-1">
-          {renderCopyableLine(
-            "line1",
-            line1,
-            line1Icon,
-            line1Text,
-            "flex w-full items-center gap-2 overflow-hidden",
-            cn("text-body font-body text-subtext-color", { hidden: size === "small" }),
-            cn(
-              "line-clamp-2 break-words text-body-bold font-body-bold text-default-font",
-              {
-                "text-caption-bold font-caption-bold": size === "small",
-                "text-default-font": system === "warning",
-              }
-            ),
-            size === "small"
-          )}
-          {renderCopyableLine(
-            "line2",
-            line2,
-            line2Icon,
-            line2Text,
-            "flex w-full items-center gap-2 overflow-hidden",
-            cn("text-body font-body text-subtext-color", { hidden: size === "small" }),
-            "line-clamp-2 break-words text-caption font-caption text-subtext-color",
-            size === "small"
-          )}
-          {renderCopyableLine(
-            "line3",
-            line3,
-            line3Icon,
-            line3Text,
-            cn("flex w-full items-center gap-2 overflow-hidden", {
-              hidden: size === "small",
-            }),
-            "text-body font-body text-subtext-color",
-            "line-clamp-1 break-words text-caption font-caption text-subtext-color"
-          )}
-          {renderCopyableLine(
-            "line4",
-            line4,
-            line4Icon,
-            line4Text,
-            cn("flex w-full items-center gap-2 overflow-hidden", {
-              hidden: size === "small",
-            }),
-            "text-body font-body text-subtext-color",
-            "line-clamp-1 break-words text-caption font-caption text-subtext-color"
-          )}
-        </div>
+        {hasLineContent ? (
+          <div className="flex w-full flex-col items-start gap-1">
+            {renderCopyableLine(
+              "line1",
+              line1,
+              line1Icon,
+              line1Text,
+              "flex w-full items-center gap-2 overflow-hidden",
+              cn("text-body font-body text-subtext-color", { hidden: size === "small" }),
+              cn(
+                "line-clamp-2 break-words text-body-bold font-body-bold text-default-font",
+                {
+                  "text-caption-bold font-caption-bold": size === "small",
+                  "text-default-font": system === "warning",
+                }
+              ),
+              size === "small"
+            )}
+            {renderCopyableLine(
+              "line2",
+              line2,
+              line2Icon,
+              line2Text,
+              "flex w-full items-center gap-2 overflow-hidden",
+              cn("text-body font-body text-subtext-color", { hidden: size === "small" }),
+              "line-clamp-2 break-words text-caption font-caption text-subtext-color",
+              size === "small"
+            )}
+            {renderCopyableLine(
+              "line3",
+              line3,
+              line3Icon,
+              line3Text,
+              cn("flex w-full items-center gap-2 overflow-hidden", {
+                hidden: size === "small",
+              }),
+              "text-body font-body text-subtext-color",
+              "line-clamp-1 break-words text-caption font-caption text-subtext-color"
+            )}
+            {renderCopyableLine(
+              "line4",
+              line4,
+              line4Icon,
+              line4Text,
+              cn("flex w-full items-center gap-2 overflow-hidden", {
+                hidden: size === "small",
+              }),
+              "text-body font-body text-subtext-color",
+              "line-clamp-1 break-words text-caption font-caption text-subtext-color"
+            )}
+          </div>
+        ) : null}
         {characterFlags ? (
           <div
             className={cn(

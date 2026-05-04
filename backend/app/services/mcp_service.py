@@ -942,6 +942,7 @@ async def add_timeline_item(
     from app.services.alert_service import alert_service
     from app.services.case_service import case_service
     from app.services.task_service import task_service
+    from app.services.timeline_service import timeline_service
     
     # Validate body length
     if len(body) > 16000:
@@ -980,15 +981,23 @@ async def add_timeline_item(
     
     # Check for existing item with same item_id (idempotency)
     timeline_items = row[0] or []
-    for existing_item in timeline_items:
-        if existing_item.get("id") == item_id:
-            return AddTimelineItemOutput(
-                mode="already_exists",
-                item_id=item_id,
-                created_at=datetime.fromisoformat(existing_item.get("timestamp", "")),
-                author=existing_item.get("author"),
-                message=f"Item {item_id} already exists (idempotent)",
-            )
+    existing_item = timeline_service._find_item_by_id(timeline_items, item_id)
+    if existing_item:
+        existing_created_at = None
+        existing_timestamp = existing_item.get("timestamp") or existing_item.get("created_at")
+        if existing_timestamp:
+            try:
+                existing_created_at = datetime.fromisoformat(str(existing_timestamp).replace("Z", "+00:00"))
+            except ValueError:
+                existing_created_at = None
+
+        return AddTimelineItemOutput(
+            mode="already_exists",
+            item_id=item_id,
+            created_at=existing_created_at,
+            author=existing_item.get("author") or existing_item.get("created_by"),
+            message=f"Item {item_id} already exists (idempotent)",
+        )
     
     # Dry-run mode
     if not commit:

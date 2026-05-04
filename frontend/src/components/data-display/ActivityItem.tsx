@@ -35,6 +35,8 @@ interface ActivityItemRootProps extends React.HTMLAttributes<HTMLDivElement> {
   end?: boolean;
   replyEnabled?: boolean;
   itemId?: string;
+  replyTargetId?: string;
+  allowReplyWhenReadOnly?: boolean;
   onFlag?: (itemId: string) => void;
   onHighlight?: (itemId: string) => void;
   onDelete?: (itemId: string) => void;
@@ -76,6 +78,8 @@ const ActivityItemRoot = React.forwardRef<
     end = false,
     replyEnabled = false,
     itemId,
+    replyTargetId,
+    allowReplyWhenReadOnly = false,
     onFlag,
     onHighlight,
     onDelete,
@@ -179,10 +183,14 @@ const ActivityItemRoot = React.forwardRef<
   }, [onEdit, itemId, isGrouped]);
   
   const handleReply = React.useCallback(() => {
-    if (onReply && itemId) {
-      onReply(itemId);
+    const targetId = replyTargetId || itemId;
+    if (onReply && targetId) {
+      onReply(targetId);
     }
-  }, [onReply, itemId]);
+  }, [onReply, replyTargetId, itemId]);
+
+  const canReply = replyEnabled && !!onReply && !!(replyTargetId || itemId);
+  const canShowActionBar = !readOnly || (allowReplyWhenReadOnly && canReply);
   
   return (
     <div
@@ -386,7 +394,7 @@ const ActivityItemRoot = React.forwardRef<
             className={cn(
               "flex h-16 w-full flex-none flex-col items-start justify-center",
                 {
-                  "hidden": readOnly
+                  "hidden": !canShowActionBar
                 }
             )}
           >
@@ -394,12 +402,12 @@ const ActivityItemRoot = React.forwardRef<
               className={cn(
                 "w-full items-center justify-end gap-1 flex",
                 {
-                  "hidden": !(isHovered && !readOnly)
+                  "hidden": !(isHovered && canShowActionBar)
                 }
               )}
             >
               {/* Reply button at leftmost position (only when enabled) */}
-              {replyEnabled && (
+              {canReply && (
                 <Button 
                   size="small"
                   variant="neutral-tertiary"
@@ -414,41 +422,45 @@ const ActivityItemRoot = React.forwardRef<
               )}
 
               <div className="flex h-px grow shrink-0 basis-0 flex-col items-center gap-2 bg-neutral-border" />
-              <IconButton 
-                size="small" 
-                icon={<Flag />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleGroupFlag();
-                }}
-              />
-              <IconButton 
-                size="small" 
-                icon={<Highlighter />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleGroupHighlight();
-                }}
-              />
-              <IconButton 
-                size="small" 
-                icon={<Trash />}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleGroupDelete();
-                }}
-              />
-              {/* Hide edit button for grouped items */}
-              {!isGrouped && (
+              {!readOnly ? (
+                <>
                 <IconButton 
                   size="small" 
-                  icon={<Pencil />}
+                    icon={<Flag />}
                   onClick={(e) => {
                     e.stopPropagation();
-                    handleGroupEdit();
+                      handleGroupFlag();
                   }}
                 />
-              )}
+                  <IconButton 
+                    size="small" 
+                    icon={<Highlighter />}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleGroupHighlight();
+                    }}
+                  />
+                  <IconButton 
+                    size="small" 
+                    icon={<Trash />}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleGroupDelete();
+                    }}
+                  />
+                  {/* Hide edit button for grouped items */}
+                  {!isGrouped && (
+                    <IconButton 
+                      size="small" 
+                      icon={<Pencil />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleGroupEdit();
+                      }}
+                    />
+                  )}
+                </>
+              ) : null}
             </div>
           </div>
         </div>

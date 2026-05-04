@@ -7,6 +7,8 @@ export interface CaseCardContentProps {
   data: Partial<CaseRead> & { title: string };
   /** Whether data is currently loading (shows skeleton) */
   isLoading?: boolean;
+  /** Whether to render the metadata tag section. Timeline embeds render tags in the shared footer. */
+  showTags?: boolean;
 }
 
 /**
@@ -26,13 +28,14 @@ export interface CaseCardContentProps {
  * <CaseCardContent data={partialData} isLoading={true} />
  * ```
  */
-export function CaseCardContent({ data, isLoading = false }: CaseCardContentProps) {
+export function CaseCardContent({ data, isLoading = false, showTags = true }: CaseCardContentProps) {
   if (isLoading) {
     return (
       <EntityMetadataCard 
         entity={null} 
         entityType="case" 
         isLoading={true} 
+        showTags={showTags}
       />
     );
   }
@@ -42,6 +45,7 @@ export function CaseCardContent({ data, isLoading = false }: CaseCardContentProp
       entity={data as CaseRead}
       entityType="case"
       isLoading={false}
+      showTags={showTags}
     />
   );
 }

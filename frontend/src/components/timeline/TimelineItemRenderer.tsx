@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useTheme } from '@/contexts/ThemeContext';
-import { Link } from '@/components/navigation/Link';
 import { ActivityItem } from '@/components/data-display/ActivityItem';
 import { BaseCard } from '@/components/cards/BaseCard';
 import { Badge } from '@/components/data-display/Badge';
@@ -26,7 +26,7 @@ import {
   getTimelineItemAction,
   getTimelineItemLabel,
 } from '@/utils/timelineMapping';
-import { getTimelineItems } from '@/utils/timelineHelpers';
+import { compareTimelineItems, getTimelineItems } from '@/utils/timelineHelpers';
 import { isAlertItem, isDeletedItem, isNoteItem, isTaskItem } from '@/types/timeline';
 import type { CaseItem } from '@/types/generated/models/CaseItem';
 import { convertNumericToAlertId, convertNumericToHumanId } from '@/utils/caseHelpers';
@@ -36,7 +36,7 @@ import { cn } from '@/utils/cn';
 import { Button } from '@/components/buttons/Button';
 import { IconButton } from '@/components/buttons/IconButton';
 
-import { ChevronDown, ChevronRight, MessageSquareReply as ReplyIcon, RefreshCw } from 'lucide-react';
+import { ArrowRight, ChevronDown, ChevronRight, MessageSquareReply as ReplyIcon, RefreshCw } from 'lucide-react';
 import { Tooltip } from '@/components/overlays/Tooltip';
 import {
   isTimelineItemEnrichmentActive,
@@ -75,6 +75,12 @@ function hasText(value: string | null | undefined): value is string {
   return !!value && value.trim().length > 0;
 }
 
+function getTimelineTags(item: TimelineItem): string[] {
+  const tags = (item as TimelineItem & { tags?: string[] | null }).tags;
+
+  return Array.isArray(tags) ? tags : [];
+}
+
 function withEnrichmentBlocks(
   item: TimelineItem,
   bodyChildren: React.ReactNode,
@@ -94,11 +100,26 @@ function isLinkedTimelineType(type: TimelineItem['type'] | undefined): boolean {
   return type === 'alert' || type === 'case' || type === 'task';
 }
 
+function sortRepliesForDisplay(items: TimelineItem[]): TimelineItem[] {
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => compareTimelineItems(left.item, right.item) || left.index - right.index)
+    .map(({ item }) => item);
+}
+
+function getDeletedItemTimestamp(item: TimelineItem): string | null {
+  if (!isDeletedItem(item)) {
+    return null;
+  }
+
+  return item.original_timestamp || item.original_created_at || item.deleted_at || null;
+}
+
 function flattenReplies(items: TimelineItem[]): TimelineItem[] {
   const flattened: TimelineItem[] = [];
 
   const traverse = (currentItems: TimelineItem[]) => {
-    for (const currentItem of currentItems) {
+    for (const currentItem of sortRepliesForDisplay(currentItems)) {
       flattened.push(currentItem);
       const nestedReplies = getTimelineItems({ timeline_items: currentItem.replies ?? null });
       if (nestedReplies.length > 0) {
@@ -167,6 +188,16 @@ function getSourceEntityLabel(item: TimelineItem): 'alert' | 'task' | 'case' {
     return 'task';
   }
   return 'case';
+}
+
+function getSourceEntityDisplayLabel(item: TimelineItem): 'Alert' | 'Task' | 'Case' {
+  if (isAlertItem(item)) {
+    return 'Alert';
+  }
+  if (isTaskItem(item)) {
+    return 'Task';
+  }
+  return 'Case';
 }
 
 function renderRefreshEnrichmentAction(
@@ -331,6 +362,7 @@ export function TimelineItemRenderer({
   linkTemplates,
   compactPreview = false,
 }: TimelineItemRendererProps) {
+  const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === 'dark';
 
@@ -365,6 +397,46 @@ export function TimelineItemRenderer({
     entityType ?? 'alert',
     entityId,
   );
+
+  const renderOpenEntityAction = (href: string, label: string): React.ReactNode => (
+    <div className="ml-auto flex items-center gap-2">
+      <Button
+        variant="neutral-tertiary"
+        size="small"
+        onClick={(event) => {
+          event.stopPropagation();
+          navigate(href);
+        }}
+        iconRight={<ArrowRight className="h-3.5 w-3.5" />}
+      >
+        {label}
+      </Button>
+    </div>
+  );
+
+  const renderLinkedEntityFooter = (currentItem: TimelineItem, existingActionButtons?: React.ReactNode): React.ReactNode => {
+    const currentDescription = currentItem.description;
+    const hasDescriptionContent = hasText(currentDescription);
+    const currentTags = getTimelineTags(currentItem);
+    const href = getItemDetailHref(currentItem);
+    const openAction = href ? renderOpenEntityAction(href, `Open ${getSourceEntityDisplayLabel(currentItem)}`) : null;
+    const footerActions = existingActionButtons || openAction ? (
+      <div className="flex w-full items-center gap-2">
+        {existingActionButtons}
+        {openAction}
+      </div>
+    ) : null;
+
+    if (!hasDescriptionContent && !footerActions && currentTags.length === 0) {
+      return null;
+    }
+
+    return (
+      <TimelineDescriptionBlock actionButtons={footerActions} tags={currentTags} className="mt-auto">
+        {hasDescriptionContent ? <MarkdownContent content={currentDescription} /> : null}
+      </TimelineDescriptionBlock>
+    );
+  };
   
   // Collect all item IDs for group-level actions
   const groupItemIds = isGrouped ? itemsToRender.map(i => i.id || '').filter(Boolean) : [];
@@ -386,8 +458,8 @@ export function TimelineItemRenderer({
         icon={<DeletedIcon />}
         action={`deleted ${item.original_type}`}
         displayItemId={compactPreview ? undefined : item.id}
-        timestampValue={item.deleted_at || null}
-        createdAtValue={item.original_created_at || null}
+        timestampValue={getDeletedItemTimestamp(item)}
+        createdAtValue={item.original_created_at || getDeletedItemTimestamp(item)}
         sortBy={sortBy}
         readOnly={true}
         hideRail={compactPreview}
@@ -447,13 +519,15 @@ export function TimelineItemRenderer({
 
     const description = timelineCurrentItem.description;
     const shouldRenderInlineDescription = hasText(description) && timelineCurrentItem.type !== 'ttp';
-    const shouldUseFooter = !isAlertItem(timelineCurrentItem) && !isTaskItem(timelineCurrentItem) && !isCaseItem(timelineCurrentItem) && (shouldRenderInlineDescription || !!cardActionButtons);
+    const currentTags = getTimelineTags(timelineCurrentItem);
+    const shouldRenderTags = currentTags.length > 0;
+    const shouldUseFooter = !isAlertItem(timelineCurrentItem) && !isTaskItem(timelineCurrentItem) && !isCaseItem(timelineCurrentItem) && (shouldRenderInlineDescription || shouldRenderTags || !!cardActionButtons);
     const descriptionNode = shouldUseFooter ? (
-      <TimelineDescriptionBlock actionButtons={cardActionButtons} className="mt-auto">
+      <TimelineDescriptionBlock actionButtons={cardActionButtons} tags={currentTags} className="mt-auto">
         {shouldRenderInlineDescription ? <MarkdownContent content={description} /> : null}
       </TimelineDescriptionBlock>
     ) : null;
-    const renderedActionButtons = descriptionNode ? undefined : cardActionButtons;
+    let renderedActionButtons = descriptionNode ? undefined : cardActionButtons;
 
     const cardBody = cardChildren ? (
       <div className="flex w-full flex-1 flex-col gap-3">
@@ -475,7 +549,7 @@ export function TimelineItemRenderer({
         title:
           timelineCurrentItem.title ||
           (timelineCurrentItem.alert_id ? convertNumericToAlertId(timelineCurrentItem.alert_id) : 'Alert'),
-        description: timelineCurrentItem.description,
+        description: undefined,
         priority: timelineCurrentItem.priority,
         status: ((timelineCurrentItem as TimelineItem & { status?: AlertStatus | null }).status ?? 'NEW') as AlertStatus,
         created_at: timelineCurrentItem.created_at || '',
@@ -484,16 +558,16 @@ export function TimelineItemRenderer({
           timelineCurrentItem.created_at ||
           '',
         assignee: timelineCurrentItem.assignee,
-        tags: timelineCurrentItem.tags,
         source: (timelineCurrentItem as TimelineItem & { source?: string }).source,
         case_id: (timelineCurrentItem as TimelineItem & { case_id?: number }).case_id,
       };
 
       children = withEnrichmentBlocks(timelineCurrentItem, (
         <div className="w-full pt-2 flex flex-col gap-3">
-          <AlertCardContent data={alertData} />
+          <AlertCardContent data={alertData} showTags={false} />
         </div>
-      ));
+      ), renderLinkedEntityFooter(timelineCurrentItem, cardActionButtons));
+      renderedActionButtons = undefined;
     } else if (isTaskItem(timelineCurrentItem)) {
       baseCardProps.size = 'x-large';
       const taskId = timelineCurrentItem.task_human_id || 'Task';
@@ -504,7 +578,7 @@ export function TimelineItemRenderer({
         id: timelineCurrentItem.task_id || 0,
         human_id: timelineCurrentItem.task_human_id || '',
         title: timelineCurrentItem.title || (timelineCurrentItem.task_human_id || 'Task'),
-        description: timelineCurrentItem.description,
+        description: undefined,
         priority: timelineCurrentItem.priority ?? undefined,
         status: (timelineCurrentItem.status || 'OPEN') as TaskStatus,
         created_at: timelineCurrentItem.created_at || '',
@@ -513,7 +587,6 @@ export function TimelineItemRenderer({
           timelineCurrentItem.created_at ||
           '',
         assignee: timelineCurrentItem.assignee,
-        tags: timelineCurrentItem.tags,
         due_date: timelineCurrentItem.due_date,
         created_by: timelineCurrentItem.created_by || 'System',
         case_id: (timelineCurrentItem as TimelineItem & { case_id?: number }).case_id,
@@ -521,9 +594,10 @@ export function TimelineItemRenderer({
 
       children = withEnrichmentBlocks(timelineCurrentItem, (
         <div className="w-full pt-2 flex flex-col gap-3">
-          <TaskCardContent data={taskData} />
+          <TaskCardContent data={taskData} showTags={false} />
         </div>
-      ));
+      ), renderLinkedEntityFooter(timelineCurrentItem, cardActionButtons));
+      renderedActionButtons = undefined;
     } else if (isCaseItem(timelineCurrentItem)) {
       baseCardProps.size = 'x-large';
       const caseHumanId = convertNumericToHumanId(timelineCurrentItem.case_id);
@@ -534,7 +608,7 @@ export function TimelineItemRenderer({
         id: timelineCurrentItem.case_id,
         human_id: caseHumanId,
         title: timelineCurrentItem.title || caseHumanId,
-        description: timelineCurrentItem.description,
+        description: undefined,
         priority: timelineCurrentItem.priority ?? undefined,
         status: ((timelineCurrentItem as TimelineItem & { status?: CaseStatus | null }).status ?? 'NEW') as CaseStatus,
         created_at: timelineCurrentItem.created_at || '',
@@ -543,15 +617,15 @@ export function TimelineItemRenderer({
           timelineCurrentItem.created_at ||
           '',
         assignee: timelineCurrentItem.assignee,
-        tags: timelineCurrentItem.tags,
         created_by: timelineCurrentItem.created_by || 'System',
       };
 
       children = withEnrichmentBlocks(timelineCurrentItem, (
         <div className="w-full pt-2 flex flex-col gap-3">
-          <CaseCardContent data={caseData} />
+          <CaseCardContent data={caseData} showTags={false} />
         </div>
-      ));
+      ), renderLinkedEntityFooter(timelineCurrentItem, cardActionButtons));
+      renderedActionButtons = undefined;
     }
 
     const baseCardElement = (
@@ -560,29 +634,15 @@ export function TimelineItemRenderer({
       </BaseCard>
     );
 
-    const itemHref = getItemDetailHref(timelineCurrentItem);
-    if (!itemHref) {
-      return baseCardElement;
-    }
-
-    return (
-      <Link
-        key={itemKey}
-        to={itemHref}
-        className={cn(
-          'w-full no-underline',
-          compactPreview ? 'flex min-h-full flex-1 flex-col' : 'block',
-          isGrouped && 'flex-1 self-stretch',
-          isGrouped && isCurrentItemLinked && 'min-w-[512px]',
-        )}
-      >
-        {baseCardElement}
-      </Link>
-    );
+    return baseCardElement;
   };
 
   const renderReplyContents = (reply: TimelineItem): React.ReactNode => {
     const timelineReply = reply as TimelineItem;
+
+    if (isDeletedItem(timelineReply)) {
+      return null;
+    }
 
     if ((timelineReply as any).type === 'note') {
       return hasText(timelineReply.description) ? <MarkdownContent content={timelineReply.description} /> : null;
@@ -590,6 +650,7 @@ export function TimelineItemRenderer({
 
     const replyDescription = timelineReply.description;
     const shouldRenderInlineDescription = hasText(replyDescription) && timelineReply.type !== 'ttp';
+    const replyTags = getTimelineTags(timelineReply);
     const canRefreshEnrichment = !!entityType && entityId !== null && isTimelineItemEnrichable(timelineReply);
     const isReplyEnrichmentActive = isTimelineItemEnrichmentActive(timelineReply);
     const replyRefreshEnrichmentButton = renderRefreshEnrichmentAction(timelineReply, {
@@ -615,13 +676,13 @@ export function TimelineItemRenderer({
 
     baseReplyCardProps.enableCopyInteractions = !isAlertItem(timelineReply) && !isTaskItem(timelineReply) && !isCaseItem(timelineReply);
 
-    const shouldUseFooter = !isAlertItem(timelineReply) && !isTaskItem(timelineReply) && !isCaseItem(timelineReply) && (shouldRenderInlineDescription || !!replyCardActionButtons);
+    const shouldUseFooter = !isAlertItem(timelineReply) && !isTaskItem(timelineReply) && !isCaseItem(timelineReply) && (shouldRenderInlineDescription || replyTags.length > 0 || !!replyCardActionButtons);
     const descriptionNode = shouldUseFooter ? (
-      <TimelineDescriptionBlock actionButtons={replyCardActionButtons} className="mt-auto">
+      <TimelineDescriptionBlock actionButtons={replyCardActionButtons} tags={replyTags} className="mt-auto">
         {shouldRenderInlineDescription ? <MarkdownContent content={replyDescription} /> : null}
       </TimelineDescriptionBlock>
     ) : null;
-    const renderedReplyActionButtons = descriptionNode ? undefined : replyCardActionButtons;
+    let renderedReplyActionButtons = descriptionNode ? undefined : replyCardActionButtons;
 
     const replyCardBody = replyCardChildren ? (
       <div className="flex w-full flex-1 flex-col gap-3">
@@ -641,7 +702,7 @@ export function TimelineItemRenderer({
         title:
           timelineReply.title ||
           (timelineReply.alert_id ? convertNumericToAlertId(timelineReply.alert_id) : 'Alert'),
-        description: timelineReply.description,
+        description: undefined,
         priority: timelineReply.priority,
         status: ((timelineReply as TimelineItem & { status?: AlertStatus | null }).status ?? 'NEW') as AlertStatus,
         created_at: timelineReply.created_at || '',
@@ -650,31 +711,23 @@ export function TimelineItemRenderer({
           timelineReply.created_at ||
           '',
         assignee: timelineReply.assignee,
-        tags: timelineReply.tags,
         source: (timelineReply as TimelineItem & { source?: string }).source,
         case_id: (timelineReply as TimelineItem & { case_id?: number }).case_id,
       };
 
       children = withEnrichmentBlocks(timelineReply, (
         <div className="w-full pt-2 flex flex-col gap-3">
-          {descriptionNode}
-          <AlertCard alertId={timelineReply.alert_id || 0} data={replyAlertData} />
+          <AlertCard alertId={timelineReply.alert_id || 0} data={replyAlertData} showTags={false} />
         </div>
-      ));
+      ), renderLinkedEntityFooter(timelineReply, replyCardActionButtons));
+      renderedReplyActionButtons = undefined;
     }
 
     const baseCardElement = <BaseCard {...baseReplyCardProps} actionButtons={renderedReplyActionButtons}>{children}</BaseCard>;
-    const replyHref = getItemDetailHref(timelineReply);
 
     return (
       <div className="flex w-full flex-col items-start gap-3">
-        {replyHref ? (
-          <Link to={replyHref} className="block w-full no-underline">
-            {baseCardElement}
-          </Link>
-        ) : (
-          baseCardElement
-        )}
+        {baseCardElement}
       </div>
     );
   };
@@ -745,7 +798,7 @@ export function TimelineItemRenderer({
   const flattenedReplies = combinedReplies.length > 0 ? flattenReplies(combinedReplies) : [];
   
   // Determine if we should show the toggle (for alert/task/case items with source timeline items)
-  const showSourceToggle = hasSourceItems && (isAlertItem(item) || isTaskItem(item) || isCaseItem(item));
+  const showSourceToggle = !compactPreview && hasSourceItems && (isAlertItem(item) || isTaskItem(item) || isCaseItem(item));
 
   // Build replies node if there are any (or if we have a toggle to show)
   const replies = (flattenedReplies.length > 0 || showSourceToggle) ? (
@@ -773,9 +826,13 @@ export function TimelineItemRenderer({
         </div>
       )}
       {flattenedReplies.map((reply: TimelineItem, replyIndex: number) => {
-        const replyAction = `${getTimelineItemAction(reply.type || 'note')} ${getTimelineItemLabel(reply.type || 'note')}`;
+        const isReplyDeleted = isDeletedItem(reply);
+        const ReplyItemIcon = isReplyDeleted ? getTimelineItemIcon(reply.original_type || 'note') : ReplyIcon;
+        const replyAction = isReplyDeleted
+          ? `deleted ${reply.original_type}`
+          : `${getTimelineItemAction(reply.type || 'note')} ${getTimelineItemLabel(reply.type || 'note')}`;
         
-        const replyUsername = reply.created_by || 'System';
+        const replyUsername = isReplyDeleted ? reply.original_created_by || 'System' : reply.created_by || 'System';
         const isLastReply = replyIndex === flattenedReplies.length - 1;
 
         const replyContents = renderReplyContents(reply);
@@ -784,7 +841,13 @@ export function TimelineItemRenderer({
         // Also check if this reply is a linked item type (alert, case, task)
         const isSourceItem = reply.id ? sourceItemIds.has(reply.id) : false;
         const isReplyLinkedType = reply.type === 'alert' || reply.type === 'case' || reply.type === 'task';
-        const isReplyReadOnly = isSourceItem || isReplyLinkedType;
+        const isReplyReadOnly = isSourceItem || isReplyLinkedType || isReplyDeleted;
+        const deletedReplyTargetId = isReplyDeleted && !isSourceItem ? reply.parent_id || null : null;
+        const canReplyToDeletedReply = isLastReply && !!deletedReplyTargetId;
+        const replyTimestampValue = isReplyDeleted ? getDeletedItemTimestamp(reply) : reply.timestamp || null;
+        const replyCreatedAtValue = isReplyDeleted
+          ? reply.original_created_at || getDeletedItemTimestamp(reply)
+          : reply.created_at || null;
 
         return (
           <ActivityItem
@@ -792,19 +855,21 @@ export function TimelineItemRenderer({
             id={`timeline-item-${reply.id}`}
             itemId={reply.id || ''}
             username={replyUsername}
-            icon={<ReplyIcon />}
+            icon={<ReplyItemIcon />}
             flagged={reply.flagged}
             highlighted={reply.highlighted}
             action={replyAction}
             displayItemId={compactPreview ? undefined : reply.id}
-            timestampValue={reply.timestamp || null}
-            createdAtValue={reply.created_at || null}
+            timestampValue={replyTimestampValue}
+            createdAtValue={replyCreatedAtValue}
             sortBy={sortBy}
             edited={reply.audit?.edited === true}
             readOnly={isReplyReadOnly}
+            allowReplyWhenReadOnly={canReplyToDeletedReply}
             hideRail={compactPreview}
             end={isLastReply}
-            replyEnabled={isLastReply && !isReplyReadOnly} // Only allow reply on the last flattened reply (not source/injected items)
+            replyEnabled={(isLastReply && !isReplyReadOnly) || canReplyToDeletedReply} // Deleted replies continue the parent thread.
+            replyTargetId={deletedReplyTargetId || undefined}
             contents={replyContents}
             onFlag={isReplyReadOnly ? undefined : onFlag}
             onHighlight={isReplyReadOnly ? undefined : onHighlight}

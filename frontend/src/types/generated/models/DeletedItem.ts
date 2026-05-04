@@ -11,6 +11,7 @@ export type DeletedItem = {
     deleted_at: string;
     deleted_by: string;
     original_type: string;
+    original_timestamp?: (string | null);
     original_created_at?: (string | null);
     original_created_by?: (string | null);
     parent_id?: (string | null);
