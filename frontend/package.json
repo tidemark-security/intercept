@@ -65,7 +65,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/react-router-dom": "^5.3.3",
     "@vitejs/plugin-react": "^6.0.1",
-    "autoprefixer": "^10.4.16",
+    "autoprefixer": "^10.5.0",
     "eslint": "^9.0.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
