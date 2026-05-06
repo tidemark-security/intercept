@@ -35,6 +35,11 @@ RETRY_INITIAL_DELAY_SECONDS = 5.0
 RETRY_MAX_DELAY = timedelta(seconds=60)
 RETRY_MAX_TIME = timedelta(minutes=10)
 
+# pgqueuer lease duration: jobs still in "picked" state after this long are assumed
+# dead and re-enqueued. Must exceed RETRY_MAX_TIME so in-worker retries don't race
+# with a pgqueuer-level re-enqueue (which would cause duplicate execution).
+DEFAULT_RETRY_TIMER = RETRY_MAX_TIME + timedelta(minutes=5)
+
 
 @dataclasses.dataclass
 class RetryWithTerminalFailureHookExecutor(RetryWithBackoffEntrypointExecutor):
@@ -260,22 +265,29 @@ class TaskQueueService:
         handler: TaskHandler,
         max_retries: int = 3,
         on_terminal_failure: Optional[TerminalFailureHandler] = None,
+        retry_timer: Optional[timedelta] = None,
     ):
         """
         Register a handler for a task type.
-        
+
         Args:
             task_name: Name/type of task to handle
             handler: Async function to process the task
             max_retries: Number of retries after the initial attempt
             on_terminal_failure: Optional callback invoked once after retries are
                 exhausted or the retry time limit is exceeded
+            retry_timer: pgqueuer lease duration — jobs still in "picked" state
+                after this long are assumed dead and re-enqueued. Defaults to
+                DEFAULT_RETRY_TIMER which exceeds RETRY_MAX_TIME so in-worker
+                retries cannot race with a pgqueuer-level re-enqueue.
         """
         if not self.pgqueuer:
             raise RuntimeError("Task queue not initialized")
         if max_retries < 0:
             raise ValueError("max_retries must be greater than or equal to 0")
-        
+
+        effective_retry_timer = retry_timer if retry_timer is not None else DEFAULT_RETRY_TIMER
+
         # Store handler info for later use
         self._handlers[task_name] = handler
         handler_signature = signature(handler)
@@ -289,11 +301,11 @@ class TaskQueueService:
                 max_delay=RETRY_MAX_DELAY,
                 max_time=RETRY_MAX_TIME,
             )
-        
+
         # Create a handler that parses JSON payload and register with entrypoint decorator
         @self.pgqueuer.entrypoint(
             task_name,
-            retry_timer=timedelta(seconds=5),  # Base retry timer
+            retry_timer=effective_retry_timer,
             executor_factory=build_executor,
         )
         async def entrypoint_handler(job: Job):
