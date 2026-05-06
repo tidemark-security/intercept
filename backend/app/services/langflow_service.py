@@ -7,12 +7,12 @@ Provides a wrapper around LangFlow API for:
 - Streaming responses
 - Error handling and retry logic
 """
+import json
 import logging
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, AsyncGenerator
 from uuid import UUID
 import httpx
-from datetime import datetime, timezone
 
 from app.services.settings_service import SettingsService
 
@@ -212,6 +212,154 @@ class LangFlowService:
             logger.error(f"Unexpected error communicating with LangFlow: {e}")
             raise LangFlowError(f"Unexpected error: {str(e)}") from e
     
+    async def run_flow_streaming(
+        self,
+        flow_id: str,
+        message: str,
+        session_id: Optional[UUID] = None,
+        context: Optional[Dict[str, Any]] = None,
+        per_read_timeout: float = 300.0,
+    ) -> Dict[str, Any]:
+        """
+        Run a flow to completion using LangFlow's SSE streaming endpoint.
+
+        This is the right call for long-running agent flows (alert triage, case
+        agents) because each emitted SSE chunk resets the per-read timeout —
+        so a healthy 60-180s flow streams happily, while a truly stuck flow
+        fails after `per_read_timeout` of silence.
+
+        Args:
+            flow_id: LangFlow flow identifier
+            message: User message content
+            session_id: Optional session ID for conversation continuity
+            context: Optional tweaks/context for the flow
+            per_read_timeout: Max seconds between consecutive SSE events.
+                Observed worst-case gap on tmi_alert_triage is ~20s during
+                tool-call + reasoning roundtrips. 300s gives generous headroom
+                for slower future tool integrations.
+
+        Returns:
+            The `result` payload from the terminal `end` event — same shape as
+            the synchronous `send_message` response.
+
+        Raises:
+            LangFlowError: stream stalled (per-read timeout) or ended without
+                a final `end` event.
+            LangFlowConnectionError: unable to connect to LangFlow.
+        """
+        payload: Dict[str, Any] = {
+            "input_value": message,
+            "input_type": "chat",
+            "output_type": "chat",
+        }
+        if session_id:
+            payload["session_id"] = str(session_id)
+        if context:
+            payload["tweaks"] = context
+
+        # Per-read timeout = SSE-as-heartbeat. Connect/write/pool stay short
+        # since they cover only the initial handshake.
+        request_timeout = httpx.Timeout(
+            connect=10.0,
+            read=per_read_timeout,
+            write=10.0,
+            pool=10.0,
+        )
+
+        logger.info(
+            "Starting streaming flow run",
+            extra={
+                "flow_id": flow_id,
+                "session_id": str(session_id) if session_id else None,
+                "per_read_timeout": per_read_timeout,
+            },
+        )
+
+        end_result: Optional[Dict[str, Any]] = None
+        event_count = 0
+
+        try:
+            async with self.client.stream(
+                "POST",
+                f"/run/{flow_id}?stream=true",
+                json=payload,
+                timeout=request_timeout,
+            ) as response:
+                response.raise_for_status()
+
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+
+                    # LangFlow emits raw JSON lines; tolerate `data: ` prefix too.
+                    parse_target = line[6:].strip() if line.startswith("data: ") else line
+                    if not parse_target or parse_target == "[DONE]":
+                        continue
+
+                    try:
+                        event = json.loads(parse_target)
+                    except json.JSONDecodeError:
+                        logger.debug("Skipping non-JSON SSE line: %s", line[:100])
+                        continue
+
+                    event_count += 1
+                    event_name = event.get("event") if isinstance(event, dict) else None
+
+                    if event_name == "end":
+                        data_field = event.get("data") if isinstance(event, dict) else None
+                        if isinstance(data_field, dict):
+                            result = data_field.get("result")
+                            if isinstance(result, dict):
+                                end_result = result
+                        break
+
+                    if event_name == "error":
+                        # Surface server-side errors emitted as events
+                        raise LangFlowError(
+                            f"LangFlow flow emitted error event: {event.get('data')!r}"
+                        )
+
+        except httpx.ReadTimeout as e:
+            logger.error("LangFlow stream stalled (no events for %ss)", per_read_timeout)
+            raise LangFlowError(
+                f"LangFlow stream stalled — no events received in {per_read_timeout}s"
+            ) from e
+        except httpx.ConnectError as e:
+            logger.error("Failed to connect to LangFlow stream: %s", e)
+            raise LangFlowConnectionError(
+                f"Unable to connect to LangFlow at {self.base_url}"
+            ) from e
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                "LangFlow stream returned HTTP %s",
+                e.response.status_code,
+            )
+            raise LangFlowError(
+                f"LangFlow API returned error {e.response.status_code}"
+            ) from e
+        except LangFlowError:
+            raise
+        except Exception as e:
+            logger.error("Unexpected error streaming from LangFlow: %s", e)
+            raise LangFlowError(f"Unexpected error: {str(e)}") from e
+
+        if end_result is None:
+            raise LangFlowError(
+                f"LangFlow stream closed without an `end` event "
+                f"(received {event_count} events)"
+            )
+
+        logger.info(
+            "Streaming flow run completed",
+            extra={
+                "flow_id": flow_id,
+                "session_id": str(session_id) if session_id else None,
+                "event_count": event_count,
+            },
+        )
+
+        return end_result
+
     async def stream_message(
         self,
         flow_id: str,
@@ -269,7 +417,6 @@ class LangFlowService:
                         data_str = line[6:].strip()
                         if data_str and data_str != "[DONE]":
                             try:
-                                import json
                                 data = json.loads(data_str)
                                 logger.info(f"LangFlow SSE data keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
                                 yield data
@@ -279,7 +426,6 @@ class LangFlowService:
                     elif line.strip():
                         # Handle other line formats - might be raw JSON
                         try:
-                            import json
                             data = json.loads(line)
                             logger.info(f"LangFlow raw JSON keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
                             yield data
@@ -863,7 +1009,7 @@ class LangFlowService:
             )
         
         api_key = await settings_service.get_typed_value("langflow.api_key")
-        timeout = await settings_service.get_typed_value("langflow.timeout", default=30.0)
+        timeout = await settings_service.get_typed_value("langflow.timeout", default=300.0)
         
         return LangFlowService(
             base_url=base_url,
