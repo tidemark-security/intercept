@@ -217,57 +217,83 @@ async def handle_langflow_batch(payload: Dict[str, Any]):
 async def handle_triage_alert(payload: Dict[str, Any]):
     """
     Handle an alert triage task via LangFlow.
-    
+
     Sends the alert ID to the configured LangFlow alert triage flow.
     LangFlow is expected to fetch alert details via MCP tools and create
     a triage recommendation via the MCP create_triage_recommendation tool.
-    
+
     This handler updates the QUEUED placeholder recommendation:
     - On success: The LangFlow agent will call create_triage_recommendation
       which supersedes the QUEUED record with a PENDING one
-        - On retryable failure: Leaves the recommendation QUEUED so the worker can retry
-        - On terminal failure: A queue-level failure hook updates the record to FAILED
-    
+    - On retryable failure: Leaves the recommendation QUEUED so the worker can retry
+    - On terminal failure: A queue-level failure hook updates the record to FAILED
+
     Payload:
         alert_id: ID of the alert to triage (int or str)
     """
+    from sqlmodel import select
+    from app.models.models import TriageRecommendation
+    from app.models.enums import RecommendationStatus
+
     alert_id = payload["alert_id"]
     session_id = uuid4()  # Generate a new session ID for each triage
-    
+
     logger.info(
-        f"Processing alert triage task",
+        "Processing alert triage task",
         extra={
             "alert_id": alert_id,
             "session_id": str(session_id),
         }
     )
-    
+
     async with async_session_factory() as db:
+        # Idempotency guard: if LangFlow already created a recommendation on a
+        # prior attempt (timeout fired after LangFlow completed), skip re-running.
+        result = await db.execute(
+            select(TriageRecommendation).where(
+                TriageRecommendation.alert_id == int(alert_id),
+                TriageRecommendation.status != RecommendationStatus.QUEUED,
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing is not None:
+            logger.info(
+                "Skipping triage — recommendation already exists with status %s",
+                existing.status,
+                extra={"alert_id": alert_id},
+            )
+            return
+
         settings_service = SettingsService(db)
-        
+
         # Get the alert triage flow ID from settings
         flow_id = await settings_service.get_typed_value("langflow.alert_triage_flow_id")
-        
+
         if not flow_id:
             raise LangFlowConfigurationError(
                 "Alert triage flow not configured. Please set 'langflow.alert_triage_flow_id' in settings."
             )
-        
+
         langflow_service = await LangFlowService.from_settings(settings_service)
-        
+
         try:
-            # Pass entity_id via tweaks context (same pattern as case/task agents)
-            response = await langflow_service.send_message(
+            # Use SSE streaming so the per-read timeout (300s of silence)
+            # acts as a heartbeat against the agent flow. The synchronous
+            # send_message call would time out at the global langflow.timeout
+            # (default 30s) which is far below the natural runtime of an
+            # agent doing MCP tool calls and multi-turn LLM reasoning.
+            response = await langflow_service.run_flow_streaming(
                 flow_id=flow_id,
                 message="Run alert triage",
                 session_id=session_id,
                 context={
                     "entity_id": {"input_value": str(alert_id)},
                 },
+                per_read_timeout=300.0,
             )
-            
+
             logger.info(
-                f"Alert triage task completed",
+                "Alert triage task completed",
                 extra={
                     "alert_id": alert_id,
                     "flow_id": flow_id,
@@ -275,14 +301,11 @@ async def handle_triage_alert(payload: Dict[str, Any]):
                     "response_length": len(str(response)),
                 }
             )
-            
+
             # Note: The LangFlow agent should call create_triage_recommendation MCP tool
             # which supersedes the QUEUED placeholder. If it didn't, the record stays QUEUED
             # and will be picked up on retry or marked failed after retries are exhausted.
-            
-        except Exception as e:
-            raise
-            
+
         finally:
             await langflow_service.close()
 
@@ -435,11 +458,15 @@ def register_task_handlers():
             max_retries=2,
         )
         
-        # Register alert triage handler
+        # Register alert triage handler.
+        # Streaming run uses a per-read heartbeat timeout, so a timeout means
+        # LangFlow is genuinely stuck — not "still thinking". One retry is
+        # plenty (covers a transient network blip); more would just compound
+        # the cost since each attempt runs full LLM+MCP work.
         task_queue.register_handler(
             task_name=TASK_TRIAGE_ALERT,
             handler=handle_triage_alert,
-            max_retries=3,
+            max_retries=1,
             on_terminal_failure=_handle_triage_terminal_failure,
         )
 
