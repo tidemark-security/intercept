@@ -238,15 +238,17 @@ async def test_password_change_preserves_current_session(
         cookies={"intercept_session": session_cookie},
     )
     assert change_response.status_code == 204
+    rotated_session_cookie = change_response.cookies.get("intercept_session")
+    assert rotated_session_cookie is not None
 
     # Verify current session is still active by calling session endpoint
     session_check_response = await client.get(
         "/api/v1/auth/session",
-        cookies={"intercept_session": session_cookie},
+        cookies={"intercept_session": rotated_session_cookie},
     )
     assert session_check_response.status_code == 200
     check_data = session_check_response.json()
-    assert check_data["session"]["sessionId"] == current_session_id
+    assert check_data["session"]["sessionId"] != current_session_id
 
 
 @pytest.mark.asyncio
@@ -304,11 +306,13 @@ async def test_password_change_revokes_other_sessions(
         cookies={"intercept_session": session1_cookie},
     )
     assert change_response.status_code == 204
+    rotated_session_cookie = change_response.cookies.get("intercept_session")
+    assert rotated_session_cookie is not None
 
     # Verify first session is still active
     check1_after = await client.get(
         "/api/v1/auth/session",
-        cookies={"intercept_session": session1_cookie},
+        cookies={"intercept_session": rotated_session_cookie},
     )
     assert check1_after.status_code == 200
 
