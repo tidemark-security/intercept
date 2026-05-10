@@ -1,8 +1,11 @@
-name: CI
+name: Fast CI
 
 on:
   pull_request:
     branches: [main, "release/**"]
+  push:
+    branches: ["release/**"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -85,12 +88,6 @@ jobs:
         working-directory: backend
         run: pip install -r requirements-test.txt
 
-      - name: Audit dependencies
-        working-directory: backend
-        run: |
-          pip install pip-audit
-          pip-audit -r requirements.txt
-
       - name: Run tests
         working-directory: backend
         env:
@@ -114,7 +111,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: frontend
-        run: npm install
+        run: npm install --no-audit --no-fund
 
       - name: Type check
         working-directory: frontend

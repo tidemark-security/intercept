@@ -61,6 +61,8 @@ const DEFAULT_CASE_CLOSURE_RECOMMENDED_TAGS = [
   "Duplicate",
 ];
 
+const EMPTY_TAGS: string[] = [];
+
 const LANGFLOW_SETUP_DEFAULT_USERNAME = "tidemark_ai";
 
 const MAXMIND_DATABASES_QUERY_KEY = ["admin", "maxmind", "databases"] as const;
@@ -195,6 +197,10 @@ const parseBooleanValue = (value: string): boolean => {
     normalized === "on"
   );
 };
+
+const areStringArraysEqual = (left: string[], right: string[]): boolean =>
+  left.length === right.length &&
+  left.every((value, index) => value === right[index]);
 
 const extractApiErrorMessage = (err: unknown, fallback: string): string => {
   if (err instanceof ApiError) {
@@ -3288,7 +3294,7 @@ function TagsSettingField({
   label,
   description,
   value,
-  fallbackTags = [],
+  fallbackTags = EMPTY_TAGS,
   onSave,
   source,
   localOnly = false,
@@ -3301,7 +3307,10 @@ function TagsSettingField({
   useEffect(() => {
     if (!isEditing) {
       const parsedTags = parseTagsValue(value);
-      setEditedTags(parsedTags.length > 0 ? parsedTags : fallbackTags);
+      const nextTags = parsedTags.length > 0 ? parsedTags : fallbackTags;
+      setEditedTags((currentTags) =>
+        areStringArraysEqual(currentTags, nextTags) ? currentTags : nextTags,
+      );
     }
   }, [value, fallbackTags, isEditing]);
 

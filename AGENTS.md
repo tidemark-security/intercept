@@ -1,5 +1,20 @@
 # Agent Instructions
 
+## Development Environment
+
+Use the `intercept` Conda environment for repository commands.
+
+```bash
+conda activate intercept
+```
+
+If `conda` is not on `PATH` in a non-interactive shell, initialize it first:
+
+```bash
+eval "$(~/miniconda3/bin/conda shell.bash hook)"
+conda activate intercept
+```
+
 ## Version Management
 
 **All version bumps MUST use `bump-my-version`.** Never edit version strings manually.
