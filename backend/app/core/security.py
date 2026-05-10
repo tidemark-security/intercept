@@ -2,6 +2,8 @@
 Security utilities for encryption, hashing, and secret management.
 """
 from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from typing import Optional
 import base64
 
@@ -21,11 +23,14 @@ class EncryptionService:
         Args:
             master_key: The master encryption key (must be 32 URL-safe base64-encoded bytes)
         """
-        # If the key is not in the right format, derive a proper Fernet key
-        if len(master_key) != 44:  # Fernet keys are 44 bytes when base64-encoded
-            # Use the first 32 bytes of the key and base64 encode
-            key_bytes = master_key[:32].ljust(32, b'0')
-            master_key = base64.urlsafe_b64encode(key_bytes)
+        if len(master_key) != 44:
+            derived = HKDF(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=b"intercept-fernet-v1",
+                info=b"settings-encryption",
+            ).derive(master_key)
+            master_key = base64.urlsafe_b64encode(derived)
         
         self.fernet = Fernet(master_key)
     
