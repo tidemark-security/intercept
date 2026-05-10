@@ -21,7 +21,7 @@ from sqlmodel import select, col
 from datetime import datetime, timedelta, timezone
 import httpx
 
-from app.api.routes.admin_auth import require_admin_user, require_authenticated_user
+from app.api.routes.admin_auth import require_admin_user, require_authenticated_user, require_non_auditor_user
 from app.core.database import get_db
 from app.models.models import (
     ApiKeyRead,
@@ -61,7 +61,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/langflow", tags=["langflow"])
+router = APIRouter(
+    prefix="/langflow",
+    tags=["langflow"],
+    dependencies=[Depends(require_non_auditor_user)],
+)
 
 LANGFLOW_SETUP_SERVER_NAME = "intercept"
 LANGFLOW_SETUP_VARIABLE_NAME = "intercept_api_key"
@@ -1144,7 +1148,7 @@ async def send_chat_message(
             flow_id=session.flow_id,
             message=chat_request.content,
             session_id=session.id,
-            context=chat_request.context or session.context,
+            context=session.context,
         )
         
         # Extract response content
@@ -1381,7 +1385,7 @@ async def stream_langflow_response(
                 flow_id=session.flow_id,
                 message=body.message,
                 session_id=session.id,
-                context=body.context or session.context,
+                context=session.context,
             ):
                 # LangFlow SSE events have multiple types:
                 # 1. {'event': 'add_message', 'data': {'sender': 'User'|'Machine', 'text': '...', 'properties': {'state': 'partial'|'complete'}}}
