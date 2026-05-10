@@ -98,6 +98,7 @@ LANGFLOW_DB_PASSWORD=$(generate_secret 24)
 SECRET_KEY=$(generate_fernet_key)
 MINIO_ROOT_USER=$(generate_secret 16)
 MINIO_ROOT_PASSWORD=$(generate_secret 24)
+INITIAL_ADMIN_PASSWORD=$(generate_secret 24)
 
 # --- Langflow auth -----------------------------------------------------------
 LANGFLOW_SUPERUSER=admin
@@ -132,7 +133,7 @@ EOF
   echo -e "${GREEN}  └──────────────────────────────────────────┘${NC}"
   echo ""
   echo "  Open:   http://localhost"
-  echo "  Login:  admin / admin"
+  echo "  Login:  admin / see INITIAL_ADMIN_PASSWORD in .env"
   echo ""
   echo "  Services:"
   echo "    Frontend UI ·····  http://localhost"
@@ -140,7 +141,7 @@ EOF
   echo "    MinIO Console ···  http://localhost:9001"
   echo "    Langflow AI ·····  http://localhost:7860"
   echo ""
-  echo -e "  ${YELLOW}Change the default admin password after first login.${NC}"
+  echo -e "  ${YELLOW}You will be prompted to change the generated admin password after first login.${NC}"
   echo ""
   echo -e "  To enable AI features, edit ${BOLD}${INSTALL_DIR}/.env${NC} and add your"
   echo -e "  OpenAI API key, then restart:  ${BLUE}docker compose restart${NC}"
