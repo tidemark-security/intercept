@@ -15,6 +15,7 @@ import { useTimelineForm } from "@/hooks/useTimelineForm";
 import { useTimelineFormContext } from "@/contexts/TimelineFormContext";
 import { TimelineFormLayout } from "@/components/timeline/TimelineFormLayout";
 import type { LinkItem } from "@/types/generated/models/LinkItem";
+import { isSafeUrl } from "@/utils/safeUrl";
 
 import { Link } from 'lucide-react';
 export interface AddLinkFormProps {
@@ -28,12 +29,12 @@ export interface AddLinkFormProps {
 const normalizeUrl = (url: string): string => {
   const trimmedUrl = url.trim();
   
-  // Check if URL already has a scheme (e.g., http://, https://, ftp://, file://, etc.)
-  // A scheme is defined as alphanumeric characters followed by ://
-  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmedUrl);
-  
-  if (hasScheme) {
+  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmedUrl);
+  if (hasScheme && isSafeUrl(trimmedUrl)) {
     return trimmedUrl;
+  }
+  if (hasScheme) {
+    return "";
   }
   
   // No scheme detected, add https://

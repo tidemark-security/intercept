@@ -432,7 +432,7 @@ export function AddTTPForm({ initialData }: AddTTPFormProps) {
                   Reference
                 </span>
                 <a
-                  href={formState.url}
+                  href={/^https?:\/\//i.test(formState.url) ? formState.url : undefined}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-1 text-caption text-brand-primary hover:underline"
