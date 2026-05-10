@@ -51,7 +51,7 @@ docker compose -f dev/docker-compose.yml exec -T -e PYTHONPATH=/app backend pyth
 
 The scripts import modules from the backend package as `app.*`. Setting `PYTHONPATH=/app` ensures those imports resolve correctly in non-interactive `docker compose exec` sessions.
 
-> **Tip:** The quickstart compose (`docs/quickstart/docker-compose.yml`) sets `AUTO_SEED=true`, which runs `seed_test_users.py` automatically on every backend boot. For dev, you can add `AUTO_SEED: "true"` to the backend environment in `dev/docker-compose.yml` to get the same behavior.
+> **Tip:** The quickstart compose (`docs/quickstart/docker-compose.yml`) sets `AUTO_SEED=true`, which runs `seed_initial_admin.py` with a generated `INITIAL_ADMIN_PASSWORD`. `seed_test_users.py` is dev-only and requires `INTERCEPT_ALLOW_TEST_USER_SEEDING=true`.
 
 ## What Gets Seeded
 

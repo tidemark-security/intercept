@@ -64,10 +64,7 @@ alembic revision --autogenerate -m "description"
 python scripts/seed_test_users.py
 ```
 
-This creates three test accounts:
-- **admin/admin** (ADMIN role)
-- **analyst/analyst** (ANALYST role)
-- **auditor/auditor** (AUDITOR role)
+This creates three weak-password test accounts only when `INTERCEPT_ALLOW_TEST_USER_SEEDING=true` is set. Existing users are left unchanged.
 
 ### 4. Seed Link Templates (Optional)
 
