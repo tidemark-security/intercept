@@ -331,6 +331,7 @@ class MCPApiKeyAuthMiddleware:
                     raw_key=api_key,
                     context=audit_context,
                 )
+                await db.commit()
                 
                 # Store user in scope for potential downstream use
                 scope["mcp_user"] = result.user

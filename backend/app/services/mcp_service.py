@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Union, cast
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 
 from app.core.id_parser import parse_entity_id, format_entity_id, get_prefix_for_kind, ALERT_PREFIX
 from app.models.models import Alert, Case, Task
@@ -68,6 +68,17 @@ _MERMAID_OPERATIONAL_ERROR_MARKERS = (
     "dompurify.addhook is not a function",
     "dompurify.sanitize is not a function",
 )
+
+_GET_ITEM_PARENT_MODELS = {
+    "alert": Alert,
+    "case": Case,
+    "task": Task,
+}
+_GET_ITEM_PARENT_TABLES = {
+    "alert": "alerts",
+    "case": "cases",
+    "task": "tasks",
+}
 
 
 def _build_timeline_preview_text(item: Dict[str, Any]) -> str:
@@ -1043,12 +1054,12 @@ async def add_timeline_item(
 
 async def get_item(
     db: AsyncSession,
+    parent_entity_type: str,
+    parent_entity_id: str,
     item_id: str,
     mode: str = "full",
     max_chars: int = 4000,
     cursor: Optional[str] = None,
-    hint_kind: Optional[str] = None,
-    hint_parent_id: Optional[str] = None,
 ) -> GetItemOutput:
     """Get full content of truncated timeline item.
     
@@ -1056,12 +1067,12 @@ async def get_item(
     
     Args:
         db: Database session
+        parent_entity_type: Parent entity type ("alert", "case", "task")
+        parent_entity_id: Parent entity ID in forgiving format
         item_id: Timeline item ID
         mode: Retrieval mode ("full", "head", "tail")
         max_chars: Max characters to return (100-10000, default: 4000)
         cursor: Pagination cursor from previous response
-        hint_kind: Optional entity type hint for faster lookup
-        hint_parent_id: Optional parent entity ID hint
         
     Returns:
         Dictionary with item_id, content, metadata, next_cursor, is_truncated
@@ -1072,7 +1083,6 @@ async def get_item(
     """
     import base64
     import json
-    from app.services.timeline_service import timeline_service
     
     # Validate max_chars
     max_chars = min(max(100, max_chars), 10000)
@@ -1084,70 +1094,80 @@ async def get_item(
             detail=f"Invalid mode '{mode}'. Must be 'full', 'head', or 'tail'."
         )
     
-    # Search for item
-    # If hints provided, search only in hinted entity
-    # Otherwise, search across all alerts, cases, tasks
-    
-    found_item = None
-    parent_entity = None
-    parent_kind = None
-    
-    if hint_kind and hint_parent_id:
-        # Use hints for faster lookup
-        try:
-            numeric_id, _ = parse_entity_id(hint_parent_id, hint_kind)
-            
-            if hint_kind == "alert":
-                parent_entity = await db.get(Alert, numeric_id)
-                parent_kind = "alert"
-            elif hint_kind == "case":
-                parent_entity = await db.get(Case, numeric_id)
-                parent_kind = "case"
-            elif hint_kind == "task":
-                parent_entity = await db.get(Task, numeric_id)
-                parent_kind = "task"
-            
-            if parent_entity:
-                for item in timeline_service._iter_items(parent_entity.timeline_items):
-                    if item.get("id") == item_id:
-                        found_item = item
-                        break
-        except:
-            pass  # Ignore hint errors, fallback to full search
-    
-    # Full search if not found with hints
-    if not found_item:
-        # Search alerts
-        from sqlmodel import select
-        
-        for model, kind in [(Alert, "alert"), (Case, "case"), (Task, "task")]:
-            query = select(model)
-            result = await db.execute(query)
-            entities = result.scalars().all()
-            
-            for entity in entities:
-                for item in timeline_service._iter_items(entity.timeline_items):
-                    if item.get("id") == item_id:
-                        found_item = item
-                        parent_entity = entity
-                        parent_kind = kind
-                        break
-                if found_item:
-                    break
-            
-            if found_item:
-                break
-    
-    if not found_item:
+    if parent_entity_type not in _GET_ITEM_PARENT_MODELS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid parent_entity_type '{parent_entity_type}'. "
+                "Must be 'alert', 'case', or 'task'."
+            ),
+        )
+
+    parent_kind = parent_entity_type
+    numeric_id, canonical_prefix = parse_entity_id(parent_entity_id, parent_kind)
+    parent_human_id = format_entity_id(numeric_id, canonical_prefix)
+    table_name = _GET_ITEM_PARENT_TABLES[parent_kind]
+
+    # Table name is selected from the hardcoded map above; all user input is
+    # passed as query parameters.
+    query = text(f"""
+        WITH parent AS (
+            SELECT
+                id,
+                timeline_items,
+                CASE
+                    WHEN jsonb_typeof(timeline_items) = 'object'
+                        AND timeline_items ? :item_id
+                    THEN timeline_items -> :item_id
+                    ELSE NULL
+                END AS top_level_item
+            FROM {table_name}
+            WHERE id = :parent_id
+        )
+        SELECT
+            id,
+            COALESCE(
+                top_level_item,
+                jsonb_path_query_first(
+                    timeline_items,
+                    '$.** ? (@.id == $item_id)'::jsonpath,
+                    jsonb_build_object('item_id', to_jsonb(CAST(:item_id AS text)))
+                )
+            ) AS item
+        FROM parent
+    """)
+    row = (
+        await db.execute(query, {"parent_id": numeric_id, "item_id": item_id})
+    ).mappings().one_or_none()
+
+    if row is None:
         raise HTTPException(
             status_code=404,
-            detail=f"Timeline item '{item_id}' not found"
+            detail=f"{parent_kind.capitalize()} {parent_human_id} not found",
+        )
+
+    found_item = row["item"]
+    
+    if not isinstance(found_item, dict):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Timeline item '{item_id}' not found under {parent_kind} "
+                f"{parent_human_id}. get_item no longer searches other alerts, "
+                "cases, or tasks; send the correct parent_entity_type and "
+                "parent_entity_id."
+            ),
         )
     
     # Extract content from item.
     # Notes are stored under the canonical timeline field `description`,
     # while older items may still use `body` or `content`.
-    full_content = found_item.get("body") or found_item.get("content") or found_item.get("description") or ""
+    full_content = (
+        found_item.get("body")
+        or found_item.get("content")
+        or found_item.get("description")
+        or ""
+    )
     
     # Handle pagination cursor
     offset = 0
@@ -1189,16 +1209,6 @@ async def get_item(
     else:
         timestamp_dt = datetime.now(timezone.utc)
     
-    # Guard against None (shouldn't happen since found_item implies parent_entity was found)
-    if parent_kind is None or parent_entity is None:
-        raise HTTPException(
-            status_code=500,
-            detail="Internal error: parent entity not found for timeline item"
-        )
-    
-    # parent_entity.id is guaranteed non-None since it was fetched from DB
-    assert parent_entity.id is not None
-    
     prefix = get_prefix_for_kind(parent_kind)
     
     metadata = ItemMetadata(
@@ -1206,8 +1216,8 @@ async def get_item(
         timestamp=timestamp_dt,
         author=found_item.get("author"),
         parent_kind=parent_kind,
-        parent_id=parent_entity.id,
-        parent_human_id=format_entity_id(parent_entity.id, prefix),
+        parent_id=numeric_id,
+        parent_human_id=format_entity_id(numeric_id, prefix),
     )
     
     return GetItemOutput(
