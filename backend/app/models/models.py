@@ -280,6 +280,10 @@ class AttachmentItem(ItemBase):
         default=None,
         description="Object storage key (e.g., alerts/123/attachments/abc/uuid.pdf)"
     )
+    upload_storage_key: Optional[str] = Field(
+        default=None,
+        description="Temporary object storage key used while upload is in progress"
+    )
     file_hash: Optional[str] = Field(
         default=None,
         description="SHA256 hash of file content for integrity verification"
@@ -287,6 +291,10 @@ class AttachmentItem(ItemBase):
     uploaded_by: Optional[str] = Field(
         default=None,
         description="Username of user who uploaded the file"
+    )
+    uploaded_by_user_id: Optional[str] = Field(
+        default=None,
+        description="Stable user ID of user who uploaded the file"
     )
     upload_status: UploadStatus = Field(
         default=UploadStatus.COMPLETE,
@@ -1724,8 +1732,8 @@ class PresignedUploadRequest(SQLModel):
         gt=0,
         description="File size in bytes"
     )
-    mime_type: Optional[str] = Field(
-        default=None,
+    mime_type: str = Field(
+        ...,
         description="Client-reported MIME type (validated server-side)"
     )
     
@@ -1741,7 +1749,7 @@ class PresignedUploadResponse(SQLModel):
     
     item_id: str = Field(description="Timeline item ID created for this upload")
     upload_url: str = Field(description="Presigned PUT URL for direct upload to storage")
-    storage_key: str = Field(description="Object storage key for this file")
+    storage_key: str = Field(description="Temporary object storage key targeted by the presigned upload URL")
     expires_at: datetime = Field(description="URL expiration timestamp")
     max_file_size: int = Field(description="Maximum allowed file size in bytes")
 

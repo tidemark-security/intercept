@@ -19,9 +19,25 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { AlertsService } from '@/types/generated/services/AlertsService';
 import { CasesService } from '@/types/generated/services/CasesService';
 import { TasksService } from '@/types/generated/services/TasksService';
-import type { PresignedUploadRequest, PresignedUploadResponse, UploadStatus } from '@/types/generated';
+import type { PresignedUploadRequest, UploadStatus } from '@/types/generated';
 import { queryKeys } from './queryKeys';
 import { useAttachmentLimits } from './useAttachmentLimits';
+
+type MagikaBrowser = {
+  identifyBytes: (data: Uint8Array) => Promise<{ prediction?: { output?: { mime_type?: string } } }>;
+};
+
+let magikaInstancePromise: Promise<MagikaBrowser> | null = null;
+
+async function detectMimeType(file: File): Promise<string> {
+  if (!magikaInstancePromise) {
+    magikaInstancePromise = import('magika').then(async ({ Magika }) => Magika.create() as Promise<MagikaBrowser>);
+  }
+  const magika = await magikaInstancePromise;
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const prediction = await magika.identifyBytes(bytes);
+  return prediction.prediction?.output?.mime_type || file.type || 'application/octet-stream';
+}
 
 export interface FileUploadProgress {
   /** Upload progress percentage (0-100) */
@@ -108,28 +124,27 @@ export function useFileUpload({
 
   // Mutation to update upload status
   const updateStatusMutation = useMutation({
-    mutationFn: async ({ itemId, status, fileHash }: { 
+    mutationFn: async ({ itemId, status }: {
       itemId: string; 
       status: UploadStatus;
-      fileHash?: string;
     }) => {
       if (alertId) {
         return AlertsService.updateAttachmentStatusApiV1AlertsAlertIdTimelineItemsItemIdStatusPatch({
           alertId,
           itemId,
-          requestBody: { status, file_hash: fileHash },
+          requestBody: { status },
         });
       } else if (caseId) {
         return CasesService.updateAttachmentStatusApiV1CasesCaseIdTimelineItemsItemIdStatusPatch({
           caseId,
           itemId,
-          requestBody: { status, file_hash: fileHash },
+          requestBody: { status },
         });
       } else if (taskId) {
         return TasksService.updateAttachmentStatusApiV1TasksTaskIdTimelineItemsItemIdStatusPatch({
           taskId,
           itemId,
-          requestBody: { status, file_hash: fileHash },
+          requestBody: { status },
         });
       }
       throw new Error('One of alertId, caseId, or taskId must be provided');
@@ -140,7 +155,7 @@ export function useFileUpload({
   /**
    * Validate file before upload
    */
-  const validateFile = useCallback((file: File): string | null => {
+  const validateFile = useCallback((file: File, detectedMimeType: string): string | null => {
     // Check file size
     if (attachmentLimits) {
       const maxSizeBytes = limits.max_upload_size_bytes;
@@ -157,8 +172,8 @@ export function useFileUpload({
 
     // Check file type if allowedTypes is specified
     if (allowedTypes && allowedTypes.length > 0) {
-      if (!allowedTypes.includes(file.type)) {
-        return `File type ${file.type || 'unknown'} is not allowed`;
+      if (!allowedTypes.includes(detectedMimeType)) {
+        return `File type ${detectedMimeType || 'unknown'} is not allowed`;
       }
     }
 
@@ -166,22 +181,12 @@ export function useFileUpload({
   }, [allowedTypes, attachmentLimits, limits.max_upload_size_bytes, limits.max_upload_size_mb, maxSizeMB]);
 
   /**
-   * Calculate SHA256 hash of file
-   */
-  const calculateFileHash = async (file: File): Promise<string> => {
-    const buffer = await file.arrayBuffer();
-    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-    return hashHex;
-  };
-
-  /**
    * Upload file directly to storage using presigned URL
    */
   const uploadToStorage = async (
     file: File,
     uploadUrl: string,
+    contentType: string,
     onProgress?: (progress: FileUploadProgress) => void
   ): Promise<void> => {
     return new Promise((resolve, reject) => {
@@ -228,7 +233,7 @@ export function useFileUpload({
       });
 
       xhr.open('PUT', uploadUrl);
-      xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+      xhr.setRequestHeader('Content-Type', contentType || 'application/octet-stream');
       xhr.send(file);
     });
   };
@@ -248,8 +253,10 @@ export function useFileUpload({
     });
 
     try {
+      const detectedMimeType = await detectMimeType(file);
+
       // Validate file
-      const validationError = validateFile(file);
+      const validationError = validateFile(file, detectedMimeType);
       if (validationError) {
         throw new Error(validationError);
       }
@@ -258,7 +265,7 @@ export function useFileUpload({
       const uploadResponse = await getUploadUrlMutation.mutateAsync({
         filename: file.name,
         file_size: file.size,
-        mime_type: file.type || undefined,
+        mime_type: detectedMimeType,
       });
 
       currentItemId = uploadResponse.item_id;
@@ -269,26 +276,17 @@ export function useFileUpload({
       }));
 
       // Step 2: Upload file to storage
-      await uploadToStorage(file, uploadResponse.upload_url, (progress) => {
+      await uploadToStorage(file, uploadResponse.upload_url, detectedMimeType, (progress) => {
         setUploadState(prev => ({
           ...prev,
           progress,
         }));
       });
 
-      // Step 3: Calculate file hash (optional but recommended)
-      let fileHash: string | undefined;
-      try {
-        fileHash = await calculateFileHash(file);
-      } catch (err) {
-        console.warn('Failed to calculate file hash:', err);
-      }
-
-      // Step 4: Confirm upload completion
+      // Step 3: Confirm upload completion
       const updatedEntity = await updateStatusMutation.mutateAsync({
         itemId: uploadResponse.item_id,
         status: 'COMPLETE' as UploadStatus,
-        fileHash,
       });
 
       // Ensure cache is updated immediately with the correct query key

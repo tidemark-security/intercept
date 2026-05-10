@@ -47,6 +47,14 @@ def normalize_upload_status(status: Any, default: str = "COMPLETE") -> str:
     return normalized.upper()
 
 
+def expected_attachment_storage_prefix(entity_type: str, parent_id: int, item_id: str) -> str:
+    return f"{entity_type}s/{parent_id}/attachments/{item_id}/"
+
+
+def expected_attachment_upload_storage_prefix(entity_type: str, parent_id: int, item_id: str) -> str:
+    return f"_uploads/{entity_type}s/{parent_id}/attachments/{item_id}/"
+
+
 def get_timeline_item_types(union_type):
     """
     Dynamically extract timeline item types from a Union type.
@@ -90,6 +98,23 @@ def create_timeline_converter(timeline_item_types: Dict[str, Any]):
         Function that converts dict to appropriate timeline item type
     """
     from app.core.validation import validate_value
+
+    CLIENT_WRITABLE_ATTACHMENT_FIELDS = {
+        "id",
+        "type",
+        "file_name",
+        "mime_type",
+        "file_size",
+        "created_at",
+        "timestamp",
+        "created_by",
+        "tags",
+        "flagged",
+        "highlighted",
+        "parent_id",
+        "replies",
+        "audit",
+    }
     
     def _validate_observable_item(timeline_item: dict) -> None:
         """Validate observable item fields."""
@@ -137,6 +162,13 @@ def create_timeline_converter(timeline_item_types: Dict[str, Any]):
             _validate_observable_item(timeline_item)
         elif item_type == "network_traffic":
             _validate_network_item(timeline_item)
+
+        if item_type == "attachment":
+            timeline_item = {
+                key: value
+                for key, value in timeline_item.items()
+                if key in CLIENT_WRITABLE_ATTACHMENT_FIELDS
+            }
         
         item_class = timeline_item_types[item_type]
         return item_class(**timeline_item)
@@ -257,7 +289,7 @@ async def handle_generate_upload_url(
                 detail=f"File size {request_data.file_size} exceeds limit {max_size_mb}MB",
             )
 
-        if request_data.mime_type and not storage_service.validate_file_type(request_data.mime_type):
+        if not storage_service.validate_file_type(request_data.mime_type):
             raise HTTPException(
                 status_code=415,
                 detail=f"File type {request_data.mime_type} not allowed",
@@ -269,6 +301,9 @@ async def handle_generate_upload_url(
         storage_key = storage_service.generate_storage_key(
             parent_id, item_id, sanitized_filename, parent_type=parent_type,
         )
+        upload_storage_key = storage_service.generate_upload_storage_key(
+            parent_id, item_id, parent_type=parent_type,
+        )
 
         attachment_item = AttachmentItem(
             id=item_id,
@@ -277,8 +312,10 @@ async def handle_generate_upload_url(
             mime_type=request_data.mime_type,
             file_size=request_data.file_size,
             storage_key=storage_key,
+            upload_storage_key=upload_storage_key,
             upload_status=UploadStatus.UPLOADING,
             uploaded_by=current_user.username,
+            uploaded_by_user_id=str(current_user.id),
             created_by=current_user.username,
             timestamp=datetime.now(timezone.utc),
         )
@@ -288,7 +325,7 @@ async def handle_generate_upload_url(
         )
 
         upload_url = await storage_service.generate_presigned_upload_url(
-            storage_key, expires_minutes=storage_config.upload_timeout_minutes,
+            upload_storage_key, expires_minutes=storage_config.upload_timeout_minutes,
         )
 
         expires_at = datetime.now(timezone.utc) + timedelta(
@@ -305,7 +342,7 @@ async def handle_generate_upload_url(
         return PresignedUploadResponse(
             item_id=item_id,
             upload_url=upload_url,
-            storage_key=storage_key,
+            storage_key=upload_storage_key,
             expires_at=expires_at,
             max_file_size=attachment_limits.max_upload_size_bytes,
         )
@@ -339,6 +376,7 @@ async def handle_update_attachment_status(
     """
     from app.models.enums import UploadStatus
     from app.models.models import AttachmentItem
+    from app.services.attachment_settings_service import get_attachment_limits
     from app.services.storage_service import storage_service
 
     try:
@@ -349,7 +387,11 @@ async def handle_update_attachment_status(
                 detail=f"Attachment item {item_id} not found",
             )
 
-        if timeline_item.get("uploaded_by") != current_user.username:
+        if timeline_item.get("uploaded_by_user_id"):
+            owner_matches = timeline_item.get("uploaded_by_user_id") == str(current_user.id)
+        else:
+            owner_matches = timeline_item.get("uploaded_by") == current_user.username
+        if not owner_matches:
             raise HTTPException(
                 status_code=403,
                 detail="Only upload owner can update status",
@@ -369,16 +411,120 @@ async def handle_update_attachment_status(
                     status_code=400,
                     detail="Attachment has no storage key",
                 )
-            file_exists = await storage_service.verify_file_exists(storage_key)
+            if not str(storage_key).startswith(expected_attachment_storage_prefix(entity_type, parent_id, item_id)):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Attachment storage key does not belong to this entity",
+                )
+            upload_storage_key = timeline_item.get("upload_storage_key")
+            if not upload_storage_key:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Attachment upload must be restarted before it can be finalized",
+                )
+            if not str(upload_storage_key).startswith(
+                expected_attachment_upload_storage_prefix(entity_type, parent_id, item_id)
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Attachment upload storage key does not belong to this entity",
+                )
+
+            file_exists = await storage_service.verify_file_exists(upload_storage_key)
             if not file_exists:
                 raise HTTPException(
                     status_code=409,
                     detail="File not found in storage",
                 )
 
+            raw_expected_size = timeline_item.get("file_size")
+            try:
+                expected_size = int(raw_expected_size)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Attachment has invalid expected file size",
+                )
+            if expected_size <= 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Attachment has invalid expected file size",
+                )
+
+            attachment_limits = await get_attachment_limits(db)
+            if expected_size > attachment_limits.max_upload_size_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"File size {expected_size} exceeds limit "
+                        f"{attachment_limits.max_upload_size_mb}MB"
+                    ),
+                )
+
+            upload_metadata = await storage_service.get_object_metadata(upload_storage_key)
+            if upload_metadata.size > attachment_limits.max_upload_size_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=(
+                        f"Uploaded file size {upload_metadata.size} exceeds limit "
+                        f"{attachment_limits.max_upload_size_mb}MB"
+                    ),
+                )
+            if upload_metadata.size != expected_size:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Uploaded file size does not match the expected size",
+                )
+
+            await storage_service.copy_object(upload_storage_key, storage_key)
+            try:
+                final_metadata = await storage_service.get_object_metadata(
+                    storage_key,
+                    require_checksum=True,
+                )
+                if final_metadata.size != expected_size:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Finalized file size does not match the expected size",
+                    )
+                if not final_metadata.sha256:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Storage did not return a SHA256 checksum for the finalized file",
+                    )
+
+                detected_mime_type = await storage_service.detect_mime_type(storage_key)
+                if not storage_service.validate_file_type(detected_mime_type):
+                    raise HTTPException(
+                        status_code=415,
+                        detail=f"Detected file type {detected_mime_type} not allowed",
+                    )
+                if detected_mime_type != timeline_item.get("mime_type"):
+                    raise HTTPException(
+                        status_code=415,
+                        detail="Uploaded file content type does not match the declared MIME type",
+                    )
+                if update_data.file_hash and update_data.file_hash.lower() != final_metadata.sha256:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Uploaded file hash does not match the stored object",
+                    )
+            except HTTPException:
+                try:
+                    await storage_service.delete_file(storage_key)
+                except Exception:  # pragma: no cover - best-effort cleanup
+                    logger.warning("Failed to clean up rejected finalized attachment %s", storage_key)
+                raise
+
+            server_hash = final_metadata.sha256
+            timeline_item["file_hash"] = server_hash
+            timeline_item.pop("upload_storage_key", None)
+            try:
+                await storage_service.delete_file(upload_storage_key)
+            except Exception:  # pragma: no cover - best-effort cleanup
+                logger.warning("Failed to clean up staged attachment upload %s", upload_storage_key)
+
         timeline_item["upload_status"] = update_data.status.value
-        if update_data.file_hash:
-            timeline_item["file_hash"] = update_data.file_hash
 
         attachment_item = AttachmentItem(**timeline_item)
 
@@ -445,6 +591,11 @@ async def handle_generate_download_url(
                 status_code=400,
                 detail="Attachment has no storage key",
             )
+        if not str(storage_key).startswith(expected_attachment_storage_prefix(entity_type, parent_id, item_id)):
+            raise HTTPException(
+                status_code=403,
+                detail="Attachment storage key does not belong to this entity",
+            )
 
         file_exists = await storage_service.verify_file_exists(storage_key)
         if not file_exists:
@@ -457,7 +608,7 @@ async def handle_generate_download_url(
             storage_key,
             expires_minutes=storage_config.download_timeout_minutes,
             filename=timeline_item.get("file_name"),
-            as_attachment=as_download,
+            as_attachment=True,
         )
 
         expires_at = datetime.now(timezone.utc) + timedelta(

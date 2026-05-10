@@ -47,7 +47,7 @@ class StorageConfig(BaseSettings):
         default=[
             # Images
             "image/png", "image/jpeg", "image/gif", "image/webp",
-            "image/svg+xml", "image/bmp", "image/tiff",
+            "image/bmp", "image/tiff",
             # Documents
             "application/pdf",
             "application/msword",
@@ -58,7 +58,7 @@ class StorageConfig(BaseSettings):
             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
             # Text / data
             "text/plain", "application/json", "text/csv",
-            "text/html", "text/markdown", "application/xml",
+            "text/markdown", "application/xml",
             # Archives
             "application/zip", "application/x-7z-compressed",
             "application/gzip", "application/x-tar",

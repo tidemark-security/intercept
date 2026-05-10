@@ -70,6 +70,10 @@ export type AttachmentItem = {
      */
     storage_key?: (string | null);
     /**
+     * Temporary object storage key used while upload is in progress
+     */
+    upload_storage_key?: (string | null);
+    /**
      * SHA256 hash of file content for integrity verification
      */
     file_hash?: (string | null);
@@ -83,4 +87,3 @@ export type AttachmentItem = {
     upload_status?: UploadStatus;
     url?: (string | null);
 };
-

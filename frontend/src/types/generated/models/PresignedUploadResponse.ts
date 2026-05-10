@@ -15,7 +15,7 @@ export type PresignedUploadResponse = {
      */
     upload_url: string;
     /**
-     * Object storage key for this file
+     * Temporary object storage key targeted by the presigned upload URL
      */
     storage_key: string;
     /**
@@ -27,4 +27,3 @@ export type PresignedUploadResponse = {
      */
     max_file_size: number;
 };
-

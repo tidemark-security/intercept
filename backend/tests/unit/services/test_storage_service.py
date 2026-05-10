@@ -1,0 +1,105 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+from typing import Any
+
+import pytest
+
+from app.services.storage_service import MIME_SNIFF_BYTES, StorageService, storage_service
+
+
+def test_checksum_sha256_hex_accepts_base64_checksum() -> None:
+    digest = hashlib.sha256(b"attachment bytes").digest()
+
+    assert StorageService._checksum_sha256_hex(
+        {"x-amz-checksum-sha256": base64.b64encode(digest).decode("ascii")}
+    ) == digest.hex()
+
+
+def test_checksum_sha256_hex_accepts_hex_checksum() -> None:
+    expected = hashlib.sha256(b"attachment bytes").hexdigest()
+
+    assert StorageService._checksum_sha256_hex({"x-amz-checksum-sha256": expected.upper()}) == expected
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"x-amz-checksum-sha256": "not-base64"},
+        {"x-amz-checksum-sha256": base64.b64encode(b"too-short").decode("ascii")},
+    ],
+)
+def test_checksum_sha256_hex_rejects_invalid_checksum(headers: dict[str, str]) -> None:
+    assert StorageService._checksum_sha256_hex(headers) is None
+
+
+@pytest.mark.asyncio
+async def test_detect_mime_type_reads_bounded_sample(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_get_object_bytes(storage_key: str, *, max_bytes: int | None = None) -> bytes:
+        assert storage_key == "tasks/1/attachments/item/file.txt"
+        assert max_bytes == MIME_SNIFF_BYTES
+        return b"sample"
+
+    async def fake_detect_mime_type_from_bytes(data: bytes) -> str:
+        assert data == b"sample"
+        return "text/plain"
+
+    monkeypatch.setattr(storage_service, "get_object_bytes", fake_get_object_bytes)
+    monkeypatch.setattr(storage_service, "detect_mime_type_from_bytes", fake_detect_mime_type_from_bytes)
+
+    assert await storage_service.detect_mime_type("tasks/1/attachments/item/file.txt") == "text/plain"
+
+
+@pytest.mark.asyncio
+async def test_get_object_bytes_passes_length_to_minio() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakeResponse:
+        def read(self) -> bytes:
+            return b"abc"
+
+        def close(self) -> None:
+            return None
+
+        def release_conn(self) -> None:
+            return None
+
+    class FakeClient:
+        def get_object(self, bucket_name: str, storage_key: str, **kwargs: Any) -> FakeResponse:
+            calls.append(
+                {
+                    "bucket_name": bucket_name,
+                    "storage_key": storage_key,
+                    **kwargs,
+                }
+            )
+            return FakeResponse()
+
+    service = StorageService.__new__(StorageService)
+    service.client = FakeClient()
+    service.bucket_name = "test-bucket"
+
+    assert await service.get_object_bytes("object-key", max_bytes=123) == b"abc"
+    assert calls == [
+        {
+            "bucket_name": "test-bucket",
+            "storage_key": "object-key",
+            "offset": 0,
+            "length": 123,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_object_bytes_zero_limit_does_not_issue_unbounded_get() -> None:
+    class FakeClient:
+        def get_object(self, *_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("zero max_bytes must not become an unbounded get")
+
+    service = StorageService.__new__(StorageService)
+    service.client = FakeClient()
+    service.bucket_name = "test-bucket"
+
+    assert await service.get_object_bytes("object-key", max_bytes=0) == b""
