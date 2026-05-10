@@ -266,6 +266,9 @@ class AdminAuthService:
         db: AsyncSession,
     ) -> UserAccount:
         """Update editable fields on a user account."""
+        if admin_user_id == target_user_id:
+            raise ValueError("Cannot edit your own account through the admin panel")
+
         result = await db.execute(
             select(UserAccount).where(UserAccount.id == target_user_id)
         )
@@ -468,6 +471,7 @@ class AdminAuthService:
             select(AdminResetRequest)
             .options(selectinload(AdminResetRequest.target_user))
             .where(AdminResetRequest.token_hash == token_hash)
+            .with_for_update()
         )
         reset_request = result.scalar_one_or_none()
 
@@ -503,6 +507,11 @@ class AdminAuthService:
             user.status = UserStatus.ACTIVE
 
         reset_request.consumed_at = now
+        await self._revoke_user_sessions(
+            user_id=user.id,
+            reason=SessionRevokedReason.RESET_REQUIRED,
+            db=db,
+        )
 
         await db.commit()
 
