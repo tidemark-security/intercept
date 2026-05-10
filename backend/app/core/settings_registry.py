@@ -546,8 +546,8 @@ _register(
         "langflow.timeout",
         value_type=SettingType.NUMBER,
         category="langflow",
-        description="LangFlow HTTP request timeout in seconds",
-        default=30,
+        description="LangFlow HTTP request timeout in seconds. Agent flows (alert triage, case chat) make multiple LLM round-trips and tool calls, so this needs to be well above a single LLM response time.",
+        default=300,
     ),
     _def(
         "langflow.default_flow_id",

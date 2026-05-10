@@ -10,7 +10,7 @@ WORKDIR /app
 COPY package.json ./
 
 # Install all dependencies (including devDependencies for build)
-RUN npm install
+RUN npm install --no-audit --no-fund
 
 # Copy source code and config files
 COPY index.html tsconfig.json tsconfig.node.json vite.config.ts tailwind.config.js postcss.config.js ./
