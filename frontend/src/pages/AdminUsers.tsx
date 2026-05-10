@@ -291,7 +291,7 @@ function AdminUsers() {
 
   const buildResetUrl = useCallback((token: string) => {
     const url = new URL("/reset-password", window.location.origin);
-    url.searchParams.set("token", token);
+    url.hash = `token=${encodeURIComponent(token)}`;
     return url.toString();
   }, []);
 
