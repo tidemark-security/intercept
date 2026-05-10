@@ -29,10 +29,11 @@ router = APIRouter(
     dependencies=[Depends(require_non_auditor_user)],
 )
 async def populate_dummy_data(
-    cases_count: int = Query(10, ge=1, description="Number of cases to create"),
+    cases_count: int = Query(10, ge=1, le=1000, description="Number of cases to create"),
     alerts_count: int = Query(
         20,
         ge=1,
+        le=1000,
         description="Number of random alerts to create (closure-prone alerts are added automatically)",
     ),
     link_alerts: bool = Query(True, description="Whether to link some alerts to cases"),
