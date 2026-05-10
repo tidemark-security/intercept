@@ -132,6 +132,15 @@ _register(
         default="postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db",
     ),
     _def(
+        "database.echo",
+        env_var="DATABASE_ECHO",
+        local_only=True,
+        value_type=SettingType.BOOLEAN,
+        category="bootstrap",
+        description="Enable SQLAlchemy SQL echo logging",
+        default=False,
+    ),
+    _def(
         "secret_key",
         env_var="SECRET_KEY",
         local_only=True,
