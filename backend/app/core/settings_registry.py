@@ -450,6 +450,14 @@ _register(
         ],
     ),
     _def(
+        "oidc.trusted_auto_link_issuers",
+        env_var="OIDC_TRUSTED_AUTO_LINK_ISSUERS",
+        value_type=SettingType.JSON,
+        category="oidc",
+        description="JSON array of OIDC issuers allowed to auto-link existing users by email",
+        default=[],
+    ),
+    _def(
         "oidc.browser_binding.cookie_name",
         env_var="OIDC_BROWSER_BINDING_COOKIE_NAME",
         local_only=True,

@@ -199,6 +199,10 @@ class OIDCService:
         result = await db.execute(select(UserAccount).where(cast(Any, UserAccount.email == email)))
         user = result.scalar_one_or_none()
         if user is not None:
+            settings = SettingsService(db)  # type: ignore[arg-type]
+            trusted_issuers = await settings.get("oidc.trusted_auto_link_issuers", default=[])
+            if issuer not in {str(item) for item in (trusted_issuers or [])}:
+                raise OIDCAuthenticationError("OIDC account linking requires a trusted issuer")
             if user.status != UserStatus.ACTIVE:
                 raise OIDCAuthenticationError("OIDC-linked user account is not active")
             user.oidc_issuer = issuer
@@ -286,6 +290,8 @@ class OIDCService:
 
         if not discovery_url or not client_id:
             raise OIDCConfigurationError("OIDC discovery URL and client ID must be configured")
+        if urlparse(str(discovery_url)).scheme != "https":
+            raise OIDCConfigurationError("OIDC discovery URL must use HTTPS")
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(str(discovery_url))
@@ -332,6 +338,7 @@ class OIDCService:
 
         auth_request.consumed_at = now
         await db.flush()
+        await db.commit()
         return auth_request
 
     @staticmethod
@@ -349,12 +356,15 @@ class OIDCService:
     ) -> dict[str, Any]:
         try:
             header = jwt.get_unverified_header(id_token)
-            jwk_data = self._select_jwk(jwks, header.get("kid"))
+            alg = str(header.get("alg") or "")
+            if alg not in {"RS256", "RS384", "RS512", "ES256", "ES384", "ES512"}:
+                raise OIDCAuthenticationError("OIDC ID token uses an unsupported signing algorithm")
+            jwk_data = self._select_jwk(jwks, header.get("kid"), alg)
             key = jwt.PyJWK(jwk_data).key
             claims = jwt.decode(
                 id_token,
                 key,
-                algorithms=[header.get("alg", "RS256")],
+                algorithms=[alg],
                 issuer=issuer,
                 audience=audience,
                 options={"verify_at_hash": False},
@@ -370,14 +380,19 @@ class OIDCService:
         return claims
 
     @staticmethod
-    def _select_jwk(jwks: dict[str, Any], kid: Optional[str]) -> dict[str, Any]:
+    def _select_jwk(jwks: dict[str, Any], kid: Optional[str], alg: str) -> dict[str, Any]:
         keys = jwks.get("keys")
         if not isinstance(keys, list) or not keys:
             raise OIDCAuthenticationError("OIDC provider returned no JWKS keys")
         if kid is None:
-            return cast(dict[str, Any], keys[0])
+            raise OIDCAuthenticationError("OIDC ID token did not include a key ID")
         for key in keys:
-            if isinstance(key, dict) and key.get("kid") == kid:
+            if (
+                isinstance(key, dict)
+                and key.get("kid") == kid
+                and key.get("use", "sig") == "sig"
+                and key.get("alg", alg) == alg
+            ):
                 return cast(dict[str, Any], key)
         raise OIDCAuthenticationError("OIDC signing key was not found in JWKS")
 

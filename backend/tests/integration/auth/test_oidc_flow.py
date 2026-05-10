@@ -34,11 +34,15 @@ async def test_begin_oidc_login_sets_browser_binding_cookie(
     async def fake_is_safe_redirect_target(_db, target: str) -> bool:
         return target == "http://localhost:5173/"
 
+    async def fake_setting_get(_self, key: str, default: object = None) -> object:
+        return True if key == "oidc.enabled" else default
+
     async def fake_begin_login(_db, *, redirect_to: str, callback_url: str):
         assert redirect_to == "http://localhost:5173/"
         assert callback_url.endswith("/api/v1/auth/oidc/callback")
         return "https://idp.example/authorize", expires_at, "browser-binding-token"
 
+    monkeypatch.setattr(oidc_routes.SettingsService, "get", fake_setting_get)
     monkeypatch.setattr(oidc_routes.oidc_service, "is_safe_redirect_target", fake_is_safe_redirect_target)
     monkeypatch.setattr(oidc_routes.oidc_service, "begin_login", fake_begin_login)
 
@@ -64,6 +68,9 @@ async def test_oidc_callback_sets_session_and_csrf_cookies(
 
     user = analyst_user_factory(username="oidc.user")
     expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+
+    async def fake_setting_get(_self, key: str, default: object = None) -> object:
+        return True if key == "oidc.enabled" else default
 
     async with session_maker() as session:
         session.add(user)
@@ -97,6 +104,7 @@ async def test_oidc_callback_sets_session_and_csrf_cookies(
             session_token="oidc-session-token",
         )
 
+    monkeypatch.setattr(oidc_routes.SettingsService, "get", fake_setting_get)
     monkeypatch.setattr(oidc_routes.oidc_service, "exchange_code", fake_exchange_code)
     monkeypatch.setattr(oidc_routes.auth_service, "create_session_for_user", fake_create_session_for_user)
     monkeypatch.setattr(oidc_routes, "get_audit_service", lambda _db: _FakeAuditService())
