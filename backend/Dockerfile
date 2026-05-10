@@ -29,12 +29,16 @@ COPY . .
 
 # Copy and set entrypoint script
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh \
+    && useradd --create-home --uid 10001 intercept \
+    && chown -R intercept:intercept /app /entrypoint.sh
 
 ARG APP_VERSION=dev
 ENV APP_VERSION=${APP_VERSION}
 
 EXPOSE 8000
+
+USER intercept
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

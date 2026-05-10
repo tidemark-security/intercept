@@ -27,9 +27,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+RUN useradd --create-home --uid 10001 intercept \
+    && chown -R intercept:intercept /app
+
 ARG APP_VERSION=dev
 ENV APP_VERSION=${APP_VERSION}
 
 EXPOSE 8001
+
+USER intercept
 
 CMD ["python", "worker.py"]
