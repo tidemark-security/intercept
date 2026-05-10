@@ -294,7 +294,19 @@ class AlertService:
                 query = query.where(*filters)
             
             # Apply sorting
-            sort_column = getattr(Alert, sort_by, Alert.created_at)
+            allowed_sort_columns = {
+                "id": Alert.id,
+                "title": Alert.title,
+                "status": Alert.status,
+                "priority": Alert.priority,
+                "source": Alert.source,
+                "assignee": Alert.assignee,
+                "created_at": Alert.created_at,
+                "updated_at": Alert.updated_at,
+            }
+            if sort_by not in allowed_sort_columns:
+                raise ValueError(f"Unsupported alert sort column: {sort_by}")
+            sort_column = allowed_sort_columns[sort_by]
             if sort_order.lower() == "asc":
                 query = query.order_by(sort_column.asc())  # type: ignore
             else:
@@ -319,6 +331,8 @@ class AlertService:
             db_alert = await self._get_alert_model(db, alert_id)
             if not db_alert:
                 return None
+            if db_alert.case_id is not None:
+                raise ValueError("Alert is already linked to a case; unlink it before linking to another case")
             
             # Track status changes for timeline
             old_status = db_alert.status
