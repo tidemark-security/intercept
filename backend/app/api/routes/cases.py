@@ -32,6 +32,7 @@ from app.api.route_utils import (
 )
 from app.api.routes.admin_auth import (
     require_authenticated_user,
+    require_admin_user,
     require_non_auditor_user,
 )
 from app.services.timeline_graph_service import (
@@ -219,9 +220,9 @@ async def delete_case(
     case_id: int,
     request: Request,  # pylint: disable=unused-argument
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_non_auditor_user),
+    current_user: UserAccount = Depends(require_admin_user),
 ):
-    """Delete a case."""
+    """Permanently delete a case. Restricted to admins."""
     try:
         success = await case_service.delete_case(db, case_id, current_user.username)
         if not success:

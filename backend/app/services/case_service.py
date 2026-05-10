@@ -23,6 +23,10 @@ from app.services.realtime_service import emit_event
 
 logger = logging.getLogger(__name__)
 
+CASE_DELETE_AUDIT_DESCRIPTION_MAX_CHARS = 2048
+CASE_DELETE_AUDIT_MAX_TAGS = 50
+CASE_DELETE_AUDIT_TAG_MAX_CHARS = 128
+
 # Valid closed statuses for alerts when auto-closing
 VALID_ALERT_CLOSED_STATUSES = [
     AlertStatus.CLOSED_TP,
@@ -563,26 +567,67 @@ class CaseService:
         return closure_status_map
     
     async def delete_case(self, db: AsyncSession, case_id: int, deleted_by: str) -> bool:
-        """Soft delete a case (mark as deleted in audit log)."""
+        """Permanently delete a case after recording an audit snapshot."""
         try:
             db_case = await self._get_case_model(db, case_id)
             if not db_case:
                 return False
-            
+
             await self._create_audit_log(
-                db, case_id, "deleted", "Case deleted", None, None, deleted_by
+                db,
+                case_id,
+                "deleted",
+                "Case permanently deleted",
+                self._build_delete_audit_snapshot(db_case),
+                None,
+                deleted_by,
             )
-            
+
             await db.delete(db_case)
             await db.commit()
-            
-            logger.info(f"Case deleted by {deleted_by}")
+
+            logger.warning("Case %s permanently deleted by admin %s", case_id, deleted_by)
             return True
             
         except Exception as e:
             await db.rollback()
             logger.error(f"Error deleting case {case_id}: {e}")
             raise
+
+    @staticmethod
+    def _truncate_audit_text(value: Optional[str], max_chars: int) -> Optional[str]:
+        if value is None or len(value) <= max_chars:
+            return value
+        return value[:max_chars]
+
+    def _build_delete_audit_snapshot(self, db_case: Case) -> dict[str, Any]:
+        description = self._truncate_audit_text(
+            db_case.description,
+            CASE_DELETE_AUDIT_DESCRIPTION_MAX_CHARS,
+        )
+        tags = list(db_case.tags or [])
+        sampled_tags = [
+            self._truncate_audit_text(str(tag), CASE_DELETE_AUDIT_TAG_MAX_CHARS)
+            for tag in tags[:CASE_DELETE_AUDIT_MAX_TAGS]
+        ]
+
+        return {
+            "id": db_case.id,
+            "title": db_case.title,
+            "description": description,
+            "description_length": len(db_case.description or ""),
+            "description_truncated": bool(
+                db_case.description
+                and len(db_case.description) > CASE_DELETE_AUDIT_DESCRIPTION_MAX_CHARS
+            ),
+            "status": db_case.status,
+            "priority": db_case.priority,
+            "assignee": db_case.assignee,
+            "created_by": db_case.created_by,
+            "tags": sampled_tags,
+            "tags_count": len(tags),
+            "tags_truncated": len(tags) > CASE_DELETE_AUDIT_MAX_TAGS,
+        }
     
     async def add_timeline_item(
         self, 
@@ -817,8 +862,8 @@ class CaseService:
         case_id: int,
         action: str,
         description: str,
-        old_value: Optional[str],
-        new_value: Optional[str],
+        old_value: Any,
+        new_value: Any,
         performed_by: str
     ) -> None:
         """Create an audit log entry."""
