@@ -145,9 +145,12 @@ class UTCDateTime(TypeDecorator):
 
 # Timeline Item Models - strongly typed with first-class attributes
 TimelineItemStorage: TypeAlias = Dict[str, Dict[str, Any]]
+MAX_TIMELINE_REPLY_DEPTH = 5
 
 
-def _coerce_timeline_item_storage(value: Any) -> TimelineItemStorage:
+def _coerce_timeline_item_storage(value: Any, *, depth: int = 0) -> TimelineItemStorage:
+    if depth > MAX_TIMELINE_REPLY_DEPTH:
+        raise ValueError(f"Replies cannot be nested more than {MAX_TIMELINE_REPLY_DEPTH} levels deep")
     if value is None:
         return {}
     if isinstance(value, dict):
@@ -157,7 +160,7 @@ def _coerce_timeline_item_storage(value: Any) -> TimelineItemStorage:
                 item_copy = dict(item)
                 replies = item_copy.get("replies")
                 if replies is not None:
-                    item_copy["replies"] = _coerce_timeline_item_storage(replies)
+                    item_copy["replies"] = _coerce_timeline_item_storage(replies, depth=depth + 1)
                 item_id = item_copy.get("id") or str(key)
                 item_copy["id"] = str(item_id)
                 coerced[str(item_id)] = item_copy
@@ -174,7 +177,7 @@ def _coerce_timeline_item_storage(value: Any) -> TimelineItemStorage:
                 continue
             replies = item_copy.get("replies")
             if replies is not None:
-                item_copy["replies"] = _coerce_timeline_item_storage(replies)
+                item_copy["replies"] = _coerce_timeline_item_storage(replies, depth=depth + 1)
             coerced[str(item_id)] = item_copy
         return coerced
     return {}
@@ -860,13 +863,7 @@ class AlertUpdate(SQLModel):
     priority: Optional[Priority] = None
     source: Optional[str] = None
     assignee: Optional[str] = Field(None, max_length=100)
-    timeline_items: Optional[Dict[str, AlertTimelineItem]] = None
     tags: Optional[List[str]] = None
-
-    @field_validator("timeline_items", mode="before")
-    @classmethod
-    def coerce_timeline_items(cls, value: Any) -> TimelineItemStorage:
-        return _coerce_timeline_item_storage(value)
 
 
 class AlertTriageRequest(SQLModel):
@@ -2629,4 +2626,3 @@ class QueueJobsPage(SQLModel):
     page: int = 1
     size: int = 25
     pages: int = 0
-

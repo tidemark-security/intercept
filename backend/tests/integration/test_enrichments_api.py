@@ -225,7 +225,11 @@ async def test_add_internal_actor_auto_enqueues_matching_enrichment(
             async with session_maker() as session:
                 refreshed_alert = await session.get(Alert, alert.id)
                 assert refreshed_alert is not None
-                stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-auto-1")
+                stored_item = next(
+                    item
+                    for item in _timeline_values(refreshed_alert.timeline_items)
+                    if item.get("id") == payload.get("item_id")
+                )
 
             assert stored_item["enrichment_status"] == "pending"
             captured_payloads.append(
@@ -245,10 +249,11 @@ async def test_add_internal_actor_auto_enqueues_matching_enrichment(
     ) -> dict[str, QueueJobRead]:
         assert entity_type == "alert"
         assert entity_id == alert.id
-        assert item_ids == ["item-auto-1"]
-        assert linked_task_ids_by_item_id == {"item-auto-1": "123"}
+        assert len(item_ids) == 1
+        item_id = item_ids[0]
+        assert linked_task_ids_by_item_id == {item_id: "123"}
         return {
-            "item-auto-1": QueueJobRead(
+            item_id: QueueJobRead(
                 id=123,
                 entrypoint="enrich_item",
                 status="queued",
@@ -256,7 +261,7 @@ async def test_add_internal_actor_auto_enqueues_matching_enrichment(
                 payload={
                     "entity_type": "alert",
                     "entity_id": alert.id,
-                    "item_id": "item-auto-1",
+                    "item_id": item_id,
                 },
             )
         }
@@ -279,13 +284,14 @@ async def test_add_internal_actor_auto_enqueues_matching_enrichment(
     )
 
     assert response.status_code == 200
+    item_id = _timeline_values(response.json()["timeline_items"])[0]["id"]
     assert captured_payloads == [
         {
             "task_name": "enrich_item",
             "payload": {
                 "entity_type": "alert",
                 "entity_id": alert.id,
-                "item_id": "item-auto-1",
+                "item_id": item_id,
             },
             "priority": 0,
         }
@@ -294,7 +300,7 @@ async def test_add_internal_actor_auto_enqueues_matching_enrichment(
     async with session_maker() as session:
         refreshed_alert = await session.get(Alert, alert.id)
         assert refreshed_alert is not None
-        stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-auto-1")
+        stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == item_id)
 
     assert stored_item["enrichment_status"] == "pending"
     assert stored_item["enrichment_task_id"] == "123"
@@ -902,10 +908,11 @@ async def test_denormalize_timeline_does_not_overwrite_newer_enrichment_state(
         item_ids: list[str],
         linked_task_ids_by_item_id: dict[str, str] | None = None,
     ) -> dict[str, QueueJobRead]:
-        if item_ids == ["item-race-1"]:
-            assert linked_task_ids_by_item_id == {"item-race-1": "task-race-123"}
+        if item_ids:
+            item_id = item_ids[0]
+            assert linked_task_ids_by_item_id == {item_id: "task-race-123"}
             return {
-                "item-race-1": QueueJobRead(
+                item_id: QueueJobRead(
                     id=456,
                     entrypoint="enrich_item",
                     status="queued",
@@ -913,7 +920,7 @@ async def test_denormalize_timeline_does_not_overwrite_newer_enrichment_state(
                     payload={
                         "entity_type": entity_type,
                         "entity_id": entity_id,
-                        "item_id": "item-race-1",
+                        "item_id": item_id,
                     },
                 )
             }
@@ -938,6 +945,7 @@ async def test_denormalize_timeline_does_not_overwrite_newer_enrichment_state(
     )
 
     assert response.status_code == 200
+    item_id = _timeline_values(response.json()["timeline_items"])[0]["id"]
 
     async with session_maker() as stale_session:
         stale_alert = await stale_session.get(Alert, alert.id)
@@ -949,7 +957,7 @@ async def test_denormalize_timeline_does_not_overwrite_newer_enrichment_state(
 
             updated_items = {}
             for item in _timeline_values(fresh_alert.timeline_items):
-                if item.get("id") == "item-race-1":
+                if item.get("id") == item_id:
                     updated_items[str(item["id"])] = {
                         **item,
                         "enrichment_status": "complete",
@@ -968,7 +976,7 @@ async def test_denormalize_timeline_does_not_overwrite_newer_enrichment_state(
             stale_alert,
             human_prefix="ALT",
         )
-        response_item = next(item for item in _timeline_values(denormalized_alert.timeline_items) if item.get("id") == "item-race-1")
+        response_item = next(item for item in _timeline_values(denormalized_alert.timeline_items) if item.get("id") == item_id)
 
         assert response_item["enrichment_status"] == "pending"
         await stale_session.commit()
@@ -976,7 +984,7 @@ async def test_denormalize_timeline_does_not_overwrite_newer_enrichment_state(
     async with session_maker() as session:
         refreshed_alert = await session.get(Alert, alert.id)
         assert refreshed_alert is not None
-        stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-race-1")
+        stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == item_id)
 
     assert stored_item["enrichment_status"] == "complete"
 

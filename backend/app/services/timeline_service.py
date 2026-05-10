@@ -50,6 +50,12 @@ class TimelineService:
         if not item.get("id"):
             item["id"] = self.generate_item_id()
 
+    def _assign_new_item_ids(self, item: Dict[str, Any]) -> None:
+        item["id"] = self.generate_item_id()
+        replies = item.get("replies")
+        for reply in self._iter_items(replies):
+            self._assign_new_item_ids(reply)
+
     def _coerce_item_for_storage(self, item: Dict[str, Any]) -> Dict[str, Any]:
         self._ensure_item_id(item)
         replies = item.get("replies")
@@ -954,7 +960,6 @@ class TimelineService:
             return False
         
         item_type = item_to_remove.get("type")
-        
         # Clean up external resources
         if item_type == "attachment":
             storage_key = item_to_remove.get("storage_key")
@@ -992,7 +997,6 @@ class TimelineService:
         return None
 
     def _add_item_metadata(self, item: Dict[str, Any], created_by: str) -> None:
-        self._ensure_item_id(item)
         if not item.get("created_at"):
             item["created_at"] = datetime.now(timezone.utc).isoformat()
         item["created_by"] = created_by
@@ -1019,6 +1023,11 @@ class TimelineService:
         Otherwise, it will add it as a top-level timeline item.
         """
         timeline_items = self._ensure_storage_items(entity)
+        server_prepared_attachment = item.get("type") == "attachment" and bool(item.get("storage_key"))
+        if server_prepared_attachment:
+            self._ensure_item_id(item)
+        else:
+            self._assign_new_item_ids(item)
         self._add_item_metadata(item, created_by)
         # Ensure all datetime fields are serialized to ISO strings before storing in JSON column
         self._serialize_datetime_fields(item)
@@ -1039,6 +1048,8 @@ class TimelineService:
                 pass
         
         # Add as top-level item
+        if str(item["id"]) in timeline_items:
+            raise ValueError("Timeline item ID collision")
         timeline_items[str(item["id"])] = item
         # Mark the JSON column as modified so SQLAlchemy knows to update it
         flag_modified(entity, "timeline_items")

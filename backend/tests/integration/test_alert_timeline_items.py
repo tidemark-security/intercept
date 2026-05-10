@@ -211,13 +211,14 @@ async def test_delete_alert_timeline_item_returns_tombstone_when_timeline_is_emp
     payload["timestamp"] = "2026-01-02T13:00:00+00:00"
     payload["created_at"] = "2026-01-02T13:00:01+00:00"
 
-    await _add_timeline_item(client, alert_id, payload, session_cookie)
-    body = await _delete_timeline_item(client, alert_id, "deleted-note-a1", session_cookie)
+    add_body = await _add_timeline_item(client, alert_id, payload, session_cookie)
+    item_id = add_body["timeline_items"][0]["id"]
+    body = await _delete_timeline_item(client, alert_id, item_id, session_cookie)
 
     items = body["timeline_items"]
     assert len(items) == 1
     tombstone = items[0]
-    assert tombstone["id"] == "deleted-note-a1"
+    assert tombstone["id"] == item_id
     assert tombstone["type"] == "_deleted"
     assert tombstone["original_type"] == "note"
     assert tombstone["original_timestamp"].startswith("2026-01-02T13:00:00")
@@ -237,24 +238,29 @@ async def test_update_alert_timeline_reply_description(
     reply_payload = make_note("reply-update-a1")
     reply_payload["parent_id"] = "parent-update-a1"
 
-    await _add_timeline_item(client, alert_id, parent_payload, session_cookie)
-    await _add_timeline_item(client, alert_id, reply_payload, session_cookie)
+    parent_body = await _add_timeline_item(client, alert_id, parent_payload, session_cookie)
+    parent_id = parent_body["timeline_items"][0]["id"]
+    reply_payload["parent_id"] = parent_id
+    before_body = await _add_timeline_item(client, alert_id, reply_payload, session_cookie)
+    before_parent = next(item for item in before_body["timeline_items"] if item["id"] == parent_id)
+    before_reply = before_parent["replies"][0]
 
     update_payload = make_note("reply-update-a1")
-    update_payload["parent_id"] = "parent-update-a1"
+    update_payload["id"] = before_reply["id"]
+    update_payload["parent_id"] = parent_id
     update_payload["description"] = "Edited alert reply"
     body = await _update_timeline_item(
         client,
         alert_id,
-        "reply-update-a1",
+        before_reply["id"],
         update_payload,
         session_cookie,
     )
 
-    parent = next(item for item in body["timeline_items"] if item["id"] == "parent-update-a1")
+    parent = next(item for item in body["timeline_items"] if item["id"] == parent_id)
     reply = parent["replies"][0]
-    assert reply["id"] == "reply-update-a1"
-    assert reply["parent_id"] == "parent-update-a1"
+    assert reply["id"] == before_reply["id"]
+    assert reply["parent_id"] == parent_id
     assert reply["description"] == "Edited alert reply"
 
 

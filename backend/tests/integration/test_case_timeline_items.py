@@ -210,13 +210,14 @@ async def test_delete_case_timeline_item_returns_tombstone_when_timeline_is_empt
     payload["timestamp"] = "2026-01-02T12:00:00+00:00"
     payload["created_at"] = "2026-01-02T12:00:01+00:00"
 
-    await _add_timeline_item(client, case_id, payload, session_cookie)
-    body = await _delete_timeline_item(client, case_id, "deleted-note-c1", session_cookie)
+    add_body = await _add_timeline_item(client, case_id, payload, session_cookie)
+    item_id = add_body["timeline_items"][0]["id"]
+    body = await _delete_timeline_item(client, case_id, item_id, session_cookie)
 
     items = body["timeline_items"]
     assert len(items) == 1
     tombstone = items[0]
-    assert tombstone["id"] == "deleted-note-c1"
+    assert tombstone["id"] == item_id
     assert tombstone["type"] == "_deleted"
     assert tombstone["original_type"] == "note"
     assert tombstone["original_timestamp"].startswith("2026-01-02T12:00:00")
@@ -238,17 +239,21 @@ async def test_delete_case_timeline_reply_returns_tombstone_under_parent(
     reply_payload["timestamp"] = "2026-01-02T12:15:00+00:00"
     reply_payload["created_at"] = "2026-01-02T12:15:01+00:00"
 
-    await _add_timeline_item(client, case_id, parent_payload, session_cookie)
-    await _add_timeline_item(client, case_id, reply_payload, session_cookie)
-    body = await _delete_timeline_item(client, case_id, "deleted-reply-c1", session_cookie)
+    parent_body = await _add_timeline_item(client, case_id, parent_payload, session_cookie)
+    parent_id = parent_body["timeline_items"][0]["id"]
+    reply_payload["parent_id"] = parent_id
+    latest_body = await _add_timeline_item(client, case_id, reply_payload, session_cookie)
+    latest_parent = next(item for item in latest_body["timeline_items"] if item["id"] == parent_id)
+    reply_id = latest_parent["replies"][-1]["id"]
+    body = await _delete_timeline_item(client, case_id, reply_id, session_cookie)
 
-    parent = next(item for item in body["timeline_items"] if item["id"] == "parent-note-c1")
+    parent = next(item for item in body["timeline_items"] if item["id"] == parent_id)
     assert len(body["timeline_items"]) == 1
     assert len(parent["replies"]) == 1
     tombstone = parent["replies"][0]
-    assert tombstone["id"] == "deleted-reply-c1"
+    assert tombstone["id"] == reply_id
     assert tombstone["type"] == "_deleted"
-    assert tombstone["parent_id"] == "parent-note-c1"
+    assert tombstone["parent_id"] == parent_id
     assert tombstone["original_type"] == "note"
     assert tombstone["original_timestamp"].startswith("2026-01-02T12:15:00")
 
@@ -269,28 +274,31 @@ async def test_update_case_timeline_reply_description_preserves_parent_structure
     reply_payload = make_note("reply-update-c1")
     reply_payload["parent_id"] = "parent-update-c1"
 
-    await _add_timeline_item(client, case_id, parent_payload, session_cookie)
+    parent_body = await _add_timeline_item(client, case_id, parent_payload, session_cookie)
+    parent_id = parent_body["timeline_items"][0]["id"]
+    reply_payload["parent_id"] = parent_id
     before_body = await _add_timeline_item(client, case_id, reply_payload, session_cookie)
-    before_parent = next(item for item in before_body["timeline_items"] if item["id"] == "parent-update-c1")
+    before_parent = next(item for item in before_body["timeline_items"] if item["id"] == parent_id)
     before_reply = before_parent["replies"][0]
 
     update_payload = make_note("reply-update-c1")
-    update_payload["parent_id"] = "parent-update-c1"
+    update_payload["id"] = before_reply["id"]
+    update_payload["parent_id"] = parent_id
     update_payload["description"] = "Edited nested reply"
     body = await _update_timeline_item(
         client,
         case_id,
-        "reply-update-c1",
+        before_reply["id"],
         update_payload,
         session_cookie,
     )
 
-    parent = next(item for item in body["timeline_items"] if item["id"] == "parent-update-c1")
+    parent = next(item for item in body["timeline_items"] if item["id"] == parent_id)
     assert len(body["timeline_items"]) == 1
     assert len(parent["replies"]) == 1
     reply = parent["replies"][0]
-    assert reply["id"] == "reply-update-c1"
-    assert reply["parent_id"] == "parent-update-c1"
+    assert reply["id"] == before_reply["id"]
+    assert reply["parent_id"] == parent_id
     assert reply["description"] == "Edited nested reply"
     assert reply["created_at"] == before_reply["created_at"]
     assert reply["created_by"] == before_reply["created_by"]
@@ -308,22 +316,27 @@ async def test_update_case_timeline_reply_flagged_and_highlighted(
     reply_payload = make_note("reply-flags-c1")
     reply_payload["parent_id"] = "parent-flags-c1"
 
-    await _add_timeline_item(client, case_id, parent_payload, session_cookie)
-    await _add_timeline_item(client, case_id, reply_payload, session_cookie)
+    parent_body = await _add_timeline_item(client, case_id, parent_payload, session_cookie)
+    parent_id = parent_body["timeline_items"][0]["id"]
+    reply_payload["parent_id"] = parent_id
+    before_body = await _add_timeline_item(client, case_id, reply_payload, session_cookie)
+    before_parent = next(item for item in before_body["timeline_items"] if item["id"] == parent_id)
+    before_reply = before_parent["replies"][0]
 
     update_payload = make_note("reply-flags-c1")
-    update_payload["parent_id"] = "parent-flags-c1"
+    update_payload["id"] = before_reply["id"]
+    update_payload["parent_id"] = parent_id
     update_payload["flagged"] = True
     update_payload["highlighted"] = True
     body = await _update_timeline_item(
         client,
         case_id,
-        "reply-flags-c1",
+        before_reply["id"],
         update_payload,
         session_cookie,
     )
 
-    parent = next(item for item in body["timeline_items"] if item["id"] == "parent-flags-c1")
+    parent = next(item for item in body["timeline_items"] if item["id"] == parent_id)
     reply = parent["replies"][0]
     assert parent["flagged"] is False
     assert parent["highlighted"] is False
@@ -345,27 +358,35 @@ async def test_update_deeply_nested_case_timeline_reply(
     second_reply_payload = make_note("reply-deep-c2")
     second_reply_payload["parent_id"] = "reply-deep-c1"
 
-    await _add_timeline_item(client, case_id, parent_payload, session_cookie)
-    await _add_timeline_item(client, case_id, first_reply_payload, session_cookie)
-    await _add_timeline_item(client, case_id, second_reply_payload, session_cookie)
+    parent_body = await _add_timeline_item(client, case_id, parent_payload, session_cookie)
+    parent_id = parent_body["timeline_items"][0]["id"]
+    first_reply_payload["parent_id"] = parent_id
+    first_body = await _add_timeline_item(client, case_id, first_reply_payload, session_cookie)
+    parent = next(item for item in first_body["timeline_items"] if item["id"] == parent_id)
+    first_reply_id = parent["replies"][0]["id"]
+    second_reply_payload["parent_id"] = first_reply_id
+    second_body = await _add_timeline_item(client, case_id, second_reply_payload, session_cookie)
+    parent = next(item for item in second_body["timeline_items"] if item["id"] == parent_id)
+    second_reply_id = parent["replies"][0]["replies"][0]["id"]
 
     update_payload = make_note("reply-deep-c2")
-    update_payload["parent_id"] = "reply-deep-c1"
+    update_payload["id"] = second_reply_id
+    update_payload["parent_id"] = first_reply_id
     update_payload["description"] = "Edited deep nested reply"
     body = await _update_timeline_item(
         client,
         case_id,
-        "reply-deep-c2",
+        second_reply_id,
         update_payload,
         session_cookie,
     )
 
-    parent = next(item for item in body["timeline_items"] if item["id"] == "parent-deep-c1")
+    parent = next(item for item in body["timeline_items"] if item["id"] == parent_id)
     first_reply = parent["replies"][0]
     second_reply = first_reply["replies"][0]
-    assert first_reply["id"] == "reply-deep-c1"
-    assert second_reply["id"] == "reply-deep-c2"
-    assert second_reply["parent_id"] == "reply-deep-c1"
+    assert first_reply["id"] == first_reply_id
+    assert second_reply["id"] == second_reply_id
+    assert second_reply["parent_id"] == first_reply_id
     assert second_reply["description"] == "Edited deep nested reply"
 
 
