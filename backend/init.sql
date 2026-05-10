@@ -4,13 +4,9 @@
 -- All table/index/trigger creation is handled by Alembic migrations.
 
 -- Create Langflow user and database with separate credentials
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'langflow_user') THEN
-        CREATE ROLE langflow_user WITH LOGIN PASSWORD 'langflow_password';
-    END IF;
-END
-$$;
+\set langflow_password `printf %s "$LANGFLOW_DB_PASSWORD"`
+SELECT format('CREATE ROLE langflow_user WITH LOGIN PASSWORD %L', :'langflow_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'langflow_user')\gexec
 
 SELECT 'CREATE DATABASE langflow OWNER langflow_user'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'langflow')\gexec
