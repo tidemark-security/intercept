@@ -33,7 +33,7 @@ async def test_create_setting_uses_registry_secret_metadata(
 
         assert created.is_secret is True
         assert created.value is not None
-        assert "****" in created.value
+        assert created.value == "***"
         assert "secret-value" not in created.value
 
         row = (
