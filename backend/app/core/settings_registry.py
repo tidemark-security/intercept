@@ -744,6 +744,12 @@ _register(
         default=True,
     ),
     _def(
+        "enrichment.ldap.ca_certs_file",
+        category="enrichment",
+        description="Optional CA bundle path used to validate LDAPS certificates",
+        default=None,
+    ),
+    _def(
         "enrichment.ldap.user_search_filter",
         category="enrichment",
         description="LDAP search filter template for on-demand user lookups; use {uid} as the placeholder",

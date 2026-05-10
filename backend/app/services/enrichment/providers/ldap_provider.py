@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import ssl
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -96,6 +97,7 @@ class LDAPProvider(EnrichmentProvider):
         bind_password = await settings.get(f"{self.settings_prefix}.bind_password", "")
         search_base = await settings.get(f"{self.settings_prefix}.search_base", "")
         use_ssl = await settings.get(f"{self.settings_prefix}.use_ssl", True)
+        ca_certs_file = await settings.get(f"{self.settings_prefix}.ca_certs_file", None)
         user_search_filter = await settings.get(
             f"{self.settings_prefix}.user_search_filter",
             _USER_SEARCH_FILTER_TEMPLATE,
@@ -108,10 +110,18 @@ class LDAPProvider(EnrichmentProvider):
             "bind_password": bind_password,
             "search_base": search_base,
             "use_ssl": bool(use_ssl),
+            "ca_certs_file": str(ca_certs_file).strip() if ca_certs_file else None,
             "user_search_filter": user_search_filter,
         }
 
-    def _connect(self, url: str, bind_dn: str, bind_password: str, use_ssl: bool) -> Any:
+    def _connect(
+        self,
+        url: str,
+        bind_dn: str,
+        bind_password: str,
+        use_ssl: bool,
+        ca_certs_file: Optional[str] = None,
+    ) -> Any:
         """Create and bind an ldap3 Connection. Raises ImportError if ldap3 not installed."""
         try:
             import ldap3  # type: ignore[import-untyped]
@@ -121,7 +131,21 @@ class LDAPProvider(EnrichmentProvider):
                 "Install it with: pip install ldap3"
             ) from exc
 
-        server = ldap3.Server(url, get_info=ldap3.NONE, connect_timeout=10, use_ssl=use_ssl)
+        tls = None
+        if use_ssl:
+            tls = ldap3.Tls(
+                ca_certs_file=ca_certs_file,
+                validate=ssl.CERT_REQUIRED,
+                version=ssl.PROTOCOL_TLS_CLIENT,
+            )
+
+        server = ldap3.Server(
+            url,
+            get_info=ldap3.NONE,
+            connect_timeout=10,
+            use_ssl=use_ssl,
+            tls=tls,
+        )
         conn = ldap3.Connection(
             server,
             user=bind_dn,
@@ -226,7 +250,7 @@ class LDAPProvider(EnrichmentProvider):
 
     def _build_user_search_filter(self, template: str, identifier: str) -> str:
         escaped_identifier = self._escape_identifier(identifier)
-        return template.replace("{value}", escaped_identifier).format(uid=escaped_identifier)
+        return template.replace("{uid}", escaped_identifier).replace("{value}", escaped_identifier)
 
     async def enrich(
         self,
@@ -249,7 +273,7 @@ class LDAPProvider(EnrichmentProvider):
         return result
 
     def _sync_lookup(self, cfg: Dict[str, Any], identifier: str, cache_key: str) -> EnrichmentResult:
-        conn = self._connect(cfg["url"], cfg["bind_dn"], cfg["bind_password"], cfg["use_ssl"])
+        conn = self._connect_with_config(cfg)
         try:
             search_filter = self._build_user_search_filter(cfg["user_search_filter"], identifier)
             conn.search(
@@ -277,7 +301,7 @@ class LDAPProvider(EnrichmentProvider):
         return results
 
     def _sync_bulk_search(self, cfg: Dict[str, Any]) -> List[EnrichmentResult]:
-        conn = self._connect(cfg["url"], cfg["bind_dn"], cfg["bind_password"], cfg["use_ssl"])
+        conn = self._connect_with_config(cfg)
         try:
             results: List[EnrichmentResult] = []
             conn.search(
@@ -315,6 +339,23 @@ class LDAPProvider(EnrichmentProvider):
             return results
         finally:
             conn.unbind()
+
+    def _connect_with_config(self, cfg: Dict[str, Any]) -> Any:
+        ca_certs_file = cfg.get("ca_certs_file")
+        if ca_certs_file:
+            return self._connect(
+                cfg["url"],
+                cfg["bind_dn"],
+                cfg["bind_password"],
+                cfg["use_ssl"],
+                ca_certs_file,
+            )
+        return self._connect(
+            cfg["url"],
+            cfg["bind_dn"],
+            cfg["bind_password"],
+            cfg["use_ssl"],
+        )
 
 
 ldap_provider = LDAPProvider()
