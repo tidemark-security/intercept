@@ -25,6 +25,13 @@ router = APIRouter()
 VALID_ENTITY_TYPES = {"alert", "case", "task"}
 
 
+def _origin_allowed(ws: WebSocket) -> bool:
+    origin = ws.headers.get("origin")
+    if not origin:
+        return False
+    return origin in set(get_local("cors_origins") or [])
+
+
 async def _authenticate(ws: WebSocket) -> LoginResult | None:
     """Validate the session cookie and return login details, or None."""
     cookie_name = get_local("auth.session.cookie_name")
@@ -60,6 +67,10 @@ async def _revalidate_session(session_token: str) -> bool:
 
 @router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    if not _origin_allowed(ws):
+        await ws.close(code=4003, reason="Origin not allowed")
+        return
+
     # --- Authenticate on handshake ---
     login_result = await _authenticate(ws)
     if not login_result:
