@@ -287,10 +287,18 @@ test("production bundle loads all major lazy routes", async ({ page }) => {
       expect(response?.status(), `${routePath} document response`).toBeLessThan(400);
 
       await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
-      await page.waitForTimeout(250);
+
+      await expect
+        .poll(
+          async () => (await page.locator("#root").innerText()).trim(),
+          {
+            message: `${routePath} rendered non-empty root`,
+            timeout: 10_000,
+          }
+        )
+        .not.toBe("");
 
       const rootText = await page.locator("#root").innerText();
-      expect(rootText.trim(), `${routePath} rendered non-empty root`).not.toBe("");
       expect(rootText, `${routePath} should not be stuck on auth loading`).not.toBe("Loading...");
 
       const routeFailures = failures.splice(0);
