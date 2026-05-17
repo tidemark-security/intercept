@@ -61,7 +61,7 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Start built frontend image
-        run: docker run --detach --rm --name intercept-frontend-smoke --publish 8080:80 intercept-frontend:ci
+        run: docker run --detach --name intercept-frontend-smoke --publish 8080:8080 intercept-frontend:ci
 
       - name: Wait for frontend
         run: |
