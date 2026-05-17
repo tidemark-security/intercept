@@ -26,7 +26,7 @@ from webauthn.helpers.structs import (
 )
 
 from app.core.settings_registry import get_local
-from app.models.enums import AccountType
+from app.models.enums import AccountType, UserStatus
 from app.models.models import AppSetting, PasskeyCredential, UserAccount, WebAuthnChallenge
 from app.services.settings_service import SettingsService
 
@@ -167,20 +167,19 @@ class PasskeyService:
         db: AsyncSession,
         *,
         username: str,
-    ) -> tuple[dict[str, Any], UserAccount]:
+    ) -> tuple[dict[str, Any], Optional[UserAccount]]:
         normalized_username = username.strip().lower()
         user_result = await db.execute(select(UserAccount).where(cast(Any, UserAccount.username == normalized_username)))
         user = user_result.scalar_one_or_none()
-        if user is None:
-            raise PasskeyCredentialNotFoundError()
-        if user.account_type != AccountType.HUMAN:
-            raise PasskeyCredentialNotFoundError()
-
-        credentials = await self.list_user_passkeys(db, user_id=user.id, include_revoked=False)
-        if not credentials:
-            raise PasskeyCredentialNotFoundError()
-
         config = await self._load_config(db)
+        credentials: list[PasskeyCredential] = []
+        challenge_user_id = None
+        challenge_username = normalized_username
+        if user and user.account_type == AccountType.HUMAN and user.status == UserStatus.ACTIVE:
+            credentials = await self.list_user_passkeys(db, user_id=user.id, include_revoked=False)
+            if credentials:
+                challenge_user_id = user.id
+                challenge_username = user.username
         allow_credentials = [
             PublicKeyCredentialDescriptor(
                 id=base64url_to_bytes(credential.credential_id),
@@ -202,8 +201,8 @@ class PasskeyService:
             db,
             challenge=challenge,
             flow_type="authentication",
-            user_id=user.id,
-            username=user.username,
+            user_id=challenge_user_id,
+            username=challenge_username,
             ttl_seconds=config.challenge_ttl_seconds,
             metadata={"rp_id": config.rp_id},
         )
@@ -211,7 +210,7 @@ class PasskeyService:
         return {
             "challenge": challenge,
             "options": options_dict,
-        }, user
+        }, user if challenge_user_id else None
 
     async def finish_authentication(
         self,
@@ -246,6 +245,8 @@ class PasskeyService:
 
         user = await db.get(UserAccount, passkey.user_id)
         if user is None:
+            raise PasskeyCredentialNotFoundError()
+        if user.status != UserStatus.ACTIVE:
             raise PasskeyCredentialNotFoundError()
 
         config = await self._load_config(db)
@@ -387,7 +388,7 @@ class PasskeyService:
         )
         if user_id is not None:
             query = query.where(cast(Any, WebAuthnChallenge.user_id == user_id))
-        query = query.order_by(cast(Any, WebAuthnChallenge.created_at).desc())
+        query = query.order_by(cast(Any, WebAuthnChallenge.created_at).desc()).with_for_update()
 
         result = await db.execute(query)
         challenge_row = result.scalar_one_or_none()

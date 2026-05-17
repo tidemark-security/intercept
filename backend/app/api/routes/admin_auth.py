@@ -10,6 +10,7 @@ from pydantic import BaseModel, EmailStr, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.route_utils import read_session_cookie
+from app.core.csrf import API_KEY_AUTH_RESULT_SCOPE_KEY
 from app.core.database import get_db
 from app.models.enums import AccountType, UserRole, UserStatus
 from app.models.models import UserAccount, ApiKeyCreateResponse
@@ -231,6 +232,10 @@ async def _authenticate_from_request(
     audit_context = _build_audit_context(request)
     
     # Try API key authentication first
+    cached_api_key_result = request.scope.get(API_KEY_AUTH_RESULT_SCOPE_KEY)
+    if cached_api_key_result is not None:
+        return cached_api_key_result.user
+
     api_key = _extract_api_key(request)
     if api_key:
         try:

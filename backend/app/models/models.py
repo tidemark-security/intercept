@@ -145,9 +145,12 @@ class UTCDateTime(TypeDecorator):
 
 # Timeline Item Models - strongly typed with first-class attributes
 TimelineItemStorage: TypeAlias = Dict[str, Dict[str, Any]]
+MAX_TIMELINE_REPLY_DEPTH = 5
 
 
-def _coerce_timeline_item_storage(value: Any) -> TimelineItemStorage:
+def _coerce_timeline_item_storage(value: Any, *, depth: int = 0) -> TimelineItemStorage:
+    if depth > MAX_TIMELINE_REPLY_DEPTH:
+        raise ValueError(f"Replies cannot be nested more than {MAX_TIMELINE_REPLY_DEPTH} levels deep")
     if value is None:
         return {}
     if isinstance(value, dict):
@@ -157,7 +160,7 @@ def _coerce_timeline_item_storage(value: Any) -> TimelineItemStorage:
                 item_copy = dict(item)
                 replies = item_copy.get("replies")
                 if replies is not None:
-                    item_copy["replies"] = _coerce_timeline_item_storage(replies)
+                    item_copy["replies"] = _coerce_timeline_item_storage(replies, depth=depth + 1)
                 item_id = item_copy.get("id") or str(key)
                 item_copy["id"] = str(item_id)
                 coerced[str(item_id)] = item_copy
@@ -174,7 +177,7 @@ def _coerce_timeline_item_storage(value: Any) -> TimelineItemStorage:
                 continue
             replies = item_copy.get("replies")
             if replies is not None:
-                item_copy["replies"] = _coerce_timeline_item_storage(replies)
+                item_copy["replies"] = _coerce_timeline_item_storage(replies, depth=depth + 1)
             coerced[str(item_id)] = item_copy
         return coerced
     return {}
@@ -280,6 +283,10 @@ class AttachmentItem(ItemBase):
         default=None,
         description="Object storage key (e.g., alerts/123/attachments/abc/uuid.pdf)"
     )
+    upload_storage_key: Optional[str] = Field(
+        default=None,
+        description="Temporary object storage key used while upload is in progress"
+    )
     file_hash: Optional[str] = Field(
         default=None,
         description="SHA256 hash of file content for integrity verification"
@@ -287,6 +294,10 @@ class AttachmentItem(ItemBase):
     uploaded_by: Optional[str] = Field(
         default=None,
         description="Username of user who uploaded the file"
+    )
+    uploaded_by_user_id: Optional[str] = Field(
+        default=None,
+        description="Stable user ID of user who uploaded the file"
     )
     upload_status: UploadStatus = Field(
         default=UploadStatus.COMPLETE,
@@ -852,13 +863,7 @@ class AlertUpdate(SQLModel):
     priority: Optional[Priority] = None
     source: Optional[str] = None
     assignee: Optional[str] = Field(None, max_length=100)
-    timeline_items: Optional[Dict[str, AlertTimelineItem]] = None
     tags: Optional[List[str]] = None
-
-    @field_validator("timeline_items", mode="before")
-    @classmethod
-    def coerce_timeline_items(cls, value: Any) -> TimelineItemStorage:
-        return _coerce_timeline_item_storage(value)
 
 
 class AlertTriageRequest(SQLModel):
@@ -1724,8 +1729,8 @@ class PresignedUploadRequest(SQLModel):
         gt=0,
         description="File size in bytes"
     )
-    mime_type: Optional[str] = Field(
-        default=None,
+    mime_type: str = Field(
+        ...,
         description="Client-reported MIME type (validated server-side)"
     )
     
@@ -1741,7 +1746,7 @@ class PresignedUploadResponse(SQLModel):
     
     item_id: str = Field(description="Timeline item ID created for this upload")
     upload_url: str = Field(description="Presigned PUT URL for direct upload to storage")
-    storage_key: str = Field(description="Object storage key for this file")
+    storage_key: str = Field(description="Temporary object storage key targeted by the presigned upload URL")
     expires_at: datetime = Field(description="URL expiration timestamp")
     max_file_size: int = Field(description="Maximum allowed file size in bytes")
 
@@ -2621,4 +2626,3 @@ class QueueJobsPage(SQLModel):
     page: int = 1
     size: int = 25
     pages: int = 0
-

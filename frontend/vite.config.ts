@@ -20,6 +20,9 @@ const manualChunkGroups = {
   ],
   query: ["@tanstack/react-query"],
   markdown: ["react-markdown", "rehype-raw", "rehype-sanitize", "remark-gfm"],
+  // CodeMirror packages have cross-package initialization dependencies and
+  // break when split across separate chunks by Rollup's default heuristics.
+  codemirror: ["@codemirror/", "@lezer/", "codemirror"],
 } as const
 
 function manualChunks(id: string): string | undefined {
@@ -27,6 +30,12 @@ function manualChunks(id: string): string | undefined {
     if (packages.some((pkg) => id.includes(`/node_modules/${pkg}/`) || id.includes(`\\node_modules\\${pkg}\\`))) {
       return chunkName
     }
+  }
+
+  // Catch-all: keep all remaining vendor code in one chunk to prevent Rollup
+  // from creating multiple dist-*.js chunks with circular init dependencies.
+  if (id.includes("/node_modules/") || id.includes("\\node_modules\\")) {
+    return "vendor"
   }
 
   return undefined

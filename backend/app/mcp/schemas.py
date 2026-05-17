@@ -6,7 +6,7 @@ specs/004-mcp-server-v1/contracts/mcp-protocol.md
 
 from datetime import datetime
 from typing import Any, Dict, Optional, List, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ============================================================================
@@ -244,12 +244,14 @@ class AddTimelineItemOutput(BaseModel):
 
 class GetItemInput(BaseModel):
     """Input schema for get_item tool."""
+    model_config = ConfigDict(extra="forbid")
+
+    parent_entity_type: Literal["alert", "case", "task"]
+    parent_entity_id: str
     item_id: str
     mode: Literal["full", "head", "tail"] = "full"
     max_chars: int = Field(default=4000, ge=100, le=10000)
     cursor: Optional[str] = None  # Pagination cursor
-    hint_kind: Optional[Literal["alert", "case", "task"]] = None
-    hint_parent_id: Optional[str] = None
 
 
 class ItemMetadata(BaseModel):

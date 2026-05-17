@@ -14,6 +14,7 @@ from app.api.routes.admin_auth import (
     require_authenticated_user,
     require_admin_user,
     _build_audit_context,
+    _extract_api_key,
 )
 from app.core.database import get_db
 from app.models.models import (
@@ -81,6 +82,13 @@ async def create_api_key(
     **Returns**: The created API key with the full key value (one-time only)
     """
     audit_context = _build_audit_context(request)
+    if _extract_api_key(request):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ValidationErrorResponse(
+                message="API keys cannot be used to create additional API keys",
+            ).model_dump(),
+        )
     
     # Determine target user
     target_user_id = body.user_id or current_user.id
@@ -127,7 +135,7 @@ async def create_api_key(
             user_id=target_user_id,
             name=body.name,
             expires_at=body.expires_at,
-            created_by_user_id=current_user.id if target_user_id != current_user.id else None,
+            created_by_user_id=current_user.id,
             context=audit_context,
         )
     except ValueError as e:

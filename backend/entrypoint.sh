@@ -42,7 +42,7 @@ finally:
 
 if [ "$AUTO_SEED" = "true" ]; then
     echo "🌱 Ensuring initial admin user exists..."
-    python -m scripts.seed_initial_admin || echo "⚠️  Admin seeding failed (non-fatal)"
+    python -m scripts.seed_initial_admin
     echo "🌱 Auto-seeding link templates..."
     python -m scripts.seed_link_templates || echo "⚠️  Link template seeding failed (non-fatal)"
 fi

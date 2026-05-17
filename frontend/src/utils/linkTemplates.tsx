@@ -14,6 +14,7 @@
  */
 
 import React from 'react';
+import { isSafeUrl } from './safeUrl';
 
 /**
  * Link template configuration
@@ -109,7 +110,7 @@ export function interpolateUrl(template: string, item: any): string {
     if (value !== undefined && value !== null) {
       const strValue = String(value);
       // If the value is already a URL, return it as-is
-      if (/^(https?:|mailto:|tel:|slack:|msteams:)/i.test(strValue)) {
+      if (isSafeUrl(strValue)) {
         return strValue;
       }
     }
@@ -117,7 +118,7 @@ export function interpolateUrl(template: string, item: any): string {
   
   // Encode each interpolated value
   // We need to re-parse to encode only the variable parts
-  return template.replace(/\{\{([^}]+)\}\}/g, (match, fieldPath) => {
+  const interpolated = template.replace(/\{\{([^}]+)\}\}/g, (match, fieldPath) => {
     const trimmedPath = fieldPath.trim();
     const value = trimmedPath.split('.').reduce((obj: any, key: string) => {
       return obj?.[key];
@@ -125,6 +126,7 @@ export function interpolateUrl(template: string, item: any): string {
     
     return value !== undefined && value !== null ? urlEncode(String(value)) : match;
   });
+  return isSafeUrl(interpolated) ? interpolated : '';
 }
 
 /**

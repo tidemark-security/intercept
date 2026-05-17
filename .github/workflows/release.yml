@@ -2,8 +2,10 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches: [main]
+    paths:
+      - VERSION
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,27 +16,73 @@ env:
   IMAGE_PREFIX: ghcr.io/tidemark-security
 
 jobs:
-  guard:
-    name: Verify tag is on main
+  prepare-release:
+    name: Create Release Tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
+      major: ${{ steps.version.outputs.major }}
+      minor: ${{ steps.version.outputs.minor }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || 'main' }}
+          fetch-depth: 0
+
+      - name: Create tag from VERSION
+        id: version
+        run: |
+          set -euo pipefail
+
+          version="$(tr -d '[:space:]' < VERSION)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::VERSION must be a semver value like 1.2.3; got '$version'."
+            exit 1
+          fi
+
+          tag="v${version}"
+          target_sha="$(git rev-parse HEAD)"
+
+          git fetch --force --tags origin '+refs/heads/main:refs/remotes/origin/main'
+          if ! git merge-base --is-ancestor "${target_sha}" origin/main; then
+            echo "::error::Release target ${target_sha} is not on origin/main."
+            exit 1
+          fi
+
+          if git rev-parse --verify --quiet "refs/tags/${tag}" >/dev/null; then
+            existing_sha="$(git rev-list -n 1 "${tag}")"
+            if [[ "$existing_sha" != "$target_sha" ]]; then
+              echo "::error::Tag ${tag} already exists on ${existing_sha}, not main commit ${target_sha}."
+              exit 1
+            fi
+            echo "Tag ${tag} already exists on ${target_sha}; continuing."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "${tag}" "${target_sha}" -m "Release ${tag}"
+            git push origin "refs/tags/${tag}"
+          fi
+
+          major="${version%%.*}"
+          remainder="${version#*.}"
+          minor="${remainder%%.*}"
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "sha=${target_sha}" >> "$GITHUB_OUTPUT"
+          echo "major=${major}" >> "$GITHUB_OUTPUT"
+          echo "minor=${minor}" >> "$GITHUB_OUTPUT"
+
+  build-backend:
+    name: Build Backend
+    needs: [prepare-release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0
-
-      - name: Check tagged commit is on main
-        run: |
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "::error::Tag $GITHUB_REF_NAME does not point to a commit on main. Aborting release."
-            exit 1
-          fi
-
-  build-backend:
-    name: Build Backend
-    needs: [guard]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
+          ref: ${{ needs.prepare-release.outputs.sha }}
 
       - uses: docker/setup-qemu-action@v3
 
@@ -51,9 +99,9 @@ jobs:
         with:
           images: ${{ env.IMAGE_PREFIX }}/intercept-backend
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            type=semver,pattern={{version}},value=${{ needs.prepare-release.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare-release.outputs.tag }}
+            type=semver,pattern={{major}},value=${{ needs.prepare-release.outputs.tag }},enable=${{ needs.prepare-release.outputs.major != '0' }}
             type=raw,value=latest
 
       - uses: docker/build-push-action@v6
@@ -64,16 +112,18 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: APP_VERSION=${{ steps.meta.outputs.version }}
+          build-args: APP_VERSION=${{ needs.prepare-release.outputs.version }}
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
 
   build-worker:
     name: Build Worker
-    needs: [guard]
+    needs: [prepare-release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare-release.outputs.sha }}
 
       - uses: docker/setup-qemu-action@v3
 
@@ -90,9 +140,9 @@ jobs:
         with:
           images: ${{ env.IMAGE_PREFIX }}/intercept-worker
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            type=semver,pattern={{version}},value=${{ needs.prepare-release.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare-release.outputs.tag }}
+            type=semver,pattern={{major}},value=${{ needs.prepare-release.outputs.tag }},enable=${{ needs.prepare-release.outputs.major != '0' }}
             type=raw,value=latest
 
       - uses: docker/build-push-action@v6
@@ -103,16 +153,18 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: APP_VERSION=${{ steps.meta.outputs.version }}
+          build-args: APP_VERSION=${{ needs.prepare-release.outputs.version }}
           cache-from: type=gha,scope=worker
           cache-to: type=gha,mode=max,scope=worker
 
   build-frontend:
     name: Build Frontend
-    needs: [guard]
+    needs: [prepare-release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare-release.outputs.sha }}
 
       - uses: docker/setup-qemu-action@v3
 
@@ -129,9 +181,9 @@ jobs:
         with:
           images: ${{ env.IMAGE_PREFIX }}/intercept-frontend
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            type=semver,pattern={{version}},value=${{ needs.prepare-release.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare-release.outputs.tag }}
+            type=semver,pattern={{major}},value=${{ needs.prepare-release.outputs.tag }},enable=${{ needs.prepare-release.outputs.major != '0' }}
             type=raw,value=latest
 
       - uses: docker/build-push-action@v6
@@ -147,10 +199,12 @@ jobs:
 
   build-postgres:
     name: Build PostgreSQL
-    needs: [guard]
+    needs: [prepare-release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare-release.outputs.sha }}
 
       - uses: docker/setup-qemu-action@v3
 
@@ -167,9 +221,9 @@ jobs:
         with:
           images: ${{ env.IMAGE_PREFIX }}/intercept-postgres
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            type=semver,pattern={{version}},value=${{ needs.prepare-release.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare-release.outputs.tag }}
+            type=semver,pattern={{major}},value=${{ needs.prepare-release.outputs.tag }},enable=${{ needs.prepare-release.outputs.major != '0' }}
             type=raw,value=latest
 
       - uses: docker/build-push-action@v6
@@ -185,15 +239,18 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [guard, build-backend, build-worker, build-frontend, build-postgres]
+    needs:
+      - prepare-release
+      - build-backend
+      - build-worker
+      - build-frontend
+      - build-postgres
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.prepare-release.outputs.tag }}
+          target_commitish: ${{ needs.prepare-release.outputs.sha }}
           generate_release_notes: true
           make_latest: true
         env:

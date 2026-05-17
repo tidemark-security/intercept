@@ -1,0 +1,89 @@
+name: Detailed PR CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit-backend:
+    name: Backend Dependency Audit
+    if: github.event_name == 'workflow_dispatch' || github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Audit dependencies
+        working-directory: backend
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
+
+  frontend-production-smoke:
+    name: Frontend Production Smoke
+    if: github.event_name == 'workflow_dispatch' || github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: false
+          load: true
+          tags: intercept-frontend:ci
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Install frontend test dependencies
+        working-directory: frontend
+        run: npm install --no-audit --no-fund
+
+      - name: Install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Start built frontend image
+        run: docker run --detach --name intercept-frontend-smoke --publish 8080:8080 intercept-frontend:ci
+
+      - name: Wait for frontend
+        run: |
+          for attempt in {1..20}; do
+            if curl -fsS http://127.0.0.1:8080/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs intercept-frontend-smoke
+          exit 1
+
+      - name: Smoke test production frontend routes
+        working-directory: frontend
+        env:
+          BASE_URL: http://127.0.0.1:8080
+        run: npm run test:production-smoke
+
+      - name: Show frontend container logs on failure
+        if: failure()
+        run: docker logs intercept-frontend-smoke || true
+
+      - name: Stop frontend smoke container
+        if: always()
+        run: docker rm --force intercept-frontend-smoke || true

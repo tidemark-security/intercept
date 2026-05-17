@@ -226,12 +226,7 @@ class SettingsService:
 
             value: Optional[str] = db_row.value
             source = "database"
-            env_key = key.upper().replace(".", "__")
-            env_val = self._env_lookup(env_key)
-            if env_val is not None:
-                value = env_val
-                source = "env"
-            elif db_row.is_secret and value:
+            if db_row.is_secret and value:
                 # Decrypt DB-stored secret so we can mask it below
                 value = self.encryption.decrypt(value)
 
@@ -344,6 +339,8 @@ class SettingsService:
         Raises ``ValueError`` for local_only keys or duplicate keys.
         """
         defn = SETTINGS_REGISTRY.get(setting_create.key)
+        if defn is None:
+            raise ValueError("Settings must be registered before they can be created")
         if defn is not None and defn.local_only:
             raise ValueError(
                 f"Setting '{setting_create.key}' is local-only and cannot be "
@@ -618,8 +615,8 @@ class SettingsService:
             if defn.is_secret:
                 try:
                     value = self.encryption.decrypt(value)
-                except Exception:
-                    pass  # If decryption fails, return raw
+                except Exception as exc:
+                    raise ValueError(f"Failed to decrypt setting '{defn.key}'") from exc
             return value, "database"
 
         # 3. Registry default
@@ -643,16 +640,14 @@ class SettingsService:
         if decrypt and row.is_secret:
             try:
                 value = self.encryption.decrypt(value)
-            except Exception:
-                pass
+            except Exception as exc:
+                raise ValueError(f"Failed to decrypt setting '{key}'") from exc
         return value
 
     @staticmethod
     def _mask(value: Optional[str]) -> str:
         """Mask a value for display."""
-        if not value or len(value) <= 8:
-            return "****"
-        return value[:2] + "****" + value[-2:]
+        return "***" if value else ""
 
     @staticmethod
     def _serialize_display_value(value: Any, value_type: SettingType) -> Optional[str]:

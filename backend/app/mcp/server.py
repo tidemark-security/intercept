@@ -4,7 +4,13 @@ Replaces the auto-generated FastMCP.from_fastapi() with intentionally designed t
 Part of T013-T014 (Phase 2: MCP Server Skeleton).
 """
 
+from typing import Any
+
 from fastmcp import FastMCP
+from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
+from mcp import McpError
+from mcp.types import ErrorData
+
 from app.mcp.tools import (
     get_summary_tool,
     list_work_tool,
@@ -16,8 +22,58 @@ from app.mcp.tools import (
 )
 
 
+_GET_ITEM_OLD_CONTRACT_MESSAGE = (
+    'get_item changed: use parent_entity_type and parent_entity_id instead of '
+    'hint_kind and hint_parent_id. Example: parent_entity_type="case", '
+    'parent_entity_id="CAS-000001".'
+)
+_GET_ITEM_MIXED_CONTRACT_MESSAGE = (
+    "get_item changed: remove hint_kind and hint_parent_id. Keep "
+    "parent_entity_type and parent_entity_id so the server only searches one "
+    "alert, case, or task."
+)
+_GET_ITEM_MISSING_SCOPE_MESSAGE = (
+    "get_item now requires the parent entity scope. Send parent_entity_type "
+    "plus parent_entity_id so the server only searches one alert, case, or task."
+)
+
+
+class GetItemContractGuidanceMiddleware(Middleware):
+    """Give MCP clients repairable get_item contract errors before validation."""
+
+    async def on_call_tool(
+        self,
+        context: MiddlewareContext[Any],
+        call_next: CallNext[Any, Any],
+    ) -> Any:
+        if context.message.name != "get_item":
+            return await call_next(context)
+
+        arguments = context.message.arguments or {}
+        old_fields = {"hint_kind", "hint_parent_id"} & arguments.keys()
+        has_parent_scope = bool(arguments.get("parent_entity_type")) and bool(
+            arguments.get("parent_entity_id")
+        )
+
+        if old_fields and has_parent_scope:
+            raise McpError(
+                ErrorData(code=-32602, message=_GET_ITEM_MIXED_CONTRACT_MESSAGE)
+            )
+        if old_fields:
+            raise McpError(
+                ErrorData(code=-32602, message=_GET_ITEM_OLD_CONTRACT_MESSAGE)
+            )
+        if not has_parent_scope:
+            raise McpError(
+                ErrorData(code=-32602, message=_GET_ITEM_MISSING_SCOPE_MESSAGE)
+            )
+
+        return await call_next(context)
+
+
 # Create MCP server instance with explicit tool registration
 mcp = FastMCP("Tidemark Intercept MCP")
+mcp.add_middleware(GetItemContractGuidanceMiddleware())
 
 
 # Register tools explicitly.
@@ -193,16 +249,18 @@ async def add_timeline_item(
 
 @mcp.tool(annotations={"readOnlyHint": True})
 async def get_item(
+    parent_entity_type: str,
+    parent_entity_id: str,
     item_id: str,
     mode: str = "full",
     max_chars: int = 4000,
     cursor: str | None = None,
-    hint_kind: str | None = None,
-    hint_parent_id: str | None = None,
 ) -> dict:
     """Get full content of truncated timeline item.
     
     Supports pagination for very large items.
+    The parent entity scope is required; get_item no longer searches all alerts,
+    cases, and tasks when a timeline item ID is missing or ambiguous.
     
     Returns:
         - item_id: Item identifier
@@ -211,14 +269,16 @@ async def get_item(
         - next_cursor: Pagination cursor if truncated
         
     Args:
+        parent_entity_type: Parent entity type ("alert", "case", or "task")
+        parent_entity_id: Parent entity ID (forgiving format: "123", "CAS-000123", etc.)
         item_id: Timeline item ID
         mode: Retrieval mode ("full", "head", "tail")
         max_chars: Max characters to return (100-10000, default: 4000)
         cursor: Pagination cursor from previous response
-        hint_kind: Optional entity type hint for faster lookup
-        hint_parent_id: Optional parent entity ID hint
     """
-    return await get_item_tool(item_id, mode, max_chars, cursor, hint_kind, hint_parent_id)
+    return await get_item_tool(
+        parent_entity_type, parent_entity_id, item_id, mode, max_chars, cursor
+    )
 
 
 @mcp.tool(annotations={"readOnlyHint": True})

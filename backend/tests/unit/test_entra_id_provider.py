@@ -48,7 +48,7 @@ class FakeAsyncClient:
     async def get(self, url: str, headers: dict[str, str] | None = None, params: dict[str, object] | None = None):
         assert headers is not None
         assert headers.get("Authorization") == "Bearer entra-token"
-        if url.endswith("/users/alice@example.com"):
+        if url.endswith("/users/alice%40example.com"):
             assert headers == {"Authorization": "Bearer entra-token"}
             return FakeResponse(
                 200,

@@ -35,7 +35,8 @@ export default function SetPasswordPage() {
   const navigate = useViewTransitionNavigate();
   const { resolvedTheme } = useTheme();
   const [searchParams] = useSearchParams();
-  const token = searchParams.get("token")?.trim() ?? "";
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const token = (hashParams.get("token") || searchParams.get("token") || "").trim();
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);

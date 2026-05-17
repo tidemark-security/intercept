@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 import re
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -107,9 +108,10 @@ class EntraIDProvider(EnrichmentProvider):
 
     async def _lookup_manager(self, token: str, identifier: str) -> Dict[str, Any] | None:
         headers = {"Authorization": f"Bearer {token}"}
+        encoded_identifier = quote(identifier, safe="")
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(
-                f"{_GRAPH_BASE}/users/{identifier}/manager",
+                f"{_GRAPH_BASE}/users/{encoded_identifier}/manager",
                 headers=headers,
                 params={"$select": "displayName,mail,userPrincipalName,id"},
             )
@@ -140,9 +142,10 @@ class EntraIDProvider(EnrichmentProvider):
         async with httpx.AsyncClient(timeout=15) as client:
             endpoints: List[tuple[str, Dict[str, str], Dict[str, Any]]] = []
             if self._should_try_direct_user_lookup(identifier):
+                encoded_path_identifier = quote(identifier, safe="")
                 endpoints.append(
                     (
-                        f"{_GRAPH_BASE}/users/{identifier}",
+                        f"{_GRAPH_BASE}/users/{encoded_path_identifier}",
                         self._graph_headers(token),
                         {"$select": _USER_FIELDS},
                     )

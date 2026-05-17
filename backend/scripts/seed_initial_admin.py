@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # type: ignore[attr-defined]
@@ -18,7 +20,6 @@ from app.services.security.password_hasher import Argon2Parameters, PasswordHash
 DEFAULT_ADMIN = {
     "username": "admin",
     "email": "admin@intercept.local",
-    "password": "admin",
     "role": UserRole.ADMIN,
 }
 
@@ -38,6 +39,14 @@ def _create_password_hasher() -> PasswordHasher:
 
 async def ensure_initial_admin() -> None:
     """Create the default admin account when it does not already exist."""
+    admin_password = os.environ.get("INITIAL_ADMIN_PASSWORD", "").strip()
+    if not admin_password:
+        print("INITIAL_ADMIN_PASSWORD is required to seed the initial admin user", file=sys.stderr)
+        raise SystemExit(1)
+    if admin_password == "admin" or len(admin_password) < 12:
+        print("INITIAL_ADMIN_PASSWORD must be non-default and at least 12 characters", file=sys.stderr)
+        raise SystemExit(1)
+
     engine = create_async_engine(get_local("database.url"), echo=False)
     session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     password_hasher = _create_password_hasher()
@@ -59,9 +68,9 @@ async def ensure_initial_admin() -> None:
             email=DEFAULT_ADMIN["email"],
             role=DEFAULT_ADMIN["role"],
             status=UserStatus.ACTIVE,
-            password_hash=password_hasher.hash(DEFAULT_ADMIN["password"]),
+            password_hash=password_hasher.hash(admin_password),
             password_updated_at=now,
-            must_change_password=False,
+            must_change_password=True,
             failed_login_attempts=0,
             created_at=now,
             updated_at=now,

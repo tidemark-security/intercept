@@ -241,21 +241,9 @@ async def add_timeline_item_tool(
 
     Phase 7 (User Story 5): add_timeline_item implementation
     """
-    from datetime import datetime, timezone
-
     username = (
         _require_mcp_non_auditor_user() if commit else _get_authenticated_username()
     )
-
-    # Parse created_at if provided
-    parsed_created_at = None
-    if created_at:
-        try:
-            parsed_created_at = datetime.fromisoformat(
-                created_at.replace("Z", "+00:00")
-            )
-        except ValueError:
-            pass  # Will use default (current time)
 
     async with async_session_factory() as db:
         result = await mcp_service.add_timeline_item(
@@ -266,18 +254,18 @@ async def add_timeline_item_tool(
             body=body,
             commit=commit,
             created_by=username,
-            created_at=parsed_created_at,
+            created_at=None,
         )
         return result.model_dump()
 
 
 async def get_item_tool(
+    parent_entity_type: str,
+    parent_entity_id: str,
     item_id: str,
     mode: str = "full",
     max_chars: int = 4000,
     cursor: str | None = None,
-    hint_kind: str | None = None,
-    hint_parent_id: str | None = None,
 ) -> Dict[str, Any]:
     """Get full content of truncated timeline item.
 
@@ -286,12 +274,12 @@ async def get_item_tool(
     async with async_session_factory() as db:
         result = await mcp_service.get_item(
             db=db,
+            parent_entity_type=parent_entity_type,
+            parent_entity_id=parent_entity_id,
             item_id=item_id,
             mode=mode,
             max_chars=max_chars,
             cursor=cursor,
-            hint_kind=hint_kind,
-            hint_parent_id=hint_parent_id,
         )
         return result.model_dump()
 

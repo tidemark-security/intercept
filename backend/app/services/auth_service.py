@@ -153,6 +153,7 @@ class AuthService:
             encoding=get_local("auth.argon2.encoding"),
         )
         self._password_hasher = password_hasher or PasswordHasher(argon2_params)
+        self._dummy_password_hash = self._password_hasher.hash("InvalidCredentialsDummyPassword123!")
         # Session timeouts are local_only (read per-request from frozen values)
         self._idle_timeout = timedelta(hours=get_local("auth.session.idle_timeout_hours"))
         self._absolute_timeout = timedelta(hours=get_local("auth.session.absolute_timeout_hours"))
@@ -206,10 +207,14 @@ class AuthService:
         now = datetime.now(timezone.utc)
 
         username_match = cast(Any, UserAccount.username == normalized_username)
-        result = await db.execute(select(UserAccount).where(username_match))
+        result = await db.execute(select(UserAccount).where(username_match).with_for_update())
         user = result.scalar_one_or_none()
 
         if user is None:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, self._password_hasher.verify, self._dummy_password_hash, password
+            )
             await get_audit_service(db).login_failure(
                 username=normalized_username,
                 role=None,
@@ -230,12 +235,6 @@ class AuthService:
             )
             raise NHIPasswordLoginError()
 
-        # Reset lockout if expired
-        if user.lockout_expires_at and user.lockout_expires_at <= now:
-            user.lockout_expires_at = None
-            user.failed_login_attempts = 0
-            user.status = UserStatus.ACTIVE
-
         if user.status == UserStatus.DISABLED:
             await get_audit_service(db).login_failure(
                 username=normalized_username,
@@ -245,6 +244,13 @@ class AuthService:
                 context=metadata.to_audit_context(),
             )
             raise AccountDisabledError()
+
+        # Reset lockout if expired
+        if user.lockout_expires_at and user.lockout_expires_at <= now:
+            user.lockout_expires_at = None
+            user.failed_login_attempts = 0
+            if user.status == UserStatus.LOCKED:
+                user.status = UserStatus.ACTIVE
 
         if user.lockout_expires_at and user.lockout_expires_at > now:
             await get_audit_service(db).login_failure(
@@ -344,6 +350,9 @@ class AuthService:
         user: UserAccount,
         metadata: RequestMetadata,
     ) -> LoginResult:
+        if user.status != UserStatus.ACTIVE:
+            raise AccountDisabledError()
+
         now = datetime.now(timezone.utc)
         session_token = secrets.token_urlsafe(48)
         session_token_hash = self._hash_session_token(session_token)
@@ -443,7 +452,7 @@ class AuthService:
         current_password: str,
         new_password: str,
         metadata: RequestMetadata,
-    ) -> None:
+    ) -> LoginResult:
         session = await self._resolve_active_session(db, session_token)
         user = session.user
         if user is None:
@@ -480,11 +489,13 @@ class AuthService:
         user.lockout_expires_at = None
         user.updated_at = now
 
-        session.last_seen_at = now
+        old_session_id = session.id
+        session.revoked_at = now
+        session.revoked_reason = SessionRevokedReason.RESET_REQUIRED
 
         # Revoke all other active sessions for this user except current one
         user_match = cast(Any, AuthSession.user_id == user.id)
-        not_current = cast(Any, AuthSession.id != session.id)
+        not_current = cast(Any, AuthSession.id != old_session_id)
         result = await db.execute(select(AuthSession).where(user_match, not_current))
         other_sessions = result.scalars().all()
         for other in other_sessions:
@@ -492,6 +503,7 @@ class AuthService:
                 other.revoked_at = now
                 other.revoked_reason = SessionRevokedReason.RESET_REQUIRED
 
+        new_login = await self.create_session_for_user(db, user=user, metadata=metadata)
         await db.commit()
 
         # Audit log and metrics
@@ -501,6 +513,7 @@ class AuthService:
             was_forced=was_forced,
             context=metadata.to_audit_context(),
         )
+        return new_login
 
     # ------------------------------------------------------------------
     # Internal helpers

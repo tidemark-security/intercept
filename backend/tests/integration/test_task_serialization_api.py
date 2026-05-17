@@ -141,4 +141,8 @@ async def test_add_task_timeline_item_serializes_response_after_reload(
     payload = response.json()
     assert payload["id"] == task_id
     assert len(payload["timeline_items"]) == 1
-    assert payload["timeline_items"]["task-note-1"]["id"] == "task-note-1"
+    item_id, item = next(iter(payload["timeline_items"].items()))
+    assert item_id == item["id"]
+    assert item_id != "task-note-1"
+    assert item["type"] == "note"
+    assert item["description"] == "Timeline note"

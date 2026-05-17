@@ -8,6 +8,7 @@ RUN apt-get update \
 
 # Copy UX library build context
 COPY --from=ux . /ux
+RUN npm ci --prefix /ux
 
 # Copy package files first for better layer caching
 COPY package.json ./
@@ -15,8 +16,12 @@ COPY package.json ./
 # Install dependencies
 RUN npm pkg set dependencies.@tidemark-security/ux="file:/ux" \
 	&& npm install
+RUN useradd --create-home --uid 10001 intercept \
+	&& chown -R intercept:intercept /app /ux
 
 EXPOSE 5173
+
+USER intercept
 
 # Run development server
 CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

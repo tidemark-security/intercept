@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 import pytest
 from httpx import AsyncClient, Response
+from sqlalchemy import select
 
 from app.models.enums import (
     AlertStatus,
@@ -15,7 +17,7 @@ from app.models.enums import (
     TaskStatus,
     TriageDisposition,
 )
-from app.models.models import Alert, Case, Task, TriageRecommendation
+from app.models.models import Alert, AuditLog, Case, Task, TriageRecommendation
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -245,8 +247,98 @@ async def test_auditor_cannot_delete_case_or_task(
 
     assert case_response.status_code == 403
     assert task_response.status_code == 403
-    assert _detail_message(case_response) == "Auditor accounts have read-only access"
+    assert _detail_message(case_response) == "Admin role required for this operation"
     assert _detail_message(task_response) == "Auditor accounts have read-only access"
+
+
+@pytest.mark.asyncio
+async def test_analyst_cannot_delete_case(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie, _ = await _login_and_get_session_cookie(
+        client, session_maker, analyst_user_factory
+    )
+
+    async with session_maker() as session:
+        case = Case(
+            title="Analyst delete blocked",
+            description="seed",
+            priority=Priority.MEDIUM,
+            status=CaseStatus.NEW,
+            created_by="seed-user",
+        )
+        session.add(case)
+        await session.commit()
+        case_id = case.id
+
+    response = await client.delete(
+        f"/api/v1/cases/{case_id}",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 403
+    assert _detail_message(response) == "Admin role required for this operation"
+
+    async with session_maker() as session:
+        assert await session.get(Case, case_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_admin_can_hard_delete_case_with_audit_log(
+    client: AsyncClient,
+    session_maker: Any,
+    admin_user_factory,
+) -> None:
+    session_cookie, admin_username = await _login_and_get_session_cookie(
+        client, session_maker, admin_user_factory
+    )
+
+    async with session_maker() as session:
+        case = Case(
+            title="Admin hard delete",
+            description="x" * 10_000,
+            priority=Priority.MEDIUM,
+            status=CaseStatus.NEW,
+            created_by="seed-user",
+            tags=[f"tag-{index}-{'y' * 200}" for index in range(75)],
+        )
+        session.add(case)
+        await session.commit()
+        case_id = case.id
+
+    response = await client.delete(
+        f"/api/v1/cases/{case_id}",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "Case deleted successfully"
+
+    async with session_maker() as session:
+        assert await session.get(Case, case_id) is None
+        audit_log = (
+            await session.execute(
+                select(AuditLog)
+                .where(AuditLog.event_type == "case.deleted")
+                .where(AuditLog.entity_type == "case")
+                .where(AuditLog.entity_id == str(case_id))
+            )
+        ).scalar_one()
+
+    assert audit_log.performed_by == admin_username
+    assert audit_log.description == "Case permanently deleted"
+    assert audit_log.old_value is not None
+    snapshot = json.loads(audit_log.old_value)
+    assert snapshot["title"] == "Admin hard delete"
+    assert snapshot["description"] == "x" * 2048
+    assert snapshot["description_length"] == 10_000
+    assert snapshot["description_truncated"] is True
+    assert len(snapshot["tags"]) == 50
+    assert snapshot["tags_count"] == 75
+    assert snapshot["tags_truncated"] is True
+    assert all(len(tag) <= 128 for tag in snapshot["tags"])
 
 
 @pytest.mark.asyncio

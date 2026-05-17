@@ -270,6 +270,15 @@ class TaskService:
             old_case_id = db_task.case_id
             old_assignee = db_task.assignee
             assignee_changed = False
+            if "case_id" in update_data and update_data["case_id"] != old_case_id:
+                if old_case_id is not None:
+                    raise ValueError("Task case reassignment is not allowed; unlink before linking to another case")
+                if update_data["case_id"] is not None:
+                    from app.services.case_service import case_service
+
+                    destination_case = await case_service.get_case_minimal(db, update_data["case_id"])
+                    if destination_case is None:
+                        raise ValueError(f"Case {update_data['case_id']} not found")
             
             for field, new_value in update_data.items():
                 if hasattr(db_task, field):

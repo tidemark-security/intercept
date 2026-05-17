@@ -36,6 +36,16 @@ vi.mock('@/types/generated/services/TasksService', () => ({
   },
 }));
 
+vi.mock('magika', () => ({
+  Magika: {
+    create: vi.fn().mockResolvedValue({
+      identifyBytes: vi.fn().mockResolvedValue({
+        prediction: { output: { mime_type: 'text/plain' } },
+      }),
+    }),
+  },
+}));
+
 import { useFileUpload } from './useFileUpload';
 
 class MockXMLHttpRequest {
@@ -71,7 +81,7 @@ class MockXMLHttpRequest {
 
   open() {}
 
-  setRequestHeader() {}
+  setRequestHeader = vi.fn();
 
   send() {
     this.progressHandler?.({
@@ -153,9 +163,9 @@ describe('useFileUpload', () => {
       itemId: 'attachment-1',
       requestBody: {
         status: 'COMPLETE',
-        file_hash: '01020304',
       },
     });
+    expect(MockXMLHttpRequest.lastInstance?.setRequestHeader).toHaveBeenCalledWith('Content-Type', 'text/plain');
     expect(generateAlertUploadUrl).not.toHaveBeenCalled();
     expect(generateCaseUploadUrl).not.toHaveBeenCalled();
     expect(result.current.itemId).toBe('attachment-1');

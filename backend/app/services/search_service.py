@@ -8,6 +8,7 @@ This service implements PostgreSQL full-text search with:
 - Type-specific JSONB containment queries for IOCs (IPs, emails, URLs, hashes)
 """
 import asyncio
+import ipaddress
 import json
 import logging
 import re
@@ -139,6 +140,13 @@ _FILENAME_EXTENSIONS = {
 }
 
 
+def _is_ipv6_address(value: str) -> bool:
+    try:
+        return isinstance(ipaddress.ip_address(value), ipaddress.IPv6Address)
+    except ValueError:
+        return False
+
+
 def classify_query(query: str) -> QueryClassification:
     """Classify a search query to determine optimal search strategy.
     
@@ -217,7 +225,7 @@ def classify_query(query: str) -> QueryClassification:
         )
     
     # IPv6
-    if _IPV6_PATTERN.match(test_value):
+    if _is_ipv6_address(test_value):
         return QueryClassification(
             query_type=QueryType.IP,
             normalized_value=query,

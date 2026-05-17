@@ -132,6 +132,15 @@ _register(
         default="postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db",
     ),
     _def(
+        "database.echo",
+        env_var="DATABASE_ECHO",
+        local_only=True,
+        value_type=SettingType.BOOLEAN,
+        category="bootstrap",
+        description="Enable SQLAlchemy SQL echo logging",
+        default=False,
+    ),
+    _def(
         "secret_key",
         env_var="SECRET_KEY",
         local_only=True,
@@ -450,6 +459,14 @@ _register(
         ],
     ),
     _def(
+        "oidc.trusted_auto_link_issuers",
+        env_var="OIDC_TRUSTED_AUTO_LINK_ISSUERS",
+        value_type=SettingType.JSON,
+        category="oidc",
+        description="JSON array of OIDC issuers allowed to auto-link existing users by email",
+        default=[],
+    ),
+    _def(
         "oidc.browser_binding.cookie_name",
         env_var="OIDC_BROWSER_BINDING_COOKIE_NAME",
         local_only=True,
@@ -546,8 +563,8 @@ _register(
         "langflow.timeout",
         value_type=SettingType.NUMBER,
         category="langflow",
-        description="LangFlow HTTP request timeout in seconds",
-        default=30,
+        description="LangFlow HTTP request timeout in seconds. Agent flows (alert triage, case chat) make multiple LLM round-trips and tool calls, so this needs to be well above a single LLM response time.",
+        default=300,
     ),
     _def(
         "langflow.default_flow_id",
@@ -742,6 +759,12 @@ _register(
         category="enrichment",
         description="Use SSL/TLS when connecting to the LDAP server",
         default=True,
+    ),
+    _def(
+        "enrichment.ldap.ca_certs_file",
+        category="enrichment",
+        description="Optional CA bundle path used to validate LDAPS certificates",
+        default=None,
     ),
     _def(
         "enrichment.ldap.user_search_filter",

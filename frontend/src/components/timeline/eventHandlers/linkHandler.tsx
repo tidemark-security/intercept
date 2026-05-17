@@ -5,6 +5,7 @@ import { getTimelineIcon } from '@/utils/timelineIcons';
 import type { CardConfig, CardFactoryOptions } from '../TimelineCardFactory';
 
 import { ExternalLink } from 'lucide-react';
+import { toSafeHref } from '@/utils/safeUrl';
 
 export function isLinkItem(item: TimelineItem): item is TimelineItem & LinkItem {
   return item.type === 'link';
@@ -23,12 +24,13 @@ export function handleLinkItem(
   const urlDisplay = item.url && item.url.length > 50
     ? item.url.substring(0, 50) + '...'
     : item.url;
+  const safeHref = toSafeHref(item.url);
 
   return {
     title: urlDisplay || 'Link',
-    line1: item.url ? (
+    line1: safeHref ? (
       <a
-        href={item.url}
+        href={safeHref}
         target="_blank"
         rel="noreferrer"
         className="hover:underline"
@@ -36,7 +38,7 @@ export function handleLinkItem(
         Open in new tab
       </a>
     ) : undefined,
-    line1Icon: item.url ? <ExternalLink /> : undefined,
+    line1Icon: safeHref ? <ExternalLink /> : undefined,
     disableCopyTargets: ['line1'],
     baseIcon: Icon ? <Icon /> : undefined,
     system: 'default',

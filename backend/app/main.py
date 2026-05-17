@@ -194,7 +194,10 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
-app.add_middleware(CSRFMiddleware)
+app.add_middleware(
+    CSRFMiddleware,
+    session_factory_provider=lambda: async_session_factory,
+)
 
 # Include routers BEFORE MCP generation so routes are available
 app.include_router(cases.router, prefix="/api/v1")
@@ -328,6 +331,7 @@ class MCPApiKeyAuthMiddleware:
                     raw_key=api_key,
                     context=audit_context,
                 )
+                await db.commit()
                 
                 # Store user in scope for potential downstream use
                 scope["mcp_user"] = result.user

@@ -1,9 +1,8 @@
 [tool.bumpversion]
-current_version = "0.4.2"
+current_version = "0.4.3"
 commit = true
-tag = true
-tag_name = "v{new_version}"
-commit_message = "release: v{new_version}"
+tag = false
+message = "release: v{new_version}"
 pre_commit_hooks = ["scripts/bump-lockfile.sh"]
 
 [[tool.bumpversion.files]]
@@ -13,3 +12,13 @@ filename = "VERSION"
 filename = "frontend/package.json"
 search = "\"version\": \"{current_version}\""
 replace = "\"version\": \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "frontend/package-lock.json"
+search = "\"name\": \"intercept\",\n  \"version\": \"{current_version}\""
+replace = "\"name\": \"intercept\",\n  \"version\": \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "frontend/package-lock.json"
+search = "\"\": {{\n      \"name\": \"intercept\",\n      \"version\": \"{current_version}\""
+replace = "\"\": {{\n      \"name\": \"intercept\",\n      \"version\": \"{new_version}\""

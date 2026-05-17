@@ -24,3 +24,4 @@ RUN apt-get purge -y --auto-remove git build-essential ca-certificates || true
 
 # Note: extension initialization is performed by init.sql mounted via dev/docker-compose.yml
 # or inlined via configs in docs/quickstart/docker-compose.yml
+USER postgres

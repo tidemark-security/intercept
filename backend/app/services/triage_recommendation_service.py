@@ -90,7 +90,9 @@ def _build_state_change_note(
 
 async def get_by_alert_id(
     db: AsyncSession,
-    alert_id: int
+    alert_id: int,
+    *,
+    for_update: bool = False,
 ) -> Optional[TriageRecommendation]:
     """Get current triage recommendation for an alert.
     
@@ -104,6 +106,8 @@ async def get_by_alert_id(
     query = select(TriageRecommendation).where(
         TriageRecommendation.alert_id == alert_id
     )
+    if for_update:
+        query = query.with_for_update()
     result = await db.execute(query)
     return result.scalar_one_or_none()
 
@@ -335,7 +339,7 @@ async def auto_reject_if_pending(
     Returns:
         TriageRecommendation if one was rejected, None if no pending recommendation exists
     """
-    recommendation = await get_by_alert_id(db, alert_id)
+    recommendation = await get_by_alert_id(db, alert_id, for_update=True)
     if not recommendation or recommendation.status != RecommendationStatus.PENDING:
         return None
     
@@ -380,7 +384,7 @@ async def accept_recommendation(
         HTTPException(404): Recommendation not found
         HTTPException(409): Recommendation already reviewed
     """
-    recommendation = await get_by_alert_id(db, alert_id)
+    recommendation = await get_by_alert_id(db, alert_id, for_update=True)
     if not recommendation:
         raise HTTPException(
             status_code=404,
@@ -634,7 +638,7 @@ async def reject_recommendation(
         HTTPException(404): Recommendation not found
         HTTPException(409): Recommendation already reviewed
     """
-    recommendation = await get_by_alert_id(db, alert_id)
+    recommendation = await get_by_alert_id(db, alert_id, for_update=True)
     if not recommendation:
         raise HTTPException(
             status_code=404,

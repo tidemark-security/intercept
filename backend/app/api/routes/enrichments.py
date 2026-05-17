@@ -5,7 +5,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.routes.admin_auth import require_admin_user, require_authenticated_user
+from app.api.routes.admin_auth import require_admin_user, require_authenticated_user, require_non_auditor_user
 from app.core.database import get_db
 from app.models.enums import SettingType
 from app.models.models import (
@@ -63,6 +63,7 @@ async def enqueue_item_enrichment(
     entity_id: int,
     item_id: str,
     db: AsyncSession = Depends(get_db),
+    _current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     try:
         task_id = await enrichment_service.enqueue_item_enrichment(

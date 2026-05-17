@@ -7,15 +7,14 @@ Creates the following test accounts:
 - Analyst user: username='analyst', password='analyst', role=ANALYST
 - Auditor user: username='auditor', password='auditor', role=AUDITOR
 
-This script is idempotent and will reset existing users to their default state:
-- Resets password to the default test password
-- Clears must_change_password flag
-- Sets status to ACTIVE
-- Clears lockout and failed login attempts
+This script is development-only. It creates missing test users but refuses to run
+unless INTERCEPT_ALLOW_TEST_USER_SEEDING=true and never resets existing accounts.
 """
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # type: ignore[attr-defined]
@@ -55,6 +54,13 @@ TEST_USERS = [
 
 async def seed_test_users() -> None:
     """Create test users if they don't exist."""
+    if os.environ.get("INTERCEPT_ALLOW_TEST_USER_SEEDING") != "true":
+        print(
+            "Refusing to seed weak test users unless INTERCEPT_ALLOW_TEST_USER_SEEDING=true",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
     engine = create_async_engine(get_local("database.url"), echo=False)
     session_maker = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     
@@ -83,26 +89,7 @@ async def seed_test_users() -> None:
             existing_user = result.scalar_one_or_none()
             
             if existing_user:
-                # Reset existing user to default state
-                print(f"\n✓ {user_config['role'].value} user already exists - resetting to defaults")
-                print(f"  Username: {existing_user.username}")
-                print(f"  Old Status: {existing_user.status.value}")
-                print(f"  Old must_change_password: {existing_user.must_change_password}")
-                
-                # Reset all parameters to defaults
-                existing_user.password_hash = password_hasher.hash(user_config["password"])
-                existing_user.password_updated_at = now
-                existing_user.must_change_password = user_config["must_change_password"]
-                existing_user.status = UserStatus.ACTIVE
-                existing_user.lockout_expires_at = None
-                existing_user.failed_login_attempts = 0
-                existing_user.updated_at = now
-                
-                await session.commit()
-                
-                print(f"  New Status: {existing_user.status.value}")
-                print(f"  New must_change_password: {existing_user.must_change_password}")
-                print(f"  Password: reset to default")
+                print(f"\n✓ {user_config['role'].value} user already exists; leaving credentials unchanged")
                 continue
             
             # Create new user

@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 # Create async engine
 engine = create_async_engine(
     get_local("database.url"),
-    echo=True,  # Set to False in production
+    echo=bool(get_local("database.echo", False)),
     future=True
 )
 

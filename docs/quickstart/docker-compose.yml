@@ -11,8 +11,9 @@
 #   2. Copy .env.example to .env and fill in values
 #   3. docker compose up -d
 #
-# Then open http://localhost and log in:
-#   Username: admin    Password: admin
+# Then open http://localhost and log in with:
+#   Username: admin
+#   Password: INITIAL_ADMIN_PASSWORD from your .env file
 #
 # Default ports:
 #   80    — Frontend UI
@@ -78,7 +79,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - tmi_qs_postgres_data:/var/lib/postgresql/data
     configs:
@@ -110,8 +111,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     ports:
-      - "9000:9000"   # API
-      - "9001:9001"   # Console
+      - "127.0.0.1:9000:9000"   # API
+      - "127.0.0.1:9001:9001"   # Console
     volumes:
       - tmi_qs_minio_data:/data
     command: server /data --console-address ":9001"
@@ -144,7 +145,7 @@ services:
     extra_hosts:
       - "localhost:host-gateway"
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://intercept_user:${POSTGRES_PASSWORD}@localhost:5432/intercept_case_db
       SECRET_KEY: ${SECRET_KEY}
@@ -156,7 +157,8 @@ services:
       STORAGE_USE_SSL: "false"
       LANGFLOW__BASE_URL: http://localhost:7860/api/v1
       LANGFLOW__API_KEY: ${LANGFLOW_API_KEY}
-      AUTO_SEED: "true"                            # Creates admin/admin user on first boot
+      AUTO_SEED: "true"                            # Creates the admin user on first boot
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD}
       CORS_ORIGINS: '["http://localhost"]'         # Adjust for production (e.g. "https://example.com")
     depends_on:
       postgres:
@@ -179,7 +181,7 @@ services:
     extra_hosts:
       - "localhost:host-gateway"
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     environment:
       DATABASE_URL: postgresql+asyncpg://intercept_user:${POSTGRES_PASSWORD}@localhost:5432/intercept_case_db
       SECRET_KEY: ${SECRET_KEY}
@@ -210,7 +212,7 @@ services:
   frontend:
     image: ghcr.io/tidemark-security/intercept-frontend:${TAG:-latest}
     ports:
-      - "80:80"
+      - "127.0.0.1:80:8080"
     depends_on:
       - backend
     restart: unless-stopped
@@ -243,7 +245,7 @@ services:
     extra_hosts:
       - "localhost:host-gateway"
     ports:
-      - "7860:7860"
+      - "127.0.0.1:7860:7860"
     volumes:
       - tmi_qs_langflow_data:/app/langflow
     depends_on:

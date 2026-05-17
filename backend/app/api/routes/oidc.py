@@ -24,6 +24,7 @@ from app.services.oidc_service import (
     OIDCStateError,
     oidc_service,
 )
+from app.services.settings_service import SettingsService
 
 
 router = APIRouter(prefix="/auth/oidc", tags=["authentication"])
@@ -59,6 +60,17 @@ def _frontend_error_redirect(redirect_to: str, message: str) -> RedirectResponse
     )
 
 
+async def _safe_error_redirect(
+    db: AsyncSession,
+    request: Request,
+    candidate: str,
+    message: str,
+) -> RedirectResponse:
+    if not await oidc_service.is_safe_redirect_target(db, candidate):
+        candidate = str(request.base_url).rstrip("/")
+    return _frontend_error_redirect(candidate, message)
+
+
 @router.get("/config", response_model=OIDCConfigResponse)
 async def get_oidc_config(db: AsyncSession = Depends(get_db)) -> OIDCConfigResponse:
     config = await oidc_service.get_public_config(db)
@@ -71,6 +83,9 @@ async def begin_oidc_login(
     db: AsyncSession = Depends(get_db),
     next: str = Query(..., description="Absolute frontend URL to return to after authentication"),
 ):
+    if not await SettingsService(db).get("oidc.enabled", default=False):  # type: ignore[arg-type]
+        return _frontend_error_redirect(str(request.base_url).rstrip("/"), "OIDC sign-in is disabled")
+
     if not await oidc_service.is_safe_redirect_target(db, next):
         return _frontend_error_redirect(str(request.base_url).rstrip("/"), "Invalid OIDC return target")
 
@@ -98,9 +113,12 @@ async def finish_oidc_login(
     code: str = Query(...),
     state: str = Query(...),
 ):
+    if not await SettingsService(db).get("oidc.enabled", default=False):  # type: ignore[arg-type]
+        return _frontend_error_redirect(str(request.base_url).rstrip("/"), "OIDC sign-in is disabled")
+
     callback_url = str(request.url_for("finish_oidc_login"))
     metadata = _build_metadata(request)
-    fallback_redirect = request.headers.get("origin") or str(request.base_url).rstrip("/")
+    fallback_redirect = str(request.base_url).rstrip("/")
     browser_binding_token = read_oidc_browser_binding_cookie(request)
 
     try:
@@ -133,7 +151,7 @@ async def finish_oidc_login(
             oidc_issuer=None,
             context=metadata.to_audit_context(),
         )
-        response = _frontend_error_redirect(fallback_redirect, str(exc))
+        response = await _safe_error_redirect(db, request, fallback_redirect, str(exc))
         revoke_oidc_browser_binding_cookie(response)
         return response
 

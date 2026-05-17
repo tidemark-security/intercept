@@ -17,6 +17,5 @@ export type PresignedUploadRequest = {
     /**
      * Client-reported MIME type (validated server-side)
      */
-    mime_type?: (string | null);
+    mime_type: string;
 };
-

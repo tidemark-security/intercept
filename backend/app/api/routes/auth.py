@@ -622,7 +622,7 @@ async def change_password(
     metadata = _build_metadata(request)
 
     try:
-        await auth_service.change_password(
+        new_login = await auth_service.change_password(
             db,
             session_token=session_token,
             current_password=body.currentPassword,
@@ -647,7 +647,13 @@ async def change_password(
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    success_response = Response(status_code=status.HTTP_204_NO_CONTENT)
+    issue_authenticated_session_cookies(
+        success_response,
+        new_login.session_token,
+        new_login.session.expires_at,
+    )
+    return success_response
 
 
 @router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT)
