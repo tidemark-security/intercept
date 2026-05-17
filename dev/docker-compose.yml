@@ -87,7 +87,7 @@ services:
     command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
 
   minio:
-    image: minio/minio:latest
+    image: docker.io/minio/minio:latest
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -104,7 +104,7 @@ services:
       retries: 5
 
   minio-init:
-    image: minio/mc:latest
+    image: docker.io/minio/mc:latest
     depends_on:
       minio:
         condition: service_healthy
@@ -118,7 +118,7 @@ services:
       "
 
   langflow:
-    image: langflowai/langflow:1.9.0
+    image: docker.io/langflowai/langflow:1.9.0
     user: root
     environment:
       LANGFLOW_DATABASE_URL: postgresql://langflow_user:langflow_password@postgres:5432/langflow

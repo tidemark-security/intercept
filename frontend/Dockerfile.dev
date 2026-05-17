@@ -8,6 +8,7 @@ RUN apt-get update \
 
 # Copy UX library build context
 COPY --from=ux . /ux
+RUN npm ci --prefix /ux
 
 # Copy package files first for better layer caching
 COPY package.json ./

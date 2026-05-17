@@ -53,6 +53,14 @@ def auth_service(password_hasher: PasswordHasher) -> AuthService:
     return AuthService(password_hasher=password_hasher)
 
 
+def _mock_audit_service() -> MagicMock:
+    """Create an audit service mock with awaitable methods used by password changes."""
+    mock_audit_svc = MagicMock()
+    mock_audit_svc.login_success = AsyncMock()
+    mock_audit_svc.password_changed = AsyncMock()
+    return mock_audit_svc
+
+
 @pytest.fixture
 def sample_user(password_hasher: PasswordHasher) -> UserAccount:
     """Create a sample user account."""
@@ -111,8 +119,7 @@ async def test_change_password_verifies_current_password(
     # Mock session resolution + audit service
     with patch.object(auth_service, "_resolve_active_session", return_value=sample_session), \
          patch("app.services.auth_service.get_audit_service") as mock_get_audit:
-        mock_audit_svc = MagicMock()
-        mock_audit_svc.password_changed = AsyncMock()
+        mock_audit_svc = _mock_audit_service()
         mock_get_audit.return_value = mock_audit_svc
 
         # Attempt with correct current password should not raise
@@ -222,14 +229,14 @@ async def test_change_password_enforces_complexity_requirements(
 
 
 @pytest.mark.asyncio
-async def test_change_password_preserves_current_session(
+async def test_change_password_rotates_current_session(
     auth_service: AuthService,
     mock_db: AsyncMock,
     sample_user: UserAccount,
     sample_session: AuthSession,
     password_hasher: PasswordHasher,
 ) -> None:
-    """Test that change_password does not revoke the current session."""
+    """Test that change_password revokes the current session and returns a new one."""
     # Create a second session for the same user
     other_session = AuthSession(
         id=uuid4(),
@@ -249,11 +256,10 @@ async def test_change_password_preserves_current_session(
 
     with patch.object(auth_service, "_resolve_active_session", return_value=sample_session), \
          patch("app.services.auth_service.get_audit_service") as mock_get_audit:
-        mock_audit_svc = MagicMock()
-        mock_audit_svc.password_changed = AsyncMock()
+        mock_audit_svc = _mock_audit_service()
         mock_get_audit.return_value = mock_audit_svc
 
-        await auth_service.change_password(
+        result = await auth_service.change_password(
             mock_db,
             session_token="valid_token",
             current_password="OldPassword123!",
@@ -261,12 +267,10 @@ async def test_change_password_preserves_current_session(
             metadata=RequestMetadata(),
         )
 
-        # Verify current session was NOT revoked
-        assert sample_session.revoked_at is None
-        assert sample_session.revoked_reason is None
-
-        # Verify last_seen_at was updated
-        assert sample_session.last_seen_at is not None
+        assert sample_session.revoked_at is not None
+        assert sample_session.revoked_reason == SessionRevokedReason.RESET_REQUIRED
+        assert result.session.id != sample_session.id
+        assert result.session.revoked_at is None
 
 
 @pytest.mark.asyncio
@@ -307,8 +311,7 @@ async def test_change_password_revokes_other_sessions(
 
     with patch.object(auth_service, "_resolve_active_session", return_value=sample_session), \
          patch("app.services.auth_service.get_audit_service") as mock_get_audit:
-        mock_audit_svc = MagicMock()
-        mock_audit_svc.password_changed = AsyncMock()
+        mock_audit_svc = _mock_audit_service()
         mock_get_audit.return_value = mock_audit_svc
 
         await auth_service.change_password(
@@ -348,8 +351,7 @@ async def test_change_password_updates_user_fields(
 
     with patch.object(auth_service, "_resolve_active_session", return_value=sample_session), \
          patch("app.services.auth_service.get_audit_service") as mock_get_audit:
-        mock_audit_svc = MagicMock()
-        mock_audit_svc.password_changed = AsyncMock()
+        mock_audit_svc = _mock_audit_service()
         mock_get_audit.return_value = mock_audit_svc
 
         await auth_service.change_password(
@@ -425,8 +427,7 @@ async def test_change_password_calls_audit_logging(
 
     with patch.object(auth_service, "_resolve_active_session", return_value=sample_session), \
          patch("app.services.auth_service.get_audit_service") as mock_get_audit:
-        mock_audit_svc = MagicMock()
-        mock_audit_svc.password_changed = AsyncMock()
+        mock_audit_svc = _mock_audit_service()
         mock_get_audit.return_value = mock_audit_svc
 
         await auth_service.change_password(
