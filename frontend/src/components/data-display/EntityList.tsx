@@ -16,9 +16,15 @@ export function EntityList<T, F = FilterState>({
   onSelect,
   onDoubleClick,
   getItemHref,
+  selectable = false,
+  selectedIds,
+  onSelectionChange,
+  onSelectVisible,
+  bulkActions,
   filters,
   onFilterChange,
   statusOptions,
+  enableTagFilters = false,
   currentPage,
   totalPages,
   totalItems,
@@ -31,11 +37,16 @@ export function EntityList<T, F = FilterState>({
   usersLoading,
   mapItemToCard,
   getItemIds,
+  onTagClick,
   emptyMessage = "No items found"
 }: EntityListProps<T, F>) {
   const hasItems = items.length > 0;
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === 'dark';
+  const visibleIds = items.map((item) => getItemIds(item).id);
+  const selectedVisibleCount = visibleIds.filter((id) => selectedIds?.has(id)).length;
+  const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
+  const someVisibleSelected = selectedVisibleCount > 0 && !allVisibleSelected;
 
   return (
     <>
@@ -48,12 +59,31 @@ export function EntityList<T, F = FilterState>({
             assignees={users}
             assigneesLoading={usersLoading}
             statusOptions={statusOptions}
+            showTagFilters={enableTagFilters}
           />
         </div>
       </div>
 
       {/* Item List */}
       <div className="flex w-full grow shrink-0 basis-0 flex-col items-start gap-3 p-6 mobile:p-2 overflow-auto">
+        {selectable && hasItems && (
+          <div className="flex w-full items-center gap-3 border-b border-solid border-neutral-border pb-3">
+            <input
+              type="checkbox"
+              aria-label="Select visible alerts"
+              checked={allVisibleSelected}
+              ref={(input) => {
+                if (input) input.indeterminate = someVisibleSelected;
+              }}
+              onChange={(event) => onSelectVisible?.(event.target.checked, visibleIds)}
+              className="h-4 w-4 shrink-0"
+            />
+            <span className="text-caption font-caption text-subtext-color">
+              {selectedIds?.size ? `${selectedIds.size} selected` : 'Select visible alerts'}
+            </span>
+          </div>
+        )}
+        {bulkActions}
         {isLoading ? (
           <div className="flex w-full items-center justify-center py-8">
             <span className="text-body font-body text-subtext-color">Loading...</span>
@@ -67,6 +97,7 @@ export function EntityList<T, F = FilterState>({
             const cardProps = mapItemToCard(item);
             const { id, humanId } = getItemIds(item);
             const href = getItemHref?.(id, humanId);
+            const isRowSelected = selectedIds?.has(id) ?? false;
             
             /**
              * Handle click events on the menu card.
@@ -88,6 +119,7 @@ export function EntityList<T, F = FilterState>({
                 {...cardProps}
                 variant={selectedId === id ? 'selected' : undefined}
                 onClick={handleClick}
+                onTagClick={onTagClick}
               />
             );
             
@@ -115,8 +147,20 @@ export function EntityList<T, F = FilterState>({
             );
             
             return (
-              <div key={id} className="w-full">
+              <div key={id} className="flex w-full items-start gap-3">
+                {selectable && (
+                  <input
+                    type="checkbox"
+                    aria-label={`Select ${humanId}`}
+                    checked={isRowSelected}
+                    onChange={(event) => onSelectionChange?.(id, event.target.checked)}
+                    onClick={(event) => event.stopPropagation()}
+                    className="mt-4 h-4 w-4 shrink-0"
+                  />
+                )}
+                <div className="min-w-0 flex-1">
                 {content}
+                </div>
               </div>
             );
           })

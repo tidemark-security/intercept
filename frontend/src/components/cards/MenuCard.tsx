@@ -49,6 +49,7 @@ interface MenuCardRootProps
   variant?: "default" | "selected";
   showDescription?: boolean;
   description?: React.ReactNode;
+  onTagClick?: (tag: string, mode: "include" | "exclude") => void;
   className?: string;
 }
 
@@ -65,6 +66,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
       variant = "default",
       showDescription = false,
       description,
+      onTagClick,
       className,
       ...otherProps
     }: MenuCardRootProps,
@@ -182,13 +184,32 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
           <div className="-mx-4 -mb-3 mt-2 w-[calc(100%+2rem)] border-t border-solid border-neutral-border bg-neutral-500/10 px-4 py-2">
             <div className="flex w-full items-center gap-1 overflow-hidden flex-nowrap">
               {tagList.map((tag, index) => (
-                <Tag
-                  key={`${tag}-${index}`}
-                  tagText={tag}
-                  showDelete={false}
-                  p="0"
-                  className="shrink-0"
-                />
+                onTagClick ? (
+                  <button
+                    key={`${tag}-${index}`}
+                    type="button"
+                    className="shrink-0 cursor-pointer"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onTagClick(tag, event.ctrlKey || event.metaKey ? "exclude" : "include");
+                    }}
+                  >
+                    <Tag
+                      tagText={tag}
+                      showDelete={false}
+                      p="0"
+                    />
+                  </button>
+                ) : (
+                  <Tag
+                    key={`${tag}-${index}`}
+                    tagText={tag}
+                    showDelete={false}
+                    p="0"
+                    className="shrink-0"
+                  />
+                )
               ))}
             </div>
           </div>

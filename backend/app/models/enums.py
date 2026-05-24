@@ -113,6 +113,18 @@ class RealtimeEventType(str, Enum):
     TRIAGE_COMPLETED = "triage_completed"
 
 
+class AITriageContextScopeType(str, Enum):
+    """Structured scopes for analyst-authored AI triage context."""
+
+    GLOBAL = "GLOBAL"
+    ALERT_SOURCE = "ALERT_SOURCE"
+    CASE = "CASE"
+    USER_ACCOUNT = "USER_ACCOUNT"
+    HOST_SYSTEM = "HOST_SYSTEM"
+    OBSERVABLE = "OBSERVABLE"
+    TAG = "TAG"
+
+
 class Protocol(str, Enum):
     """Internet Protocol Numbers from IANA registry."""
     
@@ -443,4 +455,3 @@ class MessageFeedback(str, Enum):
     """Feedback for AI chat messages"""
     POSITIVE = "POSITIVE"
     NEGATIVE = "NEGATIVE"
-

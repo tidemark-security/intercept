@@ -294,6 +294,10 @@ class CaseService:
             
             # If case status changed to CLOSED, close all linked tasks and alerts
             if status_changed_to_closed and old_status != CaseStatus.CLOSED:
+                self._add_case_closure_summary_note(
+                    db_case, case_update.closure_summary, updated_by
+                )
+
                 # Extract alert closure statuses if provided
                 alert_closure_statuses = self._build_alert_closure_status_map(
                     case_update.alert_closure_updates
@@ -565,6 +569,25 @@ class CaseService:
             closure_status_map[alert_update.alert_id] = alert_update.status
 
         return closure_status_map
+
+    def _add_case_closure_summary_note(
+        self,
+        db_case: Case,
+        closure_summary: Optional[str],
+        closed_by: str,
+    ) -> None:
+        """Append an analyst-provided closure summary to the case timeline."""
+        summary = (closure_summary or "").strip()
+        if not summary:
+            return
+
+        closure_note = {
+            "type": "note",
+            "description": summary,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "tags": ["case-closure"],
+        }
+        timeline_service.add_timeline_item(db_case, closure_note, created_by=closed_by)
     
     async def delete_case(self, db: AsyncSession, case_id: int, deleted_by: str) -> bool:
         """Permanently delete a case after recording an audit snapshot."""

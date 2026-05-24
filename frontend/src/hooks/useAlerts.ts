@@ -12,6 +12,8 @@ interface UseAlertsOptions {
   caseId?: number | null;
   priority?: Priority[] | null;
   source?: string | null;
+  includeTags?: string[] | null;
+  excludeTags?: string[] | null;
   hasCase?: boolean | null;
   startDate?: string | null;
   endDate?: string | null;
@@ -35,6 +37,8 @@ export function useAlerts(
     caseId = null,
     priority = null,
     source = null,
+    includeTags = null,
+    excludeTags = null,
     hasCase = null,
     startDate = null,
     endDate = null,
@@ -48,7 +52,7 @@ export function useAlerts(
   const { isConnected } = useWebSocket();
 
   return useQuery({
-    queryKey: ['alerts', { status, assignee, caseId, priority, source, hasCase, startDate, endDate, search, sortBy, sortOrder, page, size }],
+    queryKey: ['alerts', { status, assignee, caseId, priority, source, includeTags, excludeTags, hasCase, startDate, endDate, search, sortBy, sortOrder, page, size }],
     queryFn: () =>
       AlertsService.getAlertsApiV1AlertsGet({
         status,
@@ -56,6 +60,8 @@ export function useAlerts(
         caseId,
         priority,
         source,
+        includeTags,
+        excludeTags,
         hasCase,
         startDate,
         endDate,

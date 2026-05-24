@@ -7,6 +7,8 @@ import {
   formatTimelineTimestamp,
   formatRelativeTime,
   formatAbsoluteTime,
+  formatHourOfDayForPreference,
+  getHourOfDayForPreference,
 } from './dateFormatters';
 
 describe('dateFormatters', () => {
@@ -110,6 +112,32 @@ describe('dateFormatters', () => {
     it('should handle null/undefined', () => {
       expect(formatAbsoluteTime(null)).toBe('');
       expect(formatAbsoluteTime(undefined)).toBe('');
+    });
+
+    it('should format explicitly as UTC when requested', () => {
+      const timestamp = '2024-11-08T23:30:00Z';
+      const result = formatAbsoluteTime(timestamp, 'yyyy-MM-dd HH:mm', 'utc');
+      expect(result).toBe('2024-11-08 23:30');
+    });
+  });
+
+  describe('formatHourOfDayForPreference', () => {
+    it('should preserve UTC hour labels for UTC preference', () => {
+      expect(formatHourOfDayForPreference(23, 'utc')).toBe('23:00');
+      expect(getHourOfDayForPreference(23, 'utc')).toBe(23);
+    });
+
+    it('should convert UTC hour buckets to the local hour for local preference', () => {
+      const utcHour = 23;
+      const expectedLocalHour = new Date(Date.UTC(2024, 0, 1, utcHour)).getHours();
+
+      expect(formatHourOfDayForPreference(utcHour, 'local')).toBe(`${expectedLocalHour}:00`);
+      expect(getHourOfDayForPreference(utcHour, 'local')).toBe(expectedLocalHour);
+    });
+
+    it('should handle empty hour values', () => {
+      expect(formatHourOfDayForPreference(null, 'local')).toBe('');
+      expect(getHourOfDayForPreference(undefined, 'utc')).toBeNull();
     });
   });
 });

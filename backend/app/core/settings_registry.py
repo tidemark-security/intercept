@@ -585,6 +585,12 @@ _register(
         default=None,
     ),
     _def(
+        "langflow.autonomous_task_flow_id",
+        category="langflow",
+        description="LangFlow flow ID for autonomous task execution when tasks are assigned to assignable NHI accounts",
+        default=None,
+    ),
+    _def(
         "langflow.alert_triage_flow_id",
         category="langflow",
         description="LangFlow flow ID for alert triage",
@@ -629,6 +635,20 @@ _register(
         category="enrichment",
         description="Maximum number of process-local enrichment cache entries",
         default=1024,
+    ),
+    _def(
+        "enrichment.cross_case_observable.enabled",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Enable exact-match observable correlation across other cases",
+        default=True,
+    ),
+    _def(
+        "enrichment.cross_case_observable.ttl_seconds",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="TTL for cross-case observable correlation results in seconds",
+        default=3600,
     ),
     _def(
         "enrichment.entra_id.enabled",

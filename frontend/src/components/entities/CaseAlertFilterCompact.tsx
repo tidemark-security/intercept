@@ -7,6 +7,7 @@ import type { AlertStatus } from "@/types/generated/models/AlertStatus";
 import type { app__api__routes__admin_auth__UserSummary } from "@/types/generated/models/app__api__routes__admin_auth__UserSummary";
 import { AssigneeSelector } from "@/components/forms/AssigneeSelector";
 import { DateRangePicker, DateRangeValue } from "@/components/forms/DateRangePicker";
+import { TagsManager } from "@/components/forms/TagsManager";
 
 
 
@@ -36,13 +37,15 @@ interface CaseAlertFilterCompactRootProps
   assigneesLoading?: boolean;
   /** Options for status filter */
   statusOptions?: StatusOption[];
+  /** Whether to show alert include/exclude tag filters */
+  showTagFilters?: boolean;
 }
 
 const CaseAlertFilterCompactRoot = React.forwardRef<
   HTMLDivElement,
   CaseAlertFilterCompactRootProps
 >(function CaseAlertFilterCompactRoot(
-  { className, filters, onFilterChange, assignees = [], assigneesLoading = false, statusOptions, ...otherProps }: CaseAlertFilterCompactRootProps,
+  { className, filters, onFilterChange, assignees = [], assigneesLoading = false, statusOptions, showTagFilters = false, ...otherProps }: CaseAlertFilterCompactRootProps,
   ref
 ) {
   // Local state for assignee search
@@ -92,6 +95,8 @@ const CaseAlertFilterCompactRoot = React.forwardRef<
         search: '',
         assignee: null,
         status: null,
+        includeTags: null,
+        excludeTags: null,
         dateRange: null,
       });
     }
@@ -202,6 +207,24 @@ const CaseAlertFilterCompactRoot = React.forwardRef<
             onClick={handleReset}
           />
         </div>
+        {showTagFilters ? (
+          <div className="grid w-full grid-cols-1 gap-2 md:grid-cols-2">
+            <TagsManager
+              inline
+              tags={filters?.includeTags || []}
+              onTagsChange={(tags) => updateFilter('includeTags', tags.length > 0 ? tags : null)}
+              label="Include tags"
+              placeholder="+ Include tags"
+            />
+            <TagsManager
+              inline
+              tags={filters?.excludeTags || []}
+              onTagsChange={(tags) => updateFilter('excludeTags', tags.length > 0 ? tags : null)}
+              label="Exclude tags"
+              placeholder="+ Exclude tags"
+            />
+          </div>
+        ) : null}
       </div>
     </div>
   );

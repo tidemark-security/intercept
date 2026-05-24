@@ -46,6 +46,10 @@ export interface FilterState {
    * Empty array is treated as null (no filter applied)
    */
   status: AlertStatus[] | null;
+  /** Tags alerts must include. Empty array is treated as null. */
+  includeTags?: string[] | null;
+  /** Tags alerts must exclude. Empty array is treated as null. */
+  excludeTags?: string[] | null;
   /** 
    * Selected date range, or null for "All time" (no date filtering)
    * When null, the backend will return all alerts regardless of date

@@ -375,6 +375,13 @@ class TaskService:
                     user=updated_by,
                 )
 
+            if assignee_changed and db_task.assignee:
+                await self._enqueue_autonomous_task_if_assigned_to_nhi(
+                    db,
+                    task_id=task_id,
+                    assignee=db_task.assignee,
+                )
+
             logger.info(f"Task {task_id} updated by {updated_by}")
             return await self._reload_task_response(db, task_id)
             
@@ -382,6 +389,44 @@ class TaskService:
             await db.rollback()
             logger.error(f"Error updating task {task_id}: {e}")
             raise
+
+    async def _enqueue_autonomous_task_if_assigned_to_nhi(
+        self,
+        db: AsyncSession,
+        *,
+        task_id: int,
+        assignee: str,
+    ) -> None:
+        from sqlalchemy import select
+
+        from app.models.enums import AccountType, UserStatus
+        from app.models.models import UserAccount
+        from app.services.task_queue_service import get_task_queue_service
+        from app.services.tasks import TASK_AUTONOMOUS_TASK
+
+        result = await db.execute(
+            select(UserAccount).where(
+                UserAccount.username == assignee,
+                UserAccount.account_type == AccountType.NHI,
+                UserAccount.status == UserStatus.ACTIVE,
+                UserAccount.assignable.is_(True),  # type: ignore[attr-defined]
+            )
+        )
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            return
+
+        try:
+            queue = get_task_queue_service()
+        except RuntimeError:
+            logger.warning("Task queue not available; autonomous task was not enqueued", extra={"task_id": task_id})
+            return
+
+        await queue.enqueue(
+            task_name=TASK_AUTONOMOUS_TASK,
+            payload={"task_id": task_id, "agent_username": agent.username},
+            dedupe_key=f"autonomous_task:{task_id}:{agent.username}",
+        )
     
     async def delete_task(
         self, 

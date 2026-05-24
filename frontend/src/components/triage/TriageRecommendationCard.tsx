@@ -116,6 +116,13 @@ function getStatusLabel(status: string): string {
   }
 }
 
+function formatContextScope(entry: Record<string, any>): string {
+  const scope = entry.scope && typeof entry.scope === 'object' ? entry.scope : {};
+  const type = typeof scope.type === 'string' ? scope.type.replace(/_/g, ' ').toLowerCase() : 'context';
+  const label = type.replace(/\b\w/g, (char: string) => char.toUpperCase());
+  return scope.value ? `${label}: ${scope.value}` : label;
+}
+
 // Rejection category options for dropdown
 const REJECTION_CATEGORY_OPTIONS: { value: RejectionCategory; label: string }[] = [
   { value: 'INCORRECT_DISPOSITION', label: 'Incorrect Disposition' },
@@ -203,6 +210,7 @@ export function TriageRecommendationCard({
   
   // Get inferred action for display
   const recommendedAction = useMemo(() => getRecommendedAction(recommendation), [recommendation]);
+  const appliedContextEntries = recommendation.applied_context_entries ?? [];
   
   const handleRejectConfirm = () => {
     if (rejectionCategory && (rejectionCategory !== 'OTHER' || rejectionReason.trim())) {
@@ -481,6 +489,32 @@ export function TriageRecommendationCard({
                     text={bullet} 
                     className="grow shrink-0 basis-0 text-body font-body text-default-font"
                   />
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex h-px w-full flex-none bg-neutral-border" />
+        </>
+      )}
+
+      {appliedContextEntries.length > 0 && (
+        <>
+          <div className="flex w-full flex-col items-start gap-4">
+            <span className="text-heading-3 font-heading-3 text-default-font">
+              Applied Context
+            </span>
+            <div className="flex w-full flex-col gap-3">
+              {appliedContextEntries.map((entry, idx) => (
+                <div key={`${entry.id ?? idx}`} className="flex flex-col gap-1 rounded-md border border-neutral-border px-3 py-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="neutral">{formatContextScope(entry)}</Badge>
+                    {entry.author && (
+                      <span className="text-caption text-subtext-color">by {entry.author}</span>
+                    )}
+                  </div>
+                  {entry.body && (
+                    <p className="whitespace-pre-wrap text-body text-default-font">{entry.body}</p>
+                  )}
                 </div>
               ))}
             </div>

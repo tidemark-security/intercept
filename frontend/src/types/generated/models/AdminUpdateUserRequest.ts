@@ -20,8 +20,11 @@ export type AdminUpdateUserRequest = {
      */
     role?: (UserRole | null);
     /**
+     * Whether an NHI account can be assigned task work
+     */
+    assignable?: (boolean | null);
+    /**
      * Updated user title or service account description
      */
     description?: (string | null);
 };
-

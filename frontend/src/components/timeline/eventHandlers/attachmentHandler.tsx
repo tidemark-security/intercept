@@ -60,6 +60,7 @@ export function handleAttachmentItem(
   const Icon = getTimelineIcon('attachment');
   const sizeDisplay = formatFileSize(item.file_size);
   const IconComponent = Icon ? <Icon /> : undefined;
+  const isSuperCompact = options.variant === 'super-compact';
 
   // Add download button if upload is complete and we have alertId and entityType
   let actionButtons = options.actionButtons;
@@ -76,10 +77,24 @@ export function handleAttachmentItem(
   let children: React.ReactNode | undefined;
   if (item.upload_status === 'COMPLETE' && options.alertId && options.entityType) {
     if (isImageAttachment(item)) {
-      children = <AttachmentImagePreview item={item} entityId={options.alertId} entityType={options.entityType} />;
+      children = <AttachmentImagePreview item={item} entityId={options.alertId} entityType={options.entityType} variant={isSuperCompact ? 'tiny' : 'default'} />;
     } else if (isTextAttachment(item)) {
-      children = <AttachmentTextPreview item={item} entityId={options.alertId} entityType={options.entityType} />;
+      children = <AttachmentTextPreview item={item} entityId={options.alertId} entityType={options.entityType} variant={isSuperCompact ? 'tiny' : 'default'} />;
     }
+  }
+
+  if (isSuperCompact) {
+    return {
+      title: item.file_name ? `${item.file_name}` : 'Attachment',
+      line1: sizeDisplay || item.mime_type || item.upload_status || undefined,
+      line1Icon: sizeDisplay ? <HardDrive /> : item.mime_type ? <FileText /> : undefined,
+      baseIcon: IconComponent,
+      system: 'default',
+      size: 'small',
+      className: '!min-h-0 !w-full !max-w-none gap-2 px-3 py-2',
+      children,
+      _item: item,
+    };
   }
 
   return {

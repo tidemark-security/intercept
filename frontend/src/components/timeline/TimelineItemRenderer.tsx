@@ -11,8 +11,15 @@ import { CaseCardContent } from '@/components/timeline/CaseCardContent';
 import { TimelineDescriptionBlock } from '@/components/timeline/TimelineDescriptionBlock';
 import { GoogleWorkspaceEnrichmentBlock } from '@/components/timeline/GoogleWorkspaceEnrichmentBlock';
 import { MaxMindEnrichmentBlock } from '@/components/timeline/MaxMindEnrichmentBlock';
+import { CrossCaseObservableEnrichmentBlock } from '@/components/timeline/CrossCaseObservableEnrichmentBlock';
+import {
+  getLinkedEntityCollapseKey,
+  type LinkedEntityCollapseState,
+} from '@/components/timeline/linkedEntityCollapse';
 import MarkdownContent from '@/components/data-display/MarkdownContent';
 import { createTimelineCard } from '@/components/timeline/TimelineCardFactory';
+import { Priority } from '@/components/misc/Priority';
+import { State } from '@/components/misc/State';
 import type { TimelineItem } from '@/types/timeline';
 import type { AlertRead } from '@/types/generated/models/AlertRead';
 import type { AlertStatus } from '@/types/generated/models/AlertStatus';
@@ -26,6 +33,12 @@ import {
   getTimelineItemAction,
   getTimelineItemLabel,
 } from '@/utils/timelineMapping';
+import {
+  alertStatusToUIState,
+  caseStatusToUIState,
+  priorityToUIPriority,
+  taskStatusToUIState,
+} from '@/utils/statusHelpers';
 import { compareTimelineItems, getTimelineItems } from '@/utils/timelineHelpers';
 import { isAlertItem, isDeletedItem, isNoteItem, isTaskItem } from '@/types/timeline';
 import type { CaseItem } from '@/types/generated/models/CaseItem';
@@ -36,7 +49,7 @@ import { cn } from '@/utils/cn';
 import { Button } from '@/components/buttons/Button';
 import { IconButton } from '@/components/buttons/IconButton';
 
-import { ArrowRight, ChevronDown, ChevronRight, MessageSquareReply as ReplyIcon, RefreshCw } from 'lucide-react';
+import { ArrowRight, ChevronDown, ChevronRight, MessageSquareReply as ReplyIcon, RefreshCw, User } from 'lucide-react';
 import { Tooltip } from '@/components/overlays/Tooltip';
 import {
   isTimelineItemEnrichmentActive,
@@ -89,6 +102,7 @@ function withEnrichmentBlocks(
   return (
     <div className="flex w-full flex-1 flex-col gap-3">
       {bodyChildren}
+      <CrossCaseObservableEnrichmentBlock item={item} />
       <GoogleWorkspaceEnrichmentBlock item={item} />
       <MaxMindEnrichmentBlock item={item} />
       {footerChildren}
@@ -143,6 +157,19 @@ function getDeletedItemTimestamp(item: TimelineItem): string | null {
   }
 
   return item.original_timestamp || item.original_created_at || item.deleted_at || null;
+}
+
+function formatTimestampForCompact(value: string | null | undefined): string {
+  if (!value) {
+    return 'No timestamp';
+  }
+
+  return new Date(value).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 function flattenReplies(items: TimelineItem[]): TimelineItem[] {
@@ -331,6 +358,15 @@ export interface TimelineItemRendererProps {
 
   /** Suppress nested reply rendering for embedded previews that only show the selected item. */
   hideReplies?: boolean;
+
+  /** Render a dense tray/list item instead of the full timeline activity layout. */
+  variant?: 'default' | 'super-compact';
+
+  /** Persisted collapse state for linked alert/case/task cards. */
+  linkedEntityCollapseState?: LinkedEntityCollapseState;
+
+  /** Persist collapse changes for a linked alert/case/task card. */
+  onLinkedEntityCollapseChange?: (collapseKey: string, isCollapsed: boolean) => void;
 }
 
 /**
@@ -395,6 +431,9 @@ export function TimelineItemRenderer({
   linkTemplates,
   compactPreview = false,
   hideReplies = false,
+  variant: rendererVariant = 'default',
+  linkedEntityCollapseState = {},
+  onLinkedEntityCollapseChange,
 }: TimelineItemRendererProps) {
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
@@ -432,11 +471,83 @@ export function TimelineItemRenderer({
     entityId,
   );
 
+  if (rendererVariant === 'super-compact') {
+    if (isDeletedItem(item)) {
+      const DeletedIcon = getTimelineItemIcon(item.original_type || 'note');
+
+      return (
+        <div className="flex min-w-0 items-center gap-2 rounded-md border border-neutral-border bg-neutral-0 px-3 py-2 text-left">
+          <DeletedIcon className="h-4 w-4 flex-none text-subtext-color" />
+          <div className="min-w-0 flex-1">
+            <span className="block truncate text-caption-bold font-caption-bold text-default-font">
+              {getDeletedItemAction(item)}
+            </span>
+            <span className="block truncate text-caption font-caption text-subtext-color">
+              {formatTimestampForCompact(getDeletedItemTimestamp(item))}
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    const compactCardConfig = createTimelineCard(item, {
+      size: 'small',
+      alertId: entityId,
+      entityType,
+      linkTemplates,
+      variant: 'super-compact',
+    });
+    const {
+      children: compactCardChildren,
+      ...compactBaseCardProps
+    } = compactCardConfig;
+    const compactTitle = compactBaseCardProps.title || getTimelineTypeDisplayLabel(item.type);
+    const compactDescription = isNoteItem(item) && hasText(item.description) ? item.description : null;
+
+    compactBaseCardProps.title = (
+      <span className="truncate">{compactTitle}</span>
+    );
+    compactBaseCardProps.size = 'small';
+    compactBaseCardProps.className = cn(
+      '!min-h-0 !w-full !max-w-none gap-2 px-3 py-2',
+      compactBaseCardProps.className,
+    );
+    compactBaseCardProps.enableCopyInteractions = false;
+
+    return (
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <Icon className="h-3.5 w-3.5 flex-none text-subtext-color" />
+          <span className="min-w-0 flex-1 truncate text-caption-bold font-caption-bold uppercase text-subtext-color">
+            {getTimelineItemLabel(item.type || 'note')}
+          </span>
+          <span className="flex-none text-caption font-caption text-subtext-color">
+            {formatTimestampForCompact(item.timestamp || item.created_at || null)}
+          </span>
+        </div>
+        {compactDescription ? (
+          <div className="line-clamp-2 rounded-md border border-neutral-border bg-neutral-0 px-3 py-2 text-body font-body text-default-font">
+            <MarkdownContent content={compactDescription} />
+          </div>
+        ) : (
+          <BaseCard {...compactBaseCardProps} actionButtons={undefined}>
+            {compactCardChildren ? (
+              <div className="flex w-full flex-col gap-2">
+                {compactCardChildren}
+              </div>
+            ) : null}
+          </BaseCard>
+        )}
+      </div>
+    );
+  }
+
   const renderOpenEntityAction = (href: string, label: string): React.ReactNode => (
     <div className="ml-auto flex items-center gap-2">
       <Button
         variant="neutral-tertiary"
         size="small"
+        aria-label={label}
         onClick={(event) => {
           event.stopPropagation();
           navigate(href);
@@ -448,15 +559,126 @@ export function TimelineItemRenderer({
     </div>
   );
 
+  const renderCollapseLinkedEntityAction = (currentItem: TimelineItem, isCollapsed: boolean): React.ReactNode => {
+    const collapseKey = getLinkedEntityCollapseKey(currentItem);
+
+    if (!collapseKey || !onLinkedEntityCollapseChange) {
+      return null;
+    }
+
+    return (
+      <IconButton
+        size="small"
+        variant="neutral-tertiary"
+        icon={isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+        aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} ${getSourceEntityDisplayLabel(currentItem)} Card`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onLinkedEntityCollapseChange(collapseKey, !isCollapsed);
+        }}
+      />
+    );
+  };
+
+  const getLinkedEntityStatus = (currentItem: TimelineItem): React.ComponentProps<typeof State>['state'] | null => {
+    const status = (currentItem as TimelineItem & { status?: string | null }).status;
+
+    if (!status) {
+      return null;
+    }
+
+    if (isAlertItem(currentItem)) {
+      return alertStatusToUIState(status as AlertStatus) as React.ComponentProps<typeof State>['state'];
+    }
+
+    if (isTaskItem(currentItem)) {
+      return taskStatusToUIState(status as TaskStatus) as React.ComponentProps<typeof State>['state'];
+    }
+
+    return caseStatusToUIState(status as CaseStatus) as React.ComponentProps<typeof State>['state'];
+  };
+
+  const getLinkedEntityIdentifier = (currentItem: TimelineItem): string => {
+    if (isAlertItem(currentItem)) {
+      return currentItem.alert_id ? convertNumericToAlertId(currentItem.alert_id) : currentItem.id || 'Alert';
+    }
+
+    if (isTaskItem(currentItem)) {
+      return (currentItem as TimelineItem & { task_human_id?: string | null }).task_human_id || currentItem.id || 'Task';
+    }
+
+    const caseId = (currentItem as TimelineItem & { case_id?: number | null }).case_id;
+    return caseId ? convertNumericToHumanId(caseId) : currentItem.id || 'Case';
+  };
+
+  const renderCollapsedLinkedEntityCard = (
+    currentItem: TimelineItem,
+    existingActionButtons?: React.ReactNode,
+  ): React.ReactNode => {
+    const collapseKey = getLinkedEntityCollapseKey(currentItem);
+
+    if (!collapseKey || !linkedEntityCollapseState[collapseKey]) {
+      return null;
+    }
+
+    const EntityIcon = getTimelineItemIcon(currentItem.type || 'note');
+    const entityLabel = getSourceEntityDisplayLabel(currentItem);
+    const href = getItemDetailHref(currentItem);
+    const openAction = href ? renderOpenEntityAction(href, `Open ${entityLabel}`) : null;
+    const statusState = getLinkedEntityStatus(currentItem);
+    const priority = (currentItem as TimelineItem & { priority?: string | null }).priority;
+    const assignee = (currentItem as TimelineItem & { assignee?: string | null }).assignee;
+    const title = buildEntityTitle(
+      getLinkedEntityIdentifier(currentItem),
+      (currentItem as TimelineItem & { title?: string | null }).title,
+      isDarkTheme,
+    );
+
+    return (
+      <BaseCard
+        key={currentItem.id || collapseKey}
+        title={title}
+        baseIcon={<EntityIcon />}
+        size="large"
+        className={cn(
+          'min-h-0 max-w-none',
+          isGrouped && 'flex-1 self-stretch min-w-40',
+        )}
+        actionButtons={(
+          <div className="ml-auto flex items-center gap-2">
+            {existingActionButtons}
+            {renderCollapseLinkedEntityAction(currentItem, true)}
+            {openAction}
+          </div>
+        )}
+      >
+        <div className="flex w-full flex-wrap items-center gap-2">
+          <Badge variant="neutral" icon={<EntityIcon className="h-3.5 w-3.5" />}>
+            {entityLabel}
+          </Badge>
+          {statusState ? <State state={statusState} /> : null}
+          {priority ? <Priority priority={priorityToUIPriority(priority as Parameters<typeof priorityToUIPriority>[0])} /> : null}
+          {assignee ? (
+            <Badge variant="neutral" icon={<User className="h-3.5 w-3.5" />}>
+              {assignee}
+            </Badge>
+          ) : null}
+        </div>
+      </BaseCard>
+    );
+  };
+
   const renderLinkedEntityFooter = (currentItem: TimelineItem, existingActionButtons?: React.ReactNode): React.ReactNode => {
     const currentDescription = currentItem.description;
     const hasDescriptionContent = hasText(currentDescription);
     const currentTags = getTimelineTags(currentItem);
     const href = getItemDetailHref(currentItem);
     const openAction = href ? renderOpenEntityAction(href, `Open ${getSourceEntityDisplayLabel(currentItem)}`) : null;
-    const footerActions = existingActionButtons || openAction ? (
+    const collapseAction = renderCollapseLinkedEntityAction(currentItem, false);
+    const footerActions = existingActionButtons || collapseAction || openAction ? (
       <div className="flex w-full items-center gap-2">
         {existingActionButtons}
+        {collapseAction}
         {openAction}
       </div>
     ) : null;
@@ -517,6 +739,14 @@ export function TimelineItemRenderer({
     });
 
     const isCurrentItemLinked = isLinkedTimelineType(timelineCurrentItem.type);
+    const collapsedLinkedEntityCard = isCurrentItemLinked
+      ? renderCollapsedLinkedEntityCard(timelineCurrentItem, refreshEnrichmentButton)
+      : null;
+
+    if (collapsedLinkedEntityCard) {
+      return collapsedLinkedEntityCard;
+    }
+
     const cardConfig = createTimelineCard(timelineCurrentItem, {
       size: 'x-large',
       alertId: entityId,
@@ -675,6 +905,17 @@ export function TimelineItemRenderer({
 
     if ((timelineReply as any).type === 'note') {
       return hasText(timelineReply.description) ? <MarkdownContent content={timelineReply.description} /> : null;
+    }
+
+    if (isLinkedTimelineType(timelineReply.type)) {
+      const collapsedReplyCard = renderCollapsedLinkedEntityCard(timelineReply);
+      if (collapsedReplyCard) {
+        return (
+          <div className="flex w-full flex-col items-start gap-3">
+            {collapsedReplyCard}
+          </div>
+        );
+      }
     }
 
     const replyDescription = timelineReply.description;

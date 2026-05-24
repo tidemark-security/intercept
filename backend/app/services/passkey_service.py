@@ -171,15 +171,14 @@ class PasskeyService:
         normalized_username = username.strip().lower()
         user_result = await db.execute(select(UserAccount).where(cast(Any, UserAccount.username == normalized_username)))
         user = user_result.scalar_one_or_none()
+        if not user or user.account_type != AccountType.HUMAN or user.status != UserStatus.ACTIVE:
+            raise PasskeyCredentialNotFoundError()
+
+        credentials = await self.list_user_passkeys(db, user_id=user.id, include_revoked=False)
+        if not credentials:
+            raise PasskeyCredentialNotFoundError()
+
         config = await self._load_config(db)
-        credentials: list[PasskeyCredential] = []
-        challenge_user_id = None
-        challenge_username = normalized_username
-        if user and user.account_type == AccountType.HUMAN and user.status == UserStatus.ACTIVE:
-            credentials = await self.list_user_passkeys(db, user_id=user.id, include_revoked=False)
-            if credentials:
-                challenge_user_id = user.id
-                challenge_username = user.username
         allow_credentials = [
             PublicKeyCredentialDescriptor(
                 id=base64url_to_bytes(credential.credential_id),
@@ -201,8 +200,8 @@ class PasskeyService:
             db,
             challenge=challenge,
             flow_type="authentication",
-            user_id=challenge_user_id,
-            username=challenge_username,
+            user_id=user.id,
+            username=user.username,
             ttl_seconds=config.challenge_ttl_seconds,
             metadata={"rp_id": config.rp_id},
         )
@@ -210,7 +209,7 @@ class PasskeyService:
         return {
             "challenge": challenge,
             "options": options_dict,
-        }, user if challenge_user_id else None
+        }, user
 
     async def finish_authentication(
         self,

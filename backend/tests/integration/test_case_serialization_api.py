@@ -6,9 +6,17 @@ from typing import Any
 import pytest
 from httpx import AsyncClient
 
-from app.models.enums import RecommendationStatus, TriageDisposition
+from app.models.enums import AlertStatus, RecommendationStatus, TriageDisposition
 from app.models.models import Alert, Case, TriageRecommendation
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
+
+
+def _timeline_values(items: Any) -> list[dict[str, Any]]:
+    if isinstance(items, dict):
+        return [item for item in items.values() if isinstance(item, dict)]
+    if isinstance(items, list):
+        return [item for item in items if isinstance(item, dict)]
+    return []
 
 
 async def _login_and_get_session_cookie(
@@ -153,3 +161,100 @@ async def test_get_case_serializes_nested_alert_triage_recommendation(
     assert alerts_by_id[alert_with_recommendation_id]["triage_recommendation"] is not None
     assert alerts_by_id[alert_with_recommendation_id]["triage_recommendation"]["alert_id"] == alert_with_recommendation_id
     assert alerts_by_id[alert_without_recommendation_id]["triage_recommendation"] is None
+
+
+@pytest.mark.asyncio
+async def test_closing_case_with_summary_adds_case_timeline_note_only(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        case = Case(
+            title="Closure summary case",
+            description="Case closed with a markdown summary",
+            created_by="seed-user",
+        )
+        session.add(case)
+        await session.flush()
+        assert case.id is not None
+
+        alert = Alert(
+            title="Linked alert",
+            description="Should close unchanged",
+            source="SIEM",
+            case_id=case.id,
+        )
+        session.add(alert)
+        await session.commit()
+        case_id = case.id
+        alert_id = alert.id
+        assert alert_id is not None
+
+    summary = "  **Resolution**\n\n- Confirmed benign  "
+    response = await client.put(
+        f"/api/v1/cases/{case_id}",
+        json={
+            "status": "CLOSED",
+            "alert_closure_updates": [
+                {"alert_id": alert_id, "status": "CLOSED_FP"},
+            ],
+            "closure_summary": summary,
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200, response.text
+    case_items = _timeline_values(response.json()["timeline_items"])
+    summary_notes = [
+        item for item in case_items
+        if item["type"] == "note" and item["description"] == summary.strip()
+    ]
+    assert len(summary_notes) == 1
+    assert summary_notes[0]["tags"] == ["case-closure"]
+
+    async with session_maker() as session:
+        linked_alert = await session.get(Alert, alert_id)
+        assert linked_alert is not None
+        assert linked_alert.status == AlertStatus.CLOSED_FP
+        alert_items = _timeline_values(linked_alert.timeline_items)
+        assert all(item.get("description") != summary.strip() for item in alert_items)
+        assert any(
+            item.get("type") == "note"
+            and "Alert closed automatically as False Positive due to case" in item.get("description", "")
+            for item in alert_items
+        )
+
+
+@pytest.mark.asyncio
+async def test_closing_case_with_blank_summary_creates_no_timeline_note(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        case = Case(
+            title="Blank closure summary case",
+            description="Case closed without a note",
+            created_by="seed-user",
+        )
+        session.add(case)
+        await session.commit()
+        case_id = case.id
+        assert case_id is not None
+
+    response = await client.put(
+        f"/api/v1/cases/{case_id}",
+        json={
+            "status": "CLOSED",
+            "closure_summary": "  \n\t  ",
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200, response.text
+    assert _timeline_values(response.json()["timeline_items"]) == []

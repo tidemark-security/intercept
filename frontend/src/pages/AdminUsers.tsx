@@ -69,6 +69,7 @@ interface User {
   email: string;
   description: string;
   accountType: AccountType;
+  assignable: boolean;
   role: UserRole;
   status: UserStatus;
   mustChangePassword: boolean;
@@ -81,6 +82,7 @@ interface CreateUserFormData {
   username: string;
   email: string;
   role: UserRole;
+  assignable: boolean;
   // NHI-specific fields
   description: string;
   initialApiKeyName: string;
@@ -114,6 +116,7 @@ const INITIAL_CREATE_FORM_DATA: CreateUserFormData = {
   username: "",
   email: "",
   role: "ANALYST",
+  assignable: false,
   description: "",
   initialApiKeyName: "",
   initialApiKeyExpiresAt: "",
@@ -165,6 +168,7 @@ function mapApiUser(raw: Record<string, unknown>): User {
     email: typeof raw.email === "string" ? raw.email : "",
     description: typeof raw.description === "string" ? raw.description : "",
     accountType: normalizeAccountType(raw.accountType ?? raw.account_type),
+    assignable: Boolean(raw.assignable),
     role: normalizeUserRole(raw.role),
     status: normalizeUserStatus(raw.status),
     mustChangePassword: Boolean(raw.mustChangePassword),
@@ -399,6 +403,7 @@ function AdminUsers() {
             requestBody: {
               username: createFormData.username,
               role: createFormData.role,
+              assignable: createFormData.assignable,
               description: createFormData.description || undefined,
               initial_api_key_name: createFormData.initialApiKeyName,
               initial_api_key_expires_at:
@@ -429,6 +434,7 @@ function AdminUsers() {
       username: user.username,
       email: user.email,
       role: user.role,
+      assignable: user.assignable,
       description: user.description,
       initialApiKeyName: "",
       initialApiKeyExpiresAt: "",
@@ -458,6 +464,7 @@ function AdminUsers() {
               ? editFormData.email.trim() || null
               : undefined,
           role: editFormData.role,
+          assignable: editingUser.accountType === "NHI" ? editFormData.assignable : undefined,
           description: editFormData.description,
         },
       });
@@ -1304,6 +1311,17 @@ function AdminUsers() {
                     />
                   </TextField>
 
+                  <label className="flex w-full items-center gap-3 rounded-md border border-solid border-neutral-border px-3 py-2 text-body font-body text-default-font">
+                    <input
+                      type="checkbox"
+                      checked={createFormData.assignable}
+                      onChange={(e) =>
+                        updateCreateFormField("assignable", e.target.checked)
+                      }
+                    />
+                    Assignable AI task agent
+                  </label>
+
                   <TextField
                     className="h-auto w-full flex-none"
                     label="Initial API Key Name"
@@ -1449,19 +1467,32 @@ function AdminUsers() {
                   </TextField>
                 </>
               ) : (
-                <TextField
-                  className="h-auto w-full flex-none"
-                  label="Description"
-                  helpText="Purpose or description of this service account (optional)"
-                >
-                  <TextField.Input
-                    placeholder="Integration with SIEM platform"
-                    value={editFormData.description}
-                    onChange={(e) =>
-                      updateEditFormField("description", e.target.value)
-                    }
-                  />
-                </TextField>
+                <>
+                  <TextField
+                    className="h-auto w-full flex-none"
+                    label="Description"
+                    helpText="Purpose or description of this service account (optional)"
+                  >
+                    <TextField.Input
+                      placeholder="Integration with SIEM platform"
+                      value={editFormData.description}
+                      onChange={(e) =>
+                        updateEditFormField("description", e.target.value)
+                      }
+                    />
+                  </TextField>
+
+                  <label className="flex w-full items-center gap-3 rounded-md border border-solid border-neutral-border px-3 py-2 text-body font-body text-default-font">
+                    <input
+                      type="checkbox"
+                      checked={editFormData.assignable}
+                      onChange={(e) =>
+                        updateEditFormField("assignable", e.target.checked)
+                      }
+                    />
+                    Assignable AI task agent
+                  </label>
+                </>
               )}
 
               <div className="flex w-full flex-col items-start gap-2">

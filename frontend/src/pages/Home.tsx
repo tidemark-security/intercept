@@ -11,11 +11,17 @@ import { State } from "@/components/misc/State";
 import { useSession } from "@/contexts/sessionContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useDashboard, usePriorityItems } from "@/hooks/useDashboard";
+import {
+  formatOpenItemAge,
+  type MyOpenItemsSortKey,
+  useMyOpenItemsSort,
+  useMyOpenItemsWithCreatedAt,
+} from "@/hooks/useMyOpenItemsSort";
 import { DashboardCard, getAlertCountPriority } from "@/components/cards/DashboardCard";
 import { Loader } from "@/components/feedback/Loader";
 import { cn } from "@/utils/cn";
 
-import { AlertTriangle, CheckSquare, Star, NotebookPen, Search, ThumbsDown, ThumbsUp } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowUp, ArrowUpDown, CheckSquare, Star, NotebookPen, Search, ThumbsDown, ThumbsUp } from 'lucide-react';
 import { IconWrapper } from "@/utils/IconWrapper";
 
 function TipBanner() {
@@ -86,6 +92,8 @@ function HomeDashboard() {
   const { user } = useSession();
   const { data: stats, isLoading: statsLoading, error: statsError } = useDashboard({ myItems: true });
   const { data: priorityData, isLoading: priorityLoading } = usePriorityItems({ limit: 100 });
+  const openItemsWithCreatedAt = useMyOpenItemsWithCreatedAt(priorityData?.items ?? []);
+  const { sort, sortedItems, requestSort } = useMyOpenItemsSort(openItemsWithCreatedAt);
 
   const formatItemType = (type: string) => {
     switch (type) {
@@ -137,6 +145,25 @@ function HomeDashboard() {
     }
   };
 
+  const renderSortableHeader = (key: MyOpenItemsSortKey, label: string) => {
+    const isActive = sort.key === key;
+    const SortIcon = !isActive ? ArrowUpDown : sort.direction === "asc" ? ArrowUp : ArrowDown;
+
+    return (
+      <button
+        type="button"
+        onClick={() => requestSort(key)}
+        className="inline-flex items-center gap-1 text-left text-caption-bold font-caption-bold text-subtext-color hover:text-default-font"
+        aria-label={`${label}: ${
+          isActive ? `sorted ${sort.direction === "asc" ? "ascending" : "descending"}` : "not sorted"
+        }`}
+      >
+        <span>{label}</span>
+        <SortIcon className="h-3.5 w-3.5" aria-hidden="true" />
+      </button>
+    );
+  };
+
   return (
     <DefaultPageLayout withContainer>
       <div className="container max-w-none flex w-full flex-col items-start gap-8 py-8">
@@ -178,7 +205,7 @@ function HomeDashboard() {
           </div>
         )}
 
-        {/* My Open Items - sorted by priority */}
+        {/* My Open Items */}
         <div className="flex w-full flex-col items-start gap-6 rounded-md border border-solid border-neutral-border bg-default-background px-6 py-6">
           <div className="flex w-full items-center gap-2">
             <span className="grow shrink-0 basis-0 text-heading-3 font-heading-3 text-default-font">
@@ -194,15 +221,16 @@ function HomeDashboard() {
               <Table
                 header={
                   <Table.HeaderRow>
-                    <Table.HeaderCell>ID</Table.HeaderCell>
-                    <Table.HeaderCell>Title</Table.HeaderCell>
-                    <Table.HeaderCell>Type</Table.HeaderCell>
-                    <Table.HeaderCell>Status</Table.HeaderCell>
-                    <Table.HeaderCell>Priority</Table.HeaderCell>
+                    <Table.HeaderCell>{renderSortableHeader("human_id", "ID")}</Table.HeaderCell>
+                    <Table.HeaderCell>{renderSortableHeader("title", "Title")}</Table.HeaderCell>
+                    <Table.HeaderCell>{renderSortableHeader("item_type", "Type")}</Table.HeaderCell>
+                    <Table.HeaderCell>{renderSortableHeader("status", "Status")}</Table.HeaderCell>
+                    <Table.HeaderCell>{renderSortableHeader("priority", "Priority")}</Table.HeaderCell>
+                    <Table.HeaderCell>{renderSortableHeader("age", "Age")}</Table.HeaderCell>
                   </Table.HeaderRow>
                 }
               >
-                {priorityData.items.map((item) => {
+                {sortedItems.map((item) => {
                   const typeInfo = formatItemType(item.item_type);
                   return (
                     <Table.Row 
@@ -230,6 +258,14 @@ function HomeDashboard() {
                       </Table.Cell>
                       <Table.Cell>
                         <Priority priority={mapPriority(item.priority)} size="mini" />
+                      </Table.Cell>
+                      <Table.Cell>
+                        <span
+                          className="text-caption font-caption text-subtext-color"
+                          title={item.created_at ? `Created ${new Date(item.created_at).toLocaleString()}` : undefined}
+                        >
+                          {formatOpenItemAge(item.created_at)}
+                        </span>
                       </Table.Cell>
                     </Table.Row>
                   );

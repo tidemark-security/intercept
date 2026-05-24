@@ -8,7 +8,9 @@ Defines task handlers for:
 - Alert triage via LangFlow
 - Terminal failure hooks for retried worker tasks
 """
+import json
 import logging
+from datetime import datetime, timezone
 from typing import Dict, Any
 from uuid import UUID, uuid4
 
@@ -33,6 +35,7 @@ logger = logging.getLogger(__name__)
 TASK_LANGFLOW_CHAT = "langflow_chat"
 TASK_LANGFLOW_BATCH = "langflow_batch"
 TASK_TRIAGE_ALERT = "triage_alert"
+TASK_AUTONOMOUS_TASK = "autonomous_task"
 TASK_ENRICH_ITEM = "enrich_item"
 TASK_DIRECTORY_SYNC = "directory_sync"
 TASK_MAXMIND_UPDATE = "maxmind_update"
@@ -82,6 +85,15 @@ async def _handle_enrich_item_terminal_failure(
             error_message=_format_terminal_failure_message(exc),
             task_id=task_id,
         )
+
+
+async def _handle_autonomous_task_terminal_failure(payload: Dict[str, Any], exc: Exception) -> None:
+    """Record autonomous task failure after retry exhaustion."""
+    await _record_autonomous_task_failure(
+        int(payload["task_id"]),
+        str(payload.get("agent_username") or "AI agent"),
+        _format_terminal_failure_message(exc),
+    )
 
 
 async def _handle_directory_sync_terminal_failure(payload: Dict[str, Any], exc: Exception) -> None:
@@ -234,6 +246,7 @@ async def handle_triage_alert(payload: Dict[str, Any]):
     from sqlmodel import select
     from app.models.models import TriageRecommendation
     from app.models.enums import RecommendationStatus
+    from app.services.ai_triage_context_service import AITriageContextService
 
     alert_id = payload["alert_id"]
     session_id = uuid4()  # Generate a new session ID for each triage
@@ -274,6 +287,19 @@ async def handle_triage_alert(payload: Dict[str, Any]):
                 "Alert triage flow not configured. Please set 'langflow.alert_triage_flow_id' in settings."
             )
 
+        applied_context_entries = await AITriageContextService(db).get_matching_context_for_alert(int(alert_id))
+        queued_result = await db.execute(
+            select(TriageRecommendation).where(
+                TriageRecommendation.alert_id == int(alert_id),
+                TriageRecommendation.status == RecommendationStatus.QUEUED,
+            )
+        )
+        queued_recommendation = queued_result.scalar_one_or_none()
+        if queued_recommendation is not None:
+            queued_recommendation.applied_context_entries = applied_context_entries
+            db.add(queued_recommendation)
+            await db.commit()
+
         langflow_service = await LangFlowService.from_settings(settings_service)
 
         try:
@@ -288,6 +314,9 @@ async def handle_triage_alert(payload: Dict[str, Any]):
                 session_id=session_id,
                 context={
                     "entity_id": {"input_value": str(alert_id)},
+                    "triage_context_entries": {
+                        "input_value": json.dumps(applied_context_entries, default=str)
+                    },
                 },
                 per_read_timeout=300.0,
             )
@@ -308,6 +337,110 @@ async def handle_triage_alert(payload: Dict[str, Any]):
 
         finally:
             await langflow_service.close()
+
+
+async def _add_task_agent_note(db, task, agent_username: str, description: str, tags: list[str]) -> None:
+    from app.services.timeline_service import timeline_service
+
+    now = datetime.now(timezone.utc)
+    timeline_service.add_timeline_item(
+        task,
+        {
+            "id": str(uuid4()),
+            "type": "note",
+            "description": description,
+            "created_at": now.isoformat(),
+            "timestamp": now.isoformat(),
+            "created_by": agent_username,
+            "tags": tags,
+            "flagged": False,
+            "highlighted": False,
+            "replies": [],
+        },
+        created_by=agent_username,
+    )
+
+
+async def _record_autonomous_task_failure(task_id: int, agent_username: str, error_message: str) -> None:
+    from app.models.enums import TaskStatus
+    from app.models.models import Task
+
+    async with async_session_factory() as db:
+        task = await db.get(Task, task_id)
+        if task is None:
+            return
+        if task.status == TaskStatus.IN_PROGRESS:
+            task.status = TaskStatus.TODO
+        task.assignee = None
+        await _add_task_agent_note(
+            db,
+            task,
+            agent_username,
+            f"Autonomous task execution failed: {error_message}",
+            ["ai-agent", "automation-failed"],
+        )
+        await db.commit()
+
+
+async def handle_autonomous_task(payload: Dict[str, Any]):
+    """Run a configured LangFlow autonomous task flow for an assigned task."""
+    from app.models.enums import TaskStatus
+    from app.models.models import Task
+
+    task_id = int(payload["task_id"])
+    agent_username = str(payload["agent_username"])
+    session_id = uuid4()
+
+    async with async_session_factory() as db:
+        task = await db.get(Task, task_id)
+        if task is None:
+            return
+
+        settings_service = SettingsService(db)
+        flow_id = await settings_service.get_typed_value("langflow.autonomous_task_flow_id")
+        if not flow_id:
+            raise LangFlowConfigurationError(
+                "Autonomous task flow not configured. Please set 'langflow.autonomous_task_flow_id' in settings."
+            )
+
+        task.status = TaskStatus.IN_PROGRESS
+        await _add_task_agent_note(
+            db,
+            task,
+            agent_username,
+            "Autonomous task execution started.",
+            ["ai-agent", "automation-started"],
+        )
+        await db.commit()
+
+        langflow_service = await LangFlowService.from_settings(settings_service)
+        try:
+            response = await langflow_service.run_flow_streaming(
+                flow_id=flow_id,
+                message="Run autonomous task",
+                session_id=session_id,
+                context={
+                    "entity_id": {"input_value": str(task_id)},
+                    "task_id": {"input_value": str(task_id)},
+                },
+                per_read_timeout=300.0,
+            )
+        finally:
+            await langflow_service.close()
+
+        task = await db.get(Task, task_id)
+        if task is None:
+            return
+        task.status = TaskStatus.DONE
+        task.assignee = None
+        await _add_task_agent_note(
+            db,
+            task,
+            agent_username,
+            f"Autonomous task execution completed successfully.\n\n{str(response).strip()}",
+            ["ai-agent", "automation-completed"],
+        )
+        await db.commit()
 
 
 async def _mark_triage_failed(alert_id: int, error_message: str):
@@ -468,6 +601,13 @@ def register_task_handlers():
             handler=handle_triage_alert,
             max_retries=1,
             on_terminal_failure=_handle_triage_terminal_failure,
+        )
+
+        task_queue.register_handler(
+            task_name=TASK_AUTONOMOUS_TASK,
+            handler=handle_autonomous_task,
+            max_retries=1,
+            on_terminal_failure=_handle_autonomous_task_terminal_failure,
         )
 
         task_queue.register_handler(

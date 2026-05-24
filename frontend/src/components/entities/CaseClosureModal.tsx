@@ -49,6 +49,7 @@ interface CaseClosureModalProps {
   onConfirm: (payload: {
     alert_closure_updates: Array<{ alert_id: number; status: AlertStatus }>;
     tags: string[];
+    closure_summary?: string;
   }) => void;
 }
 
@@ -70,6 +71,7 @@ export function CaseClosureModal({
 
   const [statusByAlertId, setStatusByAlertId] = React.useState<Record<number, AlertStatus | undefined>>({});
   const [selectedTags, setSelectedTags] = React.useState<string[]>([]);
+  const [closureSummary, setClosureSummary] = React.useState("");
 
   React.useEffect(() => {
     if (!open) {
@@ -86,6 +88,7 @@ export function CaseClosureModal({
     });
     setStatusByAlertId(initialSelections);
     setSelectedTags(initialTags);
+    setClosureSummary("");
   }, [open, linkedAlerts, initialTags]);
 
   const hasAllSelections = linkedAlerts.every((alert) => Boolean(statusByAlertId[alert.id]));
@@ -120,6 +123,7 @@ export function CaseClosureModal({
     onConfirm({
       alert_closure_updates: alertClosureUpdates,
       tags: selectedTags,
+      closure_summary: closureSummary.trim() || undefined,
     });
   };
 
@@ -219,6 +223,18 @@ export function CaseClosureModal({
                 />
               </div>
             </div>
+          </div>
+
+          <div className="flex w-full flex-col items-start gap-3">
+            <span className="text-caption-bold font-caption-bold text-subtext-color">CLOSURE SUMMARY</span>
+
+            <textarea
+              className="min-h-32 w-full resize-y rounded-md border border-solid border-neutral-border bg-neutral-50 px-3 py-2 text-body font-body text-default-font outline-none transition-colors placeholder:text-subtext-color focus:border-brand-primary"
+              placeholder="Add optional markdown summary"
+              value={closureSummary}
+              onChange={(event) => setClosureSummary(event.target.value)}
+              disabled={isSubmitting}
+            />
           </div>
         </div>
 

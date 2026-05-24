@@ -4,6 +4,13 @@ import { QuickTerminal } from '@/components/forms/QuickTerminal';
 import { TimelineItemRenderer } from '@/components/timeline/TimelineItemRenderer';
 import { TimelineGraphView } from '@/components/timeline/TimelineGraphView';
 import { InlineReplyTerminal } from '@/components/timeline/InlineReplyTerminal';
+import {
+  getLinkedEntityCollapseKey,
+  isLinkedEntityTimelineItem,
+  loadLinkedEntityCollapseState,
+  saveLinkedEntityCollapseState,
+  type LinkedEntityCollapseState,
+} from '@/components/timeline/linkedEntityCollapse';
 import { ReplyProvider } from '@/contexts/ReplyProvider';
 import { useReplyMode } from '@/contexts/ReplyContext';
 import { usePresence } from '@/contexts/WebSocketContext';
@@ -236,6 +243,36 @@ function UnifiedTimelineInner({
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [groupSimilar, setGroupSimilar] = useState<boolean>(true);
   const [timelineViewMode, setTimelineViewMode] = useState<TimelineViewMode>('timeline');
+  const [linkedEntityCollapseState, setLinkedEntityCollapseState] = useState<LinkedEntityCollapseState>(() =>
+    typeof window === 'undefined' ? {} : loadLinkedEntityCollapseState(window.localStorage)
+  );
+
+  React.useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    setLinkedEntityCollapseState(loadLinkedEntityCollapseState(window.localStorage));
+  }, []);
+
+  const updateLinkedEntityCollapseState = React.useCallback((updater: (current: LinkedEntityCollapseState) => LinkedEntityCollapseState) => {
+    setLinkedEntityCollapseState((current) => {
+      const next = updater(current);
+
+      if (typeof window !== 'undefined') {
+        saveLinkedEntityCollapseState(next, window.localStorage);
+      }
+
+      return next;
+    });
+  }, []);
+
+  const handleLinkedEntityCollapseChange = React.useCallback((collapseKey: string, isCollapsed: boolean) => {
+    updateLinkedEntityCollapseState((current) => ({
+      ...current,
+      [collapseKey]: isCollapsed,
+    }));
+  }, [updateLinkedEntityCollapseState]);
 
   const updateTimelineViewMode = React.useCallback((nextMode: TimelineViewMode) => {
     setTimelineViewMode(nextMode);
@@ -302,6 +339,58 @@ function UnifiedTimelineInner({
 
     return sortedTimelineItems.filter((item) => item.type === selectedType);
   }, [selectedType, sortedTimelineItems]);
+
+  const visibleLinkedEntityCollapseKeys = useMemo(() => {
+    const keys = new Set<string>();
+
+    const collectKeys = (items: TimelineItem[]) => {
+      items.forEach((timelineItem) => {
+        if (isLinkedEntityTimelineItem(timelineItem)) {
+          const key = getLinkedEntityCollapseKey(timelineItem);
+          if (key) {
+            keys.add(key);
+          }
+        }
+
+        const replies = getTimelineItems({ timeline_items: timelineItem.replies ?? null });
+        if (replies.length > 0) {
+          collectKeys(replies);
+        }
+
+        const sourceTimelineItems = getTimelineItems({
+          timeline_items: (timelineItem as TimelineItem & { source_timeline_items?: Record<string, TimelineItem> | null }).source_timeline_items ?? null,
+        });
+        if (sourceTimelineItems.length > 0) {
+          collectKeys(sourceTimelineItems);
+        }
+      });
+    };
+
+    collectKeys(filteredAndSortedItems);
+    return Array.from(keys);
+  }, [filteredAndSortedItems]);
+
+  const hasVisibleLinkedEntityCards = visibleLinkedEntityCollapseKeys.length > 0;
+
+  const collapseVisibleLinkedEntityCards = React.useCallback(() => {
+    updateLinkedEntityCollapseState((current) => {
+      const next = { ...current };
+      visibleLinkedEntityCollapseKeys.forEach((key) => {
+        next[key] = true;
+      });
+      return next;
+    });
+  }, [updateLinkedEntityCollapseState, visibleLinkedEntityCollapseKeys]);
+
+  const expandVisibleLinkedEntityCards = React.useCallback(() => {
+    updateLinkedEntityCollapseState((current) => {
+      const next = { ...current };
+      visibleLinkedEntityCollapseKeys.forEach((key) => {
+        next[key] = false;
+      });
+      return next;
+    });
+  }, [updateLinkedEntityCollapseState, visibleLinkedEntityCollapseKeys]);
 
   // Helper function to calculate reply depth for a timeline item
   const calculateReplyDepth = (item: TimelineItem, items: TimelineItem[]): number => {
@@ -580,6 +669,9 @@ function UnifiedTimelineInner({
           onSortChange={handleSortChange}
           groupSimilar={groupSimilar}
           onGroupSimilarChange={setGroupSimilar}
+          hasLinkedEntityCards={hasVisibleLinkedEntityCards}
+          onCollapseLinkedEntityCards={collapseVisibleLinkedEntityCards}
+          onExpandLinkedEntityCards={expandVisibleLinkedEntityCards}
           showBackButton={!!onBackToList}
           onBackClick={onBackToList}
           scrollContainerRef={timelineScrollRef}
@@ -693,6 +785,8 @@ function UnifiedTimelineInner({
                             onDeleteBatch={isEditable ? handleInternalBatchDelete : undefined}
                             onReply={isEditable ? handleReply : undefined}
                             linkTemplates={linkTemplates}
+                            linkedEntityCollapseState={linkedEntityCollapseState}
+                            onLinkedEntityCollapseChange={handleLinkedEntityCollapseChange}
                           />
                         ));
                       } else {
@@ -712,6 +806,8 @@ function UnifiedTimelineInner({
                             onDelete={isEditable ? handleInternalDelete : undefined}
                             onReply={isEditable ? handleReply : undefined}
                             linkTemplates={linkTemplates}
+                            linkedEntityCollapseState={linkedEntityCollapseState}
+                            onLinkedEntityCollapseChange={handleLinkedEntityCollapseChange}
                           />
                         ));
                       }

@@ -226,6 +226,7 @@ function CaseDetailPage() {
   const handleCloseCaseWithDetails = useCallback((payload: {
     alert_closure_updates: Array<{ alert_id: number; status: AlertStatus }>;
     tags: string[];
+    closure_summary?: string;
   }) => {
     if (!selectedCaseId) return;
 
@@ -233,6 +234,7 @@ function CaseDetailPage() {
       status: 'CLOSED',
       alert_closure_updates: payload.alert_closure_updates,
       tags: payload.tags,
+      closure_summary: payload.closure_summary,
     });
   }, [selectedCaseId, updateCaseMutation]);
 

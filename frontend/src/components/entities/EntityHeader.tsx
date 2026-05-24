@@ -70,6 +70,7 @@ interface EntityHeaderRootProps
   onCloseCaseWithDetails?: (payload: {
     alert_closure_updates: Array<{ alert_id: number; status: AlertStatus }>;
     tags: string[];
+    closure_summary?: string;
   }) => void;
   onReopenAlert?: () => void;
   onPrimaryAction?: () => void;
@@ -91,6 +92,9 @@ interface EntityHeaderRootProps
   onSortChange?: (sortBy: SortOption, direction: SortDirection) => void;
   groupSimilar?: boolean;
   onGroupSimilarChange?: (enabled: boolean) => void;
+  hasLinkedEntityCards?: boolean;
+  onCollapseLinkedEntityCards?: () => void;
+  onExpandLinkedEntityCards?: () => void;
   // Mobile back button
   showBackButton?: boolean;
   onBackClick?: () => void;
@@ -145,6 +149,9 @@ const EntityHeaderRoot = React.forwardRef<
     onSortChange,
     groupSimilar = true,
     onGroupSimilarChange,
+    hasLinkedEntityCards = false,
+    onCollapseLinkedEntityCards,
+    onExpandLinkedEntityCards,
     showBackButton = false,
     onBackClick,
     scrollContainerRef,
@@ -499,6 +506,9 @@ const EntityHeaderRoot = React.forwardRef<
             onSortChange={onSortChange}
             groupSimilar={groupSimilar}
             onGroupSimilarChange={onGroupSimilarChange}
+            hasLinkedEntityCards={hasLinkedEntityCards}
+            onCollapseLinkedEntityCards={onCollapseLinkedEntityCards}
+            onExpandLinkedEntityCards={onExpandLinkedEntityCards}
             buttonSize={buttonSize === "medium" ? "medium" : "small"}
             disabled={timelineItems.length === 0}
             rightContent={presenceText ? (

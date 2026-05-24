@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { useParams } from 'react-router-dom';
+import { CheckCircle2, Copy, FolderPlus, Link2, Tags, X } from 'lucide-react';
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { Button } from "@/components/buttons/Button";
 import { Dialog } from "@/components/overlays/Dialog";
@@ -19,6 +20,7 @@ import { useUpdateAlert } from "@/hooks/useUpdateAlert";
 import { useTriageAlert } from "@/hooks/useTriageAlert";
 import { useLinkAlertToCase } from "@/hooks/useLinkAlertToCase";
 import { useUnlinkAlertFromCase } from "@/hooks/useUnlinkAlertFromCase";
+import { useBulkAlertAction } from "@/hooks/useBulkAlertAction";
 import { useUpdateTimelineItem } from "@/hooks/useUpdateTimelineItem";
 import { useDeleteTimelineItem } from "@/hooks/useDeleteTimelineItem";
 import { useQuickTerminalSubmit } from "@/hooks/useQuickTerminalSubmit";
@@ -79,10 +81,21 @@ function Alerts() {
       search: "",
       assignee: null,
       status: ["NEW", "IN_PROGRESS"],
+      includeTags: null,
+      excludeTags: null,
       dateRange: null,
     },
   });
   const [selectedAlertId, setSelectedAlertId] = useState<number | null>(null);
+  const [bulkSelectedAlertIds, setBulkSelectedAlertIds] = useState<Set<number>>(new Set());
+  const [bulkDialog, setBulkDialog] = useState<'status' | 'create_case' | 'duplicate' | 'tags' | null>(null);
+  const [isBulkCaseSelectorOpen, setIsBulkCaseSelectorOpen] = useState(false);
+  const [bulkStatus, setBulkStatus] = useState<AlertStatus>('IN_PROGRESS');
+  const [bulkCaseTitle, setBulkCaseTitle] = useState('');
+  const [bulkCaseDescription, setBulkCaseDescription] = useState('');
+  const [bulkDuplicateCaseId, setBulkDuplicateCaseId] = useState('');
+  const [bulkDuplicateAlertId, setBulkDuplicateAlertId] = useState('');
+  const [bulkTags, setBulkTags] = useState('');
 
   // Column visibility state: controls which columns are visible
   // On mobile (<768px): typically 'left' | 'center' | 'right' for single column
@@ -184,6 +197,8 @@ function Alerts() {
     startDate: filters.dateRange?.start || null,
     endDate: filters.dateRange?.end || null,
     search: filters.search || null,
+    includeTags: filters.includeTags || null,
+    excludeTags: filters.excludeTags || null,
     page: currentPage,
     size: pageSize,
   });
@@ -197,6 +212,7 @@ function Alerts() {
     error: detailError,
   } = useAlertDetail(selectedAlertId, { includeLinkedTimelines: true });
   const isAlertReadOnly = isAuditor || alertDetail?.status === 'ESCALATED' || !!alertDetail?.case_id;
+  const bulkSelectedIds = Array.from(bulkSelectedAlertIds);
 
   // Check if the error is a 404 (only relevant when an alert is selected)
   const is404Error = selectedAlertId && detailError && (
@@ -268,6 +284,20 @@ function Alerts() {
   const unlinkAlertFromCaseMutation = useUnlinkAlertFromCase(selectedAlertId, {
     onError: (error) => {
       console.error("Failed to unlink alert from case:", error);
+    },
+  });
+
+  const bulkAlertActionMutation = useBulkAlertAction({
+    onSuccess: (data) => {
+      setBulkSelectedAlertIds(new Set());
+      setBulkDialog(null);
+      setIsBulkCaseSelectorOpen(false);
+      if (data.case_human_id) {
+        navigate(`/cases/${data.case_human_id}`);
+      }
+    },
+    onError: (error) => {
+      console.error("Failed to apply bulk alert action:", error);
     },
   });
 
@@ -400,10 +430,97 @@ function Alerts() {
     linkAlertToCaseMutation.mutate(caseId);
   };
 
+  const handleBulkSelectionChange = (alertId: number, selected: boolean) => {
+    setBulkSelectedAlertIds((previous) => {
+      const next = new Set(previous);
+      if (selected) {
+        next.add(alertId);
+      } else {
+        next.delete(alertId);
+      }
+      return next;
+    });
+  };
+
+  const handleBulkSelectVisible = (selected: boolean, alertIds: number[]) => {
+    setBulkSelectedAlertIds((previous) => {
+      const next = new Set(previous);
+      alertIds.forEach((alertId) => {
+        if (selected) {
+          next.add(alertId);
+        } else {
+          next.delete(alertId);
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleBulkLinkToCase = (caseId: number) => {
+    bulkAlertActionMutation.mutate({
+      alert_ids: bulkSelectedIds,
+      action: 'link_case',
+      case_id: caseId,
+    });
+  };
+
+  const handleBulkStatusSubmit = () => {
+    bulkAlertActionMutation.mutate({
+      alert_ids: bulkSelectedIds,
+      action: 'update_status',
+      status: bulkStatus,
+    });
+  };
+
+  const handleBulkCreateCaseSubmit = () => {
+    bulkAlertActionMutation.mutate({
+      alert_ids: bulkSelectedIds,
+      action: 'create_case',
+      case_title: bulkCaseTitle.trim(),
+      case_description: bulkCaseDescription.trim() || null,
+    });
+  };
+
+  const handleBulkDuplicateSubmit = () => {
+    const duplicateTargetCaseId = Number.parseInt(bulkDuplicateCaseId, 10);
+    const duplicateTargetAlertId = Number.parseInt(bulkDuplicateAlertId, 10);
+    bulkAlertActionMutation.mutate({
+      alert_ids: bulkSelectedIds,
+      action: 'close_duplicate',
+      duplicate_target_case_id: Number.isNaN(duplicateTargetCaseId) ? null : duplicateTargetCaseId,
+      duplicate_target_alert_id: Number.isNaN(duplicateTargetAlertId) ? null : duplicateTargetAlertId,
+    });
+  };
+
+  const handleBulkTagsSubmit = () => {
+    const tags = bulkTags
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+    bulkAlertActionMutation.mutate({
+      alert_ids: bulkSelectedIds,
+      action: 'add_tags',
+      tags,
+    });
+  };
+
   // Tag update handler
   const handleUpdateTags = (tags: string[]) => {
     if (!selectedAlertId) return;
     updateAlertMutation.mutate({ tags });
+  };
+
+  const handleFilterByTag = (tag: string, mode: 'include' | 'exclude') => {
+    const key = mode === 'include' ? 'includeTags' : 'excludeTags';
+    const current = filters[key] || [];
+    if (current.includes(tag)) {
+      return;
+    }
+    setFilters({
+      ...filters,
+      [key]: [...current, tag],
+    });
+    setCurrentPage(1);
   };
 
   // Triage recommendation handlers
@@ -577,6 +694,60 @@ function Alerts() {
     navigate('/alerts');
   };
 
+  const bulkActionsPanel = !isAuditor && bulkSelectedIds.length > 0 ? (
+    <div className="flex w-full flex-wrap items-center gap-2 rounded-md border border-solid border-neutral-border bg-default-background px-3 py-2">
+      <span className="mr-auto text-body-bold font-body-bold text-default-font">
+        {bulkSelectedIds.length} selected
+      </span>
+      <Button
+        size="small"
+        variant="neutral-secondary"
+        icon={<CheckCircle2 />}
+        onClick={() => setBulkDialog('status')}
+      >
+        Status
+      </Button>
+      <Button
+        size="small"
+        variant="neutral-secondary"
+        icon={<Link2 />}
+        onClick={() => setIsBulkCaseSelectorOpen(true)}
+      >
+        Link
+      </Button>
+      <Button
+        size="small"
+        variant="neutral-secondary"
+        icon={<FolderPlus />}
+        onClick={() => setBulkDialog('create_case')}
+      >
+        New Case
+      </Button>
+      <Button
+        size="small"
+        variant="neutral-secondary"
+        icon={<Copy />}
+        onClick={() => setBulkDialog('duplicate')}
+      >
+        Duplicate
+      </Button>
+      <Button
+        size="small"
+        variant="neutral-secondary"
+        icon={<Tags />}
+        onClick={() => setBulkDialog('tags')}
+      >
+        Tags
+      </Button>
+      <Button
+        size="small"
+        variant="neutral-tertiary"
+        icon={<X />}
+        onClick={() => setBulkSelectedAlertIds(new Set())}
+      />
+    </div>
+  ) : null;
+
   // Show 404 error if alert not found (when viewing a specific alert)
   if (is404Error) {
     return (
@@ -600,6 +771,11 @@ function Alerts() {
             selectedId={selectedAlertId}
             onSelect={handleAlertSelect}
             getItemHref={(_id, humanId) => `/alerts/${humanId}`}
+            selectable={!isAuditor}
+            selectedIds={bulkSelectedAlertIds}
+            onSelectionChange={handleBulkSelectionChange}
+            onSelectVisible={handleBulkSelectVisible}
+            bulkActions={bulkActionsPanel}
             filters={filters}
             onFilterChange={setFilters}
             currentPage={currentPage}
@@ -611,6 +787,8 @@ function Alerts() {
             error={error}
             users={users}
             usersLoading={isLoadingUsers}
+            enableTagFilters
+            onTagClick={handleFilterByTag}
             getItemIds={(alert: AlertRead) => ({ id: alert.id, humanId: alert.human_id })}
             mapItemToCard={(alert: AlertRead) => ({
               id: alert.human_id,
@@ -637,7 +815,7 @@ function Alerts() {
             users={users}
             usersLoading={isLoadingUsers}
             isUpdating={updateAlertMutation.isPending}
-            isOverlayOpen={dockOpen || isCaseSelectorOpen}
+            isOverlayOpen={dockOpen || isCaseSelectorOpen || isBulkCaseSelectorOpen || bulkDialog !== null}
             onFlagItem={handleFlagItem}
             onHighlightItem={handleHighlightItem}
             onEditItem={handleEditItem}
@@ -704,6 +882,123 @@ function Alerts() {
         onSelectCase={handleSelectCase}
         isLinking={linkAlertToCaseMutation.isPending}
       />
+
+      <CaseSelectorModal
+        isOpen={isBulkCaseSelectorOpen}
+        onClose={() => setIsBulkCaseSelectorOpen(false)}
+        onSelectCase={handleBulkLinkToCase}
+        isLinking={bulkAlertActionMutation.isPending}
+      />
+
+      <Dialog open={bulkDialog === 'status'} onOpenChange={(open) => !open && setBulkDialog(null)}>
+        <Dialog.Content className="w-[420px] max-w-[90vw] p-6">
+          <div className="flex flex-col gap-4">
+            <span className="text-heading-3 font-heading-3 text-default-font">Update Status</span>
+            <select
+              value={bulkStatus}
+              onChange={(event) => setBulkStatus(event.target.value as AlertStatus)}
+              className="h-10 rounded-md border border-solid border-neutral-border bg-default-background px-3 text-body font-body text-default-font"
+            >
+              <option value="NEW">New</option>
+              <option value="IN_PROGRESS">In Progress</option>
+              <option value="CLOSED_TP">Closed: True Positive</option>
+              <option value="CLOSED_BP">Closed: Benign Positive</option>
+              <option value="CLOSED_FP">Closed: False Positive</option>
+              <option value="CLOSED_UNRESOLVED">Closed: Unresolved</option>
+            </select>
+            <div className="flex justify-end gap-2">
+              <Button variant="neutral-secondary" onClick={() => setBulkDialog(null)}>Cancel</Button>
+              <Button onClick={handleBulkStatusSubmit} loading={bulkAlertActionMutation.isPending}>
+                Apply
+              </Button>
+            </div>
+          </div>
+        </Dialog.Content>
+      </Dialog>
+
+      <Dialog open={bulkDialog === 'create_case'} onOpenChange={(open) => !open && setBulkDialog(null)}>
+        <Dialog.Content className="w-[520px] max-w-[90vw] p-6">
+          <div className="flex flex-col gap-4">
+            <span className="text-heading-3 font-heading-3 text-default-font">Create Case From Alerts</span>
+            <input
+              value={bulkCaseTitle}
+              onChange={(event) => setBulkCaseTitle(event.target.value)}
+              placeholder="Case title"
+              className="h-10 rounded-md border border-solid border-neutral-border bg-default-background px-3 text-body font-body text-default-font"
+            />
+            <textarea
+              value={bulkCaseDescription}
+              onChange={(event) => setBulkCaseDescription(event.target.value)}
+              placeholder="Description"
+              className="min-h-24 rounded-md border border-solid border-neutral-border bg-default-background px-3 py-2 text-body font-body text-default-font"
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="neutral-secondary" onClick={() => setBulkDialog(null)}>Cancel</Button>
+              <Button
+                onClick={handleBulkCreateCaseSubmit}
+                disabled={!bulkCaseTitle.trim()}
+                loading={bulkAlertActionMutation.isPending}
+              >
+                Create
+              </Button>
+            </div>
+          </div>
+        </Dialog.Content>
+      </Dialog>
+
+      <Dialog open={bulkDialog === 'duplicate'} onOpenChange={(open) => !open && setBulkDialog(null)}>
+        <Dialog.Content className="w-[520px] max-w-[90vw] p-6">
+          <div className="flex flex-col gap-4">
+            <span className="text-heading-3 font-heading-3 text-default-font">Close As Duplicate</span>
+            <input
+              value={bulkDuplicateCaseId}
+              onChange={(event) => setBulkDuplicateCaseId(event.target.value)}
+              placeholder="Target case numeric ID"
+              className="h-10 rounded-md border border-solid border-neutral-border bg-default-background px-3 text-body font-body text-default-font"
+            />
+            <input
+              value={bulkDuplicateAlertId}
+              onChange={(event) => setBulkDuplicateAlertId(event.target.value)}
+              placeholder="Target alert numeric ID"
+              className="h-10 rounded-md border border-solid border-neutral-border bg-default-background px-3 text-body font-body text-default-font"
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="neutral-secondary" onClick={() => setBulkDialog(null)}>Cancel</Button>
+              <Button
+                onClick={handleBulkDuplicateSubmit}
+                disabled={!bulkDuplicateCaseId.trim() && !bulkDuplicateAlertId.trim()}
+                loading={bulkAlertActionMutation.isPending}
+              >
+                Close
+              </Button>
+            </div>
+          </div>
+        </Dialog.Content>
+      </Dialog>
+
+      <Dialog open={bulkDialog === 'tags'} onOpenChange={(open) => !open && setBulkDialog(null)}>
+        <Dialog.Content className="w-[420px] max-w-[90vw] p-6">
+          <div className="flex flex-col gap-4">
+            <span className="text-heading-3 font-heading-3 text-default-font">Add Tags</span>
+            <input
+              value={bulkTags}
+              onChange={(event) => setBulkTags(event.target.value)}
+              placeholder="tag-one, tag-two"
+              className="h-10 rounded-md border border-solid border-neutral-border bg-default-background px-3 text-body font-body text-default-font"
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="neutral-secondary" onClick={() => setBulkDialog(null)}>Cancel</Button>
+              <Button
+                onClick={handleBulkTagsSubmit}
+                disabled={!bulkTags.split(',').some((tag) => tag.trim())}
+                loading={bulkAlertActionMutation.isPending}
+              >
+                Add
+              </Button>
+            </div>
+          </div>
+        </Dialog.Content>
+      </Dialog>
 
     </DefaultPageLayout>
   );

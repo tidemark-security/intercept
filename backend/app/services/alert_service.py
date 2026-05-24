@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, cast, String
+from sqlalchemy import select, or_, cast, String, not_
 from sqlalchemy.orm import selectinload, defer
 from sqlmodel import col
 from typing import List, Optional, Set, Dict, Any
@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from app.models.models import (
     Alert, Case, UserAccount, Task, Actor,
     AlertCreate, AlertUpdate, AlertTriageRequest,
+    AlertBulkActionRequest, AlertBulkActionResponse,
     AlertRead, AlertTimelineItem, TriageRecommendation
 )
 from app.models.enums import AlertStatus, Priority, RecommendationStatus, TriageDisposition, RealtimeEventType
@@ -199,6 +200,8 @@ class AlertService:
         case_id: Optional[int] = None,
         priority: Optional[List[Priority]] = None,
         source: Optional[str] = None,
+        include_tags: Optional[List[str]] = None,
+        exclude_tags: Optional[List[str]] = None,
         has_case: Optional[bool] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
@@ -256,6 +259,10 @@ class AlertService:
                 filters.append(Alert.priority.in_(priority))  # type: ignore
             if source:
                 filters.append(Alert.source.ilike(f"%{source}%"))  # type: ignore
+            for tag in self._normalize_tag_filters(include_tags):
+                filters.append(Alert.tags.contains([tag]))  # type: ignore[attr-defined]
+            for tag in self._normalize_tag_filters(exclude_tags):
+                filters.append(not_(Alert.tags.contains([tag])))  # type: ignore[attr-defined]
             if has_case is not None:
                 if has_case:
                     filters.append(Alert.case_id.is_not(None))  # type: ignore
@@ -318,6 +325,19 @@ class AlertService:
         except Exception as e:
             logger.error(f"Error fetching alerts: {e}")
             raise
+
+    @staticmethod
+    def _normalize_tag_filters(tags: Optional[List[str]]) -> List[str]:
+        """Trim, deduplicate, and drop blank tag filters while preserving order."""
+        normalized: List[str] = []
+        seen: Set[str] = set()
+        for tag in tags or []:
+            clean = tag.strip()
+            if not clean or clean in seen:
+                continue
+            normalized.append(clean)
+            seen.add(clean)
+        return normalized
     
     async def update_alert(
         self, 
@@ -524,6 +544,326 @@ class AlertService:
             await db.rollback()
             logger.error(f"Error linking alert {alert_id} to case {case_id}: {e}")
             raise
+
+    async def bulk_action(
+        self,
+        db: AsyncSession,
+        request: AlertBulkActionRequest,
+        performed_by: str,
+    ) -> AlertBulkActionResponse:
+        """Apply one supported bulk action to selected alerts."""
+        try:
+            alert_ids = list(dict.fromkeys(request.alert_ids))
+            result = await db.execute(
+                select(Alert)
+                .options(selectinload(Alert.triage_recommendation))  # type: ignore
+                .where(col(Alert.id).in_(alert_ids))
+            )
+            alerts = list(result.scalars().all())
+            alerts_by_id = {alert.id: alert for alert in alerts}
+            missing_ids = [alert_id for alert_id in alert_ids if alert_id not in alerts_by_id]
+            if missing_ids:
+                raise ValueError(f"Alert(s) not found: {', '.join(str(item) for item in missing_ids)}")
+
+            ordered_alerts = [alerts_by_id[alert_id] for alert_id in alert_ids]
+            target_case: Optional[Case] = None
+            target_alert: Optional[Alert] = None
+            created_case: Optional[Case] = None
+
+            if request.action == "link_case":
+                assert request.case_id is not None
+                target_case = await case_service.get_case(db, request.case_id)
+                if not target_case:
+                    raise ValueError(f"Case {request.case_id} not found")
+                self._ensure_alerts_can_link_to_case(ordered_alerts, request.case_id)
+
+            if request.action == "create_case":
+                self._ensure_alerts_can_link_to_case(ordered_alerts, None)
+                first_alert = ordered_alerts[0]
+                created_case = await create_case_from_alert(
+                    db,
+                    alert=first_alert,
+                    created_by=performed_by,
+                    title=request.case_title,
+                    description=request.case_description
+                    if request.case_description is not None
+                    else self._build_bulk_case_description(ordered_alerts),
+                    assignee=performed_by,
+                )
+                await get_audit_service(db).log_event(
+                    event_type="case.created",
+                    entity_type="case",
+                    entity_id=str(created_case.id),
+                    description="Case created from bulk alert selection",
+                    new_value={
+                        "title": created_case.title,
+                        "alert_ids": alert_ids,
+                    },
+                    performed_by=performed_by,
+                )
+                target_case = created_case
+
+            resolved_update_status: Optional[AlertStatus] = None
+            if request.action == "update_status":
+                resolved_update_status = request.status or self._status_from_disposition(request.disposition)
+
+            if request.action == "close_duplicate" or resolved_update_status == AlertStatus.CLOSED_DUPLICATE:
+                if request.duplicate_target_case_id is not None:
+                    target_case = await case_service.get_case(db, request.duplicate_target_case_id)
+                    if not target_case:
+                        raise ValueError(f"Case {request.duplicate_target_case_id} not found")
+                if request.duplicate_target_alert_id is not None:
+                    target_alert = await self._get_alert_model(db, request.duplicate_target_alert_id)
+                    if not target_alert:
+                        raise ValueError(f"Alert {request.duplicate_target_alert_id} not found")
+                    if request.duplicate_target_alert_id in alert_ids:
+                        raise ValueError("Duplicate target alert cannot be one of the selected alerts")
+
+            for alert in ordered_alerts:
+                before = self._bulk_audit_snapshot(alert)
+
+                if request.action == "update_status":
+                    assert resolved_update_status is not None
+                    if resolved_update_status == AlertStatus.CLOSED_DUPLICATE:
+                        linked_case_id = request.duplicate_target_case_id or (
+                            target_alert.case_id if target_alert else None
+                        )
+                        if linked_case_id is not None:
+                            alert.case_id = linked_case_id
+                            alert.linked_at = datetime.now(timezone.utc)
+                    duplicate_note = request.note
+                    if resolved_update_status == AlertStatus.CLOSED_DUPLICATE and not duplicate_note:
+                        duplicate_note = self._duplicate_description(
+                            request.duplicate_target_case_id,
+                            request.duplicate_target_alert_id,
+                        )
+                    self._set_alert_status_for_bulk(alert, resolved_update_status, performed_by, duplicate_note)
+                elif request.action == "link_case":
+                    assert request.case_id is not None
+                    apply_triage_state(alert, triaged_by=performed_by, set_assignee=True)
+                    mark_alert_escalated(alert, case_id=request.case_id)
+                    self._add_bulk_note(
+                        alert,
+                        performed_by,
+                        f"Bulk linked alert to case CAS-{request.case_id:07d}",
+                        ["bulk-action", "case-link"],
+                    )
+                elif request.action == "create_case":
+                    assert target_case is not None and target_case.id is not None
+                    apply_triage_state(alert, triaged_by=performed_by, set_assignee=True)
+                    mark_alert_escalated(alert, case_id=target_case.id)
+                    self._add_bulk_note(
+                        alert,
+                        performed_by,
+                        f"Bulk linked alert to new case CAS-{target_case.id:07d}",
+                        ["bulk-action", "case-link"],
+                    )
+                elif request.action == "close_duplicate":
+                    duplicate_description = self._duplicate_description(
+                        request.duplicate_target_case_id,
+                        request.duplicate_target_alert_id,
+                    )
+                    linked_case_id = request.duplicate_target_case_id or (
+                        target_alert.case_id if target_alert else None
+                    )
+                    if linked_case_id is not None:
+                        alert.case_id = linked_case_id
+                        alert.linked_at = datetime.now(timezone.utc)
+                    self._set_alert_status_for_bulk(
+                        alert,
+                        AlertStatus.CLOSED_DUPLICATE,
+                        performed_by,
+                        request.note or duplicate_description,
+                    )
+                elif request.action == "add_tags":
+                    alert.tags = self._merge_tags(alert.tags, request.tags or [])
+                    alert.updated_at = datetime.now(timezone.utc)
+
+                if request.action in {"link_case", "create_case", "close_duplicate"} or (
+                    request.action == "update_status"
+                    and resolved_update_status is not None
+                    and is_triage_completion_status(resolved_update_status)
+                ):
+                    await triage_recommendation_service.auto_reject_if_pending(
+                        db, alert.id, performed_by  # type: ignore[arg-type]
+                    )
+                await self._audit_bulk_alert_update(db, alert, before, performed_by)
+                await emit_event(
+                    db,
+                    entity_type="alert",
+                    entity_id=alert.id,  # type: ignore[arg-type]
+                    event_type=RealtimeEventType.ENTITY_UPDATED,
+                    performed_by=performed_by,
+                )
+
+            await db.commit()
+
+            updated_alerts: List[Alert] = []
+            for alert_id in alert_ids:
+                updated_alert = await self.get_alert(db, alert_id)
+                if updated_alert is not None:
+                    updated_alerts.append(updated_alert)
+
+            case_id = created_case.id if created_case is not None else None
+            return AlertBulkActionResponse(
+                updated_alerts=updated_alerts,  # type: ignore[arg-type]
+                updated_count=len(updated_alerts),
+                case_id=case_id,
+                case_human_id=f"CAS-{case_id:07d}" if case_id is not None else None,
+            )
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Error applying bulk alert action {request.action}: {e}")
+            raise
+
+    @staticmethod
+    def _ensure_alerts_can_link_to_case(alerts: List[Alert], case_id: Optional[int]) -> None:
+        for alert in alerts:
+            if alert.case_id is not None and alert.case_id != case_id:
+                raise ValueError(
+                    f"Alert ALT-{alert.id:07d} is already linked to case CAS-{alert.case_id:07d}"
+                )
+
+    @staticmethod
+    def _bulk_audit_snapshot(alert: Alert) -> Dict[str, Any]:
+        return {
+            "status": alert.status,
+            "assignee": alert.assignee,
+            "triaged_at": alert.triaged_at,
+            "triage_notes": alert.triage_notes,
+            "case_id": alert.case_id,
+            "linked_at": alert.linked_at,
+            "tags": list(alert.tags or []),
+        }
+
+    async def _audit_bulk_alert_update(
+        self,
+        db: AsyncSession,
+        alert: Alert,
+        before: Dict[str, Any],
+        performed_by: str,
+    ) -> None:
+        after = self._bulk_audit_snapshot(alert)
+        changed_before = {
+            field: value for field, value in before.items() if value != after.get(field)
+        }
+        changed_after = {
+            field: after.get(field) for field in changed_before
+        }
+        if not changed_before:
+            return
+
+        await get_audit_service(db).log_entity_updated(
+            entity_type="alert",
+            entity_id=alert.id,  # type: ignore[arg-type]
+            before=changed_before,
+            after=changed_after,
+            user=performed_by,
+        )
+
+    def _set_alert_status_for_bulk(
+        self,
+        alert: Alert,
+        status: AlertStatus,
+        performed_by: str,
+        note: Optional[str] = None,
+    ) -> None:
+        if is_triage_completion_status(status):
+            apply_triage_state(
+                alert,
+                triaged_by=performed_by,
+                status=status,
+                triage_notes=note,
+                set_assignee=True,
+            )
+        else:
+            alert.status = status
+        alert.updated_at = datetime.now(timezone.utc)
+        description = note or self._status_description(status)
+        self._add_bulk_note(alert, performed_by, description, ["bulk-action", "status-change"])
+
+    @staticmethod
+    def _status_description(status: AlertStatus) -> str:
+        descriptions = {
+            AlertStatus.NEW: "Bulk changed alert status to New",
+            AlertStatus.IN_PROGRESS: "Bulk changed alert status to In Progress",
+            AlertStatus.ESCALATED: "Bulk changed alert status to Escalated",
+            AlertStatus.CLOSED_TP: "Bulk closed alert as True Positive",
+            AlertStatus.CLOSED_BP: "Bulk closed alert as Benign Positive",
+            AlertStatus.CLOSED_FP: "Bulk closed alert as False Positive",
+            AlertStatus.CLOSED_UNRESOLVED: "Bulk closed alert as Unresolved",
+            AlertStatus.CLOSED_DUPLICATE: "Bulk closed alert as Duplicate",
+        }
+        return descriptions.get(status, f"Bulk changed alert status to {status.value}")
+
+    @staticmethod
+    def _status_from_disposition(disposition: Optional[TriageDisposition]) -> AlertStatus:
+        disposition_statuses = {
+            TriageDisposition.TRUE_POSITIVE: AlertStatus.CLOSED_TP,
+            TriageDisposition.BENIGN: AlertStatus.CLOSED_BP,
+            TriageDisposition.FALSE_POSITIVE: AlertStatus.CLOSED_FP,
+            TriageDisposition.DUPLICATE: AlertStatus.CLOSED_DUPLICATE,
+            TriageDisposition.NEEDS_INVESTIGATION: AlertStatus.IN_PROGRESS,
+            TriageDisposition.UNKNOWN: AlertStatus.CLOSED_UNRESOLVED,
+        }
+        if disposition not in disposition_statuses:
+            raise ValueError("Unsupported disposition for status update")
+        return disposition_statuses[disposition]
+
+    @staticmethod
+    def _add_bulk_note(
+        alert: Alert,
+        performed_by: str,
+        description: str,
+        tags: List[str],
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        note_item = {
+            "id": str(uuid4()),
+            "type": "note",
+            "description": description,
+            "created_at": now.isoformat(),
+            "timestamp": now.isoformat(),
+            "created_by": performed_by,
+            "tags": tags,
+            "flagged": False,
+            "highlighted": False,
+            "replies": {},
+        }
+        timeline_service.add_timeline_item(alert, note_item, created_by=performed_by)
+
+    @staticmethod
+    def _build_bulk_case_description(alerts: List[Alert]) -> str:
+        alert_lines = [
+            f"- ALT-{alert.id:07d}: {alert.title}"
+            for alert in alerts
+            if alert.id is not None
+        ]
+        return "Created from selected alerts:\n" + "\n".join(alert_lines)
+
+    @staticmethod
+    def _duplicate_description(
+        target_case_id: Optional[int],
+        target_alert_id: Optional[int],
+    ) -> str:
+        refs: List[str] = []
+        if target_case_id is not None:
+            refs.append(f"case CAS-{target_case_id:07d}")
+        if target_alert_id is not None:
+            refs.append(f"alert ALT-{target_alert_id:07d}")
+        return f"Bulk closed alert as duplicate of {' and '.join(refs)}"
+
+    @staticmethod
+    def _merge_tags(existing: Optional[List[str]], incoming: List[str]) -> List[str]:
+        merged: List[str] = []
+        seen: Set[str] = set()
+        for tag in [*(existing or []), *incoming]:
+            clean = tag.strip()
+            if not clean or clean in seen:
+                continue
+            merged.append(clean)
+            seen.add(clean)
+        return merged
 
     async def unlink_alert_from_case(
         self, 
