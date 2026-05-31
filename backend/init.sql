@@ -8,6 +8,10 @@
 SELECT format('CREATE ROLE langflow_user WITH LOGIN PASSWORD %L', :'langflow_password')
 WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'langflow_user')\gexec
 
+-- Keep the password in sync when a dev volume was initialized with an older
+-- compose file that omitted LANGFLOW_DB_PASSWORD.
+SELECT format('ALTER ROLE langflow_user WITH PASSWORD %L', :'langflow_password')\gexec
+
 SELECT 'CREATE DATABASE langflow OWNER langflow_user'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'langflow')\gexec
 
