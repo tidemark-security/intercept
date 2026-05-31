@@ -157,6 +157,9 @@ services:
       STORAGE_USE_SSL: "false"
       LANGFLOW__BASE_URL: http://localhost:7860/api/v1
       LANGFLOW__API_KEY: ${LANGFLOW_API_KEY}
+      MCP_OAUTH_ENABLED: "true"
+      MCP_OAUTH_PUBLIC_BASE_URL: http://localhost:8000
+      MCP_OAUTH_LOGIN_BASE_URL: http://localhost
       AUTO_SEED: "true"                            # Creates the admin user on first boot
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD}
       CORS_ORIGINS: '["http://localhost"]'         # Adjust for production (e.g. "https://example.com")

@@ -4,6 +4,7 @@ import React from "react";
 import { ApiError } from "@/types/generated/core/ApiError";
 import { ApiKeysService } from "@/types/generated/services/ApiKeysService";
 import { AuthenticationService } from "@/types/generated/services/AuthenticationService";
+import { McpOauthService } from "@/types/generated/services/McpOauthService";
 import { Alert } from "@/components/feedback/Alert";
 import {
   ApiKeyCreatedContent,
@@ -26,6 +27,7 @@ import { useToast } from "@/contexts/ToastContext";
 import { useVisualFilterPreference } from "@/contexts/VisualFilterContext";
 import type { ApiKeyCreateResponse } from "@/types/generated/models/ApiKeyCreateResponse";
 import type { ApiKeyRead } from "@/types/generated/models/ApiKeyRead";
+import type { MCPOAuthClientRead } from "@/types/generated/models/MCPOAuthClientRead";
 import type { PasskeyRead } from "@/types/generated/models/PasskeyRead";
 import {
   formatForDatetimeLocal,
@@ -47,6 +49,7 @@ import {
   Edit2,
   Fingerprint,
   Key,
+  Link2,
   Lock,
   Monitor,
   MoreHorizontal,
@@ -110,6 +113,8 @@ function ProfileManagement() {
   const [createdApiKey, setCreatedApiKey] = React.useState<ApiKeyCreateResponse | null>(null);
   const [showCreatedApiKeyValue, setShowCreatedApiKeyValue] = React.useState(true);
   const [createdApiKeyCopied, setCreatedApiKeyCopied] = React.useState(false);
+  const [mcpClients, setMcpClients] = React.useState<MCPOAuthClientRead[]>([]);
+  const [isLoadingMcpClients, setIsLoadingMcpClients] = React.useState(false);
   const [passkeys, setPasskeys] = React.useState<PasskeyRead[]>([]);
   const [isLoadingPasskeys, setIsLoadingPasskeys] = React.useState(false);
   const [isRegisteringPasskey, setIsRegisteringPasskey] = React.useState(false);
@@ -150,6 +155,18 @@ function ProfileManagement() {
     }
   }, [showToast]);
 
+  const loadMcpClients = React.useCallback(async () => {
+    setIsLoadingMcpClients(true);
+    try {
+      const items = await McpOauthService.listConnectedMcpClientsApiV1McpOauthClientsGet();
+      setMcpClients(items);
+    } catch {
+      showToast("Error", "Failed to load connected MCP clients", "error");
+    } finally {
+      setIsLoadingMcpClients(false);
+    }
+  }, [showToast]);
+
   React.useEffect(() => {
     loadPasskeys();
   }, [loadPasskeys]);
@@ -157,6 +174,10 @@ function ProfileManagement() {
   React.useEffect(() => {
     loadApiKeys();
   }, [loadApiKeys]);
+
+  React.useEffect(() => {
+    loadMcpClients();
+  }, [loadMcpClients]);
 
   const handleChangePassword = async () => {
     if (!currentPassword.trim() || !newPassword.trim() || !confirmPassword.trim()) {
@@ -264,6 +285,17 @@ function ProfileManagement() {
       } else {
         showToast("Error", "Failed to revoke API key", "error");
       }
+    }
+  };
+
+  const handleRevokeMcpClient = async (clientId: string) => {
+    try {
+      await McpOauthService.revokeConnectedMcpClientApiV1McpOauthClientsConsentIdDelete({
+        consentId: clientId,
+      });
+      await loadMcpClients();
+    } catch {
+      showToast("Error", "Failed to revoke MCP client", "error");
     }
   };
 
@@ -751,6 +783,59 @@ function ProfileManagement() {
                     formatDate={formatApiKeyDate}
                     onRevoke={() => handleRevokeApiKey(apiKey.id)}
                   />
+                ))}
+              </div>
+            </div>
+
+            <div className="flex w-full flex-col items-start gap-6 rounded-md border border-solid border-neutral-border bg-neutral-50 px-6 py-6">
+              <div className="flex w-full flex-wrap items-center gap-2">
+                <IconWithBackground
+                  variant="neutral"
+                  size="medium"
+                  icon={<Link2 />}
+                />
+                <span className="grow shrink-0 basis-0 text-heading-2 font-heading-2 text-default-font">
+                  Connected MCP Clients
+                </span>
+              </div>
+
+              <span className="text-body font-body text-subtext-color">
+                Browser-authorized MCP clients use your account permissions.
+              </span>
+
+              <div className="flex w-full flex-col items-start gap-4">
+                {isLoadingMcpClients ? (
+                  <span className="text-body font-body text-subtext-color">Loading MCP clients...</span>
+                ) : mcpClients.length === 0 ? (
+                  <span className="text-body font-body text-subtext-color">
+                    No MCP clients connected yet.
+                  </span>
+                ) : mcpClients.map((client) => (
+                  <div
+                    key={client.id}
+                    className="flex w-full flex-wrap items-center gap-4 rounded-md border border-solid border-neutral-border bg-default-background px-4 py-4"
+                  >
+                    <div className="flex grow shrink basis-0 flex-col items-start gap-1">
+                      <span className="text-body-bold font-body-bold text-default-font">
+                        {client.client_name}
+                      </span>
+                      <span className="text-caption font-caption text-subtext-color break-all">
+                        {client.client_uri || client.client_id}
+                      </span>
+                      <span className="text-caption font-caption text-subtext-color">
+                        Last authorized {formatApiKeyDate(client.last_authorized_at)}
+                        {" · "}
+                        Last used {formatApiKeyDate(client.last_used_at)}
+                      </span>
+                    </div>
+                    <Button
+                      variant="destructive-secondary"
+                      icon={<Trash2 />}
+                      onClick={() => handleRevokeMcpClient(client.id)}
+                    >
+                      Revoke
+                    </Button>
+                  </div>
                 ))}
               </div>
             </div>

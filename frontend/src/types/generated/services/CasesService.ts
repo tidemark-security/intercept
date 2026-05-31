@@ -170,7 +170,7 @@ export class CasesService {
     }
     /**
      * Delete Case
-     * Delete a case.
+     * Permanently delete a case. Restricted to admins.
      * @returns any Successful Response
      * @throws ApiError
      */

@@ -6,6 +6,11 @@ This guide covers configuration options for the Tidemark Intercept MCP server, i
 
 The MCP server provides 7 purpose-built tools for AI agent integration. The preferred transport is Streamable HTTP at `/mcp/streamable/`, with legacy SSE still available at `/mcp/sse`.
 
+Authentication supports two paths:
+
+- OAuth 2.1 authorization-code with PKCE for human-operated local agents such as Codex or Claude Code.
+- API keys for machine-to-machine integrations and non-human identity accounts.
+
 ## MCP Server Architecture
 
 The MCP server is **not** auto-generated from FastAPI routes. Instead, it provides 7 intentionally designed tools:
@@ -41,6 +46,16 @@ The MCP server inherits configuration from the main Intercept application.
 | `LOG_LEVEL` | Logging level | `INFO` | No |
 | `CORS_ORIGINS` | Allowed CORS origins | `["*"]` | No |
 
+### MCP OAuth Settings
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `MCP_OAUTH_ENABLED` | Enables OAuth 2.1 with PKCE for MCP browser sign-in | `false` | No |
+| `MCP_OAUTH_PUBLIC_BASE_URL` | Public backend base URL used as the OAuth issuer and discovery URL | - | Yes, when OAuth is enabled |
+| `MCP_OAUTH_LOGIN_BASE_URL` | Frontend base URL for local Intercept login during browser authorization | Same as `MCP_OAUTH_PUBLIC_BASE_URL` | No |
+| `MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS` | OAuth access-token lifetime | `3600` | No |
+| `MCP_OAUTH_REFRESH_TOKEN_TTL_DAYS` | OAuth refresh-token lifetime | `30` | No |
+
 ### Example `.env` File
 
 ```bash
@@ -53,6 +68,11 @@ LOG_LEVEL=INFO
 
 # CORS (adjust for production)
 CORS_ORIGINS=["http://localhost:3000","http://localhost:8000"]
+
+# MCP OAuth browser auth for human-operated agents
+MCP_OAUTH_ENABLED=true
+MCP_OAUTH_PUBLIC_BASE_URL=http://localhost:8000
+MCP_OAUTH_LOGIN_BASE_URL=http://localhost:5173
 ```
 
 ## MCP Endpoints
@@ -65,11 +85,36 @@ The MCP server exposes both the preferred streamable transport and the legacy SS
 | `/mcp/sse` | GET | Legacy SSE connection endpoint |
 | `/mcp/messages` | POST | Legacy SSE message endpoint |
 
-All requests require API key authentication via `Authorization: Bearer <key>` or `X-API-Key` header.
+MCP requests accept either API key authentication via `Authorization: Bearer <key>` or `X-API-Key`, or OAuth bearer tokens issued through the MCP OAuth flow.
+
+When OAuth is enabled and an MCP client sends no credential, Intercept returns a `WWW-Authenticate` challenge with the MCP protected-resource metadata URL. OAuth-capable MCP clients use that metadata to discover the authorization server, open the user's browser, and complete PKCE authorization.
+
+## OAuth Browser Authorization
+
+Use OAuth for human-to-machine access where the MCP client runs locally for a signed-in analyst.
+
+1. Enable `MCP_OAUTH_ENABLED`.
+2. Set `MCP_OAUTH_PUBLIC_BASE_URL` to the externally reachable backend origin, for example `https://intercept.example.com` or `http://localhost:8000` for local development.
+3. Set `MCP_OAUTH_LOGIN_BASE_URL` to the frontend origin if it differs from the backend, for example `http://localhost:5173` in dev or `http://localhost` in quickstart.
+4. Configure the MCP client with the MCP URL, for example `http://localhost:8000/mcp/streamable/`.
+5. The client discovers OAuth metadata, opens the browser, and the user signs in with normal Intercept auth.
+
+Supported OAuth capabilities:
+
+- Dynamic client registration at `/oauth/register`
+- Authorization endpoint at `/oauth/authorize`
+- Token endpoint at `/oauth/token`
+- Revocation endpoint at `/oauth/revoke`
+- Public clients only: `token_endpoint_auth_method=none`
+- Authorization code + PKCE only: `response_type=code`, `code_challenge_method=S256`
+- Scope: `mcp:access`
+- Loopback redirect URIs only, such as `http://127.0.0.1:49152/callback`
+
+Users can review and revoke connected MCP clients from their profile page. Revocation invalidates active access and refresh tokens for that user/client pair.
 
 ## Deployment Options
 
-The MCP server deploys alongside the backend app - no special considerations are needed.
+The MCP server deploys alongside the backend app. For OAuth, make sure the public backend URL is stable and HTTPS in production, and that the frontend login URL can redirect back to the backend authorization URL through the `next` parameter.
 
 ## API Key Management
 
@@ -141,7 +186,9 @@ If a key is compromised:
 ### Logging
 
 MCP requests are logged with:
-- User ID (from API key)
+- User ID
+- Authentication type (API key or OAuth)
+- OAuth client name and ID when applicable
 - Tool name
 - Timestamp
 - Status
@@ -159,8 +206,9 @@ Key metrics to track:
 
 - **Authentication**:
   - API key validations per minute
+  - OAuth token validations per minute
   - Authentication failures
-  - Expired/revoked key attempts
+  - Expired/revoked key or token attempts
 
 - **Tool Usage**:
   - Tool calls per minute
@@ -215,21 +263,39 @@ uvicorn app.main:app --reload
 
 ### Authentication Always Fails
 
-**Symptom**: All API keys rejected with 401
+**Symptom**: All API keys or OAuth tokens are rejected with 401
 
 **Checks**:
 1. Verify SECRET_KEY is set correctly
 2. Check database connectivity
 3. Verify API key table exists
 4. Check API key service initialization
+5. If using OAuth, verify `MCP_OAUTH_PUBLIC_BASE_URL` exactly matches the MCP resource URL used by the client
 
 **Solution**:
 ```bash
 # Check database
 psql $DATABASE_URL -c "SELECT COUNT(*) FROM api_keys;"
+psql $DATABASE_URL -c "SELECT COUNT(*) FROM mcp_oauth_tokens;"
 
 # Verify encryption service
 # Check logs for "Initializing encryption service..." message
+```
+
+### OAuth Browser Opens the Wrong Login URL
+
+**Symptom**: The MCP client opens a browser, but `/login` is served by the backend or returns 404.
+
+**Checks**:
+1. Confirm `MCP_OAUTH_PUBLIC_BASE_URL` points to the backend/OAuth issuer origin.
+2. Confirm `MCP_OAUTH_LOGIN_BASE_URL` points to the frontend origin.
+3. Confirm the frontend allows redirecting back to the backend origin through the `next` parameter.
+
+**Solution**: Set both URLs explicitly when frontend and backend run on different origins:
+
+```bash
+MCP_OAUTH_PUBLIC_BASE_URL=http://localhost:8000
+MCP_OAUTH_LOGIN_BASE_URL=http://localhost:5173
 ```
 
 ### SSE Connection Drops

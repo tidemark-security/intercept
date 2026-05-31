@@ -477,6 +477,50 @@ _register(
 )
 
 # ---------------------------------------------------------------------------
+# MCP OAuth 2.1 / PKCE  (hot-swappable)
+# ---------------------------------------------------------------------------
+_register(
+    _def(
+        "mcp.oauth.enabled",
+        env_var="MCP_OAUTH_ENABLED",
+        value_type=SettingType.BOOLEAN,
+        category="mcp",
+        description="Enable OAuth 2.1 authorization-code with PKCE for the remote MCP server",
+        default=False,
+    ),
+    _def(
+        "mcp.oauth.public_base_url",
+        env_var="MCP_OAUTH_PUBLIC_BASE_URL",
+        category="mcp",
+        description="Public HTTPS base URL for MCP OAuth issuer and discovery metadata",
+        default="",
+    ),
+    _def(
+        "mcp.oauth.login_base_url",
+        env_var="MCP_OAUTH_LOGIN_BASE_URL",
+        category="mcp",
+        description="Frontend base URL used when an MCP OAuth browser flow needs local Intercept login",
+        default="",
+    ),
+    _def(
+        "mcp.oauth.refresh_token_ttl_days",
+        env_var="MCP_OAUTH_REFRESH_TOKEN_TTL_DAYS",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Days before MCP OAuth refresh tokens expire",
+        default=30,
+    ),
+    _def(
+        "mcp.oauth.access_token_ttl_seconds",
+        env_var="MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Seconds before MCP OAuth access tokens expire",
+        default=3600,
+    ),
+)
+
+# ---------------------------------------------------------------------------
 # Attachment storage and preview limits  (hot-swappable)
 # ---------------------------------------------------------------------------
 _register(

@@ -36,7 +36,7 @@ from app.api.routes.admin_auth import (
 from app.services.task_queue_service import initialize_task_queue_service, shutdown_task_queue_service
 from app.services.enrichment.providers import register_providers
 from app.services.tasks import register_task_handlers
-from app.api.routes import admin_auth, alerts, audit, auth, cases, dashboard, dummy_data, link_templates, mitre, tasks, settings as settings_routes, langflow, api_keys, soc_metrics, triage_recommendations, search, validation, features, oidc, enrichments, queue_status
+from app.api.routes import admin_auth, alerts, audit, auth, cases, dashboard, dummy_data, link_templates, mitre, tasks, settings as settings_routes, langflow, api_keys, soc_metrics, triage_recommendations, search, validation, features, oidc, enrichments, queue_status, mcp_oauth
 from app.api.routes import websocket as ws_route
 # from app.api.routes import admin_auth, alerts, auth, cases, dashboard, dummy_data, link_templates, mitre, soc_metrics, tasks, api_keys
 # Import models to register them with SQLModel
@@ -206,6 +206,7 @@ app.include_router(triage_recommendations.router, prefix="/api/v1")
 app.include_router(tasks.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(oidc.router, prefix="/api/v1")
+app.include_router(mcp_oauth.router)
 app.include_router(admin_auth.authenticated_router, prefix="/api/v1")
 app.include_router(admin_auth.router, prefix="/api/v1")
 app.include_router(audit.router, prefix="/api/v1")
@@ -221,6 +222,7 @@ app.include_router(queue_status.router, prefix="/api/v1")
 app.include_router(langflow.router, prefix="/api/v1")
 app.include_router(soc_metrics.router, prefix="/api/v1")
 app.include_router(api_keys.router, prefix="/api/v1")
+app.include_router(mcp_oauth.management_router, prefix="/api/v1")
 app.include_router(search.router, prefix="/api/v1")
 app.include_router(validation.router, prefix="/api/v1")
 app.include_router(features.router, prefix="/api/v1")
@@ -262,6 +264,15 @@ from app.services.api_key_service import (
     UserInactiveError,
     AuditContext,
 )
+from app.services.mcp_oauth_service import (
+    ACCESS_TOKEN_PREFIX,
+    OAuthConfigurationError,
+    OAuthDisabledError,
+    OAuthInactiveUserError,
+    OAuthInvalidClientError,
+    OAuthInvalidTokenError,
+    mcp_oauth_service,
+)
 
 
 def _extract_api_key_from_headers(headers: dict) -> str | None:
@@ -282,7 +293,7 @@ def _extract_api_key_from_headers(headers: dict) -> str | None:
 
 
 class MCPApiKeyAuthMiddleware:
-    """ASGI middleware that requires API key authentication for MCP requests."""
+    """ASGI middleware that accepts API keys or MCP OAuth bearer tokens."""
     
     def __init__(self, app):
         self.app = app
@@ -295,18 +306,14 @@ class MCPApiKeyAuthMiddleware:
         
         # Extract headers as dict
         headers = dict(scope.get("headers", []))
-        api_key = _extract_api_key_from_headers(headers)
+        credential = _extract_api_key_from_headers(headers)
         
         # Get path for logging
         path = scope.get("path", "unknown")
         
-        if not api_key:
-            logger.warning(f"MCP auth failed: No API key provided for {path}")
-            response = JSONResponse(
-                status_code=401,
-                content={"message": "API key required. Use Authorization: Bearer <key> or X-API-Key header."}
-            )
-            await response(scope, receive, send)
+        if not credential:
+            logger.warning(f"MCP auth failed: No credential provided for {path}")
+            await self._send_missing_credential_response(scope, receive, send, path)
             return
         
         # Validate the API key
@@ -325,21 +332,43 @@ class MCPApiKeyAuthMiddleware:
                     correlation_id=headers.get(b"x-request-id", b"").decode() or None,
                 )
                 
-                # Validate the API key
-                result = await api_key_service.validate_api_key(
-                    db,
-                    raw_key=api_key,
-                    context=audit_context,
-                )
+                credential_from_x_api_key = b"x-api-key" in headers
+                is_oauth_candidate = credential.startswith(ACCESS_TOKEN_PREFIX)
+                is_api_key_candidate = credential_from_x_api_key or not is_oauth_candidate
+
+                if is_api_key_candidate:
+                    result = await api_key_service.validate_api_key(
+                        db,
+                        raw_key=credential,
+                        context=audit_context,
+                    )
+                    authenticated_user = result.user
+                    auth_type = "api_key"
+                    client_label = None
+                elif is_oauth_candidate:
+                    result = await mcp_oauth_service.validate_access_token(
+                        db,
+                        token=credential,
+                        request_path=path,
+                        context=audit_context,
+                    )
+                    authenticated_user = result.user
+                    auth_type = "oauth"
+                    client_label = result.client.client_name
+                else:
+                    raise ApiKeyNotFoundError()
+
                 await db.commit()
                 
                 # Store user in scope for potential downstream use
-                scope["mcp_user"] = result.user
+                scope["mcp_user"] = authenticated_user
+                scope["mcp_auth_type"] = auth_type
                 
                 # Log successful authentication
                 logger.info(
-                    f"MCP auth success: user={result.user.username}, "
-                    f"user_id={result.user.id}, path={path}, ip={client_host}"
+                    f"MCP auth success: user={authenticated_user.username}, "
+                    f"user_id={authenticated_user.id}, auth_type={auth_type}, "
+                    f"client={client_label}, path={path}, ip={client_host}"
                 )
                 
         except ApiKeyNotFoundError:
@@ -362,6 +391,39 @@ class MCPApiKeyAuthMiddleware:
             response = JSONResponse(status_code=403, content={"message": "User account is not active"})
             await response(scope, receive, send)
             return
+        except OAuthInvalidTokenError as e:
+            logger.warning(f"MCP auth failed: Invalid OAuth token for {path}, ip={client_host}")
+            response = JSONResponse(
+                status_code=401,
+                content={"message": e.description},
+                headers=await self._oauth_challenge_headers(path),
+            )
+            await response(scope, receive, send)
+            return
+        except OAuthDisabledError:
+            logger.warning(f"MCP auth failed: OAuth token used while MCP OAuth disabled for {path}, ip={client_host}")
+            response = JSONResponse(status_code=401, content={"message": "Invalid API key"})
+            await response(scope, receive, send)
+            return
+        except OAuthConfigurationError as e:
+            logger.error(f"MCP OAuth configuration error: {e}, path={path}, ip={client_host}", exc_info=True)
+            response = JSONResponse(status_code=500, content={"message": "MCP OAuth configuration error"})
+            await response(scope, receive, send)
+            return
+        except OAuthInvalidClientError:
+            logger.warning(f"MCP auth failed: Invalid OAuth client for {path}, ip={client_host}")
+            response = JSONResponse(
+                status_code=401,
+                content={"message": "Invalid OAuth client"},
+                headers=await self._oauth_challenge_headers(path),
+            )
+            await response(scope, receive, send)
+            return
+        except OAuthInactiveUserError:
+            logger.warning(f"MCP auth failed: Inactive OAuth user for {path}, ip={client_host}")
+            response = JSONResponse(status_code=403, content={"message": "User account is not active"})
+            await response(scope, receive, send)
+            return
         except Exception as e:
             logger.error(f"MCP auth error: {e}, path={path}, ip={client_host}", exc_info=True)
             response = JSONResponse(status_code=500, content={"message": "Authentication error"})
@@ -370,6 +432,39 @@ class MCPApiKeyAuthMiddleware:
         
         # Auth succeeded, pass through to MCP app
         await self.app(scope, receive, send)
+
+    async def _send_missing_credential_response(self, scope, receive, send, path: str) -> None:
+        headers = await self._oauth_challenge_headers(path)
+        if headers:
+            response = JSONResponse(
+                status_code=401,
+                content={
+                    "message": "Authentication required. Use an API key or complete MCP OAuth authorization."
+                },
+                headers=headers,
+            )
+        else:
+            response = JSONResponse(
+                status_code=401,
+                content={"message": "API key required. Use Authorization: Bearer <key> or X-API-Key header."},
+            )
+        await response(scope, receive, send)
+
+    async def _oauth_challenge_headers(self, path: str) -> dict[str, str]:
+        try:
+            async with async_session_factory() as db:
+                settings = await mcp_oauth_service.get_settings(db)
+                if not settings.enabled:
+                    return {}
+                metadata_url = mcp_oauth_service.resource_metadata_url_for_path(settings, path)
+        except Exception:
+            return {}
+
+        return {
+            "WWW-Authenticate": (
+                f'Bearer resource_metadata="{metadata_url}", scope="mcp:access"'
+            )
+        }
 
 
 # Wrap MCP transport apps with shared auth middleware

@@ -82,6 +82,10 @@ export type AttachmentItem = {
      */
     uploaded_by?: (string | null);
     /**
+     * Stable user ID of user who uploaded the file
+     */
+    uploaded_by_user_id?: (string | null);
+    /**
      * Current upload state
      */
     upload_status?: UploadStatus;
