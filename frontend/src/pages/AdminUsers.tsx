@@ -464,7 +464,7 @@ function AdminUsers() {
               ? editFormData.email.trim() || null
               : undefined,
           role: editFormData.role,
-          assignable: editingUser.accountType === "NHI" ? editFormData.assignable : undefined,
+          assignable: editingUser.accountType === "NHI" ? editFormData.assignable : false,
           description: editFormData.description,
         },
       });

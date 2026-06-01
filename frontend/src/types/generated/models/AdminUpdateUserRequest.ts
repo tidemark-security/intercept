@@ -22,7 +22,7 @@ export type AdminUpdateUserRequest = {
     /**
      * Whether an NHI account can be assigned task work
      */
-    assignable?: (boolean | null);
+    assignable: boolean;
     /**
      * Updated user title or service account description
      */

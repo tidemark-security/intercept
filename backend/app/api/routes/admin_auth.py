@@ -83,8 +83,8 @@ class AdminUpdateUserRequest(BaseModel):
         default=None,
         description="Updated user role",
     )
-    assignable: Optional[bool] = Field(
-        default=None,
+    assignable: bool = Field(
+        default=False,
         description="Whether an NHI account can be assigned task work",
     )
     description: Optional[str] = Field(
