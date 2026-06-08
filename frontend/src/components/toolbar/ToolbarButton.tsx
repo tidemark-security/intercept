@@ -3,6 +3,7 @@
 import React from "react";
 import { ChevronDown } from "lucide-react";
 
+import { useTheme } from "@/contexts/ThemeContext";
 import { cn } from "@/utils/cn";
 
 export interface ToolbarButtonProps
@@ -31,6 +32,7 @@ export const ToolbarButton = React.forwardRef<
   },
   ref,
 ) {
+  const { resolvedTheme } = useTheme();
   const accessibleName =
     buttonProps["aria-label"] ??
     [label, value].filter(Boolean).join(" ");
@@ -38,9 +40,9 @@ export const ToolbarButton = React.forwardRef<
   return (
     <button
       className={cn(
-        "group flex h-12 min-w-0 items-center gap-2 rounded-none border-0 px-2 text-left transition-colors",
-        "bg-default-background hover:bg-neutral-100 focus-visible:outline focus-visible:outline-1 focus-visible:outline-focus-border",
-        active && "bg-brand-primary/10",
+        "group relative flex h-12 min-w-0 items-center gap-2 rounded-none border-0 px-2 text-left transition-colors",
+        "bg-default-background focus-visible:outline focus-visible:outline-1 focus-visible:outline-focus-border",
+        resolvedTheme === "light" ? "hover:bg-neutral-200" : "hover:bg-neutral-100",
         className,
       )}
       ref={ref}
@@ -48,6 +50,16 @@ export const ToolbarButton = React.forwardRef<
       aria-label={accessibleName}
       {...buttonProps}
     >
+      {active ? (
+        <span
+          aria-hidden="true"
+          data-modified-indicator="true"
+          className={cn(
+            "absolute right-2.5 top-1.5 h-2 w-2 rounded-full",
+            resolvedTheme === "light" ? "bg-default-font" : "bg-brand-primary",
+          )}
+        />
+      ) : null}
       <span className="flex shrink-0 items-center justify-center text-body font-body text-subtext-color group-hover:text-default-font">
         {icon}
       </span>

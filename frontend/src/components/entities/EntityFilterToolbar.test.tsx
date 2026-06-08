@@ -46,6 +46,10 @@ function renderToolbar(
   return { onFilterChange };
 }
 
+function getModifiedIndicator(button: HTMLElement) {
+  return button.querySelector("[data-modified-indicator='true']");
+}
+
 describe("EntityFilterToolbar", () => {
   it("renders compact two-line toolbar values", () => {
     renderToolbar({
@@ -66,6 +70,29 @@ describe("EntityFilterToolbar", () => {
     expect(screen.getByRole("button", { name: /time last 30 days/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /tags \+2 -1/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /reset clear all/i })).toBeInTheDocument();
+  });
+
+  it("does not mark the default open statuses as modified", () => {
+    renderToolbar();
+
+    const statusButton = screen.getByRole("button", { name: /status 2 statuses/i });
+
+    expect(getModifiedIndicator(statusButton)).not.toBeInTheDocument();
+  });
+
+  it("marks status as modified when it differs from the default open statuses", () => {
+    renderToolbar({
+      search: "",
+      assignee: null,
+      status: ["NEW"],
+      includeTags: null,
+      excludeTags: null,
+      dateRange: null,
+    });
+
+    const statusButton = screen.getByRole("button", { name: /status new/i });
+
+    expect(getModifiedIndicator(statusButton)).toBeInTheDocument();
   });
 
   it("clears every filter when reset is selected", async () => {

@@ -145,6 +145,22 @@ function compactTagLabel(includeTags: string[], excludeTags: string[]) {
   return `+${includeTags.length} -${excludeTags.length}`;
 }
 
+function haveSameValues(left: readonly string[], right: readonly string[]) {
+  if (left.length !== right.length) return false;
+  const rightValues = new Set(right);
+  return left.every((value) => rightValues.has(value));
+}
+
+function statusFilterDiffersFromDefault(
+  filters: FilterState | undefined,
+  statusOptions: StatusOption[],
+) {
+  const defaultStatuses = statusOptions.slice(0, 2).map((option) => option.value);
+  const selectedStatuses = (filters?.status ?? []) as string[];
+
+  return !haveSameValues(selectedStatuses, defaultStatuses);
+}
+
 function FilterValueChip({
   tone,
   children,
@@ -494,6 +510,10 @@ export function EntityFilterToolbar({
   const effectiveStatusOptions = statusOptions ?? DEFAULT_STATUS_OPTIONS;
   const includeTags = normalizeTags(filters?.includeTags);
   const excludeTags = normalizeTags(filters?.excludeTags);
+  const statusFilterModified = statusFilterDiffersFromDefault(
+    filters,
+    effectiveStatusOptions,
+  );
 
   const updateFilter = <K extends keyof FilterState>(
     key: K,
@@ -582,7 +602,7 @@ export function EntityFilterToolbar({
             label="Status"
             value={compactStatusLabel(filters, effectiveStatusOptions)}
             chevron
-            active={!!filters?.status?.length}
+            active={statusFilterModified}
           />
         </DropdownMenu.Trigger>
         <DropdownMenu.Content side="bottom" align="start" sideOffset={6}>
