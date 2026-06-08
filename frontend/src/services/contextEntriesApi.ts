@@ -1,22 +1,20 @@
 import { OpenAPI } from '@/types/generated/core/OpenAPI';
 
-export type AITriageContextScopeType =
-  | 'GLOBAL'
+export type ContextCriterionType =
   | 'ALERT_SOURCE'
-  | 'CASE'
-  | 'USER_ACCOUNT'
-  | 'HOST_SYSTEM'
+  | 'ACTOR'
+  | 'SYSTEM'
   | 'OBSERVABLE'
   | 'TAG';
 
-export interface AITriageContextScope {
-  type: AITriageContextScopeType;
-  value?: string | null;
+export interface ContextCriterion {
+  type: ContextCriterionType;
+  value: string;
 }
 
-export interface AITriageContextEntry {
+export interface ContextEntry {
   id: number;
-  scope: AITriageContextScope;
+  criteria: ContextCriterion[];
   body: string;
   author: string;
   created_at: string;
@@ -25,8 +23,8 @@ export interface AITriageContextEntry {
   expired_at?: string | null;
 }
 
-export interface AITriageContextPayload {
-  scope: AITriageContextScope;
+export interface ContextEntryPayload {
+  criteria?: ContextCriterion[];
   body: string;
   expires_at: string;
 }
@@ -70,27 +68,27 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function listAITriageContext(includeExpired = false): Promise<AITriageContextEntry[]> {
+export function listContextEntries(includeExpired = false): Promise<ContextEntry[]> {
   const query = includeExpired ? '?include_expired=true' : '';
-  return request<AITriageContextEntry[]>(`/api/v1/ai-triage-context${query}`);
+  return request<ContextEntry[]>(`/api/v1/context-entries${query}`);
 }
 
-export function createAITriageContext(payload: AITriageContextPayload): Promise<AITriageContextEntry> {
-  return request<AITriageContextEntry>('/api/v1/ai-triage-context', {
+export function createContextEntry(payload: ContextEntryPayload): Promise<ContextEntry> {
+  return request<ContextEntry>('/api/v1/context-entries', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
-export function updateAITriageContext(id: number, payload: Partial<AITriageContextPayload>): Promise<AITriageContextEntry> {
-  return request<AITriageContextEntry>(`/api/v1/ai-triage-context/${id}`, {
+export function updateContextEntry(id: number, payload: Partial<ContextEntryPayload>): Promise<ContextEntry> {
+  return request<ContextEntry>(`/api/v1/context-entries/${id}`, {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
 }
 
-export function expireAITriageContext(id: number): Promise<AITriageContextEntry> {
-  return request<AITriageContextEntry>(`/api/v1/ai-triage-context/${id}/expire`, {
+export function expireContextEntry(id: number): Promise<ContextEntry> {
+  return request<ContextEntry>(`/api/v1/context-entries/${id}/expire`, {
     method: 'POST',
   });
 }

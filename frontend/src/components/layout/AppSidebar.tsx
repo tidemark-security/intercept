@@ -81,11 +81,11 @@ const navigationItems: NavigationItem[] = [
     match: (path: string) => path.startsWith("/ai-chat"),
   },
   {
-    key: "ai-triage-context",
-    label: "AI Context",
+    key: "context-entries",
+    label: "Context",
     icon: BrainCircuit,
-    to: "/ai-triage-context",
-    match: (path: string) => path.startsWith("/ai-triage-context"),
+    to: "/context-entries",
+    match: (path: string) => path.startsWith("/context-entries"),
   },
   {
     key: "reports",

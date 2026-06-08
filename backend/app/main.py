@@ -36,7 +36,7 @@ from app.api.routes.admin_auth import (
 from app.services.task_queue_service import initialize_task_queue_service, shutdown_task_queue_service
 from app.services.enrichment.providers import register_providers
 from app.services.tasks import register_task_handlers
-from app.api.routes import admin_auth, alerts, audit, auth, cases, dashboard, dummy_data, link_templates, mitre, tasks, settings as settings_routes, langflow, api_keys, soc_metrics, triage_recommendations, search, validation, features, oidc, enrichments, queue_status, ai_triage_context
+from app.api.routes import admin_auth, alerts, audit, auth, cases, dashboard, dummy_data, link_templates, mitre, tasks, settings as settings_routes, langflow, api_keys, soc_metrics, triage_recommendations, search, validation, features, oidc, enrichments, queue_status, context_entries
 from app.api.routes import websocket as ws_route
 # from app.api.routes import admin_auth, alerts, auth, cases, dashboard, dummy_data, link_templates, mitre, soc_metrics, tasks, api_keys
 # Import models to register them with SQLModel
@@ -203,7 +203,7 @@ app.add_middleware(
 app.include_router(cases.router, prefix="/api/v1")
 app.include_router(alerts.router, prefix="/api/v1")
 app.include_router(triage_recommendations.router, prefix="/api/v1")
-app.include_router(ai_triage_context.router, prefix="/api/v1")
+app.include_router(context_entries.router, prefix="/api/v1")
 app.include_router(tasks.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(oidc.router, prefix="/api/v1")

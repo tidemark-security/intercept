@@ -246,7 +246,7 @@ async def handle_triage_alert(payload: Dict[str, Any]):
     from sqlmodel import select
     from app.models.models import TriageRecommendation
     from app.models.enums import RecommendationStatus
-    from app.services.ai_triage_context_service import AITriageContextService
+    from app.services.context_service import ContextService
 
     alert_id = payload["alert_id"]
     session_id = uuid4()  # Generate a new session ID for each triage
@@ -287,7 +287,7 @@ async def handle_triage_alert(payload: Dict[str, Any]):
                 "Alert triage flow not configured. Please set 'langflow.alert_triage_flow_id' in settings."
             )
 
-        applied_context_entries = await AITriageContextService(db).get_matching_context_for_alert(int(alert_id))
+        applied_context_entries = await ContextService(db).get_matching_context_for_alert(int(alert_id))
         queued_result = await db.execute(
             select(TriageRecommendation).where(
                 TriageRecommendation.alert_id == int(alert_id),

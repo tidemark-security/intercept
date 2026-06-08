@@ -113,14 +113,12 @@ class RealtimeEventType(str, Enum):
     TRIAGE_COMPLETED = "triage_completed"
 
 
-class AITriageContextScopeType(str, Enum):
-    """Structured scopes for analyst-authored AI triage context."""
+class ContextCriterionType(str, Enum):
+    """Criteria types for analyst-authored context entries."""
 
-    GLOBAL = "GLOBAL"
     ALERT_SOURCE = "ALERT_SOURCE"
-    CASE = "CASE"
-    USER_ACCOUNT = "USER_ACCOUNT"
-    HOST_SYSTEM = "HOST_SYSTEM"
+    ACTOR = "ACTOR"
+    SYSTEM = "SYSTEM"
     OBSERVABLE = "OBSERVABLE"
     TAG = "TAG"
 

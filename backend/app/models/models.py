@@ -31,7 +31,7 @@ from app.models.enums import (
     RejectionCategory,
     MessageFeedback,
     RealtimeEventType,
-    AITriageContextScopeType,
+    ContextCriterionType,
 )
 
 TimelineGraphEntityType = Literal["case", "task"]
@@ -1054,35 +1054,30 @@ class TriageRecommendationRead(SQLModel):
     applied_context_entries: List[Dict[str, Any]] = []
 
 
-class AITriageContextScope(SQLModel):
-    """Structured scope for analyst-authored AI triage context."""
+class ContextCriterion(SQLModel):
+    """Single narrowing criterion for an analyst-authored context entry."""
 
-    type: AITriageContextScopeType
-    value: Optional[str] = Field(default=None, max_length=255)
+    type: ContextCriterionType
+    value: str = Field(min_length=1, max_length=255)
 
     @model_validator(mode="after")
-    def validate_value_for_scope(self) -> "AITriageContextScope":
-        if self.type == AITriageContextScopeType.GLOBAL:
-            self.value = None
-            return self
-        if not self.value or not self.value.strip():
-            raise ValueError("Scope value is required unless scope type is GLOBAL")
+    def validate_value(self) -> "ContextCriterion":
         self.value = self.value.strip()
+        if not self.value:
+            raise ValueError("Criterion value is required")
         return self
 
 
-class AITriageContextEntry(SQLModel, table=True):
-    """Shared analyst-authored context injected into matching AI triage runs."""
+class ContextEntry(SQLModel, table=True):
+    """Shared analyst-authored context available to matching workflows."""
 
-    __tablename__ = "ai_triage_context_entries"  # type: ignore
+    __tablename__ = "context_entries"  # type: ignore
     __table_args__ = (
-        Index("ix_ai_triage_context_scope", "scope_type", "scope_value"),
-        Index("ix_ai_triage_context_active", "expires_at", "expired_at"),
+        Index("ix_context_entries_active", "expires_at", "expired_at"),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    scope_type: AITriageContextScopeType = Field(sa_column=Column(SAEnum(AITriageContextScopeType), nullable=False))
-    scope_value: Optional[str] = Field(default=None, max_length=255, index=True)
+    criteria: List[Dict[str, str]] = Field(default_factory=list, sa_column=Column(JSONB, nullable=False))
     body: str = Field(min_length=1)
     author: str = Field(max_length=100)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
@@ -1091,33 +1086,33 @@ class AITriageContextEntry(SQLModel, table=True):
     expired_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
 
 
-class AITriageContextEntryCreate(SQLModel):
-    """Schema for creating shared AI triage context."""
+class ContextEntryCreate(SQLModel):
+    """Schema for creating shared context."""
 
-    scope: AITriageContextScope
+    criteria: List[ContextCriterion] = Field(default_factory=list)
     body: str = Field(min_length=1, max_length=4000)
     expires_at: datetime
 
 
-class AITriageContextEntryUpdate(SQLModel):
-    """Schema for editing shared AI triage context."""
+class ContextEntryUpdate(SQLModel):
+    """Schema for editing shared context."""
 
-    scope: Optional[AITriageContextScope] = None
+    criteria: Optional[List[ContextCriterion]] = None
     body: Optional[str] = Field(default=None, min_length=1, max_length=4000)
     expires_at: Optional[datetime] = None
 
     @model_validator(mode="after")
-    def validate_has_updates(self) -> "AITriageContextEntryUpdate":
-        if not self.model_fields_set.intersection({"scope", "body", "expires_at"}):
+    def validate_has_updates(self) -> "ContextEntryUpdate":
+        if not self.model_fields_set.intersection({"criteria", "body", "expires_at"}):
             raise ValueError("At least one editable field must be provided")
         return self
 
 
-class AITriageContextEntryRead(SQLModel):
-    """Schema for reading shared AI triage context."""
+class ContextEntryRead(SQLModel):
+    """Schema for reading shared context."""
 
     id: int
-    scope: AITriageContextScope
+    criteria: List[ContextCriterion] = Field(default_factory=list)
     body: str
     author: str
     created_at: datetime
