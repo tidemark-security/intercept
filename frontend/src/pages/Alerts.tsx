@@ -5,6 +5,10 @@ import { useParams } from 'react-router-dom';
 import { CheckCircle2, Copy, FolderPlus, Link2, Tags, X } from 'lucide-react';
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { Button } from "@/components/buttons/Button";
+import { Select } from "@/components/forms/Select";
+import { TagsManager } from "@/components/forms/TagsManager";
+import { TextArea } from "@/components/forms/TextArea";
+import { TextField } from "@/components/forms/TextField";
 import { Dialog } from "@/components/overlays/Dialog";
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
@@ -12,6 +16,10 @@ import { EntityList } from "@/components/data-display/EntityList";
 import { UnifiedTimeline } from "@/components/timeline/UnifiedTimeline";
 import { RightDock } from '@/components/layout/RightDock';
 import { CaseSelectorModal } from "@/components/entities/CaseSelectorModal";
+import {
+  DuplicateTargetSelectorModal,
+  type DuplicateTargetSelection,
+} from "@/components/entities/DuplicateTargetSelectorModal";
 import { useAlerts } from "@/hooks/useAlerts";
 import { useAlertDetail } from "@/hooks/useAlertDetail";
 import { convertHumanIdToNumeric } from "@/hooks/useAlertIdFromHumanId";
@@ -93,9 +101,7 @@ function Alerts() {
   const [bulkStatus, setBulkStatus] = useState<AlertStatus>('IN_PROGRESS');
   const [bulkCaseTitle, setBulkCaseTitle] = useState('');
   const [bulkCaseDescription, setBulkCaseDescription] = useState('');
-  const [bulkDuplicateCaseId, setBulkDuplicateCaseId] = useState('');
-  const [bulkDuplicateAlertId, setBulkDuplicateAlertId] = useState('');
-  const [bulkTags, setBulkTags] = useState('');
+  const [bulkTags, setBulkTags] = useState<string[]>([]);
 
   // Column visibility state: controls which columns are visible
   // On mobile (<768px): typically 'left' | 'center' | 'right' for single column
@@ -291,6 +297,7 @@ function Alerts() {
     onSuccess: (data) => {
       setBulkSelectedAlertIds(new Set());
       setBulkDialog(null);
+      setBulkTags([]);
       setIsBulkCaseSelectorOpen(false);
       if (data.case_human_id) {
         navigate(`/cases/${data.case_human_id}`);
@@ -481,27 +488,26 @@ function Alerts() {
     });
   };
 
-  const handleBulkDuplicateSubmit = () => {
-    const duplicateTargetCaseId = Number.parseInt(bulkDuplicateCaseId, 10);
-    const duplicateTargetAlertId = Number.parseInt(bulkDuplicateAlertId, 10);
+  const handleBulkDuplicateTargetSelect = (target: DuplicateTargetSelection) => {
     bulkAlertActionMutation.mutate({
       alert_ids: bulkSelectedIds,
       action: 'close_duplicate',
-      duplicate_target_case_id: Number.isNaN(duplicateTargetCaseId) ? null : duplicateTargetCaseId,
-      duplicate_target_alert_id: Number.isNaN(duplicateTargetAlertId) ? null : duplicateTargetAlertId,
+      duplicate_target_case_id: target.type === 'case' ? target.id : null,
+      duplicate_target_alert_id: target.type === 'alert' ? target.id : null,
     });
   };
 
   const handleBulkTagsSubmit = () => {
-    const tags = bulkTags
-      .split(',')
-      .map((tag) => tag.trim())
-      .filter(Boolean);
     bulkAlertActionMutation.mutate({
       alert_ids: bulkSelectedIds,
       action: 'add_tags',
-      tags,
+      tags: bulkTags,
     });
+  };
+
+  const handleBulkTagsClose = () => {
+    setBulkTags([]);
+    setBulkDialog(null);
   };
 
   // Tag update handler
@@ -890,112 +896,121 @@ function Alerts() {
         isLinking={bulkAlertActionMutation.isPending}
       />
 
+      {bulkDialog === 'duplicate' ? (
+        <DuplicateTargetSelectorModal
+          isOpen
+          onClose={() => setBulkDialog(null)}
+          onSelectTarget={handleBulkDuplicateTargetSelect}
+          excludedAlertIds={bulkSelectedIds}
+          isSubmitting={bulkAlertActionMutation.isPending}
+        />
+      ) : null}
+
       <Dialog open={bulkDialog === 'status'} onOpenChange={(open) => !open && setBulkDialog(null)}>
-        <Dialog.Content className="w-[420px] max-w-[90vw] p-6">
-          <div className="flex flex-col gap-4">
+        <Dialog.Content className="w-[520px] max-w-[90vw]">
+          <div className="flex w-full items-center justify-between border-b border-solid border-neutral-border px-6 py-4">
             <span className="text-heading-3 font-heading-3 text-default-font">Update Status</span>
-            <select
+            <Button
+              variant="neutral-tertiary"
+              size="small"
+              icon={<X />}
+              onClick={() => setBulkDialog(null)}
+            />
+          </div>
+          <div className="w-full px-6 py-4">
+            <Select
+              className="w-full"
+              label="Status"
+              placeholder="Select status"
               value={bulkStatus}
-              onChange={(event) => setBulkStatus(event.target.value as AlertStatus)}
-              className="h-10 rounded-md border border-solid border-neutral-border bg-default-background px-3 text-body font-body text-default-font"
+              onValueChange={(value) => setBulkStatus(value as AlertStatus)}
             >
-              <option value="NEW">New</option>
-              <option value="IN_PROGRESS">In Progress</option>
-              <option value="CLOSED_TP">Closed: True Positive</option>
-              <option value="CLOSED_BP">Closed: Benign Positive</option>
-              <option value="CLOSED_FP">Closed: False Positive</option>
-              <option value="CLOSED_UNRESOLVED">Closed: Unresolved</option>
-            </select>
-            <div className="flex justify-end gap-2">
-              <Button variant="neutral-secondary" onClick={() => setBulkDialog(null)}>Cancel</Button>
-              <Button onClick={handleBulkStatusSubmit} loading={bulkAlertActionMutation.isPending}>
-                Apply
-              </Button>
-            </div>
+              <Select.Item value="NEW">New</Select.Item>
+              <Select.Item value="IN_PROGRESS">In Progress</Select.Item>
+              <Select.Item value="CLOSED_TP">Closed: True Positive</Select.Item>
+              <Select.Item value="CLOSED_BP">Closed: Benign Positive</Select.Item>
+              <Select.Item value="CLOSED_FP">Closed: False Positive</Select.Item>
+              <Select.Item value="CLOSED_UNRESOLVED">Closed: Unresolved</Select.Item>
+            </Select>
+          </div>
+          <div className="flex w-full items-center justify-end gap-2 border-t border-solid border-neutral-border px-6 py-4">
+            <Button variant="neutral-secondary" onClick={() => setBulkDialog(null)}>Cancel</Button>
+            <Button onClick={handleBulkStatusSubmit} loading={bulkAlertActionMutation.isPending}>
+              Apply
+            </Button>
           </div>
         </Dialog.Content>
       </Dialog>
 
       <Dialog open={bulkDialog === 'create_case'} onOpenChange={(open) => !open && setBulkDialog(null)}>
-        <Dialog.Content className="w-[520px] max-w-[90vw] p-6">
-          <div className="flex flex-col gap-4">
+        <Dialog.Content className="w-[560px] max-w-[90vw]">
+          <div className="flex w-full items-center justify-between border-b border-solid border-neutral-border px-6 py-4">
             <span className="text-heading-3 font-heading-3 text-default-font">Create Case From Alerts</span>
-            <input
-              value={bulkCaseTitle}
-              onChange={(event) => setBulkCaseTitle(event.target.value)}
-              placeholder="Case title"
-              className="h-10 rounded-md border border-solid border-neutral-border bg-default-background px-3 text-body font-body text-default-font"
+            <Button
+              variant="neutral-tertiary"
+              size="small"
+              icon={<X />}
+              onClick={() => setBulkDialog(null)}
             />
-            <textarea
-              value={bulkCaseDescription}
-              onChange={(event) => setBulkCaseDescription(event.target.value)}
-              placeholder="Description"
-              className="min-h-24 rounded-md border border-solid border-neutral-border bg-default-background px-3 py-2 text-body font-body text-default-font"
-            />
-            <div className="flex justify-end gap-2">
-              <Button variant="neutral-secondary" onClick={() => setBulkDialog(null)}>Cancel</Button>
-              <Button
-                onClick={handleBulkCreateCaseSubmit}
-                disabled={!bulkCaseTitle.trim()}
-                loading={bulkAlertActionMutation.isPending}
-              >
-                Create
-              </Button>
-            </div>
+          </div>
+          <div className="flex w-full flex-col gap-4 px-6 py-4">
+            <TextField className="w-full" label="Case Title" helpText="">
+              <TextField.Input
+                value={bulkCaseTitle}
+                onChange={(event) => setBulkCaseTitle(event.target.value)}
+                placeholder="Case title"
+              />
+            </TextField>
+            <TextArea className="w-full" label="Description" helpText="">
+              <TextArea.Input
+                value={bulkCaseDescription}
+                onChange={(event) => setBulkCaseDescription(event.target.value)}
+                placeholder="Description"
+              />
+            </TextArea>
+          </div>
+          <div className="flex w-full items-center justify-end gap-2 border-t border-solid border-neutral-border px-6 py-4">
+            <Button variant="neutral-secondary" onClick={() => setBulkDialog(null)}>Cancel</Button>
+            <Button
+              onClick={handleBulkCreateCaseSubmit}
+              disabled={!bulkCaseTitle.trim()}
+              loading={bulkAlertActionMutation.isPending}
+            >
+              Create
+            </Button>
           </div>
         </Dialog.Content>
       </Dialog>
 
-      <Dialog open={bulkDialog === 'duplicate'} onOpenChange={(open) => !open && setBulkDialog(null)}>
-        <Dialog.Content className="w-[520px] max-w-[90vw] p-6">
-          <div className="flex flex-col gap-4">
-            <span className="text-heading-3 font-heading-3 text-default-font">Close As Duplicate</span>
-            <input
-              value={bulkDuplicateCaseId}
-              onChange={(event) => setBulkDuplicateCaseId(event.target.value)}
-              placeholder="Target case numeric ID"
-              className="h-10 rounded-md border border-solid border-neutral-border bg-default-background px-3 text-body font-body text-default-font"
-            />
-            <input
-              value={bulkDuplicateAlertId}
-              onChange={(event) => setBulkDuplicateAlertId(event.target.value)}
-              placeholder="Target alert numeric ID"
-              className="h-10 rounded-md border border-solid border-neutral-border bg-default-background px-3 text-body font-body text-default-font"
-            />
-            <div className="flex justify-end gap-2">
-              <Button variant="neutral-secondary" onClick={() => setBulkDialog(null)}>Cancel</Button>
-              <Button
-                onClick={handleBulkDuplicateSubmit}
-                disabled={!bulkDuplicateCaseId.trim() && !bulkDuplicateAlertId.trim()}
-                loading={bulkAlertActionMutation.isPending}
-              >
-                Close
-              </Button>
-            </div>
-          </div>
-        </Dialog.Content>
-      </Dialog>
-
-      <Dialog open={bulkDialog === 'tags'} onOpenChange={(open) => !open && setBulkDialog(null)}>
-        <Dialog.Content className="w-[420px] max-w-[90vw] p-6">
-          <div className="flex flex-col gap-4">
+      <Dialog open={bulkDialog === 'tags'} onOpenChange={(open) => !open && handleBulkTagsClose()}>
+        <Dialog.Content className="w-[520px] max-w-[90vw]">
+          <div className="flex w-full items-center justify-between border-b border-solid border-neutral-border px-6 py-4">
             <span className="text-heading-3 font-heading-3 text-default-font">Add Tags</span>
-            <input
-              value={bulkTags}
-              onChange={(event) => setBulkTags(event.target.value)}
-              placeholder="tag-one, tag-two"
-              className="h-10 rounded-md border border-solid border-neutral-border bg-default-background px-3 text-body font-body text-default-font"
+            <Button
+              variant="neutral-tertiary"
+              size="small"
+              icon={<X />}
+              onClick={handleBulkTagsClose}
             />
-            <div className="flex justify-end gap-2">
-              <Button variant="neutral-secondary" onClick={() => setBulkDialog(null)}>Cancel</Button>
-              <Button
-                onClick={handleBulkTagsSubmit}
-                disabled={!bulkTags.split(',').some((tag) => tag.trim())}
-                loading={bulkAlertActionMutation.isPending}
-              >
-                Add
-              </Button>
-            </div>
+          </div>
+          <div className="w-full px-6 py-4">
+            <TagsManager
+              tags={bulkTags}
+              onTagsChange={setBulkTags}
+              label="Tags"
+              placeholder="Enter tags and press Enter"
+              className="w-full"
+            />
+          </div>
+          <div className="flex w-full items-center justify-end gap-2 border-t border-solid border-neutral-border px-6 py-4">
+            <Button variant="neutral-secondary" onClick={handleBulkTagsClose}>Cancel</Button>
+            <Button
+              onClick={handleBulkTagsSubmit}
+              disabled={bulkTags.length === 0}
+              loading={bulkAlertActionMutation.isPending}
+            >
+              Add
+            </Button>
           </div>
         </Dialog.Content>
       </Dialog>
