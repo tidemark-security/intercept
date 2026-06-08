@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
@@ -12,6 +13,20 @@ from app.services.settings_service import SettingsService
 
 
 DEFAULT_MAX_LOOKBACK_DAYS = 180
+
+MATCH_SQL = """
+    (
+        jsonb_extract_path_text(timeline_match.item, 'type') = 'observable'
+        AND upper(coalesce(jsonb_extract_path_text(timeline_match.item, 'observable_type'), '')) = :observable_type
+        AND lower(coalesce(jsonb_extract_path_text(timeline_match.item, 'observable_value'), '')) = :observable_value
+    )
+    OR EXISTS (
+        SELECT 1
+        FROM jsonb_to_recordset(CAST(:field_mappings AS jsonb)) AS field_mapping(item_type text, field_name text)
+        WHERE jsonb_extract_path_text(timeline_match.item, 'type') = field_mapping.item_type
+          AND lower(coalesce(jsonb_extract_path_text(timeline_match.item, field_mapping.field_name), '')) = :observable_value
+    )
+"""
 
 CORRELATION_FIELD_MAPPINGS: dict[str, list[tuple[str, str]]] = {
     "IP": [
@@ -235,35 +250,27 @@ class CrossCaseObservableProvider(EnrichmentProvider):
             "matches": matches,
         }
 
-    def _build_match_sql(self, observable_type: str) -> tuple[str, str, dict[str, str]]:
+    def _build_match_sql(self, observable_type: str) -> tuple[str, str, dict[str, Any]]:
         field_mappings = CORRELATION_FIELD_MAPPINGS.get(observable_type, [])
         candidate_types = sorted({"observable", *(item_type for item_type, _ in field_mappings)})
-
-        prefilter_parts: list[str] = []
-        for item_type in candidate_types:
-            prefilter_parts.append(f"""timeline_items @? '$.* ? (@.type == "{item_type}")'""")
-            prefilter_parts.append(f"""timeline_items @? '$[*] ? (@.type == "{item_type}")'""")
-
-        match_parts = [
-            """(
-                timeline_match.item->>'type' = 'observable'
-                AND upper(coalesce(timeline_match.item->>'observable_type', '')) = :observable_type
-                AND lower(coalesce(timeline_match.item->>'observable_value', '')) = :observable_value
-            )"""
+        field_mapping_records = [
+            {"item_type": item_type, "field_name": field_name}
+            for item_type, field_name in field_mappings
         ]
-        params: dict[str, str] = {}
-        for index, (item_type, field_name) in enumerate(field_mappings):
-            type_param = f"field_item_type_{index}"
-            match_parts.append(
-                f"""(
-                    timeline_match.item->>'type' = :{type_param}
-                    AND lower(coalesce(timeline_match.item->>'{field_name}', '')) = :observable_value
-                )"""
-            )
-            params[type_param] = item_type
+        params: dict[str, Any] = {
+            "field_mappings": json.dumps(field_mapping_records),
+        }
+        prefilter_parts: list[str] = []
+        for index, item_type in enumerate(candidate_types):
+            object_path_param = f"candidate_object_path_{index}"
+            array_path_param = f"candidate_array_path_{index}"
+            encoded_item_type = json.dumps(item_type)
+            prefilter_parts.append(f"timeline_items @? CAST(:{object_path_param} AS jsonpath)")
+            prefilter_parts.append(f"timeline_items @? CAST(:{array_path_param} AS jsonpath)")
+            params[object_path_param] = f"$.* ? (@.type == {encoded_item_type})"
+            params[array_path_param] = f"$[*] ? (@.type == {encoded_item_type})"
 
-        match_sql = "(" + " OR ".join(match_parts) + ")"
-        return " OR ".join(prefilter_parts), match_sql, params
+        return " OR ".join(prefilter_parts), f"({MATCH_SQL})", params
 
     async def _max_lookback_days(self, settings: SettingsService) -> int:
         try:
