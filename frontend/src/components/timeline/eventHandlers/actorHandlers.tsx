@@ -14,11 +14,10 @@ import type { ExternalActorItem } from '@/types/generated/models/ExternalActorIt
 import type { ThreatActorItem } from '@/types/generated/models/ThreatActorItem';
 import { getTimelineIcon } from '@/utils/timelineIcons';
 
-import { Badge } from '@/components/data-display/Badge';
-import type { CardConfig, CardFactoryOptions, CardSystem, ItemCharacteristic } from '../TimelineCardFactory';
+import type { CardConfig, CardFactoryOptions, CardMetadataItem, CardSystem, ItemCharacteristic } from '../TimelineCardFactory';
 import { processCharacteristics } from '../TimelineCardFactory';
 
-import { Biohazard, Briefcase, Building, Cpu, Crown, Key, Mail, MessageSquare, Percent, Phone, Shield, Tag, User, Wrench } from 'lucide-react';
+import { Biohazard, Briefcase, Building, Cpu, Crown, IdCard, Key, Mail, MapPin, Percent, Phone, ShieldOff, Tag, Users, Wrench } from 'lucide-react';
 /**
  * Check if item is an InternalActorItem
  */
@@ -94,19 +93,92 @@ const INTERNAL_ACTOR_CHARACTERISTICS: Record<string, ActorCharacteristic> = {
     badgeIcon: <Cpu />,
     badgeText: 'Service Account',
   },
+  is_disabled: {
+    priority: 6,
+    color: 'warning',
+    accentText: 'Disabled',
+    accentIcon: <ShieldOff />,
+    badgeIcon: <ShieldOff />,
+    badgeText: 'Disabled',
+  },
 };
+
+type EnrichmentRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): EnrichmentRecord | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as EnrichmentRecord
+    : null;
+}
+
+function getString(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed || undefined;
+  }
+
+  if (typeof value === 'number') {
+    return String(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(getString).find(Boolean);
+  }
+
+  return undefined;
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  return values.map(getString).find(Boolean);
+}
+
+function getBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function getInternalActorEnrichments(item: InternalActorItem): {
+  googleWorkspace: EnrichmentRecord | null;
+  entraId: EnrichmentRecord | null;
+  ldap: EnrichmentRecord | null;
+} {
+  const enrichments = asRecord((item as InternalActorItem & { enrichments?: unknown }).enrichments);
+
+  return {
+    googleWorkspace: asRecord(enrichments?.google_workspace),
+    entraId: asRecord(enrichments?.entra_id),
+    ldap: asRecord(enrichments?.ldap),
+  };
+}
+
+function getManagerDisplay(item: InternalActorItem, entraId: EnrichmentRecord | null, ldap: EnrichmentRecord | null): string | undefined {
+  return firstString(
+    entraId?.manager_name,
+    entraId?.manager_email,
+    entraId?.manager_upn,
+    ldap?.manager_cn,
+    item.manager_id ? `Manager ID ${item.manager_id}` : undefined
+  );
+}
+
+function isInternalActorExplicitlyDisabled(
+  googleWorkspace: EnrichmentRecord | null,
+  entraId: EnrichmentRecord | null
+): boolean {
+  return getBoolean(googleWorkspace?.suspended) === true || getBoolean(entraId?.account_enabled) === false;
+}
 
 /**
  * Handle InternalActorItem timeline items.
  * 
  * Field mapping:
- * - Title: User name (most important identifier)
- * - Line1: User ID
- * - Line2: Job title (if present)
- * - Line3: Organization/Department (if present)
+ * - Title: User name (or user id when name is unavailable)
+ * - Line1: User ID / username
+ * - Line2: Job title
+ * - Line3: Department / organization
+ * - Metadata: Manager, office/location, and phone after higher-value org metadata
  * - characterFlags: User characteristics as chips (VIP, Privileged, etc.)
  * - accentText/accentIcon: Highest priority risk indicator
- * - actionButtons: Automatically generated based on available fields (email, phone, Teams chat, etc.)
+ * - actionButtons: Automatically generated based on available fields
  * - Icon: User
  * - Color: Based on highest priority risk indicator
  */
@@ -120,20 +192,69 @@ export function handleInternalActorItem(
 
   const Icon = getTimelineIcon('internal_actor');
   const IconComponent = Icon ? <Icon /> : undefined;
+  const { googleWorkspace, entraId, ldap } = getInternalActorEnrichments(item);
+
+  const userIdentifier = firstString(
+    item.user_id,
+    entraId?.sam_account_name,
+    entraId?.upn,
+    entraId?.email,
+    googleWorkspace?.primary_email,
+    ldap?.sam_account_name,
+    ldap?.upn,
+    item.contact_email
+  );
+  const displayName = firstString(
+    item.name,
+    googleWorkspace?.display_name,
+    entraId?.display_name,
+    ldap?.display_name,
+    userIdentifier
+  );
+  const jobTitle = firstString(item.title, googleWorkspace?.job_title, entraId?.job_title, ldap?.job_title);
+  const departmentOrOrg = firstString(
+    item.org,
+    entraId?.department,
+    googleWorkspace?.department,
+    googleWorkspace?.organization,
+    ldap?.department,
+    ldap?.company,
+    googleWorkspace?.org_unit_path
+  );
+  const manager = getManagerDisplay(item, entraId, ldap);
+  const officeLocation = firstString(entraId?.office, ldap?.office);
+  const phone = firstString(item.contact_phone, entraId?.mobile_phone, entraId?.business_phones, ldap?.phone, ldap?.mobile, googleWorkspace?.phone);
+  const isDisabled = isInternalActorExplicitlyDisabled(googleWorkspace, entraId);
 
   // Use the generic characteristics processor
   const { color, accentText, accentIcon, characterFlags } = processCharacteristics(item, {
     characteristics: INTERNAL_ACTOR_CHARACTERISTICS,
+    getFields: actor => ({
+      is_high_risk: actor.is_high_risk === true,
+      is_vip: actor.is_vip === true,
+      is_privileged: actor.is_privileged === true,
+      is_contractor: actor.is_contractor === true,
+      is_service_account: actor.is_service_account === true,
+      is_disabled: isDisabled,
+    }),
   });
 
+  const metadataItems: CardMetadataItem[] = [
+    ...(manager ? [{ key: 'manager', label: 'Manager', value: manager, icon: <Users /> }] : []),
+    ...(officeLocation ? [{ key: 'office', label: 'Office / Location', value: officeLocation, icon: <MapPin /> }] : []),
+    ...(phone ? [{ key: 'phone', label: 'Phone', value: phone, icon: <Phone /> }] : []),
+  ];
+
   return {
-    title: item.name ? `${item.name}` : 'Internal Actor',
-    line1: item.user_id || undefined,
-    line1Icon: item.user_id ? <User /> : undefined,
-    line2: item.title || undefined,
-    line2Icon: item.title ? <Briefcase /> : undefined,
-    line3: item.org || undefined,
-    line3Icon: item.org ? <Building /> : undefined,
+    title: displayName || 'Internal Actor',
+    line1: userIdentifier,
+    line1Icon: userIdentifier ? <IdCard /> : undefined,
+    line2: jobTitle,
+    line2Icon: jobTitle ? <Briefcase /> : undefined,
+    line3: departmentOrOrg,
+    line3Icon: departmentOrOrg ? <Building /> : undefined,
+    metadataItems,
+    metadataLayout: 'stack',
     characterFlags,
     accentText,
     accentIcon,

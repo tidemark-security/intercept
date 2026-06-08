@@ -23,6 +23,7 @@ import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useTimezonePreference } from "@/contexts/TimezoneContext";
 import { useToast } from "@/contexts/ToastContext";
+import { useSession } from "@/contexts/sessionContext";
 import { useVisualFilterPreference } from "@/contexts/VisualFilterContext";
 import type { ApiKeyCreateResponse } from "@/types/generated/models/ApiKeyCreateResponse";
 import type { ApiKeyRead } from "@/types/generated/models/ApiKeyRead";
@@ -91,6 +92,7 @@ type PasskeyModalMode = "register" | "rename";
 
 function ProfileManagement() {
   const { themePreference, setThemePreference } = useTheme();
+  const { localCredentialManagementAllowed = true } = useSession();
   const { timezonePreference, setTimezonePreference } = useTimezonePreference();
   const {
     visualFilterPreference,
@@ -453,6 +455,7 @@ function ProfileManagement() {
           </div>
 
           <div className="flex w-full flex-col items-start gap-8">
+            {localCredentialManagementAllowed ? (
             <div className="flex w-full flex-col items-start gap-6 rounded-md border border-solid border-neutral-border bg-neutral-50 px-6 py-6">
               <div className="flex w-full items-center gap-2">
                 <IconWithBackground
@@ -645,6 +648,7 @@ function ProfileManagement() {
 
               </div>
             </div>
+            ) : null}
 
             <div className="flex w-full flex-col items-start gap-6 rounded-md border border-solid border-neutral-border bg-neutral-50 px-6 py-6">
               <div className="flex w-full items-center gap-2">
@@ -765,9 +769,11 @@ function ProfileManagement() {
                 <span className="grow shrink-0 basis-0 text-heading-2 font-heading-2 text-default-font">
                   Passkeys
                 </span>
-                <Button icon={<Plus />} onClick={openRegisterPasskeyModal} disabled={isRegisteringPasskey}>
-                  {isRegisteringPasskey ? "Registering..." : "Register New Passkey"}
-                </Button>
+                {localCredentialManagementAllowed ? (
+                  <Button icon={<Plus />} onClick={openRegisterPasskeyModal} disabled={isRegisteringPasskey}>
+                    {isRegisteringPasskey ? "Registering..." : "Register New Passkey"}
+                  </Button>
+                ) : null}
               </div>
 
               <span className="text-body font-body text-subtext-color">
@@ -816,12 +822,14 @@ function ProfileManagement() {
                 ))}
               </div>
 
-              <Alert
-                variant="neutral"
-                icon={<Shield />}
-                title="Enhance your security"
-                description="We recommend registering at least two passkeys on different devices to ensure you always have a backup authentication method."
-              />
+              {localCredentialManagementAllowed ? (
+                <Alert
+                  variant="neutral"
+                  icon={<Shield />}
+                  title="Enhance your security"
+                  description="We recommend registering at least two passkeys on different devices to ensure you always have a backup authentication method."
+                />
+              ) : null}
             </div>
           </div>
         </div>

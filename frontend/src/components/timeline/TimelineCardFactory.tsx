@@ -65,6 +65,24 @@ export type CardSystem = 'default' | 'success' | 'warning' | 'error';
  */
 export type CardSize = 'x-large'| 'large' | 'medium' | 'small';
 
+export type TimelineCardVariant = 'default' | 'super-compact';
+
+/**
+ * Card metadata fields rendered below the primary rows.
+ */
+export interface CardMetadataItem {
+  key: string;
+  label: string;
+  value: React.ReactNode;
+  icon?: React.ReactNode;
+}
+
+/**
+ * Metadata layout variants. `stack` is the current default; `two-column`
+ * reserves a future denser layout for rich entity cards.
+ */
+export type CardMetadataLayout = 'stack' | 'two-column';
+
 /**
  * Item characteristic definition for priority-based display
  */
@@ -157,6 +175,8 @@ export function processCharacteristics<T extends TimelineItem>(
 export interface CardFactoryOptions {
   /** Override card size (default: 'large') */
   size?: CardSize;
+  /** Denser embedded card treatment for graph/tray previews. */
+  variant?: TimelineCardVariant;
   /** Click handler for card interactions */
   onClick?: (item: TimelineItem) => void;
   /** Custom action buttons */
@@ -206,6 +226,8 @@ export interface CardConfig {
   actionButtons?: React.ReactNode;
   system?: CardSystem;
   characterFlags?: React.ReactNode;
+  metadataItems?: CardMetadataItem[];
+  metadataLayout?: CardMetadataLayout;
   line1Icon?: React.ReactNode;
   line2Icon?: React.ReactNode;
   line3Icon?: React.ReactNode;

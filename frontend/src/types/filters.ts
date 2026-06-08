@@ -29,7 +29,7 @@ export interface DateRange {
 
 /**
  * Alert list filter state
- * Used to control CaseAlertFilterCompact and filter alerts API requests
+ * Used to control entity list filters and alert API requests
  */
 export interface FilterState {
   /** Search query for alert description/source */
@@ -46,6 +46,10 @@ export interface FilterState {
    * Empty array is treated as null (no filter applied)
    */
   status: AlertStatus[] | null;
+  /** Tags alerts must include. Empty array is treated as null. */
+  includeTags?: string[] | null;
+  /** Tags alerts must exclude. Empty array is treated as null. */
+  excludeTags?: string[] | null;
   /** 
    * Selected date range, or null for "All time" (no date filtering)
    * When null, the backend will return all alerts regardless of date
@@ -72,6 +76,10 @@ export interface CaseFilterState {
    * Empty array is treated as null (no filter applied)
    */
   status: CaseStatus[] | null;
+  /** Tags cases must include. Empty array is treated as null. */
+  includeTags?: string[] | null;
+  /** Tags cases must exclude. Empty array is treated as null. */
+  excludeTags?: string[] | null;
   /** 
    * Selected date range, or null for "All time" (no date filtering)
    * When null, the backend will return all cases regardless of date
@@ -98,6 +106,10 @@ export interface TaskFilterState {
    * Empty array is treated as null (no filter applied)
    */
   status: TaskStatus[] | null;
+  /** Tags tasks must include. Empty array is treated as null. */
+  includeTags?: string[] | null;
+  /** Tags tasks must exclude. Empty array is treated as null. */
+  excludeTags?: string[] | null;
   /** 
    * Selected date range, or null for "All time" (no date filtering)
    * When null, the backend will return all tasks regardless of date

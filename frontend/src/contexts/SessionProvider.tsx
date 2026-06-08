@@ -27,6 +27,7 @@ const sessionReducer = (state: SessionState, action: SessionAction): SessionStat
         user: action.payload.user,
         session: action.payload.session,
         mustChangePassword: Boolean(action.payload.mustChangePassword),
+        localCredentialManagementAllowed: action.payload.localCredentialManagementAllowed ?? true,
         lockout: null,
         error: null,
       };
@@ -81,6 +82,7 @@ export const SessionProvider = ({ children }: SessionProviderProps) => {
             user: response.user,
             session: response.session,
             mustChangePassword: response.mustChangePassword || false,
+            localCredentialManagementAllowed: response.localCredentialManagementAllowed ?? true,
           },
         });
       } catch (error) {
@@ -106,6 +108,7 @@ export const SessionProvider = ({ children }: SessionProviderProps) => {
               user: response.user,
               session: response.session,
               mustChangePassword: response.mustChangePassword,
+              localCredentialManagementAllowed: response.localCredentialManagementAllowed ?? true,
             },
           });
         } catch (error) {
@@ -198,6 +201,7 @@ export const SessionProvider = ({ children }: SessionProviderProps) => {
               user: response.user,
               session: response.session,
               mustChangePassword: response.mustChangePassword,
+              localCredentialManagementAllowed: response.localCredentialManagementAllowed ?? true,
             },
           });
           return "authenticated";

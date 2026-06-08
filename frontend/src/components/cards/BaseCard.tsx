@@ -11,6 +11,15 @@ import { Check, Copy, Cpu } from "lucide-react";
 
 export type CopyTarget = "title" | "line1" | "line2" | "line3" | "line4";
 
+export interface BaseCardMetadataItem {
+  key: string;
+  label: string;
+  value: React.ReactNode;
+  icon?: React.ReactNode;
+}
+
+export type BaseCardMetadataLayout = "stack" | "two-column";
+
 function extractTextFromNode(node: React.ReactNode): string {
   if (node == null || typeof node === "boolean") {
     return "";
@@ -48,6 +57,8 @@ interface BaseCardRootProps
   actionButtons?: React.ReactNode;
   system?: "default" | "success" | "warning" | "error";
   characterFlags?: React.ReactNode;
+  metadataItems?: BaseCardMetadataItem[];
+  metadataLayout?: BaseCardMetadataLayout;
   line1Icon?: React.ReactNode;
   line2Icon?: React.ReactNode;
   line3Icon?: React.ReactNode;
@@ -73,6 +84,8 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
       actionButtons,
       system = "default",
       characterFlags,
+      metadataItems,
+      metadataLayout = "stack",
       line1Icon,
       line2Icon,
       line3Icon,
@@ -100,6 +113,7 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
     const hasLineContent = Boolean(
       line1 || line1Icon || line2 || line2Icon || line3 || line3Icon || line4 || line4Icon
     );
+    const visibleMetadataItems = metadataItems?.filter(item => item.value) ?? [];
 
     const isCopyEnabled = useCallback(
       (target: CopyTarget, text: string) =>
@@ -363,6 +377,35 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
               "text-body font-body text-subtext-color",
               "line-clamp-1 break-words text-caption font-caption text-subtext-color"
             )}
+          </div>
+        ) : null}
+        {visibleMetadataItems.length > 0 ? (
+          <div
+            className={cn(
+              "w-full gap-2",
+              size === "small" && "hidden",
+              metadataLayout === "two-column"
+                ? "grid grid-cols-1 md:grid-cols-2"
+                : "flex flex-col"
+            )}
+          >
+            {visibleMetadataItems.map(item => (
+              <div key={item.key} className="flex w-full items-start gap-2 overflow-hidden">
+                {item.icon ? (
+                  <IconWrapper className="mt-0.5 text-caption font-caption text-subtext-color">
+                    {item.icon}
+                  </IconWrapper>
+                ) : null}
+                <div className="min-w-0 flex-1">
+                  <span className="block text-caption-bold font-caption-bold text-subtext-color">
+                    {item.label}
+                  </span>
+                  <span className="line-clamp-1 break-words text-caption font-caption text-default-font">
+                    {item.value}
+                  </span>
+                </div>
+              </div>
+            ))}
           </div>
         ) : null}
         {characterFlags ? (

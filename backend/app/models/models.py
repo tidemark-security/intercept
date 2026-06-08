@@ -31,6 +31,7 @@ from app.models.enums import (
     RejectionCategory,
     MessageFeedback,
     RealtimeEventType,
+    ContextCriterionType,
 )
 
 TimelineGraphEntityType = Literal["case", "task"]
@@ -466,6 +467,10 @@ class AlertItem(ItemBase):
     status: Optional[AlertStatus] = None
     priority: Optional[Priority] = None
     assignee: Optional[str] = None  # unified field for assignee
+    entity_description: Optional[str] = Field(
+        default=None,
+        description="Description from the linked alert entity; distinct from the timeline link description",
+    )
     # Optionally embedded timeline items from the linked alert (populated when include_linked_timelines=true)
     source_timeline_items: Optional[TimelineItemStorage] = Field(
         default=None,
@@ -489,6 +494,10 @@ class CaseItem(ItemBase):
     status: Optional[CaseStatus] = None
     priority: Optional[Priority] = None
     assignee: Optional[str] = None  # unified field for assignee
+    entity_description: Optional[str] = Field(
+        default=None,
+        description="Description from the linked case entity; distinct from the timeline link description",
+    )
     # Optionally embedded timeline items from the linked case (populated when include_linked_timelines=true)
     source_timeline_items: Optional[TimelineItemStorage] = Field(
         default=None,
@@ -512,6 +521,10 @@ class TaskItem(ItemBase):
     status: Optional[TaskStatus] = None
     priority: Optional[Priority] = None
     assignee: Optional[str] = None
+    entity_description: Optional[str] = Field(
+        default=None,
+        description="Description from the linked task entity; distinct from the timeline link description",
+    )
     due_date: Optional[datetime] = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True))
@@ -736,6 +749,8 @@ class CaseUpdate(SQLModel):
     # Array of per-alert closure status updates to apply when closing the case
     # Only used when status is being set to CLOSED
     alert_closure_updates: Optional[List[CaseAlertClosureUpdate]] = None
+    # Optional markdown note to append to the case timeline when closing the case
+    closure_summary: Optional[str] = None
 
     @field_validator("timeline_items", mode="before")
     @classmethod
@@ -876,6 +891,69 @@ class AlertTriageRequest(SQLModel):
     case_description: Optional[str] = None
 
 
+AlertBulkAction = Literal[
+    "update_status",
+    "link_case",
+    "create_case",
+    "close_duplicate",
+    "add_tags",
+]
+
+
+class AlertBulkActionRequest(SQLModel):
+    """Schema for supported bulk alert actions."""
+
+    alert_ids: List[int] = Field(min_length=1, max_length=200)
+    action: AlertBulkAction
+    status: Optional[AlertStatus] = None
+    disposition: Optional[TriageDisposition] = None
+    case_id: Optional[int] = None
+    case_title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    case_description: Optional[str] = None
+    tags: Optional[List[str]] = None
+    duplicate_target_case_id: Optional[int] = None
+    duplicate_target_alert_id: Optional[int] = None
+    note: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_action_payload(self) -> "AlertBulkActionRequest":
+        if self.action == "update_status" and self.status is None and self.disposition is None:
+            raise ValueError("status or disposition is required for update_status")
+        if (
+            self.action == "update_status"
+            and (
+                self.status == AlertStatus.CLOSED_DUPLICATE
+                or self.disposition == TriageDisposition.DUPLICATE
+            )
+            and not (self.duplicate_target_case_id or self.duplicate_target_alert_id)
+        ):
+            raise ValueError(
+                "duplicate_target_case_id or duplicate_target_alert_id is required when closing duplicates"
+            )
+        if self.action == "link_case" and self.case_id is None:
+            raise ValueError("case_id is required for link_case")
+        if self.action == "create_case" and not self.case_title:
+            raise ValueError("case_title is required for create_case")
+        if self.action == "close_duplicate" and not (
+            self.duplicate_target_case_id or self.duplicate_target_alert_id
+        ):
+            raise ValueError(
+                "duplicate_target_case_id or duplicate_target_alert_id is required for close_duplicate"
+            )
+        if self.action == "add_tags" and not self.tags:
+            raise ValueError("tags are required for add_tags")
+        return self
+
+
+class AlertBulkActionResponse(SQLModel):
+    """Response for bulk alert actions."""
+
+    updated_alerts: List["AlertRead"]
+    updated_count: int
+    case_id: Optional[int] = None
+    case_human_id: Optional[str] = None
+
+
 class AlertRead(AlertBase):
     """Schema for reading an alert."""
 
@@ -954,6 +1032,11 @@ class TriageRecommendation(SQLModel, table=True):
     rejection_reason: Optional[str] = Field(default=None, max_length=500)
     applied_changes: List[Dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSONB))
     error_message: Optional[str] = Field(default=None, max_length=1000, description="Error message if triage failed")
+    applied_context_entries: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSONB),
+        description="Analyst-authored context entries matched and supplied to AI triage",
+    )
 
 
 class TriageRecommendationRead(SQLModel):
@@ -980,6 +1063,74 @@ class TriageRecommendationRead(SQLModel):
     rejection_reason: Optional[str] = None
     applied_changes: List[Dict[str, Any]] = []
     error_message: Optional[str] = None
+    applied_context_entries: List[Dict[str, Any]] = []
+
+
+class ContextCriterion(SQLModel):
+    """Single narrowing criterion for an analyst-authored context entry."""
+
+    type: ContextCriterionType
+    value: str = Field(min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def validate_value(self) -> "ContextCriterion":
+        self.value = self.value.strip()
+        if not self.value:
+            raise ValueError("Criterion value is required")
+        return self
+
+
+class ContextEntry(SQLModel, table=True):
+    """Shared analyst-authored context available to matching workflows."""
+
+    __tablename__ = "context_entries"  # type: ignore
+    __table_args__ = (
+        Index("ix_context_entries_active", "expires_at", "expired_at"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    criteria: List[Dict[str, str]] = Field(default_factory=list, sa_column=Column(JSONB, nullable=False))
+    body: str = Field(min_length=1)
+    author: str = Field(max_length=100)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False, index=True))
+    expired_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+
+
+class ContextEntryCreate(SQLModel):
+    """Schema for creating shared context."""
+
+    criteria: List[ContextCriterion] = Field(default_factory=list)
+    body: str = Field(min_length=1, max_length=4000)
+    expires_at: datetime
+
+
+class ContextEntryUpdate(SQLModel):
+    """Schema for editing shared context."""
+
+    criteria: Optional[List[ContextCriterion]] = None
+    body: Optional[str] = Field(default=None, min_length=1, max_length=4000)
+    expires_at: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def validate_has_updates(self) -> "ContextEntryUpdate":
+        if not self.model_fields_set.intersection({"criteria", "body", "expires_at"}):
+            raise ValueError("At least one editable field must be provided")
+        return self
+
+
+class ContextEntryRead(SQLModel):
+    """Schema for reading shared context."""
+
+    id: int
+    criteria: List[ContextCriterion] = Field(default_factory=list)
+    body: str
+    author: str
+    created_at: datetime
+    updated_at: datetime
+    expires_at: datetime
+    expired_at: Optional[datetime] = None
 
 
 class AuditLog(SQLModel, table=True):
@@ -1336,6 +1487,10 @@ class UserAccount(UserAccountBase, table=True):
         sa_column=Column(UTCDateTime()),
     )
     status: UserStatus = Field(default=UserStatus.ACTIVE)
+    assignable: bool = Field(
+        default=False,
+        description="Whether this account can be assigned entity work. Applies to NHI automation accounts.",
+    )
     must_change_password: bool = Field(default=False)
     failed_login_attempts: int = Field(default=0, ge=0)
     lockout_expires_at: Optional[datetime] = Field(
@@ -1415,6 +1570,7 @@ class UserAccountRead(UserAccountBase):
     oidc_subject: Optional[str] = None
     oidc_issuer: Optional[str] = None
     status: UserStatus
+    assignable: bool = False
     must_change_password: bool
     failed_login_attempts: int
     lockout_expires_at: Optional[datetime]
@@ -1440,6 +1596,7 @@ class UserAccountCreate(HumanUserAccountBase):
 
 class NHIAccountCreate(UserAccountBase):
     """Schema for creating a Non-Human Identity (NHI) account."""
+    assignable: bool = Field(default=False, description="Whether this NHI can be assigned tasks")
     initial_api_key_name: str = Field(
         min_length=1,
         max_length=100,

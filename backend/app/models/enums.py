@@ -113,6 +113,16 @@ class RealtimeEventType(str, Enum):
     TRIAGE_COMPLETED = "triage_completed"
 
 
+class ContextCriterionType(str, Enum):
+    """Criteria types for analyst-authored context entries."""
+
+    ALERT_SOURCE = "ALERT_SOURCE"
+    ACTOR = "ACTOR"
+    SYSTEM = "SYSTEM"
+    OBSERVABLE = "OBSERVABLE"
+    TAG = "TAG"
+
+
 class Protocol(str, Enum):
     """Internet Protocol Numbers from IANA registry."""
     
@@ -443,4 +453,3 @@ class MessageFeedback(str, Enum):
     """Feedback for AI chat messages"""
     POSITIVE = "POSITIVE"
     NEGATIVE = "NEGATIVE"
-

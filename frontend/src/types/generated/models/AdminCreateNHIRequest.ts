@@ -16,6 +16,10 @@ export type AdminCreateNHIRequest = {
      */
     role: UserRole;
     /**
+     * Whether this NHI can be assigned task work
+     */
+    assignable?: boolean;
+    /**
      * Purpose or description of this NHI account
      */
     description?: (string | null);
@@ -28,4 +32,3 @@ export type AdminCreateNHIRequest = {
      */
     initial_api_key_expires_at: string;
 };
-

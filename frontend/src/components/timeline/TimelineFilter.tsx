@@ -7,7 +7,7 @@ import type { TimelineItem } from '@/types/timeline';
 import { getTimelineItemIcon, getTimelineItemLabel } from '@/utils/timelineMapping';
 import { getTimelineItems } from '@/utils/timelineHelpers';
 
-import { ArrowDown, ArrowUp, Calendar, Clock, Layers } from 'lucide-react';
+import { ArrowDown, ArrowUp, Calendar, Clock, Layers, Maximize2, Minimize2 } from 'lucide-react';
 export type SortOption = 'created_at' | 'timestamp';
 export type SortDirection = 'asc' | 'desc';
 
@@ -35,6 +35,15 @@ export interface TimelineFilterProps {
   
   /** Handler for group similar toggle */
   onGroupSimilarChange?: (enabled: boolean) => void;
+
+  /** Whether there are visible linked entity cards that can be collapsed. */
+  hasLinkedEntityCards?: boolean;
+
+  /** Collapse all visible linked entity cards. */
+  onCollapseLinkedEntityCards?: () => void;
+
+  /** Expand all visible linked entity cards. */
+  onExpandLinkedEntityCards?: () => void;
   
   /** Size variant for buttons (mobile vs desktop) */
   buttonSize?: 'small' | 'medium';
@@ -68,6 +77,9 @@ export function TimelineFilter({
   onSortChange,
   groupSimilar = true,
   onGroupSimilarChange,
+  hasLinkedEntityCards = false,
+  onCollapseLinkedEntityCards,
+  onExpandLinkedEntityCards,
   buttonSize = 'small',
   className,
   rightContent,
@@ -182,6 +194,43 @@ export function TimelineFilter({
                 Group Similar Items
               </Tooltip.Content>
             </Tooltip.Root>
+          )}
+
+          {(onCollapseLinkedEntityCards || onExpandLinkedEntityCards) && (
+            <div className="flex items-center gap-1 rounded-md border border-neutral-border p-0.5">
+              {onCollapseLinkedEntityCards ? (
+                <Tooltip.Root>
+                  <Tooltip.Trigger asChild>
+                    <IconButton
+                      disabled={disabled || !hasLinkedEntityCards}
+                      size={buttonSize}
+                      variant={neutralControlVariant}
+                      icon={<Minimize2 />}
+                      onClick={onCollapseLinkedEntityCards}
+                    />
+                  </Tooltip.Trigger>
+                  <Tooltip.Content side="bottom" align="center" sideOffset={4}>
+                    Collapse Linked Entity Cards
+                  </Tooltip.Content>
+                </Tooltip.Root>
+              ) : null}
+              {onExpandLinkedEntityCards ? (
+                <Tooltip.Root>
+                  <Tooltip.Trigger asChild>
+                    <IconButton
+                      disabled={disabled || !hasLinkedEntityCards}
+                      size={buttonSize}
+                      variant={neutralControlVariant}
+                      icon={<Maximize2 />}
+                      onClick={onExpandLinkedEntityCards}
+                    />
+                  </Tooltip.Trigger>
+                  <Tooltip.Content side="bottom" align="center" sideOffset={4}>
+                    Expand Linked Entity Cards
+                  </Tooltip.Content>
+                </Tooltip.Root>
+              ) : null}
+            </div>
           )}
 
           {/* Type Filter Toggle Group - Horizontal */}

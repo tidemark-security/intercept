@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -8,14 +9,16 @@ from pgqueuer.errors import MaxRetriesExceeded
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.models.models import Alert, EnrichmentAlias, QueueJobRead
+from app.models.models import Alert, Case, EnrichmentAlias, QueueJobRead, Task
 from app.models.enums import RealtimeEventType, SettingType
 from app.models.models import AppSetting
 from app.services.enrichment.base import EnrichmentResult
+from app.services.enrichment.providers.cross_case_observable import cross_case_observable_provider
 from app.services.enrichment.providers import register_providers
 from app.services.enrichment.service import enrichment_service
 from app.services.alert_service import alert_service
 from app.services.queue_status_service import QueueStatusService
+from app.services.settings_service import SettingsService
 from app.services.tasks import _handle_enrich_item_terminal_failure
 from app.services.timeline_service import timeline_service
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
@@ -65,6 +68,335 @@ def _timeline_map(items: Any) -> dict[str, dict[str, Any]]:
             if isinstance(item, dict) and item.get("id")
         }
     return {}
+
+
+def _observable_item(item_id: str, observable_type: str = "IP", observable_value: str = "148.52.126.237") -> dict[str, Any]:
+    return {
+        "id": item_id,
+        "type": "observable",
+        "timestamp": "2026-03-14T00:00:00Z",
+        "created_at": "2026-03-14T00:00:00Z",
+        "created_by": "system",
+        "observable_type": observable_type,
+        "observable_value": observable_value,
+    }
+
+
+async def _run_cross_timeline_correlation(
+    session: AsyncSession,
+    *,
+    item: dict[str, Any] | None = None,
+    entity_type: str = "alert",
+    entity_id: int = 1,
+) -> dict[str, Any]:
+    result = await cross_case_observable_provider.enrich(
+        db=session,
+        settings=SettingsService(session),
+        item=item or _observable_item("source-item"),
+        entity_type=entity_type,
+        entity_id=entity_id,
+    )
+    return result.enrichment_data
+
+
+def test_cross_timeline_observable_provider_can_enrich_network_traffic() -> None:
+    item = {
+        "type": "network_traffic",
+        "source_ip": "10.0.0.5",
+        "destination_ip": "148.52.126.237",
+    }
+
+    assert cross_case_observable_provider.can_enrich(item)
+    assert cross_case_observable_provider.build_cache_key(item) == "IP:148.52.126.237"
+
+
+@pytest.mark.asyncio
+async def test_cross_timeline_observable_correlation_matches_alert_case_and_task(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    analyst = analyst_user_factory(username="analyst.cross-timeline")
+    now = datetime.now(timezone.utc)
+    source_alert = Alert(
+        title="Source alert",
+        description="Current entity should be excluded",
+        source="unit-test",
+        timeline_items=[_observable_item("source-item")],
+        created_at=now,
+        updated_at=now,
+    )
+    matching_alert = Alert(
+        title="Matching alert",
+        description="Alert match",
+        source="unit-test",
+        timeline_items=[_observable_item("alert-match", "ip", "148.52.126.237")],
+        created_at=now,
+        updated_at=now,
+    )
+    matching_network_alert = Alert(
+        title="Matching network traffic alert",
+        description="Alert match from all timeline fields",
+        source="unit-test",
+        timeline_items=[
+            {
+                "id": "network-match",
+                "type": "network_traffic",
+                "timestamp": "2026-03-14T00:00:00Z",
+                "created_at": "2026-03-14T00:00:00Z",
+                "created_by": "system",
+                "source_ip": "10.0.0.5",
+                "destination_ip": "148.52.126.237",
+                "protocol": "TCP",
+            }
+        ],
+        created_at=now,
+        updated_at=now,
+    )
+    matching_case = Case(
+        title="Matching case",
+        description="Case match",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("case-match")],
+        created_at=now,
+        updated_at=now,
+    )
+    matching_task = Task(
+        title="Matching task",
+        description="Task match",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("task-match")],
+        created_at=now,
+        updated_at=now,
+    )
+    non_matching_case = Case(
+        title="Different observable case",
+        description="Should not match",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("case-no-match", "DOMAIN", "example.com")],
+        created_at=now,
+        updated_at=now,
+    )
+    non_matching_task = Task(
+        title="Different value task",
+        description="Should not match",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("task-no-match", "IP", "8.8.8.8")],
+        created_at=now,
+        updated_at=now,
+    )
+
+    async with session_maker() as session:
+        session.add_all([
+            analyst,
+            source_alert,
+            matching_alert,
+            matching_network_alert,
+            matching_case,
+            matching_task,
+            non_matching_case,
+            non_matching_task,
+        ])
+        await session.commit()
+        await session.refresh(source_alert)
+
+        payload = await _run_cross_timeline_correlation(
+            session,
+            entity_type="alert",
+            entity_id=source_alert.id,
+        )
+
+    assert payload["observable_type"] == "IP"
+    assert payload["observable_value"] == "148.52.126.237"
+    assert payload["max_lookback_days"] == 180
+    assert payload["match_count"] == 4
+    assert {match["entity_type"] for match in payload["matches"]} == {"alert", "case", "task"}
+    assert {match["human_id"][:3] for match in payload["matches"]} == {"ALT", "CAS", "TSK"}
+    assert any(match["title"] == "Matching network traffic alert" for match in payload["matches"])
+    assert all(match["title"] != "Source alert" for match in payload["matches"])
+    assert all(match["title"] != "Different observable case" for match in payload["matches"])
+    assert all(match["title"] != "Different value task" for match in payload["matches"])
+
+
+@pytest.mark.asyncio
+async def test_cross_timeline_observable_correlation_respects_default_lookback(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    analyst = analyst_user_factory(username="analyst.default-lookback")
+    now = datetime.now(timezone.utc)
+    source_alert = Alert(
+        title="Source alert",
+        description="Current entity",
+        source="unit-test",
+        timeline_items=[_observable_item("source-item")],
+        created_at=now,
+        updated_at=now,
+    )
+    recent_case = Case(
+        title="Recent matching case",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("recent-case")],
+        created_at=now - timedelta(days=10),
+        updated_at=now - timedelta(days=10),
+    )
+    old_case = Case(
+        title="Old matching case",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("old-case")],
+        created_at=now - timedelta(days=181),
+        updated_at=now - timedelta(days=181),
+    )
+
+    async with session_maker() as session:
+        session.add_all([analyst, source_alert, recent_case, old_case])
+        await session.commit()
+        await session.refresh(source_alert)
+
+        payload = await _run_cross_timeline_correlation(
+            session,
+            entity_type="alert",
+            entity_id=source_alert.id,
+        )
+
+    assert payload["match_count"] == 1
+    assert [match["title"] for match in payload["matches"]] == ["Recent matching case"]
+
+
+@pytest.mark.asyncio
+async def test_cross_timeline_observable_correlation_respects_configured_lookback(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    analyst = analyst_user_factory(username="analyst.short-lookback")
+    now = datetime.now(timezone.utc)
+    source_alert = Alert(
+        title="Source alert",
+        description="Current entity",
+        source="unit-test",
+        timeline_items=[_observable_item("source-item")],
+        created_at=now,
+        updated_at=now,
+    )
+    recent_task = Task(
+        title="Recent matching task",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("recent-task")],
+        created_at=now - timedelta(days=3),
+        updated_at=now - timedelta(days=3),
+    )
+    older_task = Task(
+        title="Older matching task",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("older-task")],
+        created_at=now - timedelta(days=10),
+        updated_at=now - timedelta(days=10),
+    )
+
+    async with session_maker() as session:
+        session.add_all([
+            analyst,
+            source_alert,
+            recent_task,
+            older_task,
+            AppSetting(
+                key="enrichment.cross_case_observable.max_lookback_days",
+                value="7",
+                value_type=SettingType.NUMBER,
+                is_secret=False,
+                description="Max lookback",
+                category="enrichment",
+            ),
+        ])
+        await session.commit()
+        await session.refresh(source_alert)
+
+        payload = await _run_cross_timeline_correlation(
+            session,
+            entity_type="alert",
+            entity_id=source_alert.id,
+        )
+
+    assert payload["max_lookback_days"] == 7
+    assert payload["match_count"] == 1
+    assert [match["title"] for match in payload["matches"]] == ["Recent matching task"]
+
+
+@pytest.mark.asyncio
+async def test_cross_timeline_observable_correlation_falls_back_for_invalid_lookback(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    analyst = analyst_user_factory(username="analyst.invalid-lookback")
+    now = datetime.now(timezone.utc)
+    source_alert = Alert(
+        title="Source alert",
+        description="Current entity",
+        source="unit-test",
+        timeline_items=[_observable_item("source-item")],
+        created_at=now,
+        updated_at=now,
+    )
+    matching_case = Case(
+        title="Matching case",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("matching-case")],
+        created_at=now - timedelta(days=30),
+        updated_at=now - timedelta(days=30),
+    )
+
+    async with session_maker() as session:
+        session.add_all([
+            analyst,
+            source_alert,
+            matching_case,
+            AppSetting(
+                key="enrichment.cross_case_observable.max_lookback_days",
+                value="0",
+                value_type=SettingType.NUMBER,
+                is_secret=False,
+                description="Invalid max lookback",
+                category="enrichment",
+            ),
+        ])
+        await session.commit()
+        await session.refresh(source_alert)
+
+        payload = await _run_cross_timeline_correlation(
+            session,
+            entity_type="alert",
+            entity_id=source_alert.id,
+        )
+
+    assert payload["max_lookback_days"] == 180
+    assert payload["match_count"] == 1
+    assert payload["matches"][0]["title"] == "Matching case"
+
+
+@pytest.mark.asyncio
+async def test_admin_settings_includes_observable_correlation_lookback_default(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    admin = admin_user_factory(username="admin.observable-settings")
+
+    async with session_maker() as session:
+        session.add(admin)
+        await session.commit()
+
+    session_cookie = await _login(client, admin.username)
+    response = await client.get(
+        "/api/v1/admin/settings",
+        params={"category": "enrichment"},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    settings_by_key = {setting["key"]: setting for setting in response.json()}
+    lookback = settings_by_key["enrichment.cross_case_observable.max_lookback_days"]
+    assert lookback["value"] == "180"
+    assert lookback["value_type"] == "NUMBER"
+    assert lookback["category"] == "enrichment"
 
 
 @pytest.mark.asyncio

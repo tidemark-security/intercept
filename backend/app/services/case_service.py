@@ -20,6 +20,7 @@ from app.services.timeline_add_service import add_timeline_item_and_commit, upda
 from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
+from app.services.tag_filter_utils import append_tag_filters
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +174,8 @@ class CaseService:
         limit: int = 100,
         status: Optional[List[CaseStatus]] = None,
         assignee: Optional[str] = None,
+        include_tags: Optional[List[str]] = None,
+        exclude_tags: Optional[List[str]] = None,
         search: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None
@@ -184,6 +187,8 @@ class CaseService:
             limit: Maximum number of records to return
             status: Filter by case status (can filter by multiple statuses)
             assignee: Filter by assignee username (exact match)
+            include_tags: Tags cases must include
+            exclude_tags: Tags cases must exclude
             search: Search string to match against case title or description (case-insensitive partial match)
             start_date: Filter cases created after this UTC datetime (ISO8601 format with 'Z' suffix)
             end_date: Filter cases created before this UTC datetime (ISO8601 format with 'Z' suffix)
@@ -202,6 +207,8 @@ class CaseService:
             
             if assignee:
                 filters.append(Case.assignee == assignee)
+
+            append_tag_filters(filters, Case.tags, include_tags, exclude_tags)
             
             # Date range filtering (expects UTC ISO8601 strings)
             if start_date:
@@ -243,7 +250,7 @@ class CaseService:
         except Exception as e:
             logger.error(f"Error fetching cases: {e}")
             raise
-    
+
     async def update_case(
         self, 
         db: AsyncSession, 
@@ -294,6 +301,10 @@ class CaseService:
             
             # If case status changed to CLOSED, close all linked tasks and alerts
             if status_changed_to_closed and old_status != CaseStatus.CLOSED:
+                self._add_case_closure_summary_note(
+                    db_case, case_update.closure_summary, updated_by
+                )
+
                 # Extract alert closure statuses if provided
                 alert_closure_statuses = self._build_alert_closure_status_map(
                     case_update.alert_closure_updates
@@ -565,6 +576,25 @@ class CaseService:
             closure_status_map[alert_update.alert_id] = alert_update.status
 
         return closure_status_map
+
+    def _add_case_closure_summary_note(
+        self,
+        db_case: Case,
+        closure_summary: Optional[str],
+        closed_by: str,
+    ) -> None:
+        """Append an analyst-provided closure summary to the case timeline."""
+        summary = (closure_summary or "").strip()
+        if not summary:
+            return
+
+        closure_note = {
+            "type": "note",
+            "description": summary,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "tags": ["case-closure"],
+        }
+        timeline_service.add_timeline_item(db_case, closure_note, created_by=closed_by)
     
     async def delete_case(self, db: AsyncSession, case_id: int, deleted_by: str) -> bool:
         """Permanently delete a case after recording an audit snapshot."""

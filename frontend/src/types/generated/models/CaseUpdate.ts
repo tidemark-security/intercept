@@ -35,5 +35,5 @@ export type CaseUpdate = {
     tags?: (Array<string> | null);
     timeline_items?: (Record<string, (DeletedItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AlertItem | AttachmentItem | CaseItem | EmailItem | ForensicArtifactItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | RegistryChangeItem | SystemItem | TaskItem | TTPItem)> | null);
     alert_closure_updates?: (Array<CaseAlertClosureUpdate> | null);
+    closure_summary?: (string | null);
 };
-

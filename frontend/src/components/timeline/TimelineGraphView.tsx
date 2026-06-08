@@ -2733,8 +2733,6 @@ function TimelineGraphViewInner({
         </div>
         <div className="flex min-h-0 grow flex-col gap-2 overflow-auto p-3">
           {stagedItems.length > 0 ? stagedItems.map((item) => {
-            const Icon = getTimelineItemIcon(item.type || 'note');
-
             return (
               <div
                 key={item.id}
@@ -2770,18 +2768,17 @@ function TimelineGraphViewInner({
                 }}
                 onDragEnd={() => setIsDraggingTimelineItem(false)}
               >
-                <div className="flex items-center gap-2">
-                  <Icon className="h-4 w-4 flex-none text-subtext-color" />
-                  <span className="truncate text-caption-bold font-caption-bold uppercase text-subtext-color">
-                    {getTimelineItemLabel(item.type || 'note')}
-                  </span>
-                </div>
-                <span className="line-clamp-2 text-body-bold font-body-bold text-default-font">
-                  {getNodeTitle(item)}
-                </span>
-                <span className="text-caption font-caption text-subtext-color">
-                  {formatTimestamp(item, sortBy)}
-                </span>
+                <TimelineItemRenderer
+                  item={item}
+                  index={0}
+                  total={1}
+                  entityId={entityId}
+                  entityType={entityType}
+                  sortBy={sortBy}
+                  linkTemplates={linkTemplates}
+                  variant="super-compact"
+                  hideReplies
+                />
               </div>
             );
           }) : (

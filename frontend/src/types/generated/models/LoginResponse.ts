@@ -8,5 +8,5 @@ export type LoginResponse = {
     user: app__api__routes__auth__UserSummary;
     session: SessionSummary;
     mustChangePassword?: boolean;
+    localCredentialManagementAllowed?: boolean;
 };
-

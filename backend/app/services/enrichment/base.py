@@ -62,6 +62,7 @@ class EnrichmentProvider(ABC):
     settings_prefix: str
     supported_item_types: Sequence[str]
     supports_bulk_sync: bool = False
+    cacheable: bool = True
 
     @abstractmethod
     def can_enrich(self, item: Dict[str, Any]) -> bool:

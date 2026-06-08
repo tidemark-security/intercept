@@ -88,6 +88,7 @@ export interface UnifiedTimelineProps {
   onCloseCaseWithDetails?: (payload: {
     alert_closure_updates: Array<{ alert_id: number; status: AlertStatus }>;
     tags: string[];
+    closure_summary?: string;
   }) => void;
   
   /** Handler for reopening a closed entity */

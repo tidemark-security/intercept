@@ -16,6 +16,7 @@ from app.services.timeline_add_service import add_timeline_item_and_commit, upda
 from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
+from app.services.tag_filter_utils import append_tag_filters
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,8 @@ class TaskService:
         status: Optional[List[TaskStatus]] = None,
         assignee: Optional[str] = None,
         case_id: Optional[int] = None,
+        include_tags: Optional[List[str]] = None,
+        exclude_tags: Optional[List[str]] = None,
         search: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None
@@ -160,6 +163,8 @@ class TaskService:
             status: Filter by task status (can filter by multiple statuses)
             assignee: Filter by assignee username (exact match)
             case_id: Filter by case ID (for tasks linked to a specific case)
+            include_tags: Tags tasks must include
+            exclude_tags: Tags tasks must exclude
             search: Search string to match against task title or description (case-insensitive partial match)
             start_date: Filter tasks created after this UTC datetime (ISO8601 format with 'Z' suffix)
             end_date: Filter tasks created before this UTC datetime (ISO8601 format with 'Z' suffix)
@@ -203,6 +208,8 @@ class TaskService:
             
             if case_id is not None:
                 filters.append(Task.case_id == case_id)
+
+            append_tag_filters(filters, Task.tags, include_tags, exclude_tags)
             
             # Date range filtering (expects UTC ISO8601 strings)
             if start_date:
@@ -241,7 +248,7 @@ class TaskService:
         except Exception as e:
             logger.error(f"Error fetching tasks: {e}")
             raise
-    
+
     async def update_task(
         self, 
         db: AsyncSession, 
@@ -375,6 +382,13 @@ class TaskService:
                     user=updated_by,
                 )
 
+            if assignee_changed and db_task.assignee:
+                await self._enqueue_autonomous_task_if_assigned_to_nhi(
+                    db,
+                    task_id=task_id,
+                    assignee=db_task.assignee,
+                )
+
             logger.info(f"Task {task_id} updated by {updated_by}")
             return await self._reload_task_response(db, task_id)
             
@@ -382,6 +396,44 @@ class TaskService:
             await db.rollback()
             logger.error(f"Error updating task {task_id}: {e}")
             raise
+
+    async def _enqueue_autonomous_task_if_assigned_to_nhi(
+        self,
+        db: AsyncSession,
+        *,
+        task_id: int,
+        assignee: str,
+    ) -> None:
+        from sqlalchemy import select
+
+        from app.models.enums import AccountType, UserStatus
+        from app.models.models import UserAccount
+        from app.services.task_queue_service import get_task_queue_service
+        from app.services.tasks import TASK_AUTONOMOUS_TASK
+
+        result = await db.execute(
+            select(UserAccount).where(
+                UserAccount.username == assignee,
+                UserAccount.account_type == AccountType.NHI,
+                UserAccount.status == UserStatus.ACTIVE,
+                UserAccount.assignable.is_(True),  # type: ignore[attr-defined]
+            )
+        )
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            return
+
+        try:
+            queue = get_task_queue_service()
+        except RuntimeError:
+            logger.warning("Task queue not available; autonomous task was not enqueued", extra={"task_id": task_id})
+            return
+
+        await queue.enqueue(
+            task_name=TASK_AUTONOMOUS_TASK,
+            payload={"task_id": task_id, "agent_username": agent.username},
+            dedupe_key=f"autonomous_task:{task_id}:{agent.username}",
+        )
     
     async def delete_task(
         self, 

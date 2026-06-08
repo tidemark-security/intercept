@@ -32,5 +32,5 @@ export type TriageRecommendationRead = {
     rejection_reason?: (string | null);
     applied_changes?: Array<Record<string, any>>;
     error_message?: (string | null);
+    applied_context_entries?: Array<Record<string, any>>;
 };
-

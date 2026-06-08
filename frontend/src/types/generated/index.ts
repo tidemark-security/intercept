@@ -28,6 +28,8 @@ export type { AITriageConfidenceCorrelation } from './models/AITriageConfidenceC
 export type { AITriageMetricsResponse } from './models/AITriageMetricsResponse';
 export type { AITriageMetricsSummary } from './models/AITriageMetricsSummary';
 export type { AITriageWeeklyTrend } from './models/AITriageWeeklyTrend';
+export type { AlertBulkActionRequest } from './models/AlertBulkActionRequest';
+export type { AlertBulkActionResponse } from './models/AlertBulkActionResponse';
 export type { AlertCreate } from './models/AlertCreate';
 export type { AlertItem } from './models/AlertItem';
 export type { AlertMetricsByDimension } from './models/AlertMetricsByDimension';

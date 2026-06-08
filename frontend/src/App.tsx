@@ -14,6 +14,7 @@ const AdminLinkTemplates = lazy(() => import("./pages/AdminLinkTemplates"))
 const AdminSettings = lazy(() => import("./pages/AdminSettings"))
 const AdminQueueStatus = lazy(() => import("./pages/AdminQueueStatus"))
 const AIChat = lazy(() => import("./pages/AIChat").then(m => ({ default: m.AIChat })))
+const ContextEntries = lazy(() => import("./pages/ContextEntries"))
 const Home = lazy(() => import("./pages/Home"))
 const Login = lazy(() => import("./pages/Login"))
 const SetPasswordPage = lazy(() => import("./pages/SetPasswordPage"))
@@ -172,6 +173,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <AIChat />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/context-entries"
+            element={
+              <ProtectedRoute>
+                <ContextEntries />
               </ProtectedRoute>
             }
           />

@@ -17,7 +17,7 @@ import {
   MenuCardBase,
 } from "@/components/cards/MenuCardBase";
 
-import { User2 } from 'lucide-react';
+import { Minus, Plus, User2 } from 'lucide-react';
 interface MenuCardRootProps
   extends Omit<React.HTMLAttributes<HTMLDivElement>, "id" | "title"> {
   id?: React.ReactNode;
@@ -49,6 +49,7 @@ interface MenuCardRootProps
   variant?: "default" | "selected";
   showDescription?: boolean;
   description?: React.ReactNode;
+  onTagClick?: (tag: string, mode: "include" | "exclude") => void;
   className?: string;
 }
 
@@ -65,6 +66,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
       variant = "default",
       showDescription = false,
       description,
+      onTagClick,
       className,
       ...otherProps
     }: MenuCardRootProps,
@@ -73,6 +75,26 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
     const { resolvedTheme } = useTheme();
     const { timezonePreference } = useTimezonePreference();
     const isDarkTheme = resolvedTheme === "dark";
+    const [isTagExcludeModifierActive, setIsTagExcludeModifierActive] = React.useState(false);
+
+    React.useEffect(() => {
+      const handleKeyChange = (event: KeyboardEvent) => {
+        if (event.key === "Control" || event.key === "Meta") {
+          setIsTagExcludeModifierActive(event.type === "keydown");
+        }
+      };
+      const clearModifier = () => setIsTagExcludeModifierActive(false);
+
+      window.addEventListener("keydown", handleKeyChange);
+      window.addEventListener("keyup", handleKeyChange);
+      window.addEventListener("blur", clearModifier);
+
+      return () => {
+        window.removeEventListener("keydown", handleKeyChange);
+        window.removeEventListener("keyup", handleKeyChange);
+        window.removeEventListener("blur", clearModifier);
+      };
+    }, []);
 
     const tagList = React.useMemo(() => {
       if (!tags) return [];
@@ -173,7 +195,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
                     : undefined
                 }
                 size="mini"
-                className="saturate-0"
+                className="grayscale-[50%]"
               />
             </div>
           </div>
@@ -182,13 +204,45 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
           <div className="-mx-4 -mb-3 mt-2 w-[calc(100%+2rem)] border-t border-solid border-neutral-border bg-neutral-500/10 px-4 py-2">
             <div className="flex w-full items-center gap-1 overflow-hidden flex-nowrap">
               {tagList.map((tag, index) => (
-                <Tag
-                  key={`${tag}-${index}`}
-                  tagText={tag}
-                  showDelete={false}
-                  p="0"
-                  className="shrink-0"
-                />
+                onTagClick ? (() => {
+                  const tagKey = `${tag}-${index}`;
+                  const actionMode = isTagExcludeModifierActive ? "exclude" : "include";
+                  const ActionIcon = actionMode === "exclude" ? Minus : Plus;
+
+                  return (
+                    <button
+                      key={tagKey}
+                      type="button"
+                      className="relative shrink-0 cursor-pointer"
+                      aria-label={`Add ${tag} to ${actionMode} tag filter`}
+                      title={`Click to include ${tag}. Ctrl/Cmd-click to exclude.`}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onTagClick(tag, event.ctrlKey || event.metaKey ? "exclude" : "include");
+                      }}
+                    >
+                      <Tag
+                        tagText={tag}
+                        showDelete
+                        p="0"
+                        className="[&_.lucide-x]:opacity-0"
+                      />
+                      <ActionIcon
+                        className="pointer-events-none absolute right-1 top-1/2 h-4 w-4 -translate-y-1/2 text-white"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  );
+                })() : (
+                  <Tag
+                    key={`${tag}-${index}`}
+                    tagText={tag}
+                    showDelete={false}
+                    p="0"
+                    className="shrink-0"
+                  />
+                )
               ))}
             </div>
           </div>

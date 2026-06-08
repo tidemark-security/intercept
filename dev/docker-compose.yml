@@ -19,6 +19,7 @@ services:
       POSTGRES_DB: intercept_case_db
       POSTGRES_USER: intercept_user
       POSTGRES_PASSWORD: intercept_password
+      LANGFLOW_DB_PASSWORD: langflow_password
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "5432:5432"
@@ -58,6 +59,8 @@ services:
       LANGFLOW__BASE_URL: http://localhost:7860/api/v1
       LANGFLOW__API_KEY: ${LANGFLOW_API_KEY:-dev-langflow-api-key}
       SECRET_KEY: dev-secret-key-change-in-production
+      SESSION_COOKIE_SECURE: "false"
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-dev-initial-admin-password}
       CORS_ORIGINS: '["http://localhost:5173", "http://localhost:8000"]'
     volumes:
       - ../backend:/app
@@ -72,19 +75,24 @@ services:
       context: ../frontend
       dockerfile: Dockerfile.dev
       additional_contexts:
-        ux: ../../ux
+        ux: ${UX_CONTEXT:-../ux}
     environment:
       VITE_API_URL: http://localhost:8000
     ports:
       - "5173:5173"
     volumes:
-      - ../frontend:/app
-      - /app/node_modules
-      # Comment the following line out if you don't want to mount the local UX package - this requires cloning the UX repository.
-      - ../../ux:/app/node_modules/@tidemark-security/ux 
+      - ../frontend/src:/app/src
+      - ../frontend/index.html:/app/index.html
+      - ../frontend/vite.config.ts:/app/vite.config.ts
+      - ../frontend/tailwind.config.js:/app/tailwind.config.js
+      - ../frontend/postcss.config.js:/app/postcss.config.js
+      - ../frontend/tsconfig.json:/app/tsconfig.json
+      - ../frontend/tsconfig.node.json:/app/tsconfig.node.json
+      # Uncomment the following line to mount a local UX checkout.
+      # This requires ../ux to contain the UX repository, or set UX_CONTEXT.
+      # - ${UX_CONTEXT:-../ux}:/app/node_modules/@tidemark-security/ux
     depends_on:
       - backend
-    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
 
   minio:
     image: docker.io/minio/minio:latest
@@ -166,6 +174,7 @@ services:
       STORAGE_BUCKET: intercept-attachments
       STORAGE_USE_SSL: "false"
       SECRET_KEY: dev-secret-key-change-in-production
+      SESSION_COOKIE_SECURE: "false"
       LANGFLOW__BASE_URL: http://localhost:7860/api/v1
       LANGFLOW__API_KEY: ${LANGFLOW_API_KEY:-dev-langflow-api-key}
       WORKER_CONCURRENCY: "20"

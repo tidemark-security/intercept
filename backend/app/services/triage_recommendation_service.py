@@ -159,6 +159,10 @@ async def create_or_replace_recommendation(
         existing.suggested_tags_add = data.get("suggested_tags_add", [])
         existing.suggested_tags_remove = data.get("suggested_tags_remove", [])
         existing.request_escalate_to_case = data.get("request_escalate_to_case", False)
+        existing.applied_context_entries = data.get(
+            "applied_context_entries",
+            existing.applied_context_entries or [],
+        )
         existing.created_by = created_by
         existing.created_at = datetime.now(timezone.utc)
         existing.status = RecommendationStatus.PENDING
@@ -193,6 +197,7 @@ async def create_or_replace_recommendation(
         suggested_tags_add=data.get("suggested_tags_add", []),
         suggested_tags_remove=data.get("suggested_tags_remove", []),
         request_escalate_to_case=data.get("request_escalate_to_case", False),
+        applied_context_entries=data.get("applied_context_entries", []),
         created_by=created_by,
         created_at=datetime.now(timezone.utc),
         status=RecommendationStatus.PENDING,

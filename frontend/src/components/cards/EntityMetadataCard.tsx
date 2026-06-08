@@ -25,20 +25,35 @@ import { convertNumericToHumanId } from "@/utils/caseHelpers";
 
 import { ArrowRight, CalendarClock, ClockAlert, ClockPlus, RadioTower, User } from "lucide-react";
 
+export type EntityMetadataCardVariant = "detail" | "timeline" | "compact";
+
 interface EntityMetadataCardProps {
   entity: AlertRead | CaseRead | TaskRead | null;
   entityType: "alert" | "case" | "task";
   isLoading?: boolean;
   onUpdateTags?: (tags: string[]) => void;
   showTags?: boolean;
+  variant?: EntityMetadataCardVariant;
 }
 
-export function EntityMetadataCard({ entity, entityType, isLoading, onUpdateTags, showTags = true }: EntityMetadataCardProps) {
+export function EntityMetadataCard({
+  entity,
+  entityType,
+  isLoading,
+  onUpdateTags,
+  showTags = true,
+  variant,
+}: EntityMetadataCardProps) {
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === "dark";
+  const resolvedVariant = variant ?? (showTags ? "detail" : "timeline");
+  const isTimelineVariant = resolvedVariant === "timeline";
+  const isCompactVariant = resolvedVariant === "compact";
   const rootClassName = cn(
-    "flex w-full flex-col gap-3",
+    "flex w-full min-w-0 flex-col",
+    isTimelineVariant ? "gap-3" : "gap-4",
+    isCompactVariant && "gap-2",
     showTags && "border-b border-solid p-6 mobile:p-4",
     showTags && (isDarkTheme ? "border-brand-primary" : "border-neutral-1000"),
   );
@@ -53,11 +68,12 @@ export function EntityMetadataCard({ entity, entityType, isLoading, onUpdateTags
   if (isLoading) {
     return (
       <div className={rootClassName}>
-        <div className="flex h-7 w-full animate-pulse rounded bg-neutral-200" />
-        <div className="grid w-full gap-2 md:grid-cols-3">
-          <div className="h-14 animate-pulse rounded-md bg-neutral-200" />
-          <div className="h-14 animate-pulse rounded-md bg-neutral-200" />
-          <div className="h-14 animate-pulse rounded-md bg-neutral-200" />
+        <div className="flex h-8 w-full animate-pulse bg-neutral-200" />
+        <div className="grid w-full gap-3 md:grid-cols-4">
+          <div className="h-12 animate-pulse bg-neutral-200" />
+          <div className="h-12 animate-pulse bg-neutral-200" />
+          <div className="h-12 animate-pulse bg-neutral-200" />
+          <div className="h-12 animate-pulse bg-neutral-200" />
         </div>
       </div>
     );
@@ -88,7 +104,7 @@ export function EntityMetadataCard({ entity, entityType, isLoading, onUpdateTags
     statusValue = caseStatusToUIState(entity.status as CaseStatus) as React.ComponentProps<typeof State>["state"];
   }
 
-  const InfoTile = ({
+  const MetaField = ({
     icon,
     label,
     children,
@@ -103,28 +119,29 @@ export function EntityMetadataCard({ entity, entityType, isLoading, onUpdateTags
   }) => (
     <div
       className={cn(
-        "flex min-w-0 items-start gap-2 rounded-md px-2.5 py-2",
+        "group flex min-w-0 items-start gap-2 border-l border-solid border-neutral-border pl-3",
         dueStatus === 'overdue'
-          ? "border border-solid border-error-500 bg-error-50"
+          ? "border-l-error-600 bg-error-50/40 pr-2 py-1.5"
           : dueStatus === 'due_soon'
-            ? "border border-solid border-warning-500 bg-warning-50"
-            : "bg-neutral-200",
+            ? "border-l-warning-600 bg-warning-50/40 pr-2 py-1.5"
+            : null,
+        isCompactVariant ? "gap-1.5 pl-2" : "py-1",
         className,
       )}
     >
       <span
         className={cn(
-          "mt-0.5 flex-none text-subtext-color",
+          "mt-0.5 flex-none text-subtext-color transition-colors group-hover:text-default-font",
           dueStatus === 'overdue' && "text-error-1000",
           dueStatus === 'due_soon' && "text-warning-1000",
         )}
       >
         {icon}
       </span>
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
         <span
           className={cn(
-            "text-[11px] font-medium uppercase tracking-wide text-subtext-color",
+            "font-monospace-body text-[10px] font-medium uppercase leading-none tracking-normal text-subtext-color",
             dueStatus === 'overdue' && "text-error-1000",
             dueStatus === 'due_soon' && "text-warning-1000",
           )}
@@ -148,33 +165,42 @@ export function EntityMetadataCard({ entity, entityType, isLoading, onUpdateTags
         : undefined;
 
     return (
-      <InfoTile icon={icon} label={label} className={detailFieldClassName} dueStatus={dueStatus}>
+      <MetaField icon={icon} label={label} className={detailFieldClassName} dueStatus={dueStatus}>
         <CopyableTimestamp
           value={value}
           showFull
           variant="default-right"
-          className="min-w-0 max-w-full flex-wrap"
-          textClassName={timestampTextClassName}
+          className="min-w-0 max-w-full flex-wrap font-monospace-body text-[11px] leading-4"
+          textClassName={cn("text-default-font", timestampTextClassName)}
         />
-      </InfoTile>
+      </MetaField>
     );
   };
 
-  const summaryFieldClassName = "flex min-w-[min(100%,14rem)] flex-1 basis-56 flex-col gap-1 rounded-md border border-solid border-neutral-border bg-default-background px-2.5 py-2";
-  const detailFieldClassName = "min-w-[min(100%,18rem)] flex-1 basis-72";
+  const summaryGridClassName = cn(
+    "grid w-full min-w-0 gap-x-3 gap-y-4",
+    isTimelineVariant
+      ? "grid-cols-[repeat(auto-fit,minmax(min(100%,11rem),1fr))]"
+      : "grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))]",
+    isCompactVariant && "gap-y-2",
+  );
+  const detailGridClassName = cn(
+    "grid w-full min-w-0 border-t border-solid border-neutral-border/70 pt-3",
+    isTimelineVariant
+      ? "grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-x-3 gap-y-3"
+      : "grid-cols-[repeat(auto-fit,minmax(min(100%,16rem),1fr))] gap-x-4 gap-y-3",
+    isCompactVariant && "pt-2",
+  );
+  const detailFieldClassName = "min-w-0";
 
   const PersonField = ({ label, value }: { label: string; value: string | null | undefined }) => (
-    <div className={summaryFieldClassName}>
-      <span className="text-[11px] font-medium uppercase tracking-wide text-subtext-color">
-        {label}
-      </span>
-      <div className="flex h-6 w-full min-w-0 items-center gap-1.5 rounded-md bg-neutral-200 px-2">
-        <User className="h-3.5 w-3.5 flex-none text-subtext-color" />
-        <span className="min-w-0 truncate text-caption font-caption text-default-font">
+    <MetaField icon={<User className="h-3.5 w-3.5" />} label={label}>
+      <div className="flex min-h-5 w-full min-w-0 items-center">
+        <span className="min-w-0 truncate text-caption-bold font-caption-bold text-default-font">
           {value || "Unassigned"}
         </span>
       </div>
-    </div>
+    </MetaField>
   );
 
   const createdByValue = caseEntity?.created_by || taskEntity?.created_by || (alertEntity as (AlertRead & { created_by?: string | null }) | null)?.created_by;
@@ -202,20 +228,56 @@ export function EntityMetadataCard({ entity, entityType, isLoading, onUpdateTags
   ) : null;
   const shouldRenderStandaloneFooter = !!entity.description || shouldRenderStandaloneTagRow || !!parentCaseAction;
 
-  return (
-    <div className={rootClassName}>
-      <div className="flex w-full flex-wrap gap-2">
-        <div className={summaryFieldClassName}>
-          <span className="text-[11px] font-medium uppercase tracking-wide text-subtext-color">
-            Status
-          </span>
-          <State state={statusValue} className="w-full" />
+  if (isCompactVariant) {
+    return (
+      <div className={rootClassName}>
+        <div className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          <State state={statusValue} className="min-h-5 flex-none" />
+          {entity.priority ? (
+            <Priority priority={priorityToUIPriority(entity.priority)} className="min-h-5 flex-none" />
+          ) : null}
+          {entity.assignee ? (
+            <span className="flex h-6 min-w-0 max-w-44 flex-none items-center justify-center gap-1 rounded-md border border-solid border-neutral-border bg-neutral-50 px-2">
+              <User className="h-3.5 w-3.5 flex-none text-neutral-700" />
+              <span className="min-w-0 grow shrink-0 basis-0 truncate text-center text-caption font-caption text-neutral-700">
+                {entity.assignee}
+              </span>
+            </span>
+          ) : null}
+          {entity.updated_at || entity.created_at ? (
+            <CopyableTimestamp
+              value={entity.updated_at || entity.created_at}
+              showFull={false}
+              variant="default-right"
+              className="min-w-0 max-w-full flex-wrap"
+              textClassName="text-subtext-color"
+            />
+          ) : null}
         </div>
 
-        <div className={summaryFieldClassName}>
-          <span className="text-[11px] font-medium uppercase tracking-wide text-subtext-color">
-            Priority
-          </span>
+        {entity.description ? (
+          <div className="w-full min-w-0 border-t border-solid border-neutral-border/70 pt-2">
+            <MarkdownContent
+              content={entity.description}
+              className="line-clamp-2 text-caption font-caption leading-5 text-subtext-color [overflow-wrap:anywhere] [&_*]:text-inherit [&_p]:!my-0 [&_p]:inline"
+            />
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <div className={rootClassName}>
+      <div className={summaryGridClassName}>
+        <MetaField label="Status" icon={null}>
+          <State
+            state={statusValue}
+            className={cn("w-full", isTimelineVariant && "min-h-6")}
+          />
+        </MetaField>
+
+        <MetaField label="Priority" icon={null}>
           {entity.priority ? (
             <Priority priority={priorityToUIPriority(entity.priority)} className="w-full" />
           ) : (
@@ -223,13 +285,13 @@ export function EntityMetadataCard({ entity, entityType, isLoading, onUpdateTags
               Not set
             </span>
           )}
-        </div>
+        </MetaField>
 
         <PersonField label="Assignee" value={entity.assignee} />
         <PersonField label="Created By" value={createdByValue} />
       </div>
 
-      <div className="flex w-full flex-wrap gap-2">
+      <div className={detailGridClassName}>
         {isTask && taskEntity?.due_date ? (
           <TimestampField label={taskDueLabel} value={taskEntity.due_date} icon={<CalendarClock className="h-3.5 w-3.5" />} dueStatus={taskDueStatus} />
         ) : null}
@@ -242,11 +304,11 @@ export function EntityMetadataCard({ entity, entityType, isLoading, onUpdateTags
         ) : null}
 
         {sourceValue ? (
-          <InfoTile icon={<RadioTower className="h-3.5 w-3.5" />} label="Source" className={detailFieldClassName}>
-            <span className="min-w-0 truncate text-body font-body text-default-font">
+          <MetaField icon={<RadioTower className="h-3.5 w-3.5" />} label="Source" className={detailFieldClassName}>
+            <span className="min-w-0 truncate text-caption-bold font-caption-bold text-default-font">
               {sourceValue}
             </span>
-          </InfoTile>
+          </MetaField>
         ) : null}
 
       </div>
