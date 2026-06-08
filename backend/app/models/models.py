@@ -467,6 +467,10 @@ class AlertItem(ItemBase):
     status: Optional[AlertStatus] = None
     priority: Optional[Priority] = None
     assignee: Optional[str] = None  # unified field for assignee
+    entity_description: Optional[str] = Field(
+        default=None,
+        description="Description from the linked alert entity; distinct from the timeline link description",
+    )
     # Optionally embedded timeline items from the linked alert (populated when include_linked_timelines=true)
     source_timeline_items: Optional[TimelineItemStorage] = Field(
         default=None,
@@ -490,6 +494,10 @@ class CaseItem(ItemBase):
     status: Optional[CaseStatus] = None
     priority: Optional[Priority] = None
     assignee: Optional[str] = None  # unified field for assignee
+    entity_description: Optional[str] = Field(
+        default=None,
+        description="Description from the linked case entity; distinct from the timeline link description",
+    )
     # Optionally embedded timeline items from the linked case (populated when include_linked_timelines=true)
     source_timeline_items: Optional[TimelineItemStorage] = Field(
         default=None,
@@ -513,6 +521,10 @@ class TaskItem(ItemBase):
     status: Optional[TaskStatus] = None
     priority: Optional[Priority] = None
     assignee: Optional[str] = None
+    entity_description: Optional[str] = Field(
+        default=None,
+        description="Description from the linked task entity; distinct from the timeline link description",
+    )
     due_date: Optional[datetime] = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True))

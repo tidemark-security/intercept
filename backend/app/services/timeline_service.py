@@ -344,6 +344,7 @@ class TimelineService:
                             "title": alert.title,
                             "priority": alert.priority,
                             "assignee": alert.assignee,
+                            "entity_description": alert.description,
                             "created_at": alert.linked_at.isoformat() if alert.linked_at else alert.created_at.isoformat(),
                             "timestamp": alert.linked_at.isoformat() if alert.linked_at else alert.created_at.isoformat(),
                             "created_by": alert.assignee or "system",
@@ -369,6 +370,7 @@ class TimelineService:
                             "status": task.status.value if hasattr(task.status, 'value') else str(task.status),
                             "priority": task.priority,
                             "assignee": task.assignee,
+                            "entity_description": task.description,
                             "due_date": task.due_date.isoformat() if task.due_date else None,
                             "created_at": task.linked_at.isoformat() if task.linked_at else task.created_at.isoformat(),
                             "timestamp": task.linked_at.isoformat() if task.linked_at else task.created_at.isoformat(),
@@ -397,6 +399,7 @@ class TimelineService:
                         "title": case.title,
                         "priority": case.priority,
                         "assignee": case.assignee,
+                        "entity_description": case.description,
                         "description": f"Linked to Case CAS-{case_id:07d}",
                         "created_at": linked_at.isoformat(),
                         "timestamp": linked_at.isoformat(),
@@ -425,6 +428,7 @@ class TimelineService:
                         "title": case.title,
                         "priority": case.priority,
                         "assignee": case.assignee,
+                        "entity_description": case.description,
                         "description": f"Linked to Case CAS-{case_id:07d}",
                         "created_at": linked_at.isoformat(),
                         "timestamp": linked_at.isoformat(),
@@ -536,7 +540,7 @@ class TimelineService:
         item["task_id"] = task.id
         item["task_human_id"] = f"TSK-{task.id:07d}"
         item["title"] = task.title
-        item["description"] = task.description
+        item["entity_description"] = task.description
         item["status"] = task.status.value if task.status else None
         item["priority"] = task.priority.value if task.priority else None
         item["assignee"] = task.assignee
@@ -581,19 +585,36 @@ class TimelineService:
         if not alert_id:
             return item
         
-        # Lazy import to avoid circular dependency
-        from app.services.alert_service import alert_service
-        
         try:
-            alert = await alert_service.get_alert(db, alert_id)
+            # Fetch the linked alert directly and denormalize its timeline in-place.
+            # Going through alert_service.get_alert() can run unrelated detail-page
+            # side effects; failures there should not make alert child timelines
+            # disappear from case/task linked-entity cards.
+            from app.models.models import Alert
+
+            result = await db.execute(select(Alert).where(Alert.id == alert_id))
+            alert = result.scalar_one_or_none()
             if not alert:
                 logger.warning(f"Alert {alert_id} not found for timeline embedding")
                 return item
+
+            item["title"] = alert.title
+            item["entity_description"] = alert.description
+            item["status"] = alert.status.value if alert.status else None
+            item["priority"] = alert.priority.value if alert.priority else None
+            item["assignee"] = alert.assignee
             
             # Embed the alert's timeline items
             if alert.timeline_items:
-                # Items are already denormalized from get_alert
-                item["source_timeline_items"] = alert.timeline_items
+                source_items: Dict[str, Dict[str, Any]] = {}
+                for alert_item in self._iter_items(alert.timeline_items):
+                    denormalized = await self._denormalize_item_recursive(
+                        db,
+                        alert_item,
+                        include_linked_timelines=False,
+                    )
+                    source_items[str(denormalized["id"])] = denormalized
+                item["source_timeline_items"] = source_items
         except Exception as e:
             logger.warning(f"Failed to embed timeline items for alert {alert_id}: {e}")
         
@@ -630,6 +651,13 @@ class TimelineService:
             if not case:
                 logger.warning(f"Case {case_id} not found for timeline embedding")
                 return item
+
+            item["title"] = case.title
+            item["entity_description"] = case.description
+            item["status"] = case.status.value if case.status else None
+            item["priority"] = case.priority.value if case.priority else None
+            item["assignee"] = case.assignee
+            item["created_by"] = case.created_by or item.get("created_by")
             
             # Embed the case's timeline items
             if case.timeline_items:

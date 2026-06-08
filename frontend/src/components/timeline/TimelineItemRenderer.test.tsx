@@ -70,7 +70,7 @@ describe('TimelineItemRenderer enrichments', () => {
           ip: '203.0.113.10',
         },
       },
-    } as TimelineItem;
+    } as unknown as TimelineItem;
     const collapseKey = getLinkedEntityCollapseKey(item)!;
 
     renderWithProviders(
@@ -87,11 +87,10 @@ describe('TimelineItemRenderer enrichments', () => {
 
     expect(screen.getByText('ALT-0000123')).toBeInTheDocument();
     expect(screen.getByText('Suspicious inbox rule')).toBeInTheDocument();
-    expect(screen.getByText('Alert')).toBeInTheDocument();
     expect(screen.getByText('alice')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Open Alert' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Expand Alert Card' })).toBeInTheDocument();
-    expect(screen.queryByText('Long investigation narrative that should be hidden')).not.toBeInTheDocument();
+    expect(screen.getByText('Long investigation narrative that should be hidden')).toBeInTheDocument();
     expect(screen.queryByText('mailbox')).not.toBeInTheDocument();
     expect(screen.queryByText('Microsoft Defender')).not.toBeInTheDocument();
     expect(screen.queryByText('MaxMind Enrichment')).not.toBeInTheDocument();
@@ -116,7 +115,7 @@ describe('TimelineItemRenderer enrichments', () => {
       priority: 'MEDIUM',
       status: 'OPEN',
       assignee: 'bob',
-    } as TimelineItem;
+    } as unknown as TimelineItem;
 
     renderWithProviders(
       <TimelineItemRenderer
@@ -509,7 +508,65 @@ describe('TimelineItemRenderer enrichments', () => {
     expect(screen.getAllByText('investigate')).toHaveLength(1);
   });
 
-  it('shows the linked source timeline toggle in full timeline cards', () => {
+  it.each([
+    {
+      type: 'alert',
+      entityType: 'case',
+      item: {
+        alert_id: 42,
+        title: 'Suspicious login',
+        status: 'NEW',
+        priority: 'MEDIUM',
+      },
+    },
+    {
+      type: 'case',
+      entityType: 'alert',
+      item: {
+        case_id: 7,
+        title: 'Executive phishing cluster',
+        status: 'NEW',
+        priority: 'HIGH',
+      },
+    },
+    {
+      type: 'task',
+      entityType: 'case',
+      item: {
+        task_id: 5,
+        task_human_id: 'TSK-0000005',
+        title: 'Contain endpoint',
+        status: 'OPEN',
+        priority: 'LOW',
+      },
+    },
+  ] as const)('renders the linked $type entity markdown description in the rich card', ({ type, entityType, item: entityFields }) => {
+    const item = {
+      id: `linked-${type}-description-1`,
+      type,
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      updated_at: '2026-03-14T12:50:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      description: 'Timeline link note',
+      entity_description: 'Underlying **markdown** description',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      assignee: 'alice',
+      ...entityFields,
+    } as unknown as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType={entityType} />
+    );
+
+    expect(screen.getByText('markdown')).toBeInTheDocument();
+    expect(screen.getByText('Timeline link note', { selector: 'p' })).toBeInTheDocument();
+  });
+
+  it('renders linked source timelines when the linked entity card is expanded', () => {
     const item = {
       id: 'linked-alert-source-1',
       type: 'alert',
@@ -539,16 +596,68 @@ describe('TimelineItemRenderer enrichments', () => {
           replies: null,
         },
       },
-    } as TimelineItem;
+    } as unknown as TimelineItem;
 
     renderWithProviders(
       <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="case" />
     );
 
-    expect(screen.getByText('Show alert timeline (1)')).toBeInTheDocument();
+    expect(screen.getByText('Source note')).toBeInTheDocument();
+    expect(screen.queryByText('Show alert timeline (1)')).not.toBeInTheDocument();
+    expect(screen.queryByText('Hide alert timeline (1)')).not.toBeInTheDocument();
   });
 
-  it('hides the linked source timeline toggle in compact previews', () => {
+  it('hides linked source timelines when the linked entity card is collapsed', () => {
+    const item = {
+      id: 'linked-alert-source-collapsed-1',
+      type: 'alert',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      updated_at: '2026-03-14T12:50:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      alert_id: 42,
+      title: 'Suspicious login',
+      status: 'NEW',
+      priority: 'MEDIUM',
+      source_timeline_items: {
+        'source-note-1': {
+          id: 'source-note-1',
+          type: 'note',
+          created_by: 'analyst',
+          created_at: '2026-03-14T12:45:11.293811Z',
+          timestamp: '2026-03-14T12:45:11.284000Z',
+          tags: [],
+          flagged: false,
+          highlighted: false,
+          description: 'Source note',
+          replies: null,
+        },
+      },
+    } as unknown as TimelineItem;
+    const collapseKey = getLinkedEntityCollapseKey(item)!;
+
+    renderWithProviders(
+      <TimelineItemRenderer
+        item={item}
+        index={0}
+        total={1}
+        entityId={38}
+        entityType="case"
+        linkedEntityCollapseState={{ [collapseKey]: true }}
+        onLinkedEntityCollapseChange={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByText('Source note')).not.toBeInTheDocument();
+    expect(screen.queryByText('Show alert timeline (1)')).not.toBeInTheDocument();
+    expect(screen.queryByText('Hide alert timeline (1)')).not.toBeInTheDocument();
+  });
+
+  it('hides linked source timelines and the removed hover toggle in compact previews', () => {
     const item = {
       id: 'linked-alert-source-compact-1',
       type: 'alert',
@@ -578,7 +687,7 @@ describe('TimelineItemRenderer enrichments', () => {
           replies: null,
         },
       },
-    } as TimelineItem;
+    } as unknown as TimelineItem;
 
     renderWithProviders(
       <TimelineItemRenderer
@@ -592,6 +701,7 @@ describe('TimelineItemRenderer enrichments', () => {
     );
 
     expect(screen.queryByText('Show alert timeline (1)')).not.toBeInTheDocument();
+    expect(screen.queryByText('Source note')).not.toBeInTheDocument();
   });
 
   it('renders attachments in the super-compact variant with filename and graceful incomplete state', () => {
@@ -696,6 +806,75 @@ describe('TimelineItemRenderer enrichments', () => {
 
     expect(screen.getByText('MaxMind Enrichment')).toBeInTheDocument();
     expect(screen.getByText('Cloudflare, Inc.')).toBeInTheDocument();
+  });
+
+  it('renders cross-timeline observable correlation matches', () => {
+    const item = {
+      id: 'observable-correlation-1',
+      type: 'observable',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      observable_type: 'IP',
+      observable_value: '203.0.113.10',
+      enrichments: {
+        cross_case_observable: {
+          observable_type: 'IP',
+          observable_value: '203.0.113.10',
+          max_lookback_days: 180,
+          match_count: 3,
+          matches: [
+            {
+              entity_type: 'alert',
+              entity_id: 12,
+              human_id: 'ALT-0000012',
+              title: 'Matching alert',
+              status: 'NEW',
+              priority: 'HIGH',
+              updated_at: '2026-03-15T12:00:00Z',
+            },
+            {
+              entity_type: 'case',
+              entity_id: 34,
+              human_id: 'CAS-0000034',
+              title: 'Matching case',
+              status: 'OPEN',
+              priority: 'MEDIUM',
+              updated_at: '2026-03-14T12:00:00Z',
+            },
+            {
+              entity_type: 'task',
+              entity_id: 56,
+              human_id: 'TSK-0000056',
+              title: 'Matching task',
+              status: 'TODO',
+              priority: 'LOW',
+              updated_at: '2026-03-13T12:00:00Z',
+            },
+          ],
+        },
+      },
+    } as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="alert" />
+    );
+
+    expect(screen.getByText('Observable Correlation')).toBeInTheDocument();
+    expect(screen.getByText('3 matches')).toBeInTheDocument();
+    expect(screen.getByText('180d lookback')).toBeInTheDocument();
+    expect(screen.getByText('ALT-0000012')).toBeInTheDocument();
+    expect(screen.getByText('CAS-0000034')).toBeInTheDocument();
+    expect(screen.getByText('TSK-0000056')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /ALT-0000012/i })).toHaveAttribute('href', '/alerts/ALT-0000012');
+    expect(screen.getByText('Matching alert')).toBeInTheDocument();
+    expect(screen.getByText('Matching case')).toBeInTheDocument();
+    expect(screen.getByText('Matching task')).toBeInTheDocument();
+    expect(screen.queryByText('alert')).not.toBeInTheDocument();
   });
 
   it('does not force grouped observable cards to h-full', () => {
