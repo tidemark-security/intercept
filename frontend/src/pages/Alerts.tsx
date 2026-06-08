@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { useParams } from 'react-router-dom';
+import { useLocation, useParams } from 'react-router-dom';
 import { CheckCircle2, Copy, FolderPlus, Link2, Tags, X } from 'lucide-react';
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { Button } from "@/components/buttons/Button";
@@ -38,6 +38,7 @@ import { useEnqueueTriage } from "@/hooks/useEnqueueTriage";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useSession } from "@/contexts/sessionContext";
 import { useURLFilters } from "@/hooks/useURLFilters";
+import { useTagFilterClick } from "@/hooks/useTagFilterClick";
 import type { RejectionCategory } from "@/types/generated/models/RejectionCategory";
 import { cleanupExpiredDrafts } from "@/utils/draftStorage";
 import { useDockState } from "@/hooks/useDockState";
@@ -76,6 +77,7 @@ import { NotFoundError } from "@/pages/NotFoundError";
 function Alerts() {
   // Get URL parameters and navigation
   const { humanId } = useParams<{ humanId?: string }>();
+  const location = useLocation();
   const navigate = useViewTransitionNavigate();
 
   // Get current authenticated user from session context
@@ -95,6 +97,7 @@ function Alerts() {
     },
   });
   const [selectedAlertId, setSelectedAlertId] = useState<number | null>(null);
+  const handleFilterByTag = useTagFilterClick(filters, setFilters);
   const [bulkSelectedAlertIds, setBulkSelectedAlertIds] = useState<Set<number>>(new Set());
   const [bulkDialog, setBulkDialog] = useState<'status' | 'create_case' | 'duplicate' | 'tags' | null>(null);
   const [isBulkCaseSelectorOpen, setIsBulkCaseSelectorOpen] = useState(false);
@@ -516,19 +519,6 @@ function Alerts() {
     updateAlertMutation.mutate({ tags });
   };
 
-  const handleFilterByTag = (tag: string, mode: 'include' | 'exclude') => {
-    const key = mode === 'include' ? 'includeTags' : 'excludeTags';
-    const current = filters[key] || [];
-    if (current.includes(tag)) {
-      return;
-    }
-    setFilters({
-      ...filters,
-      [key]: [...current, tag],
-    });
-    setCurrentPage(1);
-  };
-
   // Triage recommendation handlers
   const handleAcceptTriageRecommendation = (options: import('@/types/generated/models/AcceptRecommendationRequest').AcceptRecommendationRequest) => {
     if (!selectedAlertId) return;
@@ -687,7 +677,7 @@ function Alerts() {
   // Alert selection handler
   const handleAlertSelect = (alertId: number, humanId: string) => {
     setSelectedAlertId(alertId);
-    navigate(`/alerts/${humanId}`);
+    navigate(`/alerts/${humanId}${location.search}`);
 
     // Only change visible columns on mobile - ultrawide/desktop/tablet stay as-is
     switchToColumnOnMobile('center');
@@ -697,7 +687,7 @@ function Alerts() {
   // Handler for going back to alert list from 404 page
   const handleBackToAlertList = () => {
     setSelectedAlertId(null);
-    navigate('/alerts');
+    navigate(`/alerts${location.search}`);
   };
 
   const bulkActionsPanel = !isAuditor && bulkSelectedIds.length > 0 ? (
@@ -776,7 +766,7 @@ function Alerts() {
             items={alertsData?.items ?? []}
             selectedId={selectedAlertId}
             onSelect={handleAlertSelect}
-            getItemHref={(_id, humanId) => `/alerts/${humanId}`}
+            getItemHref={(_id, humanId) => `/alerts/${humanId}${location.search}`}
             selectable={!isAuditor}
             selectedIds={bulkSelectedAlertIds}
             onSelectionChange={handleBulkSelectionChange}

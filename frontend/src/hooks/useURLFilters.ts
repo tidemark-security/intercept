@@ -1,16 +1,18 @@
 import { useSearchParams } from 'react-router-dom';
 import { useCallback, useMemo } from 'react';
 import type { FilterState, CaseFilterState, TaskFilterState } from '@/types/filters';
+import { formatForBackend, parseRelativeTime } from '@/utils/dateFilters';
 
 // Union of all filter state types
 type AnyFilterState = FilterState | CaseFilterState | TaskFilterState;
 
 /**
  * Parse URL search params into a filter state object.
- * Supports: search, status (comma-separated), assignee (comma-separated), dateRange (start/end)
+ * Supports: search, status (comma-separated), assignee (comma-separated), alert tag filters, dateRange (start/end)
  */
 export function parseFiltersFromURL(searchParams: URLSearchParams): Partial<AnyFilterState> {
   const filters: Partial<AnyFilterState> = {};
+  const alertFilters = filters as Partial<FilterState>;
 
   const search = searchParams.get('search');
   if (search) filters.search = search;
@@ -25,16 +27,47 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): Partial<AnyF
     filters.assignee = assignee.split(',').filter(Boolean);
   }
 
-  const startDate = searchParams.get('start_date');
-  const endDate = searchParams.get('end_date');
-  if (startDate || endDate) {
+  const includeTags = parseListParam(searchParams, 'include_tags');
+  if (includeTags.length > 0) {
+    alertFilters.includeTags = includeTags;
+  }
+
+  const excludeTags = parseListParam(searchParams, 'exclude_tags');
+  if (excludeTags.length > 0) {
+    alertFilters.excludeTags = excludeTags;
+  }
+
+  const timeframe = searchParams.get('timeframe');
+  const relativeRange = timeframe ? parseRelativeTime(timeframe) : null;
+  if (timeframe && relativeRange) {
     filters.dateRange = {
-      start: startDate || '',
-      end: endDate || '',
+      start: formatForBackend(relativeRange.start),
+      end: formatForBackend(relativeRange.end),
+      preset: timeframe,
     };
+  } else {
+    const startDate = searchParams.get('start_date');
+    const endDate = searchParams.get('end_date');
+    if (startDate || endDate) {
+      filters.dateRange = {
+        start: startDate || '',
+        end: endDate || '',
+        preset: 'custom',
+      };
+    }
   }
 
   return filters;
+}
+
+function parseListParam(searchParams: URLSearchParams, key: string): string[] {
+  const values = searchParams
+    .getAll(key)
+    .flatMap((value) => value.split(','))
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return Array.from(new Set(values));
 }
 
 /**
@@ -55,11 +88,25 @@ export function filtersToURLParams(filters: AnyFilterState, page?: number): URLS
     params.set('assignee', filters.assignee.join(','));
   }
 
-  if (filters.dateRange?.start) {
-    params.set('start_date', filters.dateRange.start);
-  }
-  if (filters.dateRange?.end) {
-    params.set('end_date', filters.dateRange.end);
+  const alertFilters = filters as Partial<FilterState>;
+  alertFilters.includeTags?.forEach((tag) => {
+    const cleanTag = tag.trim();
+    if (cleanTag) params.append('include_tags', cleanTag);
+  });
+  alertFilters.excludeTags?.forEach((tag) => {
+    const cleanTag = tag.trim();
+    if (cleanTag) params.append('exclude_tags', cleanTag);
+  });
+
+  if (filters.dateRange?.preset && filters.dateRange.preset !== 'custom') {
+    params.set('timeframe', filters.dateRange.preset);
+  } else if (filters.dateRange) {
+    if (filters.dateRange.start) {
+      params.set('start_date', filters.dateRange.start);
+    }
+    if (filters.dateRange.end) {
+      params.set('end_date', filters.dateRange.end);
+    }
   }
 
   // Only add page to URL if it's greater than 1 (page 1 is the default)
@@ -112,14 +159,22 @@ export function useURLFilters<T extends AnyFilterState>(
   
   // Merge URL filters with defaults (URL takes precedence for specified values)
   // Use useMemo to maintain stable reference when values haven't changed
-  const filters = useMemo<T>(() => ({
-    ...defaults,
-    ...urlFilters,
-    // Handle status specially - only override if URL has status param
-    status: urlFilters.status !== undefined ? urlFilters.status : defaults.status,
-    // Handle assignee specially - only override if URL has assignee param
-    assignee: urlFilters.assignee !== undefined ? urlFilters.assignee : defaults.assignee,
-  } as T), [defaults, urlFilters]);
+  const filters = useMemo<T>(() => {
+    const parsedAlertFilters = urlFilters as Partial<FilterState>;
+    const defaultAlertFilters = defaults as Partial<FilterState>;
+
+    return {
+      ...defaults,
+      ...urlFilters,
+      // Handle status specially - only override if URL has status param
+      status: urlFilters.status !== undefined ? urlFilters.status : defaults.status,
+      // Handle assignee specially - only override if URL has assignee param
+      assignee: urlFilters.assignee !== undefined ? urlFilters.assignee : defaults.assignee,
+      // Handle alert tag filters specially - only override if URL has tag params
+      includeTags: parsedAlertFilters.includeTags !== undefined ? parsedAlertFilters.includeTags : defaultAlertFilters.includeTags,
+      excludeTags: parsedAlertFilters.excludeTags !== undefined ? parsedAlertFilters.excludeTags : defaultAlertFilters.excludeTags,
+    } as T;
+  }, [defaults, urlFilters]);
 
   // Update URL when filters change (resets page to 1)
   const setFilters = useCallback((newFilters: T) => {

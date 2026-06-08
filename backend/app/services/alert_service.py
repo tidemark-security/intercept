@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, cast, String, not_
+from sqlalchemy import select, or_, cast, String
 from sqlalchemy.orm import selectinload, defer
 from sqlmodel import col
 from typing import List, Optional, Set, Dict, Any
@@ -29,6 +29,7 @@ from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
 from app.services import triage_recommendation_service
+from app.services.tag_filter_utils import append_tag_filters
 
 logger = logging.getLogger(__name__)
 
@@ -259,10 +260,7 @@ class AlertService:
                 filters.append(Alert.priority.in_(priority))  # type: ignore
             if source:
                 filters.append(Alert.source.ilike(f"%{source}%"))  # type: ignore
-            for tag in self._normalize_tag_filters(include_tags):
-                filters.append(Alert.tags.contains([tag]))  # type: ignore[attr-defined]
-            for tag in self._normalize_tag_filters(exclude_tags):
-                filters.append(not_(Alert.tags.contains([tag])))  # type: ignore[attr-defined]
+            append_tag_filters(filters, Alert.tags, include_tags, exclude_tags)
             if has_case is not None:
                 if has_case:
                     filters.append(Alert.case_id.is_not(None))  # type: ignore
@@ -326,19 +324,6 @@ class AlertService:
             logger.error(f"Error fetching alerts: {e}")
             raise
 
-    @staticmethod
-    def _normalize_tag_filters(tags: Optional[List[str]]) -> List[str]:
-        """Trim, deduplicate, and drop blank tag filters while preserving order."""
-        normalized: List[str] = []
-        seen: Set[str] = set()
-        for tag in tags or []:
-            clean = tag.strip()
-            if not clean or clean in seen:
-                continue
-            normalized.append(clean)
-            seen.add(clean)
-        return normalized
-    
     async def update_alert(
         self, 
         db: AsyncSession, 

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { useLocation } from "react-router-dom";
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
@@ -13,6 +14,7 @@ import { useUpdateTask } from "@/hooks/useUpdateTask";
 import { useSession } from "@/contexts/sessionContext";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
 import { useURLFilters } from "@/hooks/useURLFilters";
+import { useTagFilterClick } from "@/hooks/useTagFilterClick";
 import { getColumnConfig, getInitialVisibleColumns } from "@/utils/columnConfig";
 import type { TaskStatus } from "@/types/generated/models/TaskStatus";
 import type { TaskRead } from "@/types/generated/models/TaskRead";
@@ -33,6 +35,7 @@ import { taskStatusToUIState, priorityToUIPriority, taskStateToMenuCardState } f
  */
 function TasksListPage() {
   const navigate = useViewTransitionNavigate();
+  const location = useLocation();
   const { user } = useSession();
   const currentUser = user?.username || null;
 
@@ -42,10 +45,13 @@ function TasksListPage() {
       search: "",
       assignee: null,
       status: ["TODO" as TaskStatus, "IN_PROGRESS" as TaskStatus],
+      includeTags: null,
+      excludeTags: null,
       dateRange: null,
     },
   });
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
+  const handleFilterByTag = useTagFilterClick(filters, setFilters);
 
   // Column visibility state
   const [visibleColumns, setVisibleColumns] = useState<VisibleColumns>(() => getInitialVisibleColumns());
@@ -81,6 +87,8 @@ function TasksListPage() {
   const { data: tasksData, isLoading, error } = useTasks({
     status: filters.status || null,
     assignee: filters.assignee?.[0] || null,
+    includeTags: filters.includeTags || null,
+    excludeTags: filters.excludeTags || null,
     search: filters.search || null,
     startDate: filters.dateRange?.start || null,
     endDate: filters.dateRange?.end || null,
@@ -148,7 +156,7 @@ function TasksListPage() {
     
     if (breakpoint === 'mobile' || breakpoint === 'desktop' || breakpoint === 'tablet') {
       // On mobile, desktop, and tablet, navigate directly to the detail view
-      navigate(`/tasks/${taskHumanId}`);
+      navigate(`/tasks/${taskHumanId}${location.search}`);
     } else {
       // On ultrawide, stay in list view and show read-only timeline
       // (visibleColumns will be updated by useEffect)
@@ -157,13 +165,13 @@ function TasksListPage() {
 
   // Double-click handler - always navigate to detail view
   const handleTaskDoubleClick = (taskId: number, taskHumanId: string) => {
-    navigate(`/tasks/${taskHumanId}`);
+    navigate(`/tasks/${taskHumanId}${location.search}`);
   };
 
   // Handle "Open Task" from timeline to navigate to detail view
   const handleOpenTask = () => {
     if (taskDetail?.human_id) {
-      navigate(`/tasks/${taskDetail.human_id}`);
+      navigate(`/tasks/${taskDetail.human_id}${location.search}`);
     }
   };
 
@@ -182,9 +190,11 @@ function TasksListPage() {
             selectedId={selectedTaskId}
             onSelect={handleTaskSelect}
             onDoubleClick={handleTaskDoubleClick}
-            getItemHref={(_id, humanId) => `/tasks/${humanId}`}
+            getItemHref={(_id, humanId) => `/tasks/${humanId}${location.search}`}
             filters={filters}
             onFilterChange={setFilters}
+            enableTagFilters
+            onTagClick={handleFilterByTag}
             statusOptions={[
               { value: 'TODO', label: 'To Do' },
               { value: 'IN_PROGRESS', label: 'In Progress' },

@@ -56,6 +56,8 @@ export class CasesService {
         limit = 100,
         status,
         assignee,
+        includeTags,
+        excludeTags,
         search,
         startDate,
         endDate,
@@ -69,6 +71,14 @@ export class CasesService {
          */
         status?: (Array<CaseStatus> | null),
         assignee?: (string | null),
+        /**
+         * Require cases to include all of these tags
+         */
+        includeTags?: (Array<string> | null),
+        /**
+         * Require cases to exclude all of these tags
+         */
+        excludeTags?: (Array<string> | null),
         /**
          * Search cases by title or description (case-insensitive partial match)
          */
@@ -98,6 +108,8 @@ export class CasesService {
                 'limit': limit,
                 'status': status,
                 'assignee': assignee,
+                'include_tags': includeTags,
+                'exclude_tags': excludeTags,
                 'search': search,
                 'start_date': startDate,
                 'end_date': endDate,

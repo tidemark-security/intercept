@@ -58,6 +58,8 @@ export class TasksService {
         status,
         assignee,
         caseId,
+        includeTags,
+        excludeTags,
         search,
         startDate,
         endDate,
@@ -75,6 +77,14 @@ export class TasksService {
          * Filter by case ID
          */
         caseId?: (number | null),
+        /**
+         * Require tasks to include all of these tags
+         */
+        includeTags?: (Array<string> | null),
+        /**
+         * Require tasks to exclude all of these tags
+         */
+        excludeTags?: (Array<string> | null),
         /**
          * Search tasks by title or description (case-insensitive partial match)
          */
@@ -105,6 +115,8 @@ export class TasksService {
                 'status': status,
                 'assignee': assignee,
                 'case_id': caseId,
+                'include_tags': includeTags,
+                'exclude_tags': excludeTags,
                 'search': search,
                 'start_date': startDate,
                 'end_date': endDate,

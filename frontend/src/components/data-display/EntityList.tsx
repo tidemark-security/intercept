@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from '@/components/navigation/Link';
-import { CaseAlertFilterCompact } from '@/components/entities/CaseAlertFilterCompact';
+import { EntityFilterToolbar } from '@/components/entities/EntityFilterToolbar';
 import { MenuCard } from '@/components/cards/MenuCard';
 import { PaginationFooter } from '@/components/navigation/PaginationFooter';
 import type { EntityListProps } from './EntityList.types';
@@ -44,6 +44,26 @@ export function EntityList<T, F = FilterState>({
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === 'dark';
   const visibleIds = items.map((item) => getItemIds(item).id);
+  const visibleTagCounts = React.useMemo(() => {
+    const counts = new Map<string, number>();
+
+    items.forEach((item) => {
+      const tags = mapItemToCard(item).tags;
+      const tagList = Array.isArray(tags)
+        ? tags
+        : tags
+          ? tags.split(',').map((tag) => tag.trim())
+          : [];
+
+      tagList
+        .filter(Boolean)
+        .forEach((tag) => counts.set(tag, (counts.get(tag) ?? 0) + 1));
+    });
+
+    return Array.from(counts.entries())
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((left, right) => right.count - left.count || left.tag.localeCompare(right.tag));
+  }, [items, mapItemToCard]);
   const selectedVisibleCount = visibleIds.filter((id) => selectedIds?.has(id)).length;
   const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
   const someVisibleSelected = selectedVisibleCount > 0 && !allVisibleSelected;
@@ -53,13 +73,14 @@ export function EntityList<T, F = FilterState>({
       {/* Filter Header */}
       <div className={`flex w-full flex-col items-start border-b border-solid  ${isDarkTheme ? 'border-brand-primary' : 'border-neutral-1000'} px-3 pt-3 pb-3 md:px-6 md:pt-6 md:pb-4`}>
         <div className="flex w-full flex-col items-start gap-4">
-          <CaseAlertFilterCompact
+          <EntityFilterToolbar
             filters={filters as unknown as FilterState}
             onFilterChange={onFilterChange as unknown as (filters: FilterState) => void}
             assignees={users}
             assigneesLoading={usersLoading}
             statusOptions={statusOptions}
             showTagFilters={enableTagFilters}
+            availableTags={visibleTagCounts}
           />
         </div>
       </div>

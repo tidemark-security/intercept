@@ -1,33 +1,70 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import ipaddress
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
-from sqlalchemy import select
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.models import Case
 from app.services.enrichment.base import EnrichmentProvider, EnrichmentResult
 from app.services.settings_service import SettingsService
-from app.services.timeline_service import timeline_service
+
+
+DEFAULT_MAX_LOOKBACK_DAYS = 180
+
+CORRELATION_FIELD_MAPPINGS: dict[str, list[tuple[str, str]]] = {
+    "IP": [
+        ("system", "ip_address"),
+        ("network_traffic", "source_ip"),
+        ("network_traffic", "destination_ip"),
+    ],
+    "EMAIL": [
+        ("internal_actor", "contact_email"),
+        ("external_actor", "contact_email"),
+        ("threat_actor", "contact_email"),
+        ("email", "sender"),
+        ("email", "recipient"),
+    ],
+    "URL": [
+        ("attachment", "url"),
+        ("ttp", "url"),
+        ("link", "url"),
+        ("forensic_artifact", "url"),
+    ],
+    "DOMAIN": [
+        ("system", "hostname"),
+    ],
+    "HASH": [
+        ("attachment", "file_hash"),
+        ("forensic_artifact", "hash"),
+    ],
+    "FILENAME": [
+        ("attachment", "file_name"),
+        ("process", "process_name"),
+    ],
+    "PROCESS_NAME": [
+        ("process", "process_name"),
+    ],
+}
 
 
 class CrossCaseObservableProvider(EnrichmentProvider):
     provider_id = "cross_case_observable"
-    display_name = "Cross-Case Observable Correlation"
+    display_name = "Cross-Timeline Observable Correlation"
     settings_prefix = "enrichment.cross_case_observable"
-    supported_item_types = ("observable",)
+    supported_item_types = ("observable", "network_traffic", "system")
     supports_bulk_sync = False
+    cacheable = False
 
     def can_enrich(self, item: Dict[str, Any]) -> bool:
-        return self._observable(item) is not None
+        return bool(self._observables(item))
 
     def build_cache_key(self, item: Dict[str, Any]) -> str:
-        observable = self._observable(item)
-        if observable is None:
+        observables = self._observables(item)
+        if not observables:
             raise ValueError("No observable available for cross-case correlation")
-        observable_type, observable_value = observable
-        return f"{observable_type}:{observable_value}"
+        return "|".join(f"{observable_type}:{observable_value}" for observable_type, observable_value in observables)
 
     async def enrich(
         self,
@@ -38,66 +75,263 @@ class CrossCaseObservableProvider(EnrichmentProvider):
         entity_type: str,
         entity_id: int,
     ) -> EnrichmentResult:
-        observable = self._observable(item)
-        if observable is None:
+        observables = self._observables(item)
+        if not observables:
             raise ValueError("No observable available for cross-case correlation")
-        observable_type, observable_value = observable
 
-        result = await db.execute(select(Case).order_by(Case.updated_at.desc()))
-        matches: list[dict[str, Any]] = []
-        total = 0
-        for case in result.scalars().all():
-            if entity_type == "case" and case.id == entity_id:
-                continue
-            if not self._case_contains_observable(case, observable_type, observable_value):
-                continue
-            total += 1
-            if len(matches) < 5:
-                matches.append(
-                    {
-                        "case_id": case.id,
-                        "case_human_id": f"CAS-{case.id:07d}" if case.id is not None else None,
-                        "title": case.title,
-                        "status": case.status.value if hasattr(case.status, "value") else case.status,
-                        "priority": case.priority.value if hasattr(case.priority, "value") else case.priority,
-                        "created_at": case.created_at.isoformat() if case.created_at else None,
-                        "updated_at": case.updated_at.isoformat() if case.updated_at else None,
-                        "closed_at": case.closed_at.isoformat() if case.closed_at else None,
-                    }
+        max_lookback_days = await self._max_lookback_days(settings)
+        lookback_started_at = datetime.now(timezone.utc) - timedelta(days=max_lookback_days)
+
+        correlations: list[dict[str, Any]] = []
+        for observable_type, observable_value in observables:
+            correlations.append(
+                await self._run_correlation_query(
+                    db=db,
+                    observable_type=observable_type,
+                    observable_value=observable_value,
+                    entity_type=entity_type,
+                    entity_id=entity_id,
+                    lookback_started_at=lookback_started_at,
+                    max_lookback_days=max_lookback_days,
                 )
+            )
 
-        ttl_seconds = int(await settings.get("enrichment.cross_case_observable.ttl_seconds", 3600) or 3600)
+        primary = correlations[0]
         return EnrichmentResult(
             provider_id=self.provider_id,
             cache_key=self.build_cache_key(item),
             enrichment_data={
-                "observable_type": observable_type,
-                "observable_value": observable_value,
+                "observable_type": primary["observable_type"],
+                "observable_value": primary["observable_value"],
                 "queried_at": datetime.now(timezone.utc).isoformat(),
-                "other_case_count": total,
-                "matching_cases": matches,
+                "max_lookback_days": max_lookback_days,
+                "lookback_started_at": lookback_started_at.isoformat(),
+                "match_count": primary["match_count"],
+                "matches": primary["matches"],
+                "correlations": correlations,
             },
-            ttl_seconds=ttl_seconds,
+            ttl_seconds=None,
         )
 
-    def _observable(self, item: Dict[str, Any]) -> tuple[str, str] | None:
-        if item.get("type") != "observable":
-            return None
-        observable_type = str(item.get("observable_type") or "").strip().upper()
-        observable_value = str(item.get("observable_value") or "").strip().lower()
-        if not observable_type or not observable_value:
-            return None
-        return observable_type, observable_value
+    async def _run_correlation_query(
+        self,
+        *,
+        db: AsyncSession,
+        observable_type: str,
+        observable_value: str,
+        entity_type: str,
+        entity_id: int,
+        lookback_started_at: datetime,
+        max_lookback_days: int,
+    ) -> dict[str, Any]:
+        prefilter_sql, match_sql, match_params = self._build_match_sql(observable_type)
+        query = text(f"""
+            WITH candidate_entities AS (
+                SELECT
+                    'alert' AS entity_type,
+                    id AS entity_id,
+                    title,
+                    CAST(status AS text) AS status,
+                    CAST(priority AS text) AS priority,
+                    created_at,
+                    updated_at,
+                    timeline_items
+                FROM alerts
+                WHERE updated_at >= :lookback_started_at
+                  AND NOT (:entity_type = 'alert' AND id = :entity_id)
+                  AND ({prefilter_sql})
+                UNION ALL
+                SELECT
+                    'case' AS entity_type,
+                    id AS entity_id,
+                    title,
+                    CAST(status AS text) AS status,
+                    CAST(priority AS text) AS priority,
+                    created_at,
+                    updated_at,
+                    timeline_items
+                FROM cases
+                WHERE updated_at >= :lookback_started_at
+                  AND NOT (:entity_type = 'case' AND id = :entity_id)
+                  AND ({prefilter_sql})
+                UNION ALL
+                SELECT
+                    'task' AS entity_type,
+                    id AS entity_id,
+                    title,
+                    CAST(status AS text) AS status,
+                    CAST(priority AS text) AS priority,
+                    created_at,
+                    updated_at,
+                    timeline_items
+                FROM tasks
+                WHERE updated_at >= :lookback_started_at
+                  AND NOT (:entity_type = 'task' AND id = :entity_id)
+                  AND ({prefilter_sql})
+            ),
+            matches AS (
+                SELECT
+                    entity_type,
+                    entity_id,
+                    title,
+                    status,
+                    priority,
+                    created_at,
+                    updated_at
+                FROM candidate_entities
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM jsonb_each(
+                        CASE
+                            WHEN jsonb_typeof(timeline_items) = 'object' THEN timeline_items
+                            ELSE '{{}}'::jsonb
+                        END
+                    ) AS timeline_match(key, item)
+                    WHERE {match_sql}
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(
+                        CASE
+                            WHEN jsonb_typeof(timeline_items) = 'array' THEN timeline_items
+                            ELSE '[]'::jsonb
+                        END
+                    ) AS timeline_match(item)
+                    WHERE {match_sql}
+                )
+            ),
+            counted AS (
+                SELECT
+                    *,
+                    count(*) OVER () AS match_count
+                FROM matches
+            )
+            SELECT *
+            FROM counted
+            ORDER BY updated_at DESC
+            LIMIT 5
+        """)
+        result = await db.execute(
+            query,
+            {
+                "entity_type": entity_type.lower(),
+                "entity_id": entity_id,
+                "observable_type": observable_type,
+                "observable_value": observable_value,
+                "lookback_started_at": lookback_started_at,
+                **match_params,
+            },
+        )
+        rows = result.mappings().all()
+        matches = [self._format_match(row) for row in rows]
+        total = int(rows[0]["match_count"]) if rows else 0
 
-    def _case_contains_observable(self, case: Case, observable_type: str, observable_value: str) -> bool:
-        for candidate in timeline_service._iter_items(case.timeline_items or {}):
-            if candidate.get("type") != "observable":
+        return {
+            "observable_type": observable_type,
+            "observable_value": observable_value,
+            "max_lookback_days": max_lookback_days,
+            "lookback_started_at": lookback_started_at.isoformat(),
+            "match_count": total,
+            "matches": matches,
+        }
+
+    def _build_match_sql(self, observable_type: str) -> tuple[str, str, dict[str, str]]:
+        field_mappings = CORRELATION_FIELD_MAPPINGS.get(observable_type, [])
+        candidate_types = sorted({"observable", *(item_type for item_type, _ in field_mappings)})
+
+        prefilter_parts: list[str] = []
+        for item_type in candidate_types:
+            prefilter_parts.append(f"""timeline_items @? '$.* ? (@.type == "{item_type}")'""")
+            prefilter_parts.append(f"""timeline_items @? '$[*] ? (@.type == "{item_type}")'""")
+
+        match_parts = [
+            """(
+                timeline_match.item->>'type' = 'observable'
+                AND upper(coalesce(timeline_match.item->>'observable_type', '')) = :observable_type
+                AND lower(coalesce(timeline_match.item->>'observable_value', '')) = :observable_value
+            )"""
+        ]
+        params: dict[str, str] = {}
+        for index, (item_type, field_name) in enumerate(field_mappings):
+            type_param = f"field_item_type_{index}"
+            match_parts.append(
+                f"""(
+                    timeline_match.item->>'type' = :{type_param}
+                    AND lower(coalesce(timeline_match.item->>'{field_name}', '')) = :observable_value
+                )"""
+            )
+            params[type_param] = item_type
+
+        match_sql = "(" + " OR ".join(match_parts) + ")"
+        return " OR ".join(prefilter_parts), match_sql, params
+
+    async def _max_lookback_days(self, settings: SettingsService) -> int:
+        try:
+            raw_value = await settings.get(
+                "enrichment.cross_case_observable.max_lookback_days",
+                DEFAULT_MAX_LOOKBACK_DAYS,
+            )
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            return DEFAULT_MAX_LOOKBACK_DAYS
+        return value if value > 0 else DEFAULT_MAX_LOOKBACK_DAYS
+
+    def _observables(self, item: Dict[str, Any]) -> list[tuple[str, str]]:
+        item_type = item.get("type")
+        raw_candidates: list[tuple[str, str]] = []
+
+        if item_type == "observable":
+            observable_type = str(item.get("observable_type") or "").strip().upper()
+            observable_value = str(item.get("observable_value") or "").strip().lower()
+            if observable_type and observable_value:
+                raw_candidates.append((observable_type, observable_value))
+        elif item_type == "system" and item.get("ip_address"):
+            raw_candidates.append(("IP", str(item["ip_address"]).strip().lower()))
+        elif item_type == "network_traffic":
+            for field_name in ("source_ip", "destination_ip"):
+                if item.get(field_name):
+                    raw_candidates.append(("IP", str(item[field_name]).strip().lower()))
+
+        observables: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for observable_type, observable_value in raw_candidates:
+            if observable_type == "IP" and not self._is_public_ip(observable_value):
                 continue
-            candidate_type = str(candidate.get("observable_type") or "").strip().upper()
-            candidate_value = str(candidate.get("observable_value") or "").strip().lower()
-            if candidate_type == observable_type and candidate_value == observable_value:
-                return True
-        return False
+            candidate = (observable_type, observable_value)
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            observables.append(candidate)
+        return observables
+
+    def _is_public_ip(self, value: str) -> bool:
+        try:
+            parsed = ipaddress.ip_address(value)
+        except ValueError:
+            return False
+        return not (
+            parsed.is_private
+            or parsed.is_loopback
+            or parsed.is_multicast
+            or parsed.is_reserved
+            or parsed.is_unspecified
+        )
+
+    def _format_match(self, row: Any) -> dict[str, Any]:
+        entity_type = str(row["entity_type"])
+        entity_id = int(row["entity_id"])
+        prefixes = {"alert": "ALT", "case": "CAS", "task": "TSK"}
+        prefix = prefixes.get(entity_type, entity_type.upper())
+        return {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "human_id": f"{prefix}-{entity_id:07d}",
+            "title": row["title"],
+            "status": row["status"],
+            "priority": row["priority"],
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+        }
 
 
 cross_case_observable_provider = CrossCaseObservableProvider()

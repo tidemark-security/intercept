@@ -77,6 +77,8 @@ async def get_cases(
         None, description="Filter by multiple case statuses"
     ),
     assignee: Optional[str] = None,
+    include_tags: Optional[List[str]] = Query(None, description="Require cases to include all of these tags"),
+    exclude_tags: Optional[List[str]] = Query(None, description="Require cases to exclude all of these tags"),
     search: Optional[str] = Query(
         None,
         description="Search cases by title or description (case-insensitive partial match)",
@@ -105,6 +107,8 @@ async def get_cases(
             limit=limit,
             status=status,
             assignee=assignee,
+            include_tags=include_tags,
+            exclude_tags=exclude_tags,
             search=search,
             start_date=start_date,
             end_date=end_date,

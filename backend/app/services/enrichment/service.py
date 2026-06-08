@@ -725,7 +725,12 @@ class EnrichmentService:
         try:
             for provider in providers:
                 cache_key = provider.build_cache_key(provider_item)
-                cached_payload = await enrichment_cache.get(db, provider.provider_id, cache_key)
+                provider_cacheable = bool(getattr(provider, "cacheable", True))
+                cached_payload = (
+                    await enrichment_cache.get(db, provider.provider_id, cache_key)
+                    if provider_cacheable
+                    else None
+                )
                 if cached_payload is not None:
                     result = EnrichmentResult.from_cache_payload(cached_payload)
                 else:
@@ -739,13 +744,14 @@ class EnrichmentService:
                     ttl_seconds = result.ttl_seconds or int(
                         await settings.get(f"{provider.settings_prefix}.ttl_seconds", await settings.get("enrichment.cache.default_ttl_seconds", 86400))
                     )
-                    await enrichment_cache.set(
-                        db,
-                        provider_id=provider.provider_id,
-                        cache_key=cache_key,
-                        result_payload=result.to_cache_payload(),
-                        ttl_seconds=ttl_seconds,
-                    )
+                    if provider_cacheable:
+                        await enrichment_cache.set(
+                            db,
+                            provider_id=provider.provider_id,
+                            cache_key=cache_key,
+                            result_payload=result.to_cache_payload(),
+                            ttl_seconds=ttl_seconds,
+                        )
 
                 await self._apply_result(db, entity=entity, item=item, item_id=item_id, result=result)
 

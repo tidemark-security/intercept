@@ -41,6 +41,7 @@ import {
   ChevronDown,
   ChevronRight,
   FileText,
+  GitBranch,
   Globe2,
   Lock,
   RefreshCw,
@@ -125,6 +126,8 @@ const CUSTOM_KEYS = new Set([
   "enrichment.ldap.ttl_seconds",
   "enrichment.ldap.bulk_sync_enabled",
   "enrichment.ldap.bulk_sync_time_utc",
+  "enrichment.cross_case_observable.enabled",
+  "enrichment.cross_case_observable.max_lookback_days",
   "enrichment.maxmind.enabled",
   "enrichment.maxmind.account_id",
   "enrichment.maxmind.license_key",
@@ -946,6 +949,11 @@ function AdminSettings() {
       {
         id: "directory-enrichment-settings",
         label: "Directory Enrichment",
+        group: "Enrichment Integrations",
+      },
+      {
+        id: "observable-correlation-settings",
+        label: "Observable Correlation",
         group: "Enrichment Integrations",
       },
       {
@@ -2210,6 +2218,86 @@ function AdminSettings() {
                         ) : null}
                       </div>
                     </div>
+                  </section>
+
+                  <section
+                    id="observable-correlation-settings"
+                    className="scroll-mt-24 flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-4 sm:p-6"
+                  >
+                    <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
+                      <GitBranch className="text-[20px] text-subtext-color" />
+                      <h2 className="text-heading-3 font-heading-3 text-default-font">
+                        Observable Correlation
+                      </h2>
+                    </div>
+
+                    <StatusCallout
+                      variant={
+                        parseBooleanValue(
+                          getSetting("enrichment.cross_case_observable.enabled"),
+                        )
+                          ? "success"
+                          : "warning"
+                      }
+                      title={
+                        parseBooleanValue(
+                          getSetting("enrichment.cross_case_observable.enabled"),
+                        )
+                          ? "Observable correlation is enabled"
+                          : "Observable correlation is disabled"
+                      }
+                      description={
+                        parseBooleanValue(
+                          getSetting("enrichment.cross_case_observable.enabled"),
+                        )
+                          ? "Observable timeline items can be enriched with exact matches from recent alert, case, and task timelines."
+                          : "Enable observable correlation to show exact observable reuse across alert, case, and task timelines."
+                      }
+                      isDarkTheme={isDarkTheme}
+                    />
+
+                    <BooleanSettingField
+                      label="Enable Observable Correlation"
+                      description={
+                        settingMeta("enrichment.cross_case_observable.enabled")
+                          .description
+                      }
+                      source={
+                        settingMeta("enrichment.cross_case_observable.enabled")
+                          .source
+                      }
+                      readOnly={
+                        settingMeta("enrichment.cross_case_observable.enabled")
+                          .readOnly
+                      }
+                      value={parseBooleanValue(
+                        getSetting("enrichment.cross_case_observable.enabled"),
+                      )}
+                      onSave={(value) =>
+                        handleSaveSetting(
+                          "enrichment.cross_case_observable.enabled",
+                          value ? "true" : "false",
+                          false,
+                          "BOOLEAN",
+                        )
+                      }
+                    />
+
+                    <SettingField
+                      label="Max Correlation Lookback (days)"
+                      {...settingMeta(
+                        "enrichment.cross_case_observable.max_lookback_days",
+                      )}
+                      onSave={(value) =>
+                        handleSaveSetting(
+                          "enrichment.cross_case_observable.max_lookback_days",
+                          value,
+                          false,
+                          "NUMBER",
+                        )
+                      }
+                      placeholder="180"
+                    />
                   </section>
 
                   <section

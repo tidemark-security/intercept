@@ -75,6 +75,8 @@ async def get_tasks(
     status: Optional[List[TaskStatus]] = Query(None, description="Filter by multiple task statuses"),
     assignee: Optional[str] = None,
     case_id: Optional[int] = Query(None, description="Filter by case ID"),
+    include_tags: Optional[List[str]] = Query(None, description="Require tasks to include all of these tags"),
+    exclude_tags: Optional[List[str]] = Query(None, description="Require tasks to exclude all of these tags"),
     search: Optional[str] = Query(None, description="Search tasks by title or description (case-insensitive partial match)"),
     start_date: Optional[str] = Query(None, description="Filter tasks created after this UTC datetime (ISO8601 format with 'Z' suffix)"),
     end_date: Optional[str] = Query(None, description="Filter tasks created before this UTC datetime (ISO8601 format with 'Z' suffix)"),
@@ -90,7 +92,8 @@ async def get_tasks(
     try:
         tasks = await task_service.get_tasks(
             db, skip=skip, limit=limit, status=status, assignee=assignee,
-            case_id=case_id, search=search, start_date=start_date, end_date=end_date
+            case_id=case_id, include_tags=include_tags, exclude_tags=exclude_tags,
+            search=search, start_date=start_date, end_date=end_date
         )
         return tasks
     except Exception as e:

@@ -16,6 +16,7 @@ from app.services.timeline_add_service import add_timeline_item_and_commit, upda
 from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
+from app.services.tag_filter_utils import append_tag_filters
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,8 @@ class TaskService:
         status: Optional[List[TaskStatus]] = None,
         assignee: Optional[str] = None,
         case_id: Optional[int] = None,
+        include_tags: Optional[List[str]] = None,
+        exclude_tags: Optional[List[str]] = None,
         search: Optional[str] = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None
@@ -160,6 +163,8 @@ class TaskService:
             status: Filter by task status (can filter by multiple statuses)
             assignee: Filter by assignee username (exact match)
             case_id: Filter by case ID (for tasks linked to a specific case)
+            include_tags: Tags tasks must include
+            exclude_tags: Tags tasks must exclude
             search: Search string to match against task title or description (case-insensitive partial match)
             start_date: Filter tasks created after this UTC datetime (ISO8601 format with 'Z' suffix)
             end_date: Filter tasks created before this UTC datetime (ISO8601 format with 'Z' suffix)
@@ -203,6 +208,8 @@ class TaskService:
             
             if case_id is not None:
                 filters.append(Task.case_id == case_id)
+
+            append_tag_filters(filters, Task.tags, include_tags, exclude_tags)
             
             # Date range filtering (expects UTC ISO8601 strings)
             if start_date:
@@ -241,7 +248,7 @@ class TaskService:
         except Exception as e:
             logger.error(f"Error fetching tasks: {e}")
             raise
-    
+
     async def update_task(
         self, 
         db: AsyncSession, 

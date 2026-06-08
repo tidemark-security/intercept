@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { useLocation } from "react-router-dom";
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
@@ -17,6 +18,7 @@ import { useSession } from "@/contexts/sessionContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
 import { useURLFilters } from "@/hooks/useURLFilters";
+import { useTagFilterClick } from "@/hooks/useTagFilterClick";
 import { getColumnConfig, getInitialVisibleColumns } from "@/utils/columnConfig";
 import type { CaseStatus } from "@/types/generated/models/CaseStatus";
 import type { CaseRead } from "@/types/generated/models/CaseRead";
@@ -38,6 +40,7 @@ import { Plus } from "lucide-react";
  */
 function CasesListPage() {
   const navigate = useViewTransitionNavigate();
+  const location = useLocation();
   const { user } = useSession();
   const { showToast } = useToast();
   const currentUser = user?.username || null;
@@ -48,10 +51,13 @@ function CasesListPage() {
       search: "",
       assignee: null,
       status: ["NEW" as CaseStatus, "IN_PROGRESS" as CaseStatus],
+      includeTags: null,
+      excludeTags: null,
       dateRange: null,
     },
   });
   const [selectedCaseId, setSelectedCaseId] = useState<number | null>(null);
+  const handleFilterByTag = useTagFilterClick(filters, setFilters);
   const [isCreateCaseModalOpen, setIsCreateCaseModalOpen] = useState(false);
   const [createCaseError, setCreateCaseError] = useState<string | null>(null);
 
@@ -89,6 +95,8 @@ function CasesListPage() {
   const { data: casesData, isLoading, error } = useCases({
     status: filters.status || null,
     assignee: filters.assignee?.[0] || null,
+    includeTags: filters.includeTags || null,
+    excludeTags: filters.excludeTags || null,
     search: filters.search || null,
     startDate: filters.dateRange?.start || null,
     endDate: filters.dateRange?.end || null,
@@ -153,7 +161,7 @@ function CasesListPage() {
     
     if (breakpoint === 'mobile' || breakpoint === 'desktop' || breakpoint === 'tablet') {
       // On mobile, desktop, and tablet, navigate directly to the detail view
-      navigate(`/cases/${caseHumanId}`);
+      navigate(`/cases/${caseHumanId}${location.search}`);
     } else {
       // On ultrawide, stay in list view and show read-only timeline
       // (visibleColumns will be updated by useEffect)
@@ -162,13 +170,13 @@ function CasesListPage() {
 
   // Double-click handler - always navigate to detail view
   const handleCaseDoubleClick = (caseId: number, caseHumanId: string) => {
-    navigate(`/cases/${caseHumanId}`);
+    navigate(`/cases/${caseHumanId}${location.search}`);
   };
 
   // Handle "Open Case" from timeline to navigate to detail view
   const handleOpenCase = () => {
     if (caseDetail?.human_id) {
-      navigate(`/cases/${caseDetail.human_id}`);
+      navigate(`/cases/${caseDetail.human_id}${location.search}`);
     }
   };
 
@@ -208,9 +216,11 @@ function CasesListPage() {
             selectedId={selectedCaseId}
             onSelect={handleCaseSelect}
             onDoubleClick={handleCaseDoubleClick}
-            getItemHref={(_id, humanId) => `/cases/${humanId}`}
+            getItemHref={(_id, humanId) => `/cases/${humanId}${location.search}`}
             filters={filters}
             onFilterChange={setFilters}
+            enableTagFilters
+            onTagClick={handleFilterByTag}
             statusOptions={[
               { value: 'NEW', label: 'New' },
               { value: 'IN_PROGRESS', label: 'In Progress' },
