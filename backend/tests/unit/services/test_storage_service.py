@@ -35,23 +35,35 @@ def test_checksum_sha256_hex_rejects_invalid_checksum(headers: dict[str, str]) -
     assert StorageService._checksum_sha256_hex(headers) is None
 
 
+ALLOWED_TYPES = ("message/rfc822", "application/zip", "application/x-7z-compressed", "text/html")
+DENIED_TYPES = ("text/html", "application/x-7z-compressed")
+
+
 @pytest.mark.parametrize(
     "mime_type",
     [
         "message/rfc822",
         "application/zip",
         "application/x-zip-compressed",
-        "application/x-compressed",
         "APPLICATION/X-ZIP-COMPRESSED",
     ],
 )
 def test_validate_file_type_allows_email_and_zip_aliases(mime_type: str) -> None:
-    assert storage_service.validate_file_type(mime_type)
+    assert storage_service.validate_file_type(mime_type, ALLOWED_TYPES, DENIED_TYPES)
 
 
-@pytest.mark.parametrize("mime_type", ["text/html", "image/svg+xml", "application/xhtml+xml", "", None])
-def test_validate_file_type_rejects_script_capable_types(mime_type: str | None) -> None:
-    assert not storage_service.validate_file_type(mime_type)
+@pytest.mark.parametrize(
+    "mime_type",
+    [
+        "text/html",  # denied even though allowed — deny wins
+        "application/x-compressed",  # alias of denied application/x-7z-compressed
+        "application/pdf",  # not in the allowed list
+        "",
+        None,
+    ],
+)
+def test_validate_file_type_rejects_denied_and_unlisted_types(mime_type: str | None) -> None:
+    assert not storage_service.validate_file_type(mime_type, ALLOWED_TYPES, DENIED_TYPES)
 
 
 def test_normalize_mime_type_resolves_windows_zip_aliases() -> None:

@@ -1,7 +1,6 @@
 """Object storage configuration for file uploads."""
 
-from typing import List
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,36 +42,8 @@ class StorageConfig(BaseSettings):
     )
     
     # File validation settings
-    allowed_file_types: List[str] = Field(
-        default=[
-            # Images
-            "image/png", "image/jpeg", "image/gif", "image/webp",
-            "image/bmp", "image/tiff",
-            # Documents
-            "application/pdf",
-            "application/msword",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "application/vnd.ms-excel",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "application/vnd.ms-powerpoint",
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            # Text / data
-            "text/plain", "application/json", "text/csv",
-            "text/markdown", "application/xml",
-            # Email
-            "message/rfc822",
-            # Archives
-            "application/zip", "application/x-7z-compressed",
-            "application/gzip", "application/x-tar",
-            # Windows browsers report zips with this legacy alias via File.type
-            "application/x-zip-compressed",
-            # Forensics / network captures
-            "application/vnd.tcpdump.pcap",
-            # Generic binary (e.g. memory dumps, firmware)
-            "application/octet-stream",
-        ],
-        description="Comma-separated list of allowed MIME types"
-    )
+    # NOTE: allowed/denied MIME types are managed via the settings registry
+    # (storage.allowed_file_types / storage.denied_file_types), not here.
     max_upload_size_mb: int = Field(
         default=50,
         description="Maximum upload size in megabytes"
@@ -87,14 +58,6 @@ class StorageConfig(BaseSettings):
         default=30,
         description="Presigned download URL expiration time in minutes"
     )
-    
-    @field_validator('allowed_file_types', mode='before')
-    @classmethod
-    def parse_allowed_types(cls, v):
-        """Parse comma-separated string to list."""
-        if isinstance(v, str):
-            return [t.strip() for t in v.split(',')]
-        return v
     
 # Global storage config instance
 storage_config = StorageConfig()

@@ -289,7 +289,11 @@ async def handle_generate_upload_url(
                 detail=f"File size {request_data.file_size} exceeds limit {max_size_mb}MB",
             )
 
-        if not storage_service.validate_file_type(request_data.mime_type):
+        if not storage_service.validate_file_type(
+            request_data.mime_type,
+            attachment_limits.allowed_file_types,
+            attachment_limits.denied_file_types,
+        ):
             raise HTTPException(
                 status_code=415,
                 detail=f"File type {request_data.mime_type} not allowed",
@@ -494,7 +498,11 @@ async def handle_update_attachment_status(
                     )
 
                 detected_mime_type = await storage_service.detect_mime_type(storage_key)
-                if not storage_service.validate_file_type(detected_mime_type):
+                if not storage_service.validate_file_type(
+                    detected_mime_type,
+                    attachment_limits.allowed_file_types,
+                    attachment_limits.denied_file_types,
+                ):
                     raise HTTPException(
                         status_code=415,
                         detail=f"Detected file type {detected_mime_type} not allowed",

@@ -502,6 +502,58 @@ _register(
         description="Maximum text attachment size in megabytes that will render an inline preview",
         default=1,
     ),
+    _def(
+        "storage.allowed_file_types",
+        env_var="ALLOWED_FILE_TYPES",
+        value_type=SettingType.JSON,
+        category="storage",
+        description=(
+            "JSON array of MIME types accepted for attachment uploads. "
+            "Legacy aliases (e.g. application/x-zip-compressed) are normalized to "
+            "their canonical type before matching."
+        ),
+        default=[
+            # Images
+            "image/png", "image/jpeg", "image/gif", "image/webp",
+            "image/bmp", "image/tiff",
+            # Documents
+            "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            # Text / data
+            "text/plain", "application/json", "text/csv",
+            "text/markdown", "application/xml",
+            # Email
+            "message/rfc822",
+            # Archives
+            "application/zip", "application/x-7z-compressed",
+            "application/gzip", "application/x-tar",
+            # Forensics / network captures
+            "application/vnd.tcpdump.pcap",
+            # Generic binary (e.g. memory dumps, firmware)
+            "application/octet-stream",
+        ],
+    ),
+    _def(
+        "storage.denied_file_types",
+        env_var="DENIED_FILE_TYPES",
+        value_type=SettingType.JSON,
+        category="storage",
+        description=(
+            "JSON array of MIME types rejected for attachment uploads even when "
+            "present in the allowed list. Defaults to script-capable types that "
+            "could enable stored XSS if served inline."
+        ),
+        default=[
+            "text/html",
+            "image/svg+xml",
+            "application/xhtml+xml",
+        ],
+    ),
 )
 
 # ---------------------------------------------------------------------------

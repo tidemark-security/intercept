@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
-from typing import Optional, BinaryIO
+from typing import Iterable, Optional, BinaryIO
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 # Thread pool for blocking MinIO operations
 _executor = ThreadPoolExecutor(max_workers=10)
-SCRIPT_CAPABLE_MIME_TYPES = {"text/html", "image/svg+xml", "application/xhtml+xml"}
 # Legacy aliases browsers (mostly Windows) report via File.type, mapped to the
 # canonical type Magika detects server-side.
 MIME_TYPE_ALIASES = {
@@ -322,21 +321,32 @@ class StorageService:
         normalized = (mime_type or "").strip().lower()
         return MIME_TYPE_ALIASES.get(normalized, normalized)
 
-    def validate_file_type(self, mime_type: str | None) -> bool:
+    def validate_file_type(
+        self,
+        mime_type: str | None,
+        allowed_types: "Iterable[str]",
+        denied_types: "Iterable[str]" = (),
+    ) -> bool:
         """
-        Validate that a MIME type is in the allowed list.
+        Validate a MIME type against the configured allow/deny lists.
+
+        An explicit deny wins over an allow. Legacy aliases are normalized
+        before matching.
 
         Args:
             mime_type: MIME type to validate
+            allowed_types: MIME types accepted for upload
+            denied_types: MIME types rejected even if allowed
 
         Returns:
             True if allowed, False otherwise
         """
         normalized = self.normalize_mime_type(mime_type)
-        if not normalized or normalized in SCRIPT_CAPABLE_MIME_TYPES:
+        if not normalized:
             return False
-        allowed = {self.normalize_mime_type(item) for item in storage_config.allowed_file_types}
-        return normalized in allowed
+        if normalized in {self.normalize_mime_type(item) for item in denied_types}:
+            return False
+        return normalized in {self.normalize_mime_type(item) for item in allowed_types}
     
     def validate_file_size(self, file_size: int) -> bool:
         """
