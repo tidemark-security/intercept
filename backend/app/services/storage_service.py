@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 # Thread pool for blocking MinIO operations
 _executor = ThreadPoolExecutor(max_workers=10)
 SCRIPT_CAPABLE_MIME_TYPES = {"text/html", "image/svg+xml", "application/xhtml+xml"}
+# Legacy aliases browsers (mostly Windows) report via File.type, mapped to the
+# canonical type Magika detects server-side.
+MIME_TYPE_ALIASES = {
+    "application/x-zip-compressed": "application/zip",
+    "application/x-compressed": "application/x-7z-compressed",
+}
 MIME_SNIFF_BYTES = 1024 * 1024
 _magika = None
 
@@ -310,20 +316,27 @@ class StorageService:
             logger.error(f"Failed to delete file {storage_key}: {e}")
             raise
     
-    def validate_file_type(self, mime_type: str) -> bool:
+    @staticmethod
+    def normalize_mime_type(mime_type: str | None) -> str:
+        """Lowercase a MIME type and resolve legacy aliases to their canonical form."""
+        normalized = (mime_type or "").strip().lower()
+        return MIME_TYPE_ALIASES.get(normalized, normalized)
+
+    def validate_file_type(self, mime_type: str | None) -> bool:
         """
         Validate that a MIME type is in the allowed list.
-        
+
         Args:
             mime_type: MIME type to validate
-        
+
         Returns:
             True if allowed, False otherwise
         """
-        normalized = (mime_type or "").strip().lower()
+        normalized = self.normalize_mime_type(mime_type)
         if not normalized or normalized in SCRIPT_CAPABLE_MIME_TYPES:
             return False
-        return normalized in {item.lower() for item in storage_config.allowed_file_types}
+        allowed = {self.normalize_mime_type(item) for item in storage_config.allowed_file_types}
+        return normalized in allowed
     
     def validate_file_size(self, file_size: int) -> bool:
         """

@@ -499,7 +499,8 @@ async def handle_update_attachment_status(
                         status_code=415,
                         detail=f"Detected file type {detected_mime_type} not allowed",
                     )
-                if detected_mime_type != timeline_item.get("mime_type"):
+                declared_mime_type = storage_service.normalize_mime_type(timeline_item.get("mime_type"))
+                if storage_service.normalize_mime_type(detected_mime_type) != declared_mime_type:
                     raise HTTPException(
                         status_code=415,
                         detail="Uploaded file content type does not match the declared MIME type",

@@ -35,6 +35,32 @@ def test_checksum_sha256_hex_rejects_invalid_checksum(headers: dict[str, str]) -
     assert StorageService._checksum_sha256_hex(headers) is None
 
 
+@pytest.mark.parametrize(
+    "mime_type",
+    [
+        "message/rfc822",
+        "application/zip",
+        "application/x-zip-compressed",
+        "application/x-compressed",
+        "APPLICATION/X-ZIP-COMPRESSED",
+    ],
+)
+def test_validate_file_type_allows_email_and_zip_aliases(mime_type: str) -> None:
+    assert storage_service.validate_file_type(mime_type)
+
+
+@pytest.mark.parametrize("mime_type", ["text/html", "image/svg+xml", "application/xhtml+xml", "", None])
+def test_validate_file_type_rejects_script_capable_types(mime_type: str | None) -> None:
+    assert not storage_service.validate_file_type(mime_type)
+
+
+def test_normalize_mime_type_resolves_windows_zip_aliases() -> None:
+    assert StorageService.normalize_mime_type("application/x-zip-compressed") == "application/zip"
+    assert StorageService.normalize_mime_type("application/x-compressed") == "application/x-7z-compressed"
+    assert StorageService.normalize_mime_type(" Message/RFC822 ") == "message/rfc822"
+    assert StorageService.normalize_mime_type(None) == ""
+
+
 @pytest.mark.asyncio
 async def test_detect_mime_type_reads_bounded_sample(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_get_object_bytes(storage_key: str, *, max_bytes: int | None = None) -> bytes:

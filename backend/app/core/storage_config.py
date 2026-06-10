@@ -59,9 +59,13 @@ class StorageConfig(BaseSettings):
             # Text / data
             "text/plain", "application/json", "text/csv",
             "text/markdown", "application/xml",
+            # Email
+            "message/rfc822",
             # Archives
             "application/zip", "application/x-7z-compressed",
             "application/gzip", "application/x-tar",
+            # Windows browsers report zips with this legacy alias via File.type
+            "application/x-zip-compressed",
             # Forensics / network captures
             "application/vnd.tcpdump.pcap",
             # Generic binary (e.g. memory dumps, firmware)
