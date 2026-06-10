@@ -22,9 +22,10 @@ import { TasksService } from '@/types/generated/services/TasksService';
 import type { PresignedUploadRequest, UploadStatus } from '@/types/generated';
 import { queryKeys } from './queryKeys';
 import { useAttachmentLimits } from './useAttachmentLimits';
+import { magikaLabelToMime } from '@/utils/magikaMimeMap';
 
 type MagikaBrowser = {
-  identifyBytes: (data: Uint8Array) => Promise<{ prediction?: { output?: { mime_type?: string } } }>;
+  identifyBytes: (data: Uint8Array) => Promise<{ prediction?: { output?: { label?: string } } }>;
 };
 
 let magikaInstancePromise: Promise<MagikaBrowser> | null = null;
@@ -33,10 +34,20 @@ async function detectMimeType(file: File): Promise<string> {
   if (!magikaInstancePromise) {
     magikaInstancePromise = import('magika').then(async ({ Magika }) => Magika.create() as Promise<MagikaBrowser>);
   }
-  const magika = await magikaInstancePromise;
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const prediction = await magika.identifyBytes(bytes);
-  return prediction.prediction?.output?.mime_type || file.type || 'application/octet-stream';
+  try {
+    const magika = await magikaInstancePromise;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const result = await magika.identifyBytes(bytes);
+    const detected = magikaLabelToMime(result.prediction?.output?.label);
+    if (detected) {
+      return detected;
+    }
+  } catch (error) {
+    // Model load or inference failure — fall back to the browser-reported type.
+    magikaInstancePromise = null;
+    console.warn('Magika content detection failed, falling back to browser MIME type', error);
+  }
+  return file.type || 'application/octet-stream';
 }
 
 export interface FileUploadProgress {
