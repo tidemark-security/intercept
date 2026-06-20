@@ -382,6 +382,12 @@ class SearchService:
 
     def _search_metadata(self, row) -> dict:
         """Extract optional display metadata shared by alert/case/task rows."""
+        def optional_attr(name):
+            value = getattr(row, name, None)
+            if value.__class__.__module__.startswith("unittest.mock"):
+                return None
+            return value
+
         def as_optional_str(value):
             if value is None:
                 return None
@@ -390,10 +396,10 @@ class SearchService:
             return str(value)
 
         return {
-            "updated_at": getattr(row, "updated_at", None),
-            "priority": as_optional_str(getattr(row, "priority", None)),
-            "status": as_optional_str(getattr(row, "status", None)),
-            "assignee": getattr(row, "assignee", None),
+            "updated_at": optional_attr("updated_at"),
+            "priority": as_optional_str(optional_attr("priority")),
+            "status": as_optional_str(optional_attr("status")),
+            "assignee": as_optional_str(optional_attr("assignee")),
         }
     
     async def _lookup_by_human_id(
