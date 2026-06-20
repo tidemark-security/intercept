@@ -7,6 +7,7 @@ import { Priority } from "@/components/misc/Priority";
 import { State } from "@/components/misc/State";
 import { TagsManager } from "@/components/forms/TagsManager";
 import { Button } from "@/components/buttons/Button";
+import { Badge } from "@/components/data-display/Badge";
 import { CopyableTimestamp } from "@/components/data-display/CopyableTimestamp";
 import MarkdownContent from "@/components/data-display/MarkdownContent";
 import { TimelineDescriptionBlock } from "@/components/timeline/TimelineDescriptionBlock";
@@ -26,6 +27,29 @@ import { convertNumericToHumanId } from "@/utils/caseHelpers";
 import { ArrowRight, CalendarClock, ClockAlert, ClockPlus, RadioTower, User } from "lucide-react";
 
 export type EntityMetadataCardVariant = "detail" | "timeline" | "compact";
+
+interface EntityContextCriterion {
+  type?: string | null;
+  value?: string | null;
+}
+
+interface EntityContextItem {
+  id?: number | string | null;
+  criteria?: EntityContextCriterion[] | null;
+  body?: string | null;
+  author?: string | null;
+  expires_at?: string | null;
+}
+
+interface EntityContextSection {
+  items?: EntityContextItem[] | null;
+  total_count?: number | null;
+  omitted_count?: number | null;
+}
+
+type EntityWithContext = (AlertRead | CaseRead | TaskRead) & {
+  context?: EntityContextSection | null;
+};
 
 interface EntityMetadataCardProps {
   entity: AlertRead | CaseRead | TaskRead | null;
@@ -203,6 +227,100 @@ export function EntityMetadataCard({
     </MetaField>
   );
 
+  const contextSection = (entity as EntityWithContext).context;
+  const contextItems = Array.isArray(contextSection?.items) ? contextSection.items : [];
+  const shouldRenderContextSection = contextItems.length > 0;
+  const contextTotalCount = contextSection?.total_count ?? contextItems.length;
+  const contextOmittedCount = contextSection?.omitted_count ?? 0;
+  const formatCriterionType = (value: string | null | undefined) => {
+    if (!value) return "Scope";
+    return value
+      .toLowerCase()
+      .split("_")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+  };
+  const formatContextScope = (criteria: EntityContextCriterion[] | null | undefined) => {
+    if (!criteria || criteria.length === 0) return ["Global"];
+    return criteria.map((criterion) => {
+      const type = formatCriterionType(criterion.type);
+      return criterion.value ? `${type}: ${criterion.value}` : type;
+    });
+  };
+
+  const ContextSection = () => {
+    if (!shouldRenderContextSection) {
+      return null;
+    }
+
+    return (
+      <section className="flex w-full min-w-0 flex-col gap-3 border-t border-solid border-neutral-border/70 pt-3">
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="text-heading-3 font-heading-3 text-default-font">
+              Context
+            </span>
+            <Badge variant="neutral">{contextTotalCount}</Badge>
+          </div>
+          {contextOmittedCount > 0 ? (
+            <span className="text-caption font-caption text-subtext-color">
+              {contextOmittedCount} omitted
+            </span>
+          ) : null}
+        </div>
+
+        <div className="grid w-full min-w-0 gap-3">
+          {contextItems.map((item, index) => {
+            const scopes = formatContextScope(item.criteria);
+            const key = item.id ?? `${item.body ?? "context"}-${index}`;
+
+            return (
+              <article
+                key={key}
+                className="flex min-w-0 flex-col gap-2 border-l border-solid border-brand-primary bg-default-background/70 py-2 pl-3 pr-2"
+              >
+                {item.body ? (
+                  <MarkdownContent
+                    content={item.body}
+                    className="text-body font-body text-default-font [overflow-wrap:anywhere] [&_*]:text-inherit [&_p]:!my-0"
+                  />
+                ) : null}
+
+                <div className="flex min-w-0 flex-wrap gap-1.5">
+                  {scopes.map((scope, scopeIndex) => (
+                    <Badge key={`${scope}-${scopeIndex}`} variant="neutral">
+                      {scope}
+                    </Badge>
+                  ))}
+                </div>
+
+                <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-caption font-caption text-subtext-color">
+                  {item.author ? (
+                    <span className="min-w-0 truncate">
+                      Author: <span className="text-default-font">{item.author}</span>
+                    </span>
+                  ) : null}
+                  {item.expires_at ? (
+                    <div className="flex min-w-0 items-center gap-1">
+                      <span>Expires:</span>
+                      <CopyableTimestamp
+                        value={item.expires_at}
+                        showFull
+                        variant="default-right"
+                        className="min-w-0 max-w-full flex-wrap"
+                        textClassName="text-default-font"
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </section>
+    );
+  };
+
   const createdByValue = caseEntity?.created_by || taskEntity?.created_by || (alertEntity as (AlertRead & { created_by?: string | null }) | null)?.created_by;
   const sourceValue = alertEntity?.source;
   const taskDueStatus = getTaskDueStatus(taskEntity?.due_date, taskEntity?.status);
@@ -312,6 +430,8 @@ export function EntityMetadataCard({
         ) : null}
 
       </div>
+
+      <ContextSection />
 
       {shouldRenderStandaloneFooter ? (
         <TimelineDescriptionBlock
