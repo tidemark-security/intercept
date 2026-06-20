@@ -8,8 +8,9 @@ from httpx import AsyncClient
 from pgqueuer.errors import MaxRetriesExceeded
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm.attributes import flag_modified
+from sqlmodel import select
 
-from app.models.models import Alert, Case, EnrichmentAlias, QueueJobRead, Task
+from app.models.models import Alert, Case, EnrichmentAlias, EnrichmentCacheEntry, QueueJobRead, Task
 from app.models.enums import RealtimeEventType, SettingType
 from app.models.models import AppSetting
 from app.services.enrichment.base import EnrichmentResult
@@ -1456,6 +1457,133 @@ async def test_admin_directory_sync_enqueues_task(
 
     assert response.status_code == 200
     assert response.json() == {"enqueued": True, "task_id": "task-sync-123"}
+
+
+@pytest.mark.asyncio
+async def test_admin_provider_status_includes_servicenow_counts(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    admin = admin_user_factory(username="admin.servicenow-status")
+    register_providers()
+    now = datetime.now(timezone.utc)
+
+    async with session_maker() as session:
+        session.add(admin)
+        session.add(
+            AppSetting(
+                key="enrichment.servicenow.enabled",
+                value="true",
+                value_type=SettingType.BOOLEAN,
+                category="enrichment",
+                description="Enable ServiceNow",
+            )
+        )
+        session.add(
+            EnrichmentCacheEntry(
+                provider_id="servicenow",
+                cache_key="user:alice@example.com",
+                result={"provider_id": "servicenow", "cache_key": "user:alice@example.com"},
+                expires_at=now + timedelta(hours=1),
+            )
+        )
+        session.add(
+            EnrichmentAlias(
+                provider_id="servicenow",
+                entity_type="user",
+                canonical_value="alice@example.com",
+                canonical_display="Alice Analyst",
+                alias_type="email",
+                alias_value="alice@example.com",
+                attributes={},
+            )
+        )
+        await session.commit()
+
+    session_cookie = await _login(client, admin.username)
+    response = await client.get(
+        "/api/v1/admin/enrichments/providers",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    providers = {provider["provider_id"]: provider for provider in response.json()}
+    servicenow = providers["servicenow"]
+    assert servicenow["display_name"] == "ServiceNow"
+    assert servicenow["settings_prefix"] == "enrichment.servicenow"
+    assert servicenow["enabled"] is True
+    assert servicenow["supports_bulk_sync"] is True
+    assert servicenow["item_types"] == ["internal_actor"]
+    assert servicenow["cache_entry_count"] == 1
+    assert servicenow["alias_count"] == 1
+    assert servicenow["last_activity_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_admin_clear_cache_clears_servicenow_entries(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    admin = admin_user_factory(username="admin.servicenow-cache")
+
+    async with session_maker() as session:
+        session.add(admin)
+        session.add(
+            EnrichmentCacheEntry(
+                provider_id="servicenow",
+                cache_key="user:alice@example.com",
+                result={"provider_id": "servicenow", "cache_key": "user:alice@example.com"},
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+        )
+        session.add(
+            EnrichmentCacheEntry(
+                provider_id="ldap",
+                cache_key="user:bob@example.com",
+                result={"provider_id": "ldap", "cache_key": "user:bob@example.com"},
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+        )
+        await session.commit()
+
+    session_cookie = await _login(client, admin.username)
+    response = await client.post(
+        "/api/v1/admin/enrichments/cache/clear",
+        params={"provider_id": "servicenow"},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"cleared": 1, "provider_id": "servicenow"}
+
+    async with session_maker() as session:
+        rows = (await session.execute(select(EnrichmentCacheEntry))).scalars().all()
+    assert [(row.provider_id, row.cache_key) for row in rows] == [("ldap", "user:bob@example.com")]
+
+
+@pytest.mark.asyncio
+async def test_admin_directory_sync_rejects_provider_without_bulk_sync(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    admin = admin_user_factory(username="admin.unsupported-sync")
+    register_providers()
+
+    async with session_maker() as session:
+        session.add(admin)
+        await session.commit()
+
+    session_cookie = await _login(client, admin.username)
+    response = await client.post(
+        "/api/v1/admin/enrichments/providers/maxmind/directory-sync",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Provider does not support bulk sync"
 
 
 @pytest.mark.asyncio

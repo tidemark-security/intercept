@@ -859,6 +859,83 @@ _register(
         default=86400,
     ),
     _def(
+        "enrichment.servicenow.enabled",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Enable ServiceNow user enrichment provider",
+        default=False,
+    ),
+    _def(
+        "enrichment.servicenow.instance_url",
+        category="enrichment",
+        description="Base ServiceNow instance URL, for example https://example.service-now.com",
+        default=None,
+    ),
+    _def(
+        "enrichment.servicenow.username",
+        category="enrichment",
+        description="ServiceNow API username with read access to the configured user table",
+        default=None,
+    ),
+    _def(
+        "enrichment.servicenow.password",
+        is_secret=True,
+        category="enrichment",
+        description="ServiceNow API password for the configured API user",
+        default=None,
+    ),
+    _def(
+        "enrichment.servicenow.table",
+        category="enrichment",
+        description="ServiceNow table used for user enrichment lookups",
+        default="sys_user",
+    ),
+    _def(
+        "enrichment.servicenow.fields",
+        category="enrichment",
+        description="Comma-separated ServiceNow fields returned for enrichment and bulk sync",
+        default=(
+            "sys_id,user_name,email,name,first_name,last_name,title,department,"
+            "department.name,company,company.name,phone,mobile_phone,active"
+        ),
+    ),
+    _def(
+        "enrichment.servicenow.lookup_query_template",
+        category="enrichment",
+        description="ServiceNow encoded query template for single-user lookups; use {value} as the escaped identifier",
+        default="email={value}^ORuser_name={value}^ORname={value}",
+    ),
+    _def(
+        "enrichment.servicenow.bulk_sync_query",
+        category="enrichment",
+        description="ServiceNow encoded query used for bulk sync/backfill",
+        default="active=true",
+    ),
+    _def(
+        "enrichment.servicenow.page_size",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="ServiceNow bulk sync page size, clamped by the backend to 1-1000",
+        default=500,
+    ),
+    _def(
+        "enrichment.servicenow.max_records",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description=(
+            "Maximum ServiceNow records processed per bulk sync/backfill run, "
+            "clamped by the backend to 1-50000"
+        ),
+        default=5000,
+    ),
+    _def(
+        "enrichment.servicenow.ttl_seconds",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="TTL for ServiceNow enrichment results in seconds",
+        default=86400,
+    ),
+    _def(
         "enrichment.maxmind.enabled",
         value_type=SettingType.BOOLEAN,
         category="enrichment",
@@ -916,6 +993,7 @@ _register(
     *_bulk_sync_schedule_defs("entra_id", "Microsoft Entra ID"),
     *_bulk_sync_schedule_defs("google_workspace", "Google Workspace"),
     *_bulk_sync_schedule_defs("ldap", "LDAP / Active Directory"),
+    *_bulk_sync_schedule_defs("servicenow", "ServiceNow"),
 )
 
 # ---------------------------------------------------------------------------

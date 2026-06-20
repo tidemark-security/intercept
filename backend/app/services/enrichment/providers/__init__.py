@@ -5,6 +5,7 @@ from app.services.enrichment.providers.cross_case_observable import cross_case_o
 from app.services.enrichment.providers.google_workspace import google_workspace_provider
 from app.services.enrichment.providers.ldap_provider import ldap_provider
 from app.services.enrichment.providers.maxmind import maxmind_provider
+from app.services.enrichment.providers.servicenow import servicenow_provider
 from app.services.enrichment.registry import enrichment_registry
 
 _REGISTERED = False
@@ -21,6 +22,7 @@ def register_providers() -> None:
         google_workspace_provider,
         ldap_provider,
         maxmind_provider,
+        servicenow_provider,
     ):
         if enrichment_registry.get(provider.provider_id) is None:
             enrichment_registry.register(provider)
@@ -34,5 +36,6 @@ __all__ = [
     "google_workspace_provider",
     "ldap_provider",
     "maxmind_provider",
+    "servicenow_provider",
     "register_providers",
 ]
