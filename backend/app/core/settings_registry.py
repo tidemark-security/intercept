@@ -528,7 +528,7 @@ _register(
             "text/plain", "application/json", "text/csv",
             "text/markdown", "application/xml",
             # Email
-            "message/rfc822",
+            "message/rfc822", "application/vnd.ms-outlook",
             # Archives
             "application/zip", "application/x-7z-compressed",
             "application/gzip", "application/x-tar",
