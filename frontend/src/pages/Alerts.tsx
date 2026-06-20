@@ -159,10 +159,16 @@ function Alerts() {
       return;
     }
 
-    // On desktop/tablet, keep list + timeline visible so the split pane can resize them.
-    // The dock floats over the center column when open.
-    if (breakpoint === 'desktop' || breakpoint === 'tablet') {
+    // On desktop, keep list + timeline visible so the split pane can resize them.
+    // Tablet remains focused on the timeline because the default list width crowds it out.
+    if (breakpoint === 'desktop') {
       setVisibleColumns(dockOpen ? 'all' : 'left+center');
+      return;
+    }
+
+    // On tablet, dock floats as drawer over center column.
+    if (breakpoint === 'tablet') {
+      setVisibleColumns(dockOpen ? 'center+right' : 'center');
     }
     // On mobile, keep current single column (don't auto-switch)
     // Mobile navigation is handled explicitly by user interactions
@@ -178,8 +184,10 @@ function Alerts() {
         // Set appropriate columns based on current breakpoint
         if (breakpoint === 'ultrawide') {
           setVisibleColumns('left+center');
-        } else if (breakpoint === 'desktop' || breakpoint === 'tablet') {
+        } else if (breakpoint === 'desktop') {
           setVisibleColumns('left+center');
+        } else if (breakpoint === 'tablet') {
+          setVisibleColumns('center');
         } else {
           // Mobile: switch to center (timeline) view when alert is selected via URL
           setVisibleColumns('center');
