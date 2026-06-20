@@ -88,8 +88,11 @@ async def enqueue_directory_sync(
     provider_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    if enrichment_registry.get(provider_id) is None:
+    provider = enrichment_registry.get(provider_id)
+    if provider is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider not found")
+    if not provider.supports_bulk_sync:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Provider does not support bulk sync")
 
     try:
         from app.services.task_queue_service import get_task_queue_service

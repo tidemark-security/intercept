@@ -59,6 +59,7 @@ def test_next_bulk_sync_run_at_rolls_to_next_day() -> None:
         ("enrichment.ldap.enabled", "ldap"),
         ("enrichment.ldap.bulk_sync_enabled", "ldap"),
         ("enrichment.ldap.bulk_sync_time_utc", "ldap"),
+        ("enrichment.servicenow.bulk_sync_time_utc", "servicenow"),
         ("enrichment.entra_id.bulk_sync_time_utc", "entra_id"),
         ("enrichment.maxmind.enabled", None),
         ("other.setting", None),

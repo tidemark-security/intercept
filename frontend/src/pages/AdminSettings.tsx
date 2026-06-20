@@ -23,6 +23,7 @@ import { AuthenticationService } from "../types/generated/services/Authenticatio
 import { LangflowService } from "../types/generated/services/LangflowService";
 import type {
   AppSettingRead,
+  EnrichmentProviderStatusRead,
   LangFlowSetupResponse,
   MaxMindConfigureResponse,
   MaxMindDatabaseStatus,
@@ -67,6 +68,11 @@ const EMPTY_TAGS: string[] = [];
 const LANGFLOW_SETUP_DEFAULT_USERNAME = "tidemark_ai";
 
 const MAXMIND_DATABASES_QUERY_KEY = ["admin", "maxmind", "databases"] as const;
+const ENRICHMENT_PROVIDER_STATUSES_QUERY_KEY = [
+  "admin",
+  "enrichments",
+  "providers",
+] as const;
 
 interface SettingsSectionNavItem {
   id: string;
@@ -126,6 +132,19 @@ const CUSTOM_KEYS = new Set([
   "enrichment.ldap.ttl_seconds",
   "enrichment.ldap.bulk_sync_enabled",
   "enrichment.ldap.bulk_sync_time_utc",
+  "enrichment.servicenow.enabled",
+  "enrichment.servicenow.instance_url",
+  "enrichment.servicenow.username",
+  "enrichment.servicenow.password",
+  "enrichment.servicenow.table",
+  "enrichment.servicenow.fields",
+  "enrichment.servicenow.lookup_query_template",
+  "enrichment.servicenow.bulk_sync_query",
+  "enrichment.servicenow.page_size",
+  "enrichment.servicenow.max_records",
+  "enrichment.servicenow.ttl_seconds",
+  "enrichment.servicenow.bulk_sync_enabled",
+  "enrichment.servicenow.bulk_sync_time_utc",
   "enrichment.cross_case_observable.enabled",
   "enrichment.cross_case_observable.max_lookback_days",
   "enrichment.maxmind.enabled",
@@ -364,6 +383,70 @@ function AdminSettings() {
       enabled: isAdmin,
       staleTime: 30_000,
     });
+  const {
+    data: enrichmentProviderStatuses = [],
+    isLoading: enrichmentProviderStatusesLoading,
+  } = useQuery({
+    queryKey: ENRICHMENT_PROVIDER_STATUSES_QUERY_KEY,
+    queryFn: () =>
+      AdminService.getProviderStatusesApiV1AdminEnrichmentsProvidersGet(),
+    enabled: isAdmin,
+    staleTime: 30_000,
+  });
+
+  const refreshEnrichmentProviderStatuses = async () => {
+    await queryClient.invalidateQueries({
+      queryKey: ENRICHMENT_PROVIDER_STATUSES_QUERY_KEY,
+    });
+  };
+
+  const clearEnrichmentProviderCacheMutation = useMutation({
+    mutationFn: (providerId: string) =>
+      AdminService.clearCacheApiV1AdminEnrichmentsCacheClearPost({
+        providerId,
+      }),
+    onSuccess: async (
+      response: { cleared?: number; provider_id?: string | null },
+      providerId,
+    ) => {
+      await refreshEnrichmentProviderStatuses();
+      showToast(
+        "Provider cache cleared",
+        `${response.cleared ?? 0} entries cleared for ${providerId}`,
+        "success",
+      );
+    },
+    onError: (err) => {
+      showToast(
+        "Failed to clear cache",
+        extractApiErrorMessage(err, "Failed to clear provider cache"),
+        "error",
+      );
+    },
+  });
+
+  const enqueueDirectorySyncMutation = useMutation({
+    mutationFn: (providerId: string) =>
+      AdminService.enqueueDirectorySyncApiV1AdminEnrichmentsProvidersProviderIdDirectorySyncPost(
+        {
+          providerId,
+        },
+      ),
+    onSuccess: (response: { task_id?: string | null }, providerId) => {
+      showToast(
+        "Directory sync queued",
+        `${providerId}${response.task_id ? ` (${response.task_id})` : ""}`,
+        "success",
+      );
+    },
+    onError: (err) => {
+      showToast(
+        "Failed to queue directory sync",
+        extractApiErrorMessage(err, "Failed to queue directory sync"),
+        "error",
+      );
+    },
+  });
 
   const maxMindConfigureMutation = useMutation({
     mutationFn: (confText: string) =>
@@ -615,18 +698,21 @@ function AdminSettings() {
     notify: boolean = true,
   ) => {
     const existingSetting = settings.find((s) => s.key === key);
-    if (existingSetting && existingSetting.id > 0) {
-      return await updateSetting(key, value, notify);
-    } else {
-      return await createSetting(
-        key,
-        value,
-        isSecret,
-        undefined,
-        valueType,
-        notify,
-      );
+    const saved =
+      existingSetting && existingSetting.id > 0
+        ? await updateSetting(key, value, notify)
+        : await createSetting(
+            key,
+            value,
+            isSecret,
+            undefined,
+            valueType,
+            notify,
+          );
+    if (saved && key.startsWith("enrichment.")) {
+      await refreshEnrichmentProviderStatuses();
     }
+    return saved;
   };
 
   const handleSaveSetting = (
@@ -873,18 +959,50 @@ function AdminSettings() {
     return parsed.toLocaleString();
   };
 
+  const providerStatusById = useMemo(() => {
+    return new Map(
+      enrichmentProviderStatuses.map((provider) => [
+        provider.provider_id,
+        provider,
+      ]),
+    );
+  }, [enrichmentProviderStatuses]);
+  const directoryProviderStatuses = useMemo(
+    () =>
+      enrichmentProviderStatuses.filter((provider) =>
+        provider.item_types?.includes("internal_actor"),
+      ),
+    [enrichmentProviderStatuses],
+  );
+  const providerSupportsBulkSync = (providerId: string) =>
+    providerStatusById.get(providerId)?.supports_bulk_sync ?? false;
+  const isProviderEnabled = (providerId: string, fallback: boolean) =>
+    providerStatusById.get(providerId)?.enabled ?? fallback;
+
   const maxMindConfigured =
     Boolean(getSetting("enrichment.maxmind.account_id")) &&
     Boolean(getSetting("enrichment.maxmind.license_key"));
-  const entraEnabled = parseBooleanValue(
-    getSetting("enrichment.entra_id.enabled"),
+  const entraEnabled = isProviderEnabled(
+    "entra_id",
+    parseBooleanValue(getSetting("enrichment.entra_id.enabled")),
   );
-  const googleWorkspaceEnabled = parseBooleanValue(
-    getSetting("enrichment.google_workspace.enabled"),
+  const googleWorkspaceEnabled = isProviderEnabled(
+    "google_workspace",
+    parseBooleanValue(getSetting("enrichment.google_workspace.enabled")),
   );
-  const ldapEnabled = parseBooleanValue(getSetting("enrichment.ldap.enabled"));
+  const ldapEnabled = isProviderEnabled(
+    "ldap",
+    parseBooleanValue(getSetting("enrichment.ldap.enabled")),
+  );
+  const serviceNowEnabled = isProviderEnabled(
+    "servicenow",
+    parseBooleanValue(getSetting("enrichment.servicenow.enabled")),
+  );
   const anyDirectoryEnabled =
-    entraEnabled || googleWorkspaceEnabled || ldapEnabled;
+    directoryProviderStatuses.some((provider) => provider.enabled) ||
+    (enrichmentProviderStatusesLoading
+      ? entraEnabled || googleWorkspaceEnabled || ldapEnabled || serviceNowEnabled
+      : false);
   const entraConfigured =
     Boolean(getSetting("enrichment.entra_id.tenant_id")) &&
     Boolean(getSetting("enrichment.entra_id.client_id")) &&
@@ -902,6 +1020,16 @@ function AdminSettings() {
     Boolean(getSetting("enrichment.ldap.bind_dn")) &&
     Boolean(getSetting("enrichment.ldap.bind_password")) &&
     Boolean(getSetting("enrichment.ldap.search_base"));
+  const serviceNowConfigured =
+    Boolean(getSetting("enrichment.servicenow.instance_url")) &&
+    Boolean(getSetting("enrichment.servicenow.username")) &&
+    Boolean(getSetting("enrichment.servicenow.password")) &&
+    Boolean(getSetting("enrichment.servicenow.table") || "sys_user");
+  const anyEnabledDirectoryConfigured =
+    (entraEnabled && entraConfigured) ||
+    (googleWorkspaceEnabled && googleWorkspaceConfigured) ||
+    (ldapEnabled && ldapConfigured) ||
+    (serviceNowEnabled && serviceNowConfigured);
 
   // Group remaining settings by category for the Advanced section
   const advancedByCategory = useMemo(() => {
@@ -1668,9 +1796,7 @@ function AdminSettings() {
                       variant={
                         !anyDirectoryEnabled
                           ? "warning"
-                          : entraConfigured ||
-                              googleWorkspaceConfigured ||
-                              ldapConfigured
+                          : anyEnabledDirectoryConfigured
                             ? "success"
                             : "warning"
                       }
@@ -1681,10 +1807,33 @@ function AdminSettings() {
                       }
                       description={
                         anyDirectoryEnabled
-                          ? "Enable the provider you want to use, then complete its configuration to enrich internal actors from enterprise directories."
-                          : "Turn on Entra ID, Google Workspace, or LDAP to enrich internal actors with directory metadata and aliases."
+                          ? "Complete the enabled provider configuration to enrich internal actors from enterprise directories and service management sources."
+                          : "Turn on a registered directory provider to enrich internal actors with directory metadata and aliases."
                       }
                       isDarkTheme={isDarkTheme}
+                    />
+
+                    <EnrichmentProviderStatusPanel
+                      providers={directoryProviderStatuses}
+                      loading={enrichmentProviderStatusesLoading}
+                      isDarkTheme={isDarkTheme}
+                      formatTimestamp={formatTimestamp}
+                      clearingProviderId={
+                        clearEnrichmentProviderCacheMutation.isPending
+                          ? clearEnrichmentProviderCacheMutation.variables
+                          : undefined
+                      }
+                      syncingProviderId={
+                        enqueueDirectorySyncMutation.isPending
+                          ? enqueueDirectorySyncMutation.variables
+                          : undefined
+                      }
+                      onClearCache={(providerId) =>
+                        clearEnrichmentProviderCacheMutation.mutate(providerId)
+                      }
+                      onDirectorySync={(providerId) =>
+                        enqueueDirectorySyncMutation.mutate(providerId)
+                      }
                     />
 
                     <div className="flex flex-col gap-4">
@@ -1781,6 +1930,9 @@ function AdminSettings() {
                               providerId="entra_id"
                               providerLabel="Microsoft Entra ID"
                               configured={entraConfigured}
+                              supportsBulkSync={providerSupportsBulkSync(
+                                "entra_id",
+                              )}
                               isDarkTheme={isDarkTheme}
                               getSetting={getSetting}
                               settingMeta={settingMeta}
@@ -2068,6 +2220,9 @@ function AdminSettings() {
                               providerId="google_workspace"
                               providerLabel="Google Workspace"
                               configured={googleWorkspaceConfigured}
+                              supportsBulkSync={providerSupportsBulkSync(
+                                "google_workspace",
+                              )}
                               isDarkTheme={isDarkTheme}
                               getSetting={getSetting}
                               settingMeta={settingMeta}
@@ -2209,6 +2364,199 @@ function AdminSettings() {
                               providerId="ldap"
                               providerLabel="LDAP / Active Directory"
                               configured={ldapConfigured}
+                              supportsBulkSync={providerSupportsBulkSync("ldap")}
+                              isDarkTheme={isDarkTheme}
+                              getSetting={getSetting}
+                              settingMeta={settingMeta}
+                              onSave={handleSaveSetting}
+                            />
+                          </>
+                        ) : null}
+                      </div>
+
+                      <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-neutral-50 p-4">
+                        <BooleanSettingField
+                          label="ServiceNow"
+                          description="Use the ServiceNow Table API to enrich internal actors from configured user records."
+                          source={
+                            settingMeta("enrichment.servicenow.enabled").source
+                          }
+                          readOnly={
+                            settingMeta("enrichment.servicenow.enabled")
+                              .readOnly
+                          }
+                          value={serviceNowEnabled}
+                          onSave={(value) =>
+                            handleSaveSetting(
+                              "enrichment.servicenow.enabled",
+                              value ? "true" : "false",
+                              false,
+                              "BOOLEAN",
+                            )
+                          }
+                        />
+
+                        {serviceNowEnabled ? (
+                          <>
+                            <StatusCallout
+                              variant={
+                                serviceNowConfigured ? "success" : "warning"
+                              }
+                              title={
+                                serviceNowConfigured
+                                  ? "ServiceNow is configured"
+                                  : "ServiceNow needs API credentials"
+                              }
+                              description={
+                                serviceNowConfigured
+                                  ? "Instance, API user, and table settings are present for lookups and bounded sync."
+                                  : "Provide an instance URL, API username, password, and table before running ServiceNow enrichment."
+                              }
+                              isDarkTheme={isDarkTheme}
+                            />
+                            <SettingField
+                              label="Instance URL"
+                              {...settingMeta(
+                                "enrichment.servicenow.instance_url",
+                              )}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.servicenow.instance_url",
+                                  value,
+                                )
+                              }
+                              placeholder="https://example.service-now.com"
+                            />
+                            <SettingField
+                              label="API Username"
+                              {...settingMeta("enrichment.servicenow.username")}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.servicenow.username",
+                                  value,
+                                )
+                              }
+                              placeholder="intercept_api"
+                            />
+                            <SettingField
+                              label="API Password"
+                              {...settingMeta("enrichment.servicenow.password")}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.servicenow.password",
+                                  value,
+                                  true,
+                                )
+                              }
+                              placeholder="API password"
+                              isSecret
+                            />
+                            <SettingField
+                              label="User Table"
+                              {...settingMeta("enrichment.servicenow.table")}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.servicenow.table",
+                                  value,
+                                )
+                              }
+                              placeholder="sys_user"
+                            />
+                            <SettingField
+                              label="Returned Fields"
+                              {...settingMeta("enrichment.servicenow.fields")}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.servicenow.fields",
+                                  value,
+                                )
+                              }
+                              placeholder="sys_id,user_name,email,name,department.name"
+                            />
+                            <SettingField
+                              label="Lookup Query Template"
+                              {...settingMeta(
+                                "enrichment.servicenow.lookup_query_template",
+                              )}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.servicenow.lookup_query_template",
+                                  value,
+                                )
+                              }
+                              placeholder="email={value}^ORuser_name={value}^ORname={value}"
+                            />
+                            <SettingField
+                              label="Bulk Sync Query"
+                              {...settingMeta(
+                                "enrichment.servicenow.bulk_sync_query",
+                              )}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.servicenow.bulk_sync_query",
+                                  value,
+                                )
+                              }
+                              placeholder="active=true"
+                            />
+                            <SettingField
+                              label="Page Size"
+                              {...settingMeta("enrichment.servicenow.page_size")}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.servicenow.page_size",
+                                  value,
+                                  false,
+                                  "NUMBER",
+                                )
+                              }
+                              placeholder="500"
+                              inputType="number"
+                              inputMode="numeric"
+                              min={1}
+                              step={1}
+                            />
+                            <SettingField
+                              label="Max Records"
+                              {...settingMeta(
+                                "enrichment.servicenow.max_records",
+                              )}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.servicenow.max_records",
+                                  value,
+                                  false,
+                                  "NUMBER",
+                                )
+                              }
+                              placeholder="5000"
+                              inputType="number"
+                              inputMode="numeric"
+                              min={1}
+                              step={1}
+                            />
+                            <SettingField
+                              label="Enrichment TTL (seconds)"
+                              {...settingMeta(
+                                "enrichment.servicenow.ttl_seconds",
+                              )}
+                              onSave={(value) =>
+                                handleSaveSetting(
+                                  "enrichment.servicenow.ttl_seconds",
+                                  value,
+                                  false,
+                                  "NUMBER",
+                                )
+                              }
+                              placeholder="86400"
+                            />
+                            <BulkSyncScheduleFields
+                              providerId="servicenow"
+                              providerLabel="ServiceNow"
+                              configured={serviceNowConfigured}
+                              supportsBulkSync={providerSupportsBulkSync(
+                                "servicenow",
+                              )}
                               isDarkTheme={isDarkTheme}
                               getSetting={getSetting}
                               settingMeta={settingMeta}
@@ -3161,6 +3509,154 @@ function StatusCallout({
   );
 }
 
+interface EnrichmentProviderStatusPanelProps {
+  providers: EnrichmentProviderStatusRead[];
+  loading: boolean;
+  isDarkTheme: boolean;
+  formatTimestamp: (value?: string | null) => string;
+  clearingProviderId?: string;
+  syncingProviderId?: string;
+  onClearCache: (providerId: string) => void;
+  onDirectorySync: (providerId: string) => void;
+}
+
+function formatProviderItemTypes(itemTypes?: string[]) {
+  if (!itemTypes?.length) {
+    return "-";
+  }
+
+  return itemTypes
+    .map((itemType) =>
+      itemType
+        .split("_")
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" "),
+    )
+    .join(", ");
+}
+
+function EnrichmentProviderStatusPanel({
+  providers,
+  loading,
+  isDarkTheme,
+  formatTimestamp,
+  clearingProviderId,
+  syncingProviderId,
+  onClearCache,
+  onDirectorySync,
+}: EnrichmentProviderStatusPanelProps) {
+  if (loading) {
+    return (
+      <div className="rounded-md border border-neutral-border bg-neutral-50 p-4">
+        <p className="text-caption font-caption text-subtext-color">
+          Loading enrichment provider status...
+        </p>
+      </div>
+    );
+  }
+
+  if (providers.length === 0) {
+    return (
+      <StatusCallout
+        variant="warning"
+        title="No directory providers are registered"
+        description="The backend did not report any internal-actor enrichment providers."
+        isDarkTheme={isDarkTheme}
+      />
+    );
+  }
+
+  return (
+    <div className="grid gap-3 lg:grid-cols-2">
+      {providers.map((provider) => {
+        const isClearing = clearingProviderId === provider.provider_id;
+        const isSyncing = syncingProviderId === provider.provider_id;
+
+        return (
+          <div
+            key={provider.provider_id}
+            className="flex flex-col gap-3 rounded-md border border-neutral-border bg-neutral-50 p-4"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-heading-3 font-heading-3 text-default-font">
+                    {provider.display_name}
+                  </h3>
+                  <span
+                    className={cn(
+                      "rounded-sm border px-2 py-0.5 text-caption-bold font-caption-bold",
+                      provider.enabled
+                        ? "border-success-500 text-success-500"
+                        : "border-neutral-border text-subtext-color",
+                    )}
+                  >
+                    {provider.enabled ? "Enabled" : "Disabled"}
+                  </span>
+                  {provider.supports_bulk_sync ? (
+                    <span className="rounded-sm border border-accent-1 px-2 py-0.5 text-caption-bold font-caption-bold text-accent-1">
+                      Bulk Sync
+                    </span>
+                  ) : null}
+                </div>
+                <p className="text-caption font-caption text-subtext-color">
+                  {provider.provider_id}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {provider.supports_bulk_sync ? (
+                  <Button
+                    variant="neutral-secondary"
+                    size="small"
+                    onClick={() => onDirectorySync(provider.provider_id)}
+                    disabled={!provider.enabled || isSyncing}
+                    icon={<RefreshCw className="text-[16px]" />}
+                  >
+                    {isSyncing ? "Queueing..." : "Run Sync"}
+                  </Button>
+                ) : null}
+                <Button
+                  variant="neutral-secondary"
+                  size="small"
+                  onClick={() => onClearCache(provider.provider_id)}
+                  disabled={isClearing || provider.cache_entry_count === 0}
+                >
+                  {isClearing ? "Clearing..." : "Clear Cache"}
+                </Button>
+              </div>
+            </div>
+
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-caption font-caption sm:grid-cols-4">
+              <div>
+                <dt className="text-subtext-color">Items</dt>
+                <dd className="text-default-font">
+                  {formatProviderItemTypes(provider.item_types)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-subtext-color">Cache</dt>
+                <dd className="text-default-font">
+                  {provider.cache_entry_count ?? 0}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-subtext-color">Aliases</dt>
+                <dd className="text-default-font">{provider.alias_count ?? 0}</dd>
+              </div>
+              <div>
+                <dt className="text-subtext-color">Last Activity</dt>
+                <dd className="text-default-font">
+                  {formatTimestamp(provider.last_activity_at)}
+                </dd>
+              </div>
+            </dl>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function SettingField({
   label,
   description,
@@ -3482,6 +3978,7 @@ interface BulkSyncScheduleFieldsProps {
   providerId: string;
   providerLabel: string;
   configured: boolean;
+  supportsBulkSync: boolean;
   isDarkTheme: boolean;
   getSetting: (key: string) => string;
   settingMeta: (key: string) => {
@@ -3504,11 +4001,16 @@ function BulkSyncScheduleFields({
   providerId,
   providerLabel,
   configured,
+  supportsBulkSync,
   isDarkTheme,
   getSetting,
   settingMeta,
   onSave,
 }: BulkSyncScheduleFieldsProps) {
+  if (!supportsBulkSync) {
+    return null;
+  }
+
   const enabledKey = `enrichment.${providerId}.bulk_sync_enabled`;
   const timeKey = `enrichment.${providerId}.bulk_sync_time_utc`;
   const enabledMeta = settingMeta(enabledKey);
