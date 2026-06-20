@@ -54,6 +54,7 @@ async def test_create_case_serializes_response_after_reload(
         json={
             "title": "Case serialization check",
             "description": "Created through API",
+            "tags": [" Review ", "review", "Null", "escalated"],
         },
         cookies={"intercept_session": session_cookie},
     )
@@ -63,6 +64,37 @@ async def test_create_case_serializes_response_after_reload(
     assert payload["title"] == "Case serialization check"
     assert payload["human_id"].startswith("CAS-")
     assert payload["timeline_items"] == {}
+    assert payload["tags"] == ["Review", "escalated"]
+
+
+@pytest.mark.asyncio
+async def test_update_case_normalizes_tags(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        case = Case(
+            title="Case with tags",
+            description="Stored before update",
+            created_by="seed-user",
+            tags=["existing"],
+        )
+        session.add(case)
+        await session.commit()
+        assert case.id is not None
+        case_id = case.id
+
+    response = await client.put(
+        f"/api/v1/cases/{case_id}",
+        json={"tags": [" existing ", "Existing", "Null", "triage"]},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["tags"] == ["existing", "triage"]
 
 
 @pytest.mark.asyncio

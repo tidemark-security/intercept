@@ -30,7 +30,7 @@ from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
 from app.services import triage_recommendation_service
-from app.services.tag_filter_utils import append_tag_filters
+from app.services.tag_filter_utils import append_tag_filters, merge_persisted_tags, normalize_persisted_tags
 
 logger = logging.getLogger(__name__)
 
@@ -360,6 +360,8 @@ class AlertService:
             original_values = {field: getattr(db_alert, field, None) for field in update_data if hasattr(db_alert, field)}
             for field, value in update_data.items():
                 if hasattr(db_alert, field):
+                    if field == "tags":
+                        value = normalize_persisted_tags(value)
                     if field == 'status' and value != old_status:
                         status_changed = True
                         new_status = value
@@ -818,7 +820,7 @@ class AlertService:
         context: _BulkActionContext,
         performed_by: str,
     ) -> None:
-        alert.tags = self._merge_tags(alert.tags, request.tags or [])
+        alert.tags = merge_persisted_tags(alert.tags, request.tags)
         alert.updated_at = datetime.now(timezone.utc)
 
     @staticmethod
@@ -1023,18 +1025,6 @@ class AlertService:
         if target_alert_id is not None:
             refs.append(f"alert ALT-{target_alert_id:07d}")
         return f"Bulk closed alert as duplicate of {' and '.join(refs)}"
-
-    @staticmethod
-    def _merge_tags(existing: Optional[List[str]], incoming: List[str]) -> List[str]:
-        merged: List[str] = []
-        seen: Set[str] = set()
-        for tag in [*(existing or []), *incoming]:
-            clean = tag.strip()
-            if not clean or clean in seen:
-                continue
-            merged.append(clean)
-            seen.add(clean)
-        return merged
 
     async def unlink_alert_from_case(
         self, 
