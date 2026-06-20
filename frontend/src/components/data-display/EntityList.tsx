@@ -20,7 +20,7 @@ export function EntityList<T, F = FilterState>({
   selectedIds,
   onSelectionChange,
   onSelectVisible,
-  bulkActions,
+  toolbarActions,
   filters,
   onFilterChange,
   statusOptions,
@@ -81,6 +81,7 @@ export function EntityList<T, F = FilterState>({
             statusOptions={statusOptions}
             showTagFilters={enableTagFilters}
             availableTags={visibleTagCounts}
+            actions={toolbarActions}
           />
         </div>
       </div>
@@ -104,7 +105,6 @@ export function EntityList<T, F = FilterState>({
             </span>
           </div>
         )}
-        {bulkActions}
         {isLoading ? (
           <div className="flex w-full items-center justify-center py-8">
             <span className="text-body font-body text-subtext-color">Loading...</span>

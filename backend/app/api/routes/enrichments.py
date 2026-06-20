@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import List, Optional
 
+import httpx
+import requests
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,9 +21,14 @@ from app.models.models import (
     MaxMindConfigureRequest,
     MaxMindConfigureResponse,
     MaxMindDatabaseStatus,
+    ServiceNowConfigureRequest,
+    ServiceNowConfigureResponse,
+    ServiceNowPreviewRequest,
+    ServiceNowPreviewResponse,
     UserAccount,
 )
 from app.services.audit_service import AuditContext
+from app.services.enrichment.providers.servicenow import servicenow_provider
 from app.services.enrichment.registry import enrichment_registry
 from app.services.enrichment.service import enrichment_service
 from app.services.maxmind_service import maxmind_service
@@ -251,5 +259,98 @@ async def trigger_maxmind_update(db: AsyncSession = Depends(get_db)):
     try:
         task_id = await maxmind_service.enqueue_update(db, reschedule=False)
         return {"enqueued": True, "task_id": task_id}
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@admin_router.post("/service-now/configure", response_model=ServiceNowConfigureResponse)
+async def configure_service_now(
+    http_request: Request,
+    request: ServiceNowConfigureRequest,
+    current_user: UserAccount = Depends(require_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        normalized = servicenow_provider.normalize_config(request.model_dump())
+        settings_service = SettingsService(db)  # type: ignore[arg-type]
+        audit_context = AuditContext(
+            ip_address=http_request.client.host if http_request.client else None,
+            user_agent=http_request.headers.get("user-agent"),
+            correlation_id=http_request.headers.get("x-correlation-id"),
+        )
+
+        setting_values = {
+            "instance_url": normalized["instance_url"],
+            "username": normalized["username"],
+            "password": normalized["password"],
+            "table": normalized["table"],
+            "fields": normalized["fields"],
+            "lookup_query_template": normalized["lookup_query_template"],
+            "bulk_sync_query": normalized["bulk_sync_query"],
+            "user_vip_field": normalized["user_vip_field"],
+            "user_privileged_field": normalized["user_privileged_field"],
+            "cmdb_table": normalized["cmdb_table"],
+            "cmdb_query_field": normalized["cmdb_query_field"],
+            "cmdb_fields": normalized["cmdb_fields"],
+            "cmdb_criticality_field": normalized["cmdb_criticality_field"],
+            "cmdb_privileged_field": normalized["cmdb_privileged_field"],
+            "ttl_seconds": str(request.ttl_seconds),
+            "enabled": "true" if request.enabled else "false",
+        }
+        boolean_keys = {"enabled"}
+        number_keys = {"ttl_seconds"}
+        secret_keys = {"password"}
+
+        for key_suffix, value in setting_values.items():
+            await _upsert_setting(
+                settings_service,
+                key=f"enrichment.servicenow.{key_suffix}",
+                value=value,
+                is_secret=key_suffix in secret_keys,
+                value_type=(
+                    SettingType.BOOLEAN
+                    if key_suffix in boolean_keys
+                    else SettingType.NUMBER
+                    if key_suffix in number_keys
+                    else SettingType.STRING
+                ),
+                performed_by=current_user.username,
+                audit_context=audit_context,
+            )
+
+        return ServiceNowConfigureResponse(
+            instance_url=normalized["instance_url"],
+            settings_saved=len(setting_values),
+            enabled=request.enabled,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+@admin_router.post("/service-now/preview", response_model=ServiceNowPreviewResponse)
+async def preview_service_now(request: ServiceNowPreviewRequest):
+    try:
+        result = await servicenow_provider.preview(
+            config=request.model_dump(exclude={"item"}),
+            item=request.item,
+        )
+        return ServiceNowPreviewResponse(
+            provider_id=result.provider_id,
+            cache_key=result.cache_key,
+            enrichment_data=result.enrichment_data,
+            aliases=[asdict(alias) for alias in result.aliases],
+        )
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"ServiceNow request failed with status {exc.response.status_code}",
+        )
+    except requests.HTTPError as exc:
+        response = exc.response
+        status_code = response.status_code if response is not None else "unknown"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"ServiceNow request failed with status {status_code}",
+        )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))

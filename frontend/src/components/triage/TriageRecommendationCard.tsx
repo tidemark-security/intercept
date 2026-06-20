@@ -3,13 +3,10 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/data-display/Badge';
 import { RelativeTime } from '@/components/data-display/RelativeTime';
 import { Button } from '@/components/buttons/Button';
-import { Dialog } from '@/components/overlays/Dialog';
 import { IconButton } from '@/components/buttons/IconButton';
 import { Priority } from '@/components/misc/Priority';
 import { Progress } from '@/components/feedback/Progress';
-import { Select } from '@/components/forms/Select';
 import { State } from '@/components/misc/State';
-import { TextArea } from '@/components/forms/TextArea';
 import { useTheme } from '@/contexts/ThemeContext';
 import { cn } from '@/utils/cn';
 import type { TriageRecommendationRead } from '@/types/generated/models/TriageRecommendationRead';
@@ -19,6 +16,7 @@ import { alertStatusToUIState, priorityToUIPriority } from '@/utils/statusHelper
 import type { AlertStatus } from '@/types/generated/models/AlertStatus';
 import type { Priority as PriorityType } from '@/types/generated/models/Priority';
 import { ReasoningText } from './ReasoningText';
+import { TriageRejectionDialog } from './TriageRejectionDialog';
 
 import { AlertCircle, ArrowRight, Check, ChevronDown, ChevronUp, Loader2, RefreshCw, Sparkles, Tag, TriangleAlert, X } from 'lucide-react';
 // Helper to format disposition for display
@@ -123,18 +121,6 @@ function formatContextScope(entry: Record<string, any>): string {
   return scope.value ? `${label}: ${scope.value}` : label;
 }
 
-// Rejection category options for dropdown
-const REJECTION_CATEGORY_OPTIONS: { value: RejectionCategory; label: string }[] = [
-  { value: 'INCORRECT_DISPOSITION', label: 'Incorrect Disposition' },
-  { value: 'WRONG_SUGGESTED_STATUS', label: 'Wrong Suggested Status' },
-  { value: 'WRONG_PRIORITY', label: 'Wrong Priority' },
-  { value: 'MISSING_CONTEXT', label: 'Missing Context' },
-  { value: 'INCOMPLETE_ANALYSIS', label: 'Incomplete Analysis' },
-  { value: 'PREFER_MANUAL_REVIEW', label: 'Prefer Manual Review' },
-  { value: 'FALSE_REASONING', label: 'False Reasoning' },
-  { value: 'OTHER', label: 'Other' },
-];
-
 interface TriageRecommendationCardProps {
   recommendation: TriageRecommendationRead;
   onAccept: (options: AcceptRecommendationRequest) => void;
@@ -174,8 +160,6 @@ export function TriageRecommendationCard({
   
   // Rejection dialog state
   const [showRejectDialog, setShowRejectDialog] = useState(false);
-  const [rejectionCategory, setRejectionCategory] = useState<RejectionCategory | ''>('');
-  const [rejectionReason, setRejectionReason] = useState('');
   const previousRecommendationStatusRef = useRef(recommendation.status);
 
   const inferredSuggestedStatus = useMemo(() => {
@@ -212,21 +196,6 @@ export function TriageRecommendationCard({
   const recommendedAction = useMemo(() => getRecommendedAction(recommendation), [recommendation]);
   const appliedContextEntries = recommendation.applied_context_entries ?? [];
   
-  const handleRejectConfirm = () => {
-    if (rejectionCategory && (rejectionCategory !== 'OTHER' || rejectionReason.trim())) {
-      onReject(rejectionCategory, rejectionReason.trim() || undefined);
-      setShowRejectDialog(false);
-      setRejectionCategory('');
-      setRejectionReason('');
-    }
-  };
-  
-  const handleRejectCancel = () => {
-    setShowRejectDialog(false);
-    setRejectionCategory('');
-    setRejectionReason('');
-  };
-
   useEffect(() => {
     const previousStatus = previousRecommendationStatusRef.current;
     if (previousStatus !== recommendation.status && recommendation.status === 'ACCEPTED') {
@@ -650,13 +619,13 @@ export function TriageRecommendationCard({
       {isPending && canReview && (
         <div className="flex w-full flex-wrap items-center justify-end gap-3">
           <Button
-            variant="neutral-secondary"
+            variant={recommendation.request_escalate_to_case ? "destructive-secondary" : "neutral-secondary"}
             icon={<X className="h-4 w-4" />}
             onClick={() => setShowRejectDialog(true)}
             disabled={isRejecting || isAccepting}
             loading={isRejecting}
           >
-            Reject
+            {recommendation.request_escalate_to_case ? "Escalate to Case (Reject AI)" : "Reject"}
           </Button>
           <Button
             variant="brand-primary"
@@ -665,69 +634,17 @@ export function TriageRecommendationCard({
             disabled={isAccepting || isRejecting}
             loading={isAccepting}
           >
-            Accept Recommendation
+            {recommendation.request_escalate_to_case ? "Escalate to Case (Accept AI)" : "Accept Recommendation"}
           </Button>
         </div>
       )}
       
       {/* Rejection Dialog */}
-      <Dialog open={canReview && showRejectDialog} onOpenChange={setShowRejectDialog}>
-        <Dialog.Content className="p-6">
-          <div className="flex flex-col gap-4 w-[400px]">
-            <div className="flex flex-col gap-1">
-              <span className="text-heading-3 font-heading-3 text-default-font">
-                Reject Recommendation
-              </span>
-              <span className="text-body font-body text-subtext-color">
-                Select the reason for rejecting this AI triage recommendation.
-              </span>
-            </div>
-            
-            <Select
-              label="Rejection Category"
-              helpText="Required"
-              value={rejectionCategory}
-              onValueChange={(value) => setRejectionCategory(value as RejectionCategory)}
-              placeholder="Select a category..."
-            >
-              {REJECTION_CATEGORY_OPTIONS.map((option) => (
-                <Select.Item key={option.value} value={option.value}>
-                  {option.label}
-                </Select.Item>
-              ))}
-            </Select>
-            
-            <TextArea
-              label="Additional Details"
-              helpText={rejectionCategory === 'OTHER' ? 'Required for "Other" category' : 'Optional'}
-            >
-              <TextArea.Input
-                placeholder="Provide additional context for the rejection..."
-                value={rejectionReason}
-                onChange={(e) => setRejectionReason(e.target.value)}
-              />
-            </TextArea>
-            
-            <div className="flex items-center justify-end gap-3">
-              <Button
-                variant="neutral-secondary"
-                size="small"
-                onClick={handleRejectCancel}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="destructive-primary"
-                size="small"
-                onClick={handleRejectConfirm}
-                disabled={!rejectionCategory || (rejectionCategory === 'OTHER' && !rejectionReason.trim())}
-              >
-                Reject Recommendation
-              </Button>
-            </div>
-          </div>
-        </Dialog.Content>
-      </Dialog>
+      <TriageRejectionDialog
+        open={canReview && showRejectDialog}
+        onOpenChange={setShowRejectDialog}
+        onReject={onReject}
+      />
     </div>
   );
 }

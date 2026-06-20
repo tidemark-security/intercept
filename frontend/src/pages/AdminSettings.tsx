@@ -14,6 +14,12 @@ import { useBreakpoint } from "@/hooks/useBreakpoint";
 import { cn } from "@/utils/cn";
 import { LangflowConnectionStatus } from "@/components/admin/LangflowConnectionStatus";
 import { LangflowSetupStatus } from "@/components/admin/LangflowSetupStatus";
+import {
+  ServiceNowAdminApi,
+  type ServiceNowConfigureRequest,
+  type ServiceNowConfigureResponse,
+  type ServiceNowPreviewResponse,
+} from "@/services/serviceNowAdminApi";
 
 import { useSession } from "../contexts/sessionContext";
 import { ApiError } from "../types/generated/core/ApiError";
@@ -47,6 +53,7 @@ import {
   Lock,
   RefreshCw,
   Save,
+  Search,
   Settings,
   Shield,
   Sparkles,
@@ -73,6 +80,24 @@ const ENRICHMENT_PROVIDER_STATUSES_QUERY_KEY = [
   "enrichments",
   "providers",
 ] as const;
+
+const SERVICE_NOW_DEFAULT_CONFIG: ServiceNowConfigureRequest = {
+  instance_url: "",
+  username: "",
+  password: "",
+  user_table: "sys_user",
+  user_query_field: "user_name",
+  user_vip_field: "vip",
+  user_privileged_field: "u_privileged_user",
+  cmdb_table: "cmdb_ci",
+  cmdb_query_field: "name",
+  cmdb_criticality_field: "criticality",
+  cmdb_privileged_field: "u_privileged_system",
+  active_only: true,
+  enabled: true,
+};
+
+type ServiceNowPreviewItemType = "internal_actor" | "system";
 
 interface SettingsSectionNavItem {
   id: string;
@@ -132,19 +157,20 @@ const CUSTOM_KEYS = new Set([
   "enrichment.ldap.ttl_seconds",
   "enrichment.ldap.bulk_sync_enabled",
   "enrichment.ldap.bulk_sync_time_utc",
-  "enrichment.servicenow.enabled",
-  "enrichment.servicenow.instance_url",
-  "enrichment.servicenow.username",
-  "enrichment.servicenow.password",
-  "enrichment.servicenow.table",
-  "enrichment.servicenow.fields",
-  "enrichment.servicenow.lookup_query_template",
-  "enrichment.servicenow.bulk_sync_query",
-  "enrichment.servicenow.page_size",
-  "enrichment.servicenow.max_records",
-  "enrichment.servicenow.ttl_seconds",
-  "enrichment.servicenow.bulk_sync_enabled",
-  "enrichment.servicenow.bulk_sync_time_utc",
+  "enrichment.service_now.enabled",
+  "enrichment.service_now.instance_url",
+  "enrichment.service_now.username",
+  "enrichment.service_now.password",
+  "enrichment.service_now.user_table",
+  "enrichment.service_now.user_query_field",
+  "enrichment.service_now.user_vip_field",
+  "enrichment.service_now.user_privileged_field",
+  "enrichment.service_now.cmdb_table",
+  "enrichment.service_now.cmdb_query_field",
+  "enrichment.service_now.cmdb_criticality_field",
+  "enrichment.service_now.cmdb_privileged_field",
+  "enrichment.service_now.active_only",
+  "enrichment.service_now.ttl_seconds",
   "enrichment.cross_case_observable.enabled",
   "enrichment.cross_case_observable.max_lookback_days",
   "enrichment.maxmind.enabled",
@@ -353,6 +379,29 @@ function AdminSettings() {
     title: string;
     description: string;
   } | null>(null);
+  const [showServiceNowConfigModal, setShowServiceNowConfigModal] =
+    useState(false);
+  const [showServiceNowPreviewModal, setShowServiceNowPreviewModal] =
+    useState(false);
+  const [serviceNowDraft, setServiceNowDraft] =
+    useState<ServiceNowConfigureRequest>(SERVICE_NOW_DEFAULT_CONFIG);
+  const [serviceNowConfigureStatus, setServiceNowConfigureStatus] = useState<{
+    variant: StatusVariant;
+    title: string;
+    description: string;
+  } | null>(null);
+  const [serviceNowPreviewItemType, setServiceNowPreviewItemType] =
+    useState<ServiceNowPreviewItemType>("internal_actor");
+  const [serviceNowPreviewLookup, setServiceNowPreviewLookup] = useState("");
+  const [serviceNowPreviewPassword, setServiceNowPreviewPassword] =
+    useState("");
+  const [serviceNowPreviewResult, setServiceNowPreviewResult] =
+    useState<ServiceNowPreviewResponse | null>(null);
+  const [serviceNowPreviewStatus, setServiceNowPreviewStatus] = useState<{
+    variant: StatusVariant;
+    title: string;
+    description: string;
+  } | null>(null);
   const [activeSectionId, setActiveSectionId] = useState(
     "case-closure-settings",
   );
@@ -496,6 +545,83 @@ function AdminSettings() {
         description: extractApiErrorMessage(
           err,
           "Failed to queue MaxMind update",
+        ),
+      });
+    },
+  });
+
+  const serviceNowConfigureMutation = useMutation({
+    mutationFn: (config: ServiceNowConfigureRequest) =>
+      ServiceNowAdminApi.configure(config),
+    onSuccess: async (response: ServiceNowConfigureResponse) => {
+      setServiceNowConfigureStatus({
+        variant: "success",
+        title: "ServiceNow configuration saved",
+        description: `Saved ${response.settings_saved ?? 0} settings for ${response.instance_url}.`,
+      });
+      showToast(
+        "ServiceNow configuration saved",
+        response.enabled
+          ? "ServiceNow enrichment is enabled"
+          : "ServiceNow enrichment is disabled",
+        "success",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["admin", "settings"] });
+    },
+    onError: (err) => {
+      const message = extractApiErrorMessage(
+        err,
+        "Failed to save ServiceNow configuration",
+      );
+      setServiceNowConfigureStatus({
+        variant: "error",
+        title: "ServiceNow configuration failed",
+        description: message,
+      });
+      showToast("ServiceNow configuration failed", message, "error");
+    },
+  });
+
+  const serviceNowPreviewMutation = useMutation({
+    mutationFn: (config: ServiceNowConfigureRequest) =>
+      ServiceNowAdminApi.preview({
+        ...config,
+        item:
+          serviceNowPreviewItemType === "internal_actor"
+            ? {
+                type: "internal_actor",
+                user_id: serviceNowPreviewLookup.trim(),
+                contact_email: serviceNowPreviewLookup.trim(),
+                name: serviceNowPreviewLookup.trim(),
+              }
+            : {
+                type: "system",
+                hostname: serviceNowPreviewLookup.trim(),
+                cmdb_id: serviceNowPreviewLookup.trim(),
+                ip_address: serviceNowPreviewLookup.trim(),
+              },
+      }),
+    onSuccess: (response: ServiceNowPreviewResponse) => {
+      setServiceNowPreviewResult(response);
+      setServiceNowPreviewStatus({
+        variant: response.enrichment_data?.error ? "warning" : "success",
+        title: response.enrichment_data?.error
+          ? "Preview completed with no match"
+          : "Preview completed",
+        description:
+          typeof response.enrichment_data?.error === "string"
+            ? response.enrichment_data.error
+            : `${response.aliases.length} aliases returned from ${response.provider_id}.`,
+      });
+    },
+    onError: (err) => {
+      setServiceNowPreviewResult(null);
+      setServiceNowPreviewStatus({
+        variant: "error",
+        title: "ServiceNow preview failed",
+        description: extractApiErrorMessage(
+          err,
+          "Failed to preview ServiceNow enrichment",
         ),
       });
     },
@@ -662,6 +788,140 @@ function AdminSettings() {
       nhiUsername: langflowSetupUsername,
       mcpUrl: langflowSetupMcpUrl,
     });
+  };
+
+  const getServiceNowConfigFromSettings = (
+    passwordOverride: string = "",
+  ): ServiceNowConfigureRequest => ({
+    instance_url:
+      getSetting("enrichment.service_now.instance_url") ||
+      SERVICE_NOW_DEFAULT_CONFIG.instance_url,
+    username:
+      getSetting("enrichment.service_now.username") ||
+      SERVICE_NOW_DEFAULT_CONFIG.username,
+    password: passwordOverride,
+    user_table:
+      getSetting("enrichment.service_now.user_table") ||
+      SERVICE_NOW_DEFAULT_CONFIG.user_table,
+    user_query_field:
+      getSetting("enrichment.service_now.user_query_field") ||
+      SERVICE_NOW_DEFAULT_CONFIG.user_query_field,
+    user_vip_field:
+      getSetting("enrichment.service_now.user_vip_field") ||
+      SERVICE_NOW_DEFAULT_CONFIG.user_vip_field,
+    user_privileged_field:
+      getSetting("enrichment.service_now.user_privileged_field") ||
+      SERVICE_NOW_DEFAULT_CONFIG.user_privileged_field,
+    cmdb_table:
+      getSetting("enrichment.service_now.cmdb_table") ||
+      SERVICE_NOW_DEFAULT_CONFIG.cmdb_table,
+    cmdb_query_field:
+      getSetting("enrichment.service_now.cmdb_query_field") ||
+      SERVICE_NOW_DEFAULT_CONFIG.cmdb_query_field,
+    cmdb_criticality_field:
+      getSetting("enrichment.service_now.cmdb_criticality_field") ||
+      SERVICE_NOW_DEFAULT_CONFIG.cmdb_criticality_field,
+    cmdb_privileged_field:
+      getSetting("enrichment.service_now.cmdb_privileged_field") ||
+      SERVICE_NOW_DEFAULT_CONFIG.cmdb_privileged_field,
+    active_only: parseBooleanValue(
+      getSetting("enrichment.service_now.active_only") || "true",
+    ),
+    enabled: parseBooleanValue(
+      getSetting("enrichment.service_now.enabled") || "false",
+    ),
+  });
+
+  const openServiceNowConfigModal = () => {
+    setServiceNowDraft(getServiceNowConfigFromSettings(""));
+    setServiceNowConfigureStatus(null);
+    setShowServiceNowConfigModal(true);
+  };
+
+  const closeServiceNowConfigModal = () => {
+    if (serviceNowConfigureMutation.isPending) {
+      return;
+    }
+    setShowServiceNowConfigModal(false);
+    setServiceNowDraft(SERVICE_NOW_DEFAULT_CONFIG);
+  };
+
+  const updateServiceNowDraft = <K extends keyof ServiceNowConfigureRequest>(
+    key: K,
+    value: ServiceNowConfigureRequest[K],
+  ) => {
+    setServiceNowDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  const saveServiceNowConfig = () => {
+    const trimmedConfig: ServiceNowConfigureRequest = {
+      ...serviceNowDraft,
+      instance_url: serviceNowDraft.instance_url.trim(),
+      username: serviceNowDraft.username.trim(),
+      password: serviceNowDraft.password,
+      user_table: serviceNowDraft.user_table.trim(),
+      user_query_field: serviceNowDraft.user_query_field.trim(),
+      user_vip_field: serviceNowDraft.user_vip_field.trim(),
+      user_privileged_field: serviceNowDraft.user_privileged_field.trim(),
+      cmdb_table: serviceNowDraft.cmdb_table.trim(),
+      cmdb_query_field: serviceNowDraft.cmdb_query_field.trim(),
+      cmdb_criticality_field: serviceNowDraft.cmdb_criticality_field.trim(),
+      cmdb_privileged_field: serviceNowDraft.cmdb_privileged_field.trim(),
+    };
+
+    if (!trimmedConfig.password.trim()) {
+      setServiceNowConfigureStatus({
+        variant: "warning",
+        title: "ServiceNow password required",
+        description:
+          "Enter the ServiceNow API password before saving configuration.",
+      });
+      return;
+    }
+
+    serviceNowConfigureMutation.mutate(trimmedConfig);
+  };
+
+  const openServiceNowPreviewModal = () => {
+    setServiceNowPreviewItemType("internal_actor");
+    setServiceNowPreviewLookup("");
+    setServiceNowPreviewPassword("");
+    setServiceNowPreviewResult(null);
+    setServiceNowPreviewStatus(null);
+    setShowServiceNowPreviewModal(true);
+  };
+
+  const closeServiceNowPreviewModal = () => {
+    if (serviceNowPreviewMutation.isPending) {
+      return;
+    }
+    setShowServiceNowPreviewModal(false);
+    setServiceNowPreviewPassword("");
+  };
+
+  const runServiceNowPreview = () => {
+    const config = getServiceNowConfigFromSettings(serviceNowPreviewPassword);
+    if (!serviceNowPreviewLookup.trim()) {
+      setServiceNowPreviewStatus({
+        variant: "warning",
+        title: "Lookup value required",
+        description:
+          "Enter a user or system identifier before running the preview.",
+      });
+      return;
+    }
+    if (!config.password.trim()) {
+      setServiceNowPreviewStatus({
+        variant: "warning",
+        title: "ServiceNow password required",
+        description:
+          "Enter the ServiceNow API password for this live preview request.",
+      });
+      return;
+    }
+    setServiceNowPreviewStatus(null);
+    setServiceNowPreviewResult(null);
+    serviceNowPreviewMutation.mutate(config);
   };
 
   const goToLangflowSetupOverview = () => {
@@ -995,8 +1255,8 @@ function AdminSettings() {
     parseBooleanValue(getSetting("enrichment.ldap.enabled")),
   );
   const serviceNowEnabled = isProviderEnabled(
-    "servicenow",
-    parseBooleanValue(getSetting("enrichment.servicenow.enabled")),
+    "service_now",
+    parseBooleanValue(getSetting("enrichment.service_now.enabled")),
   );
   const anyDirectoryEnabled =
     directoryProviderStatuses.some((provider) => provider.enabled) ||
@@ -1021,10 +1281,9 @@ function AdminSettings() {
     Boolean(getSetting("enrichment.ldap.bind_password")) &&
     Boolean(getSetting("enrichment.ldap.search_base"));
   const serviceNowConfigured =
-    Boolean(getSetting("enrichment.servicenow.instance_url")) &&
-    Boolean(getSetting("enrichment.servicenow.username")) &&
-    Boolean(getSetting("enrichment.servicenow.password")) &&
-    Boolean(getSetting("enrichment.servicenow.table") || "sys_user");
+    Boolean(getSetting("enrichment.service_now.instance_url")) &&
+    Boolean(getSetting("enrichment.service_now.username")) &&
+    Boolean(getSetting("enrichment.service_now.password"));
   const anyEnabledDirectoryConfigured =
     (entraEnabled && entraConfigured) ||
     (googleWorkspaceEnabled && googleWorkspaceConfigured) ||
@@ -1082,6 +1341,11 @@ function AdminSettings() {
       {
         id: "observable-correlation-settings",
         label: "Observable Correlation",
+        group: "Enrichment Integrations",
+      },
+      {
+        id: "service-now-settings",
+        label: "ServiceNow",
         group: "Enrichment Integrations",
       },
       {
@@ -2374,197 +2638,6 @@ function AdminSettings() {
                         ) : null}
                       </div>
 
-                      <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-neutral-50 p-4">
-                        <BooleanSettingField
-                          label="ServiceNow"
-                          description="Use the ServiceNow Table API to enrich internal actors from configured user records."
-                          source={
-                            settingMeta("enrichment.servicenow.enabled").source
-                          }
-                          readOnly={
-                            settingMeta("enrichment.servicenow.enabled")
-                              .readOnly
-                          }
-                          value={serviceNowEnabled}
-                          onSave={(value) =>
-                            handleSaveSetting(
-                              "enrichment.servicenow.enabled",
-                              value ? "true" : "false",
-                              false,
-                              "BOOLEAN",
-                            )
-                          }
-                        />
-
-                        {serviceNowEnabled ? (
-                          <>
-                            <StatusCallout
-                              variant={
-                                serviceNowConfigured ? "success" : "warning"
-                              }
-                              title={
-                                serviceNowConfigured
-                                  ? "ServiceNow is configured"
-                                  : "ServiceNow needs API credentials"
-                              }
-                              description={
-                                serviceNowConfigured
-                                  ? "Instance, API user, and table settings are present for lookups and bounded sync."
-                                  : "Provide an instance URL, API username, password, and table before running ServiceNow enrichment."
-                              }
-                              isDarkTheme={isDarkTheme}
-                            />
-                            <SettingField
-                              label="Instance URL"
-                              {...settingMeta(
-                                "enrichment.servicenow.instance_url",
-                              )}
-                              onSave={(value) =>
-                                handleSaveSetting(
-                                  "enrichment.servicenow.instance_url",
-                                  value,
-                                )
-                              }
-                              placeholder="https://example.service-now.com"
-                            />
-                            <SettingField
-                              label="API Username"
-                              {...settingMeta("enrichment.servicenow.username")}
-                              onSave={(value) =>
-                                handleSaveSetting(
-                                  "enrichment.servicenow.username",
-                                  value,
-                                )
-                              }
-                              placeholder="intercept_api"
-                            />
-                            <SettingField
-                              label="API Password"
-                              {...settingMeta("enrichment.servicenow.password")}
-                              onSave={(value) =>
-                                handleSaveSetting(
-                                  "enrichment.servicenow.password",
-                                  value,
-                                  true,
-                                )
-                              }
-                              placeholder="API password"
-                              isSecret
-                            />
-                            <SettingField
-                              label="User Table"
-                              {...settingMeta("enrichment.servicenow.table")}
-                              onSave={(value) =>
-                                handleSaveSetting(
-                                  "enrichment.servicenow.table",
-                                  value,
-                                )
-                              }
-                              placeholder="sys_user"
-                            />
-                            <SettingField
-                              label="Returned Fields"
-                              {...settingMeta("enrichment.servicenow.fields")}
-                              onSave={(value) =>
-                                handleSaveSetting(
-                                  "enrichment.servicenow.fields",
-                                  value,
-                                )
-                              }
-                              placeholder="sys_id,user_name,email,name,department.name"
-                            />
-                            <SettingField
-                              label="Lookup Query Template"
-                              {...settingMeta(
-                                "enrichment.servicenow.lookup_query_template",
-                              )}
-                              onSave={(value) =>
-                                handleSaveSetting(
-                                  "enrichment.servicenow.lookup_query_template",
-                                  value,
-                                )
-                              }
-                              placeholder="email={value}^ORuser_name={value}^ORname={value}"
-                            />
-                            <SettingField
-                              label="Bulk Sync Query"
-                              {...settingMeta(
-                                "enrichment.servicenow.bulk_sync_query",
-                              )}
-                              onSave={(value) =>
-                                handleSaveSetting(
-                                  "enrichment.servicenow.bulk_sync_query",
-                                  value,
-                                )
-                              }
-                              placeholder="active=true"
-                            />
-                            <SettingField
-                              label="Page Size"
-                              {...settingMeta("enrichment.servicenow.page_size")}
-                              onSave={(value) =>
-                                handleSaveSetting(
-                                  "enrichment.servicenow.page_size",
-                                  value,
-                                  false,
-                                  "NUMBER",
-                                )
-                              }
-                              placeholder="500"
-                              inputType="number"
-                              inputMode="numeric"
-                              min={1}
-                              step={1}
-                            />
-                            <SettingField
-                              label="Max Records"
-                              {...settingMeta(
-                                "enrichment.servicenow.max_records",
-                              )}
-                              onSave={(value) =>
-                                handleSaveSetting(
-                                  "enrichment.servicenow.max_records",
-                                  value,
-                                  false,
-                                  "NUMBER",
-                                )
-                              }
-                              placeholder="5000"
-                              inputType="number"
-                              inputMode="numeric"
-                              min={1}
-                              step={1}
-                            />
-                            <SettingField
-                              label="Enrichment TTL (seconds)"
-                              {...settingMeta(
-                                "enrichment.servicenow.ttl_seconds",
-                              )}
-                              onSave={(value) =>
-                                handleSaveSetting(
-                                  "enrichment.servicenow.ttl_seconds",
-                                  value,
-                                  false,
-                                  "NUMBER",
-                                )
-                              }
-                              placeholder="86400"
-                            />
-                            <BulkSyncScheduleFields
-                              providerId="servicenow"
-                              providerLabel="ServiceNow"
-                              configured={serviceNowConfigured}
-                              supportsBulkSync={providerSupportsBulkSync(
-                                "servicenow",
-                              )}
-                              isDarkTheme={isDarkTheme}
-                              getSetting={getSetting}
-                              settingMeta={settingMeta}
-                              onSave={handleSaveSetting}
-                            />
-                          </>
-                        ) : null}
-                      </div>
                     </div>
                   </section>
 
@@ -2645,6 +2718,169 @@ function AdminSettings() {
                         )
                       }
                       placeholder="180"
+                      inputType="number"
+                      inputMode="numeric"
+                      min={1}
+                      step={1}
+                    />
+                  </section>
+
+                  <section
+                    id="service-now-settings"
+                    className="scroll-mt-24 flex flex-col gap-6 rounded-lg border border-neutral-border bg-default-background p-4 sm:p-6"
+                  >
+                    <div className="flex items-center gap-2 border-b border-neutral-border pb-4">
+                      <Workflow className="text-[20px] text-subtext-color" />
+                      <h2 className="text-heading-3 font-heading-3 text-default-font">
+                        ServiceNow
+                      </h2>
+                    </div>
+
+                    <StatusCallout
+                      variant={
+                        serviceNowEnabled && serviceNowConfigured
+                          ? "success"
+                          : "warning"
+                      }
+                      title={
+                        serviceNowEnabled
+                          ? serviceNowConfigured
+                            ? "ServiceNow enrichment is enabled"
+                            : "ServiceNow needs credentials"
+                          : "ServiceNow enrichment is disabled"
+                      }
+                      description={
+                        serviceNowEnabled && serviceNowConfigured
+                          ? "Internal actors and systems can be enriched from ServiceNow user and CMDB tables."
+                          : serviceNowEnabled
+                            ? "Complete the ServiceNow connection and field mapping before lookups can run."
+                            : "Configure ServiceNow to add VIP, privileged-user, critical-system, and privileged-system context to timeline cards."
+                      }
+                      isDarkTheme={isDarkTheme}
+                    />
+
+                    <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-neutral-50 p-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="flex flex-col gap-1">
+                          <span className="text-body-bold font-body-bold text-default-font">
+                            Connection and Field Mapping
+                          </span>
+                          <p className="text-caption font-caption text-subtext-color">
+                            Save instance credentials, user table fields, and
+                            CMDB fields through the ServiceNow configure API.
+                          </p>
+                        </div>
+                        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                          <Button
+                            className="w-full sm:w-auto"
+                            variant="neutral-secondary"
+                            onClick={openServiceNowPreviewModal}
+                            disabled={!serviceNowConfigured}
+                            icon={<Search className="text-[16px]" />}
+                          >
+                            Live Preview
+                          </Button>
+                          <Button
+                            className="w-full sm:w-auto"
+                            variant="brand-primary"
+                            onClick={openServiceNowConfigModal}
+                            icon={<Settings className="text-[16px]" />}
+                          >
+                            Configure
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <ServiceNowSummaryField
+                          label="Instance"
+                          value={
+                            getSetting("enrichment.service_now.instance_url") ||
+                            "Not configured"
+                          }
+                        />
+                        <ServiceNowSummaryField
+                          label="Username"
+                          value={
+                            getSetting("enrichment.service_now.username") ||
+                            "Not configured"
+                          }
+                        />
+                        <ServiceNowSummaryField
+                          label="User lookup"
+                          value={`${getSetting("enrichment.service_now.user_table") || SERVICE_NOW_DEFAULT_CONFIG.user_table}.${getSetting("enrichment.service_now.user_query_field") || SERVICE_NOW_DEFAULT_CONFIG.user_query_field}`}
+                        />
+                        <ServiceNowSummaryField
+                          label="CMDB lookup"
+                          value={`${getSetting("enrichment.service_now.cmdb_table") || SERVICE_NOW_DEFAULT_CONFIG.cmdb_table}.${getSetting("enrichment.service_now.cmdb_query_field") || SERVICE_NOW_DEFAULT_CONFIG.cmdb_query_field}`}
+                        />
+                      </div>
+                    </div>
+
+                    <BooleanSettingField
+                      label="Enable ServiceNow Enrichment"
+                      description={
+                        settingMeta("enrichment.service_now.enabled")
+                          .description
+                      }
+                      source={settingMeta("enrichment.service_now.enabled").source}
+                      readOnly={
+                        settingMeta("enrichment.service_now.enabled").readOnly
+                      }
+                      value={serviceNowEnabled}
+                      onSave={(value) =>
+                        handleSaveSetting(
+                          "enrichment.service_now.enabled",
+                          value ? "true" : "false",
+                          false,
+                          "BOOLEAN",
+                        )
+                      }
+                    />
+
+                    <BooleanSettingField
+                      label="Active Users Only"
+                      description={
+                        settingMeta("enrichment.service_now.active_only")
+                          .description
+                      }
+                      source={
+                        settingMeta("enrichment.service_now.active_only").source
+                      }
+                      readOnly={
+                        settingMeta("enrichment.service_now.active_only")
+                          .readOnly
+                      }
+                      value={parseBooleanValue(
+                        getSetting("enrichment.service_now.active_only") ||
+                          "true",
+                      )}
+                      onSave={(value) =>
+                        handleSaveSetting(
+                          "enrichment.service_now.active_only",
+                          value ? "true" : "false",
+                          false,
+                          "BOOLEAN",
+                        )
+                      }
+                    />
+
+                    <SettingField
+                      label="Enrichment TTL (seconds)"
+                      {...settingMeta("enrichment.service_now.ttl_seconds")}
+                      onSave={(value) =>
+                        handleSaveSetting(
+                          "enrichment.service_now.ttl_seconds",
+                          value,
+                          false,
+                          "NUMBER",
+                        )
+                      }
+                      placeholder="86400"
+                      inputType="number"
+                      inputMode="numeric"
+                      min={1}
+                      step={1}
                     />
                   </section>
 
@@ -3048,6 +3284,305 @@ function AdminSettings() {
         )}
       </div>
 
+      {showServiceNowConfigModal && (
+        <ModalShell
+          title="Configure ServiceNow"
+          description="Configure ServiceNow enrichment connection and field mappings"
+          panelClassName="max-w-4xl max-h-[calc(100vh-2rem)] overflow-hidden"
+          contentClassName="h-full min-h-0"
+          onClose={closeServiceNowConfigModal}
+        >
+          <div className="flex w-full items-start justify-between gap-3">
+            <div className="flex grow flex-col gap-1">
+              <span className="text-heading-2 font-heading-2 text-default-font">
+                Configure ServiceNow
+              </span>
+              <span className="text-body font-body text-subtext-color">
+                Save the ServiceNow connection, user mapping, and CMDB mapping.
+              </span>
+            </div>
+            <Workflow className="text-[24px] text-default-font" />
+          </div>
+
+          <div className="min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-neutral-border bg-default-background p-4">
+            <div className="flex flex-col gap-6">
+              <div className="grid gap-4 md:grid-cols-2">
+                <ServiceNowDraftField
+                  label="Instance URL"
+                  value={serviceNowDraft.instance_url}
+                  onChange={(value) =>
+                    updateServiceNowDraft("instance_url", value)
+                  }
+                  placeholder="https://example.service-now.com"
+                />
+                <ServiceNowDraftField
+                  label="Username"
+                  value={serviceNowDraft.username}
+                  onChange={(value) => updateServiceNowDraft("username", value)}
+                  placeholder="svc-intercept"
+                />
+                <ServiceNowDraftField
+                  label="Password"
+                  value={serviceNowDraft.password}
+                  onChange={(value) => updateServiceNowDraft("password", value)}
+                  placeholder="ServiceNow API password"
+                  type="password"
+                />
+                <div className="flex items-end">
+                  <BooleanSettingField
+                    label="Enable after save"
+                    description="Turn on the provider as soon as this configuration is saved."
+                    value={serviceNowDraft.enabled}
+                    onSave={(value) =>
+                      updateServiceNowDraft("enabled", value)
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-neutral-50 p-4">
+                  <span className="text-body-bold font-body-bold text-default-font">
+                    User Table
+                  </span>
+                  <ServiceNowDraftField
+                    label="Table"
+                    value={serviceNowDraft.user_table}
+                    onChange={(value) =>
+                      updateServiceNowDraft("user_table", value)
+                    }
+                    placeholder="sys_user"
+                  />
+                  <ServiceNowDraftField
+                    label="Lookup Field"
+                    value={serviceNowDraft.user_query_field}
+                    onChange={(value) =>
+                      updateServiceNowDraft("user_query_field", value)
+                    }
+                    placeholder="user_name"
+                  />
+                  <ServiceNowDraftField
+                    label="VIP Field"
+                    value={serviceNowDraft.user_vip_field}
+                    onChange={(value) =>
+                      updateServiceNowDraft("user_vip_field", value)
+                    }
+                    placeholder="vip"
+                  />
+                  <ServiceNowDraftField
+                    label="Privileged User Field"
+                    value={serviceNowDraft.user_privileged_field}
+                    onChange={(value) =>
+                      updateServiceNowDraft("user_privileged_field", value)
+                    }
+                    placeholder="u_privileged_user"
+                  />
+                  <BooleanSettingField
+                    label="Active Users Only"
+                    description="Append active=true to ServiceNow user lookups."
+                    value={serviceNowDraft.active_only}
+                    onSave={(value) =>
+                      updateServiceNowDraft("active_only", value)
+                    }
+                  />
+                </div>
+
+                <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-neutral-50 p-4">
+                  <span className="text-body-bold font-body-bold text-default-font">
+                    CMDB Table
+                  </span>
+                  <ServiceNowDraftField
+                    label="Table"
+                    value={serviceNowDraft.cmdb_table}
+                    onChange={(value) =>
+                      updateServiceNowDraft("cmdb_table", value)
+                    }
+                    placeholder="cmdb_ci"
+                  />
+                  <ServiceNowDraftField
+                    label="Lookup Field"
+                    value={serviceNowDraft.cmdb_query_field}
+                    onChange={(value) =>
+                      updateServiceNowDraft("cmdb_query_field", value)
+                    }
+                    placeholder="name"
+                  />
+                  <ServiceNowDraftField
+                    label="Criticality Field"
+                    value={serviceNowDraft.cmdb_criticality_field}
+                    onChange={(value) =>
+                      updateServiceNowDraft("cmdb_criticality_field", value)
+                    }
+                    placeholder="criticality"
+                  />
+                  <ServiceNowDraftField
+                    label="Privileged System Field"
+                    value={serviceNowDraft.cmdb_privileged_field}
+                    onChange={(value) =>
+                      updateServiceNowDraft("cmdb_privileged_field", value)
+                    }
+                    placeholder="u_privileged_system"
+                  />
+                </div>
+              </div>
+
+              {serviceNowConfigureStatus ? (
+                <StatusCallout
+                  variant={serviceNowConfigureStatus.variant}
+                  title={serviceNowConfigureStatus.title}
+                  description={serviceNowConfigureStatus.description}
+                  isDarkTheme={isDarkTheme}
+                />
+              ) : null}
+            </div>
+          </div>
+
+          <div className="flex w-full items-center justify-end gap-2">
+            <Button
+              variant="neutral-secondary"
+              onClick={closeServiceNowConfigModal}
+              disabled={serviceNowConfigureMutation.isPending}
+            >
+              Close
+            </Button>
+            <Button
+              variant="brand-primary"
+              onClick={saveServiceNowConfig}
+              loading={serviceNowConfigureMutation.isPending}
+              disabled={
+                !serviceNowDraft.instance_url.trim() ||
+                !serviceNowDraft.username.trim() ||
+                !serviceNowDraft.password.trim()
+              }
+              icon={<Save className="text-[16px]" />}
+            >
+              Save Configuration
+            </Button>
+          </div>
+        </ModalShell>
+      )}
+
+      {showServiceNowPreviewModal && (
+        <ModalShell
+          title="Preview ServiceNow Enrichment"
+          description="Run a live ServiceNow enrichment preview"
+          panelClassName="max-w-4xl max-h-[calc(100vh-2rem)] overflow-hidden"
+          contentClassName="h-full min-h-0"
+          onClose={closeServiceNowPreviewModal}
+        >
+          <div className="flex w-full items-start justify-between gap-3">
+            <div className="flex grow flex-col gap-1">
+              <span className="text-heading-2 font-heading-2 text-default-font">
+                ServiceNow Live Preview
+              </span>
+              <span className="text-body font-body text-subtext-color">
+                Query the configured user or CMDB table before analysts see the
+                enrichment on cards.
+              </span>
+            </div>
+            <Search className="text-[24px] text-default-font" />
+          </div>
+
+          <div className="min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-neutral-border bg-default-background p-4">
+            <div className="flex flex-col gap-5">
+              <div className="grid gap-4 md:grid-cols-[180px_1fr_1fr]">
+                <div className="flex flex-col gap-2">
+                  <span className="text-body-bold font-body-bold text-default-font">
+                    Item Type
+                  </span>
+                  <div className="grid grid-cols-2 gap-2 md:grid-cols-1">
+                    <Button
+                      variant={
+                        serviceNowPreviewItemType === "internal_actor"
+                          ? "brand-primary"
+                          : "neutral-secondary"
+                      }
+                      onClick={() =>
+                        setServiceNowPreviewItemType("internal_actor")
+                      }
+                      className="justify-center"
+                    >
+                      User
+                    </Button>
+                    <Button
+                      variant={
+                        serviceNowPreviewItemType === "system"
+                          ? "brand-primary"
+                          : "neutral-secondary"
+                      }
+                      onClick={() => setServiceNowPreviewItemType("system")}
+                      className="justify-center"
+                    >
+                      System
+                    </Button>
+                  </div>
+                </div>
+                <ServiceNowDraftField
+                  label={
+                    serviceNowPreviewItemType === "internal_actor"
+                      ? "User Identifier"
+                      : "System Identifier"
+                  }
+                  value={serviceNowPreviewLookup}
+                  onChange={setServiceNowPreviewLookup}
+                  placeholder={
+                    serviceNowPreviewItemType === "internal_actor"
+                      ? "jane.smith or jane@example.com"
+                      : "workstation-42 or 10.0.0.42"
+                  }
+                />
+                <ServiceNowDraftField
+                  label="Password for Preview"
+                  value={serviceNowPreviewPassword}
+                  onChange={setServiceNowPreviewPassword}
+                  placeholder="ServiceNow API password"
+                  type="password"
+                />
+              </div>
+
+              <div className="flex justify-end">
+                <Button
+                  variant="brand-primary"
+                  onClick={runServiceNowPreview}
+                  loading={serviceNowPreviewMutation.isPending}
+                  disabled={
+                    serviceNowPreviewMutation.isPending ||
+                    !serviceNowPreviewLookup.trim() ||
+                    !serviceNowPreviewPassword.trim()
+                  }
+                  icon={<Search className="text-[16px]" />}
+                >
+                  Run Preview
+                </Button>
+              </div>
+
+              {serviceNowPreviewStatus ? (
+                <StatusCallout
+                  variant={serviceNowPreviewStatus.variant}
+                  title={serviceNowPreviewStatus.title}
+                  description={serviceNowPreviewStatus.description}
+                  isDarkTheme={isDarkTheme}
+                />
+              ) : null}
+
+              {serviceNowPreviewResult ? (
+                <ServiceNowPreviewResultPanel result={serviceNowPreviewResult} />
+              ) : null}
+            </div>
+          </div>
+
+          <div className="flex w-full items-center justify-end gap-2">
+            <Button
+              variant="neutral-secondary"
+              onClick={closeServiceNowPreviewModal}
+              disabled={serviceNowPreviewMutation.isPending}
+            >
+              Close
+            </Button>
+          </div>
+        </ModalShell>
+      )}
+
       {showLangflowSetupModal && (
         <ModalShell
           title="Setup Langflow for Intercept"
@@ -3270,6 +3805,131 @@ interface SettingsTableOfContentsProps {
   isCompact?: boolean;
   isOpen?: boolean;
   onToggle?: () => void;
+}
+
+function ServiceNowSummaryField({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1 rounded-md border border-neutral-border bg-default-background p-3">
+      <span className="text-caption font-caption uppercase tracking-[0.08em] text-subtext-color">
+        {label}
+      </span>
+      <span className="truncate text-body font-body text-default-font">
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function ServiceNowDraftField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  type?: React.HTMLInputTypeAttribute;
+}) {
+  return (
+    <TextField className="h-auto w-full flex-none" label={label}>
+      <TextField.Input
+        value={value}
+        onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+          onChange(event.target.value)
+        }
+        placeholder={placeholder}
+        type={type}
+      />
+    </TextField>
+  );
+}
+
+function ServiceNowPreviewResultPanel({
+  result,
+}: {
+  result: ServiceNowPreviewResponse;
+}) {
+  const enrichmentEntries = Object.entries(result.enrichment_data ?? {});
+
+  return (
+    <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-neutral-50 p-4">
+      <div className="grid gap-3 md:grid-cols-3">
+        <ServiceNowSummaryField label="Provider" value={result.provider_id} />
+        <ServiceNowSummaryField label="Cache Key" value={result.cache_key} />
+        <ServiceNowSummaryField
+          label="Aliases"
+          value={String(result.aliases.length)}
+        />
+      </div>
+
+      <div className="overflow-x-auto rounded-md border border-neutral-border">
+        <table className="w-full divide-y divide-neutral-border text-sm">
+          <thead className="bg-neutral-100">
+            <tr>
+              <th className="px-3 py-2 text-left text-caption-bold font-caption-bold text-default-font">
+                Field
+              </th>
+              <th className="px-3 py-2 text-left text-caption-bold font-caption-bold text-default-font">
+                Value
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-neutral-border bg-default-background">
+            {enrichmentEntries.length > 0 ? (
+              enrichmentEntries.map(([key, value]) => (
+                <tr key={key}>
+                  <td className="px-3 py-2 text-body text-default-font">
+                    {key}
+                  </td>
+                  <td className="px-3 py-2 text-body text-subtext-color">
+                    {formatPreviewValue(value)}
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td
+                  colSpan={2}
+                  className="px-3 py-4 text-body text-subtext-color"
+                >
+                  No enrichment fields returned.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function formatPreviewValue(value: unknown): string {
+  if (typeof value === "boolean") {
+    return value ? "true" : "false";
+  }
+  if (typeof value === "string") {
+    return value || "-";
+  }
+  if (value == null) {
+    return "-";
+  }
+  if (typeof value === "number") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function SettingsTableOfContents({
