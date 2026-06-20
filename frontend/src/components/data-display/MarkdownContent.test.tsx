@@ -53,4 +53,32 @@ describe('MarkdownContent', () => {
     expect(codeElement).not.toBeNull();
     expect(codeElement?.textContent?.replace(/\s+/g, ' ')).toContain('const value = 1;');
   });
+
+  it('opens external badge links in a new tab', () => {
+    render(
+      <ThemeProvider>
+        <MarkdownContent content="[Flashpoint](https://flashpoint.io/report)" />
+      </ThemeProvider>
+    );
+
+    const link = screen.getByRole('link', { name: /flashpoint/i });
+
+    expect(link).toHaveAttribute('href', 'https://flashpoint.io/report');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('keeps non-external badge links in the current tab', () => {
+    render(
+      <ThemeProvider>
+        <MarkdownContent content="[Email](mailto:analyst@example.com)" />
+      </ThemeProvider>
+    );
+
+    const link = screen.getByRole('link', { name: /email/i });
+
+    expect(link).toHaveAttribute('href', 'mailto:analyst@example.com');
+    expect(link).not.toHaveAttribute('target');
+    expect(link).not.toHaveAttribute('rel');
+  });
 });

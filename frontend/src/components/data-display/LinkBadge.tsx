@@ -73,6 +73,8 @@ export function LinkBadge({
   return (
     <a
       href={href}
+      target={isExternal ? "_blank" : undefined}
+      rel={isExternal ? "noopener noreferrer" : undefined}
       className={cn(baseStyles, validStyles, className)}
       title={title}
     >
