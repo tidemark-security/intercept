@@ -76,7 +76,11 @@ export function mapState(status?: string, entityType?: string): "new" | "in_prog
       default: return 'tsk_todo';
     }
   }
-  switch (status?.toLowerCase()) {
+  const normalizedStatus = status?.toLowerCase();
+  if (entityType === 'alert' && normalizedStatus?.startsWith('closed_')) {
+    return 'closed';
+  }
+  switch (normalizedStatus) {
     case 'new': return 'new';
     case 'in_progress': return 'in_progress';
     case 'escalated': return 'escalated';
