@@ -45,6 +45,7 @@ export interface EntityFilterToolbarProps
   statusOptions?: StatusOption[];
   showTagFilters?: boolean;
   availableTags?: Array<{ tag: string; count: number }>;
+  actions?: React.ReactNode;
 }
 
 type TagMode = "include" | "exclude";
@@ -501,6 +502,7 @@ export function EntityFilterToolbar({
   statusOptions,
   showTagFilters = false,
   availableTags = [],
+  actions,
   ...otherProps
 }: EntityFilterToolbarProps) {
   const [tagMode, setTagMode] = React.useState<TagMode>("include");
@@ -597,60 +599,61 @@ export function EntityFilterToolbar({
   ].filter((item) => item.statuses.length > 0);
 
   return (
-    <Toolbar className={className} {...otherProps}>
-      <AssigneeFilterDropdown
-        filters={filters}
-        users={assignees}
-        isLoadingUsers={assigneesLoading}
-        onChange={(assignees) => updateFilter("assignee", assignees)}
-      />
+    <div className={cn("flex w-full flex-col gap-3", className)} {...otherProps}>
+      <Toolbar>
+        <AssigneeFilterDropdown
+          filters={filters}
+          users={assignees}
+          isLoadingUsers={assigneesLoading}
+          onChange={(assignees) => updateFilter("assignee", assignees)}
+        />
 
-      <DropdownMenu.Root>
-        <DropdownMenu.Trigger asChild>
-          <ToolbarButton
-            icon={<FileText />}
-            label="Status"
-            value={compactStatusLabel(filters, effectiveStatusOptions)}
-            chevron
-            active={statusFilterModified}
-          />
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Content side="bottom" align="start" sideOffset={6}>
-          {statusGroupItems.map((item) => (
-            <DropdownMenu.DropdownItem
-              key={item.label}
-              icon={
-                haveSameValues(selectedStatuses, item.statuses) ? (
-                  <CheckSquare />
-                ) : (
-                  <Square />
-                )
-              }
-              label={item.label}
-              onClick={() => handleStatusGroupSelect(item.statuses)}
-              onSelect={(event) => event.preventDefault()}
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger asChild>
+            <ToolbarButton
+              icon={<FileText />}
+              label="Status"
+              value={compactStatusLabel(filters, effectiveStatusOptions)}
+              chevron
+              active={statusFilterModified}
             />
-          ))}
-          <DropdownMenu.DropdownDivider />
-          {effectiveStatusOptions.map((option) => (
-            <DropdownMenu.DropdownItem
-              key={option.value}
-              icon={selectedStatuses.includes(option.value as AlertStatus) ? <CheckSquare /> : <Square />}
-              label={option.label}
-              onClick={() => handleStatusToggle(option.value)}
-              onSelect={(event) => event.preventDefault()}
-            />
-          ))}
-        </DropdownMenu.Content>
-      </DropdownMenu.Root>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Content side="bottom" align="start" sideOffset={6}>
+            {statusGroupItems.map((item) => (
+              <DropdownMenu.DropdownItem
+                key={item.label}
+                icon={
+                  haveSameValues(selectedStatuses, item.statuses) ? (
+                    <CheckSquare />
+                  ) : (
+                    <Square />
+                  )
+                }
+                label={item.label}
+                onClick={() => handleStatusGroupSelect(item.statuses)}
+                onSelect={(event) => event.preventDefault()}
+              />
+            ))}
+            <DropdownMenu.DropdownDivider />
+            {effectiveStatusOptions.map((option) => (
+              <DropdownMenu.DropdownItem
+                key={option.value}
+                icon={selectedStatuses.includes(option.value as AlertStatus) ? <CheckSquare /> : <Square />}
+                label={option.label}
+                onClick={() => handleStatusToggle(option.value)}
+                onSelect={(event) => event.preventDefault()}
+              />
+            ))}
+          </DropdownMenu.Content>
+        </DropdownMenu.Root>
 
-      <TimeFilterDropdown
-        value={filters?.dateRange ?? null}
-        onChange={(value) => updateFilter("dateRange", value)}
-      />
+        <TimeFilterDropdown
+          value={filters?.dateRange ?? null}
+          onChange={(value) => updateFilter("dateRange", value)}
+        />
 
-      {showTagFilters ? (
-        <DropdownMenu.Root modal={false}>
+        {showTagFilters ? (
+          <DropdownMenu.Root modal={false}>
           <DropdownMenu.Trigger asChild>
             <ToolbarButton
               icon={<TagIcon />}
@@ -821,15 +824,17 @@ export function EntityFilterToolbar({
               </div>
             </div>
           </DropdownMenu.Content>
-        </DropdownMenu.Root>
-      ) : null}
+          </DropdownMenu.Root>
+        ) : null}
 
-      <ToolbarButton
-        icon={<RotateCcw />}
-        label="Reset"
-        value="Clear all"
-        onClick={() => onFilterChange?.(emptyFilters())}
-      />
-    </Toolbar>
+        <ToolbarButton
+          icon={<RotateCcw />}
+          label="Reset"
+          value="Clear all"
+          onClick={() => onFilterChange?.(emptyFilters())}
+        />
+      </Toolbar>
+      {actions ? <div className="w-full">{actions}</div> : null}
+    </div>
   );
 }

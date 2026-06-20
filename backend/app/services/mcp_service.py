@@ -38,6 +38,7 @@ from app.mcp.schemas import (
 from app.services.observable_service import extract_observables, extract_high_signal_entities
 from app.services.similarity_service import count_similar_alerts
 from app.services import triage_recommendation_service
+from app.services.tag_filter_utils import normalize_persisted_tags
 
 
 _MERMAID_VALIDATION_TIMEOUT_SECONDS = 10
@@ -532,6 +533,9 @@ async def record_triage_decision(
             current_value=alert.assignee,
             new_value=suggested_assignee,
         ))
+
+    suggested_tags_add = normalize_persisted_tags(suggested_tags_add)
+    suggested_tags_remove = normalize_persisted_tags(suggested_tags_remove)
     
     if suggested_tags_add:
         for tag in suggested_tags_add:

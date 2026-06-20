@@ -896,8 +896,20 @@ _register(
         description="Comma-separated ServiceNow fields returned for enrichment and bulk sync",
         default=(
             "sys_id,user_name,email,name,first_name,last_name,title,department,"
-            "department.name,company,company.name,phone,mobile_phone,active"
+            "department.name,company,company.name,phone,mobile_phone,active,vip,u_privileged_user"
         ),
+    ),
+    _def(
+        "enrichment.servicenow.user_vip_field",
+        category="enrichment",
+        description="ServiceNow user field that marks VIP users",
+        default="vip",
+    ),
+    _def(
+        "enrichment.servicenow.user_privileged_field",
+        category="enrichment",
+        description="ServiceNow user field that marks privileged users",
+        default="u_privileged_user",
     ),
     _def(
         "enrichment.servicenow.lookup_query_template",
@@ -934,6 +946,36 @@ _register(
         category="enrichment",
         description="TTL for ServiceNow enrichment results in seconds",
         default=86400,
+    ),
+    _def(
+        "enrichment.servicenow.cmdb_table",
+        category="enrichment",
+        description="ServiceNow CMDB table used for system lookups",
+        default="cmdb_ci",
+    ),
+    _def(
+        "enrichment.servicenow.cmdb_query_field",
+        category="enrichment",
+        description="ServiceNow CMDB field matched against timeline system identifiers",
+        default="name",
+    ),
+    _def(
+        "enrichment.servicenow.cmdb_fields",
+        category="enrichment",
+        description="Comma-separated ServiceNow CMDB fields returned for system enrichment",
+        default="sys_id,name,fqdn,ip_address,asset_tag,classification,criticality,u_privileged_system,install_status",
+    ),
+    _def(
+        "enrichment.servicenow.cmdb_criticality_field",
+        category="enrichment",
+        description="ServiceNow CMDB field that marks critical systems",
+        default="criticality",
+    ),
+    _def(
+        "enrichment.servicenow.cmdb_privileged_field",
+        category="enrichment",
+        description="ServiceNow CMDB field that marks privileged systems",
+        default="u_privileged_system",
     ),
     _def(
         "enrichment.maxmind.enabled",
