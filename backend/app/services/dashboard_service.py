@@ -36,6 +36,39 @@ class DashboardStats:
 
 class DashboardService:
     """Service for dashboard statistics."""
+
+    async def get_sidebar_badge_counts(self, db: AsyncSession) -> Dict[str, Dict[str, int]]:
+        """Get open and unassigned counts for sidebar badges."""
+
+        async def count(model: Any, statuses: list[Any], *, unassigned: bool = False) -> int:
+            query = select(func.count(model.id)).where(col(model.status).in_(statuses))
+            if unassigned:
+                query = query.where(model.assignee.is_(None))
+            result = await db.execute(query)
+            return result.scalar() or 0
+
+        alert_open_statuses = [
+            AlertStatus.NEW,
+            AlertStatus.IN_PROGRESS,
+            AlertStatus.ESCALATED,
+        ]
+        case_open_statuses = [CaseStatus.NEW, CaseStatus.IN_PROGRESS]
+        task_open_statuses = [TaskStatus.TODO, TaskStatus.IN_PROGRESS]
+
+        return {
+            "alerts": {
+                "open": await count(Alert, alert_open_statuses),
+                "unassigned": await count(Alert, alert_open_statuses, unassigned=True),
+            },
+            "cases": {
+                "open": await count(Case, case_open_statuses),
+                "unassigned": await count(Case, case_open_statuses, unassigned=True),
+            },
+            "tasks": {
+                "open": await count(Task, task_open_statuses),
+                "unassigned": await count(Task, task_open_statuses, unassigned=True),
+            },
+        }
     
     async def get_dashboard_stats(
         self, 
