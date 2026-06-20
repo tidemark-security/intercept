@@ -1533,6 +1533,7 @@ class UserAccount(UserAccountBase, table=True):
     )
     langflow_sessions: List["LangFlowSession"] = Relationship(back_populates="user")
     api_keys: List["ApiKey"] = Relationship(back_populates="user")
+    link_template_preferences: List["UserLinkTemplatePreference"] = Relationship(back_populates="user")
     passkey_credentials: List["PasskeyCredential"] = Relationship(
         back_populates="user",
         sa_relationship_kwargs={"foreign_keys": "[PasskeyCredential.user_id]"},
@@ -2003,6 +2004,7 @@ class LinkTemplate(LinkTemplateBase, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(UTCDateTime)
     )
+    user_preferences: List["UserLinkTemplatePreference"] = Relationship(back_populates="template")
 
 
 class LinkTemplateCreate(LinkTemplateBase):
@@ -2029,6 +2031,82 @@ class LinkTemplateRead(LinkTemplateBase):
     id: int
     created_at: datetime
     updated_at: datetime
+
+
+class UserLinkTemplatePreferenceBase(SQLModel):
+    """Per-user overrides and values for a global link template."""
+
+    template_id: int = Field(
+        foreign_key="link_templates.id",
+        index=True,
+        description="Global link template this preference applies to",
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Whether this user wants the template shown",
+    )
+    values: Dict[str, str] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB),
+        description="User-scoped interpolation values referenced as {{user.key}}",
+    )
+
+
+class UserLinkTemplatePreference(UserLinkTemplatePreferenceBase, table=True):
+    """User-owned link template preference row."""
+
+    __tablename__ = "user_link_template_preferences"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint("user_id", "template_id", name="uq_user_link_template_preference"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: UUID = Field(foreign_key="user_accounts.id", index=True)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime)
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime)
+    )
+
+    user: Optional[UserAccount] = Relationship(back_populates="link_template_preferences")
+    template: Optional[LinkTemplate] = Relationship(back_populates="user_preferences")
+
+
+class UserLinkTemplatePreferenceUpdate(SQLModel):
+    """Schema for upserting per-user link template preferences."""
+
+    enabled: bool = True
+    values: Dict[str, str] = Field(default_factory=dict)
+
+
+class UserLinkTemplatePreferenceRead(UserLinkTemplatePreferenceBase):
+    """Schema for reading per-user link template preferences."""
+
+    id: int
+    user_id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+
+class ResolvedLinkTemplateRead(SQLModel):
+    """A link template resolved against item context and user values."""
+
+    id: int
+    template_id: str
+    name: str
+    icon_name: str
+    tooltip: str
+    url: str
+    display_order: int
+
+
+class LinkTemplateResolveRequest(SQLModel):
+    """Request body for resolving enabled link templates for a context item."""
+
+    item: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ============================================================================
