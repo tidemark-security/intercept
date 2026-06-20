@@ -705,8 +705,8 @@ function Alerts() {
     navigate(`/alerts${location.search}`);
   };
 
-  const bulkActionsPanel = !isAuditor && bulkSelectedIds.length > 0 ? (
-    <div className="flex w-full flex-wrap items-center gap-2 rounded-md border border-solid border-neutral-border bg-default-background px-3 py-2">
+  const bulkActionsPanel = !isAuditor && bulkSelectedIds.length > 1 ? (
+    <div className="flex w-full flex-wrap items-center gap-2 rounded-md border border-solid border-neutral-border bg-default-background px-3 py-2 shadow-sm">
       <span className="mr-auto text-body-bold font-body-bold text-default-font">
         {bulkSelectedIds.length} selected
       </span>
@@ -786,7 +786,7 @@ function Alerts() {
             selectedIds={bulkSelectedAlertIds}
             onSelectionChange={handleBulkSelectionChange}
             onSelectVisible={handleBulkSelectVisible}
-            bulkActions={bulkActionsPanel}
+            toolbarActions={bulkActionsPanel}
             filters={filters}
             onFilterChange={setFilters}
             currentPage={currentPage}
