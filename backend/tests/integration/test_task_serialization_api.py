@@ -6,7 +6,8 @@ from typing import Any
 import pytest
 from httpx import AsyncClient
 
-from app.models.models import Task
+from app.models.enums import AccountType, UserRole, UserStatus
+from app.models.models import Task, UserAccount
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -112,6 +113,122 @@ async def test_update_task_serializes_response_after_reload(
     assert payload["title"] == "Updated task title"
     assert payload["tags"] == ["Review", "escalated"]
     assert payload["human_id"].startswith("TSK-")
+
+
+@pytest.mark.asyncio
+async def test_update_task_enqueues_autonomous_execution_for_assignable_nhi(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+    enqueued: list[dict[str, Any]] = []
+
+    class FakeQueue:
+        async def enqueue(
+            self,
+            *,
+            task_name: str,
+            payload: dict[str, object],
+            priority: int = 0,
+            schedule_at: object = None,
+            dedupe_key: str | None = None,
+        ) -> str:
+            enqueued.append(
+                {
+                    "task_name": task_name,
+                    "payload": payload,
+                    "priority": priority,
+                    "schedule_at": schedule_at,
+                    "dedupe_key": dedupe_key,
+                }
+            )
+            return "autonomous-job-1"
+
+    monkeypatch.setattr("app.services.task_queue_service.get_task_queue_service", lambda: FakeQueue())
+
+    async with session_maker() as session:
+        agent = UserAccount(
+            username="splunk-agent",
+            display_name="Splunk Agent",
+            role=UserRole.ANALYST,
+            account_type=AccountType.NHI,
+            status=UserStatus.ACTIVE,
+            assignable=True,
+        )
+        task = Task(
+            title="Investigate Splunk alert",
+            description="Use Splunk and Falcon to investigate",
+            created_by="seed-user",
+            assignee="analyst-user",
+        )
+        session.add_all([agent, task])
+        await session.commit()
+        assert task.id is not None
+        task_id = task.id
+
+    response = await client.put(
+        f"/api/v1/tasks/{task_id}",
+        json={"assignee": "splunk-agent"},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    assert enqueued == [
+        {
+            "task_name": "autonomous_task",
+            "payload": {"task_id": task_id, "agent_username": "splunk-agent"},
+            "priority": 0,
+            "schedule_at": None,
+            "dedupe_key": f"autonomous_task:{task_id}:splunk-agent",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_update_task_does_not_enqueue_autonomous_execution_for_human_assignee(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    class FakeQueue:
+        async def enqueue(self, **_: object) -> str:
+            raise AssertionError("Human assignees must not enqueue autonomous execution")
+
+    monkeypatch.setattr("app.services.task_queue_service.get_task_queue_service", lambda: FakeQueue())
+
+    async with session_maker() as session:
+        human = UserAccount(
+            username="human-analyst",
+            display_name="Human Analyst",
+            email="human-analyst@example.com",
+            role=UserRole.ANALYST,
+            account_type=AccountType.HUMAN,
+            status=UserStatus.ACTIVE,
+            assignable=False,
+        )
+        task = Task(
+            title="Human-handled alert",
+            description="Should stay manual",
+            created_by="seed-user",
+            assignee="seed-user",
+        )
+        session.add_all([human, task])
+        await session.commit()
+        assert task.id is not None
+        task_id = task.id
+
+    response = await client.put(
+        f"/api/v1/tasks/{task_id}",
+        json={"assignee": "human-analyst"},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio

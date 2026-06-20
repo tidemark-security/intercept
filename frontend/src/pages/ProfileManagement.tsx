@@ -11,6 +11,7 @@ import {
   CreateApiKeyModalContent,
   PasskeySecurityCard,
 } from "@/components/auth";
+import { UserLinkTemplatesPanel } from "@/components/profile/UserLinkTemplatesPanel";
 import { Button } from "@/components/buttons/Button";
 import { DropdownMenu } from "@/components/overlays/DropdownMenu";
 import { IconButton } from "@/components/buttons/IconButton";
@@ -831,6 +832,8 @@ function ProfileManagement() {
                 />
               ) : null}
             </div>
+
+            <UserLinkTemplatesPanel />
           </div>
         </div>
       </div>

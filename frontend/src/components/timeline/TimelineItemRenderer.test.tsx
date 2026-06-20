@@ -16,6 +16,7 @@ import {
 } from './linkedEntityCollapse';
 
 const mutateMock = vi.fn();
+const useResolvedLinkTemplatesMock = vi.hoisted(() => vi.fn(() => ({ data: [] as unknown[] })));
 
 vi.mock('@/hooks/useEnqueueItemEnrichment', () => ({
   useEnqueueItemEnrichment: () => ({
@@ -25,9 +26,14 @@ vi.mock('@/hooks/useEnqueueItemEnrichment', () => ({
   }),
 }));
 
+vi.mock('@/hooks/useUserLinkTemplates', () => ({
+  useResolvedLinkTemplates: useResolvedLinkTemplatesMock,
+}));
+
 describe('TimelineItemRenderer enrichments', () => {
   beforeEach(() => {
     mutateMock.mockReset();
+    useResolvedLinkTemplatesMock.mockReturnValue({ data: [] });
     window.localStorage.clear();
   });
 
@@ -1041,15 +1047,20 @@ describe('TimelineItemRenderer enrichments', () => {
       user_id: 'alice@example.com',
     } as TimelineItem;
 
-    const linkTemplates = [
-      {
-        id: 'email-link',
-        icon: <span>Mail</span>,
-        tooltip: 'Email {{user_id}}',
-        urlTemplate: 'mailto:{{user_id}}',
-        fieldNames: ['user_id'],
-      },
-    ];
+    useResolvedLinkTemplatesMock.mockReturnValue({
+      data: [
+        {
+          id: 1,
+          template_id: 'email-link',
+          name: 'Email',
+          icon: <span>Mail</span>,
+          icon_name: 'mail',
+          tooltip: 'Email alice@example.com',
+          url: 'mailto:alice@example.com',
+          display_order: 1,
+        },
+      ],
+    });
 
     const { container } = renderWithProviders(
       <TimelineItemRenderer
@@ -1058,7 +1069,6 @@ describe('TimelineItemRenderer enrichments', () => {
         total={1}
         entityId={38}
         entityType="alert"
-        linkTemplates={linkTemplates}
       />
     );
 

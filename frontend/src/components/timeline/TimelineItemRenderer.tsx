@@ -252,7 +252,7 @@ function renderNoteCard(
     size: 'x-large',
     alertId: options.entityId,
     entityType: options.entityType,
-    linkTemplates: options.linkTemplates,
+    resolveLinkTemplates: true,
   });
   const { children: cardChildren, actionButtons: cardActionButtons, ...baseCardProps } = noteCardConfig;
   const badgeVariant = isAutomation ? 'warning' : 'neutral';
@@ -555,7 +555,7 @@ export function TimelineItemRenderer({
       size: 'small',
       alertId: entityId,
       entityType,
-      linkTemplates,
+      resolveLinkTemplates: true,
       variant: 'super-compact',
     });
     const {
@@ -844,7 +844,6 @@ export function TimelineItemRenderer({
       return renderNoteCard(timelineCurrentItem, {
         entityId,
         entityType,
-        linkTemplates,
         compactPreview,
         isGrouped,
         itemKey,
@@ -882,7 +881,7 @@ export function TimelineItemRenderer({
       onDelete,
       onEdit,
       readOnly: isCurrentItemLinked || !item.created_by,
-      linkTemplates,
+      resolveLinkTemplates: true,
     });
 
     const { children: cardChildren, actionButtons: cardActionButtons, ...baseCardProps } = cardConfig;
@@ -1036,7 +1035,6 @@ export function TimelineItemRenderer({
           {renderNoteCard(timelineReply, {
             entityId,
             entityType,
-            linkTemplates,
             compactPreview,
           })}
         </div>
@@ -1073,7 +1071,7 @@ export function TimelineItemRenderer({
       alertId: entityId,
       entityType,
       actionButtons: replyRefreshEnrichmentButton,
-      linkTemplates,
+      resolveLinkTemplates: true,
     });
 
     const { children: replyCardChildren, actionButtons: replyCardActionButtons, ...baseReplyCardProps } = replyCardConfig;
@@ -1154,7 +1152,6 @@ export function TimelineItemRenderer({
         {renderNoteCard(item, {
           entityId,
           entityType,
-          linkTemplates,
           compactPreview,
         })}
       </div>

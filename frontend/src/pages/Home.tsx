@@ -1,16 +1,17 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { Badge } from "@/components/data-display/Badge";
+import { RelativeTime } from "@/components/data-display/RelativeTime";
 import { Table } from "@/components/data-display/Table";
 import { Priority } from "@/components/misc/Priority";
 import { State } from "@/components/misc/State";
 
 import { useSession } from "@/contexts/sessionContext";
 import { useTheme } from "@/contexts/ThemeContext";
-import { useDashboard, usePriorityItems } from "@/hooks/useDashboard";
+import { useDashboard, usePriorityItems, useRecentItems } from "@/hooks/useDashboard";
 import {
   formatOpenItemAge,
   type MyOpenItemsSortKey,
@@ -91,6 +92,7 @@ function HomeDashboard() {
   const navigate = useNavigate();
   const { user } = useSession();
   const { data: stats, isLoading: statsLoading, error: statsError } = useDashboard({ myItems: true });
+  const { data: recentData, isLoading: recentLoading, error: recentError } = useRecentItems({ myItems: false, limit: 10 });
   const { data: priorityData, isLoading: priorityLoading } = usePriorityItems({ limit: 100 });
   const openItemsWithCreatedAt = useMyOpenItemsWithCreatedAt(priorityData?.items ?? []);
   const { sort, sortedItems, requestSort } = useMyOpenItemsSort(openItemsWithCreatedAt);
@@ -138,10 +140,18 @@ function HomeDashboard() {
   };
 
   const navigateToItem = (type: string, humanId: string) => {
+    const path = getItemPath(type, humanId);
+    if (path) {
+      navigate(path);
+    }
+  };
+
+  const getItemPath = (type: string, humanId: string) => {
     switch (type) {
-      case "alert": navigate(`/alerts/${humanId}`); break;
-      case "case": navigate(`/cases/${humanId}`); break;
-      case "task": navigate(`/tasks/${humanId}`); break;
+      case "alert": return `/alerts/${humanId}`;
+      case "case": return `/cases/${humanId}`;
+      case "task": return `/tasks/${humanId}`;
+      default: return null;
     }
   };
 
@@ -204,6 +214,83 @@ function HomeDashboard() {
             />
           </div>
         )}
+
+        {/* Live Activity Feed */}
+        <div className="flex w-full flex-col items-start gap-5 rounded-md border border-solid border-neutral-border bg-default-background px-6 py-6">
+          <div className="flex w-full flex-col gap-1 sm:flex-row sm:items-end">
+            <span className="grow shrink-0 basis-0 text-heading-3 font-heading-3 text-default-font">
+              Live Activity Feed
+            </span>
+            <span className="text-caption font-caption text-subtext-color">
+              Latest alert, case, and task updates
+            </span>
+          </div>
+          {recentLoading ? (
+            <div className="flex w-full items-center justify-center py-8">
+              <Loader />
+            </div>
+          ) : recentError ? (
+            <div className="flex w-full items-center justify-center py-8">
+              <span className="text-body font-body text-error-600">
+                Failed to load recent activity
+              </span>
+            </div>
+          ) : recentData?.items && recentData.items.length > 0 ? (
+            <div className="flex w-full flex-col divide-y divide-neutral-border">
+              {recentData.items.map((item) => {
+                const typeInfo = formatItemType(item.item_type);
+                const path = getItemPath(item.item_type, item.human_id);
+                const content = (
+                  <>
+                    <div className="flex min-w-0 grow flex-col gap-2">
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                        <Badge variant={typeInfo.variant} icon={typeInfo.icon}>
+                          {typeInfo.label}
+                        </Badge>
+                        <span className="text-caption font-caption text-subtext-color">
+                          {item.human_id}
+                        </span>
+                        <span className="text-caption font-caption text-subtext-color">
+                          <RelativeTime value={item.updated_at} />
+                        </span>
+                      </div>
+                      <span className="line-clamp-2 text-body-bold font-body-bold text-default-font">
+                        {item.title}
+                      </span>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
+                      <State state={mapStatus(item.status, item.item_type)} variant="small" />
+                      <Priority priority={mapPriority(item.priority)} size="mini" />
+                    </div>
+                  </>
+                );
+
+                return path ? (
+                  <Link
+                    key={`activity-${item.item_type}-${item.id}`}
+                    to={path}
+                    className="flex w-full items-start gap-4 px-0 py-4 transition-colors hover:bg-neutral-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary sm:items-center"
+                  >
+                    {content}
+                  </Link>
+                ) : (
+                  <div
+                    key={`activity-${item.item_type}-${item.id}`}
+                    className="flex w-full items-start gap-4 px-0 py-4 sm:items-center"
+                  >
+                    {content}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="flex w-full items-center justify-center py-8">
+              <span className="text-body font-body text-subtext-color">
+                No recent activity
+              </span>
+            </div>
+          )}
+        </div>
 
         {/* My Open Items */}
         <div className="flex w-full flex-col items-start gap-6 rounded-md border border-solid border-neutral-border bg-default-background px-6 py-6">

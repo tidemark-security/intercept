@@ -71,6 +71,24 @@ class ObservablesSection(BaseModel):
     omitted_count: int
 
 
+class ContextEntrySummary(BaseModel):
+    """Analyst-authored context entry that matched the summarized entity."""
+    id: int
+    criteria: List[Dict[str, str]]
+    body: str
+    author: str
+    created_at: datetime
+    updated_at: datetime
+    expires_at: datetime
+
+
+class ContextSection(BaseModel):
+    """Matching temporary context entries with bounding metadata."""
+    items: List[ContextEntrySummary]
+    total_count: int
+    omitted_count: int
+
+
 class RelatedCounts(BaseModel):
     """Counts of related/linked items."""
     linked_alerts: int = 0
@@ -93,6 +111,7 @@ class GetSummaryOutput(BaseModel):
     header: ObjectHeader
     timeline: TimelineSection
     observables: ObservablesSection
+    context: ContextSection
     related_counts: RelatedCounts
     resources: List[Resource]
 

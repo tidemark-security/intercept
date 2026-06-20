@@ -977,6 +977,7 @@ class EnrichmentService:
                 value = result.enrichment_data.get(enrichment_key)
                 if isinstance(value, bool):
                     item[item_key] = value
+        self._apply_system_enrichment_fields(item, result)
         await self._upsert_alias_mappings(db, result.provider_id, result.aliases)
 
         if result.timeline_reply:
@@ -985,6 +986,27 @@ class EnrichmentService:
             reply = dict(result.timeline_reply)
             reply["parent_id"] = item_id
             timeline_service.add_timeline_item(entity, reply, created_by=reply.get("created_by", result.provider_id))
+
+    def _apply_system_enrichment_fields(self, item: Dict[str, Any], result: EnrichmentResult) -> None:
+        if item.get("type") != "system" or result.enrichment_data.get("status") != "matched":
+            return
+
+        for key in ("is_privileged", "is_critical"):
+            value = result.enrichment_data.get(key)
+            if isinstance(value, bool):
+                item[key] = value
+
+        field_map = {
+            "cmdb_id": "record_id",
+            "hostname": "name",
+            "ip_address": "ip_address",
+        }
+        for item_key, enrichment_key in field_map.items():
+            if item.get(item_key):
+                continue
+            value = result.enrichment_data.get(enrichment_key)
+            if isinstance(value, str) and value.strip():
+                item[item_key] = value.strip()
 
     async def _upsert_alias_mappings(
         self,

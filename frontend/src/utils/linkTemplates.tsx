@@ -24,6 +24,9 @@ import { isSafeUrl } from './safeUrl';
 export interface LinkTemplate {
   /** Unique identifier for this template */
   id: string;
+
+  /** Human-readable label for header/menu surfaces */
+  name?: string;
   
   /** Icon component to display in the button */
   icon: React.ReactNode;
@@ -41,6 +44,15 @@ export interface LinkTemplate {
   conditions?: Record<string, any>;
   
   /** Optional: custom className for styling */
+  className?: string;
+}
+
+export interface GeneratedLink {
+  url: string;
+  tooltip: string;
+  icon: React.ReactNode;
+  id: string;
+  name?: string;
   className?: string;
 }
 
@@ -159,7 +171,7 @@ export function shouldShowLink(template: LinkTemplate, item: any): boolean {
 export function generateLink(
   template: LinkTemplate,
   item: any
-): { url: string; tooltip: string; icon: React.ReactNode; id: string; className?: string } | null {
+): GeneratedLink | null {
   if (!shouldShowLink(template, item)) {
     return null;
   }
@@ -169,6 +181,7 @@ export function generateLink(
     url: interpolateUrl(template.urlTemplate, item),
     tooltip: interpolateTemplate(template.tooltip, item),
     icon: template.icon,
+    name: template.name,
     className: template.className,
   };
 }
@@ -183,10 +196,10 @@ export function generateLink(
 export function generateLinks(
   templates: LinkTemplate[],
   item: any
-): Array<{ url: string; tooltip: string; icon: React.ReactNode; id: string; className?: string }> {
+): GeneratedLink[] {
   return templates
     .map(template => generateLink(template, item))
-    .filter((link): link is NonNullable<typeof link> => link !== null);
+    .filter((link): link is GeneratedLink => link !== null && link.url.length > 0);
 }
 
 /**
@@ -228,7 +241,7 @@ export function detectLinkTemplates(templates: LinkTemplate[], item: any): LinkT
 export function generateAutoLinks(
   templates: LinkTemplate[],
   item: any
-): Array<{ url: string; tooltip: string; icon: React.ReactNode; id: string; className?: string }> {
+): GeneratedLink[] {
   const applicableTemplates = detectLinkTemplates(templates, item);
   return generateLinks(applicableTemplates, item);
 }
