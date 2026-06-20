@@ -276,6 +276,11 @@ const EntityHeaderRoot = React.forwardRef<
     });
   };
 
+  const handleRejectAiEscalation = (category: RejectionCategory, reason?: string) => {
+    onRejectTriageRecommendation?.(category, reason);
+    onPrimaryAction?.();
+  };
+
   return (
     <div
       className={"flex w-full flex-col flex-wrap items-center gap-2 mobile:gap-0"}
@@ -597,7 +602,7 @@ const EntityHeaderRoot = React.forwardRef<
       <TriageRejectionDialog
         open={showAiEscalationDecision && isTriageRejectDialogOpen}
         onOpenChange={setIsTriageRejectDialogOpen}
-        onReject={(category, reason) => onRejectTriageRecommendation?.(category, reason)}
+        onReject={handleRejectAiEscalation}
       />
     </div>
   );
