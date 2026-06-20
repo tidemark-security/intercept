@@ -137,3 +137,39 @@ async def test_get_alerts_serializes_legacy_list_backed_timeline_items(
     payload = response.json()
     matching_alert = next(item for item in payload["items"] if item["title"] == "Legacy list-backed alert")
     assert matching_alert["timeline_items"] == {}
+
+
+@pytest.mark.asyncio
+async def test_get_alerts_filters_unassigned_sentinel(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        unassigned_alert = Alert(
+            title="Unassigned alert",
+            description="Should match sentinel filter",
+            source="seed",
+            assignee=None,
+        )
+        assigned_alert = Alert(
+            title="Assigned alert",
+            description="Should not match sentinel filter",
+            source="seed",
+            assignee="analyst-user",
+        )
+        session.add_all([unassigned_alert, assigned_alert])
+        await session.commit()
+
+    response = await client.get(
+        "/api/v1/alerts",
+        params={"assignee": "__unassigned__"},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    titles = {item["title"] for item in response.json()["items"]}
+    assert "Unassigned alert" in titles
+    assert "Assigned alert" not in titles

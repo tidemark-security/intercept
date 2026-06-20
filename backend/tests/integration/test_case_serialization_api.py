@@ -99,6 +99,42 @@ async def test_get_cases_serializes_legacy_list_backed_timeline_items(
 
 
 @pytest.mark.asyncio
+async def test_get_cases_filters_unassigned_sentinel(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        unassigned_case = Case(
+            title="Unassigned case",
+            description="Should match sentinel filter",
+            created_by="seed-user",
+            assignee=None,
+        )
+        assigned_case = Case(
+            title="Assigned case",
+            description="Should not match sentinel filter",
+            created_by="seed-user",
+            assignee="analyst-user",
+        )
+        session.add_all([unassigned_case, assigned_case])
+        await session.commit()
+
+    response = await client.get(
+        "/api/v1/cases",
+        params={"assignee": "__unassigned__"},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    titles = {item["title"] for item in response.json()["items"]}
+    assert "Unassigned case" in titles
+    assert "Assigned case" not in titles
+
+
+@pytest.mark.asyncio
 async def test_get_case_serializes_nested_alert_triage_recommendation(
     client: AsyncClient,
     session_maker: Any,

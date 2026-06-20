@@ -111,6 +111,42 @@ async def test_update_task_serializes_response_after_reload(
 
 
 @pytest.mark.asyncio
+async def test_get_tasks_filters_unassigned_sentinel(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        unassigned_task = Task(
+            title="Unassigned task",
+            description="Should match sentinel filter",
+            created_by="seed-user",
+            assignee=None,
+        )
+        assigned_task = Task(
+            title="Assigned task",
+            description="Should not match sentinel filter",
+            created_by="seed-user",
+            assignee="analyst-user",
+        )
+        session.add_all([unassigned_task, assigned_task])
+        await session.commit()
+
+    response = await client.get(
+        "/api/v1/tasks",
+        params={"assignee": "__unassigned__"},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    titles = {item["title"] for item in response.json()["items"]}
+    assert "Unassigned task" in titles
+    assert "Assigned task" not in titles
+
+
+@pytest.mark.asyncio
 async def test_add_task_timeline_item_serializes_response_after_reload(
     client: AsyncClient,
     session_maker: Any,

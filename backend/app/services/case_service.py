@@ -206,7 +206,10 @@ class CaseService:
                 filters.append(col(Case.status).in_(status))
             
             if assignee:
-                filters.append(Case.assignee == assignee)
+                if assignee == "__unassigned__":
+                    filters.append(Case.assignee.is_(None))  # type: ignore
+                else:
+                    filters.append(Case.assignee == assignee)
 
             append_tag_filters(filters, Case.tags, include_tags, exclude_tags)
             

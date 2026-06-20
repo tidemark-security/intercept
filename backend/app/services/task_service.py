@@ -204,7 +204,10 @@ class TaskService:
                     filters.append(col(Task.status).in_(normalized_statuses))
             
             if assignee:
-                filters.append(Task.assignee == assignee)
+                if assignee == "__unassigned__":
+                    filters.append(Task.assignee.is_(None))  # type: ignore
+                else:
+                    filters.append(Task.assignee == assignee)
             
             if case_id is not None:
                 filters.append(Task.case_id == case_id)
