@@ -904,6 +904,7 @@ AlertBulkAction = Literal[
     "create_case",
     "close_duplicate",
     "add_tags",
+    "assign",
 ]
 
 
@@ -918,6 +919,7 @@ class AlertBulkActionRequest(SQLModel):
     case_title: Optional[str] = Field(default=None, min_length=1, max_length=200)
     case_description: Optional[str] = None
     tags: Optional[List[str]] = None
+    assignee: Optional[str] = Field(default=None, max_length=100)
     duplicate_target_case_id: Optional[int] = None
     duplicate_target_alert_id: Optional[int] = None
     note: Optional[str] = None
@@ -949,6 +951,8 @@ class AlertBulkActionRequest(SQLModel):
             )
         if self.action == "add_tags" and not self.tags:
             raise ValueError("tags are required for add_tags")
+        if self.action == "assign" and not self.assignee:
+            raise ValueError("assignee is required for assign")
         return self
 
 

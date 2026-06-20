@@ -36,6 +36,8 @@ export interface AssigneeSelectorProps {
   className?: string;
   /** Optional className for the dropdown menu content */
   dropdownClassName?: string;
+  /** Optional label when assign mode has no current assignee */
+  unassignedLabel?: string;
 }
 
 /**
@@ -110,6 +112,7 @@ export const AssigneeSelector: React.FC<AssigneeSelectorProps> = ({
   maxUsers,
   className,
   dropdownClassName,
+  unassignedLabel = "Unassigned",
 }) => {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -146,7 +149,7 @@ export const AssigneeSelector: React.FC<AssigneeSelectorProps> = ({
     if (mode === "assign") {
       return currentAssignee
         ? `${currentAssignee}${isAssignedToCurrentUser ? " (You)" : ""}`
-        : "Unassigned";
+        : unassignedLabel;
     } else {
       // Filter mode
       if (selected.length === 0) return "Assignee";
@@ -163,7 +166,7 @@ export const AssigneeSelector: React.FC<AssigneeSelectorProps> = ({
       }
       return `${selected.length} assignees`;
     }
-  }, [mode, disabled, currentAssignee, isAssignedToCurrentUser, selected, users]);
+  }, [mode, disabled, currentAssignee, isAssignedToCurrentUser, selected, users, unassignedLabel]);
 
   // Handle assignee toggle for filter mode
   const handleToggle = (username: string) => {

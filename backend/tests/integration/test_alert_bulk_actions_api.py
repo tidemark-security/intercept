@@ -117,6 +117,36 @@ async def test_bulk_status_update_audits_every_alert(
 
 
 @pytest.mark.asyncio
+async def test_bulk_assign_updates_assignee_and_starts_new_alerts(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+    alert_ids = await _seed_alerts(session_maker)
+
+    response = await client.post(
+        "/api/v1/alerts/bulk-actions",
+        json={
+            "alert_ids": alert_ids,
+            "action": "assign",
+            "assignee": "analyst",
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["updated_count"] == len(alert_ids)
+
+    async with session_maker() as session:
+        for alert_id in alert_ids:
+            alert = await session.get(Alert, alert_id)
+            assert alert is not None
+            assert alert.assignee == "analyst"
+            assert alert.status == AlertStatus.IN_PROGRESS
+
+
+@pytest.mark.asyncio
 async def test_bulk_link_existing_case_links_all_selected_alerts(
     client: AsyncClient,
     session_maker: Any,

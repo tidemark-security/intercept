@@ -734,6 +734,7 @@ class AlertService:
             "create_case": self._apply_bulk_created_case_link,
             "close_duplicate": self._apply_bulk_duplicate_close,
             "add_tags": self._apply_bulk_tags,
+            "assign": self._apply_bulk_assign,
         }
         return handlers[action]
 
@@ -822,6 +823,26 @@ class AlertService:
     ) -> None:
         alert.tags = merge_persisted_tags(alert.tags, request.tags)
         alert.updated_at = datetime.now(timezone.utc)
+
+    def _apply_bulk_assign(
+        self,
+        alert: Alert,
+        request: AlertBulkActionRequest,
+        context: _BulkActionContext,
+        performed_by: str,
+    ) -> None:
+        if not request.assignee:
+            raise ValueError("assignee is required for assign")
+        alert.assignee = request.assignee
+        if alert.status == AlertStatus.NEW:
+            alert.status = AlertStatus.IN_PROGRESS
+        alert.updated_at = datetime.now(timezone.utc)
+        self._add_bulk_note(
+            alert,
+            performed_by,
+            f"Bulk assigned alert to {request.assignee}",
+            ["bulk-action", "assignment"],
+        )
 
     @staticmethod
     def _link_alert_to_case(
