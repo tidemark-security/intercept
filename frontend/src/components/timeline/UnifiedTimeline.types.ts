@@ -1,5 +1,4 @@
 import type { AlertRead } from '@/types/generated/models/AlertRead';
-import type { AlertStatus } from '@/types/generated/models/AlertStatus';
 import type { CaseReadWithAlerts } from '@/types/generated/models/CaseReadWithAlerts';
 import type { TaskRead } from '@/types/generated/models/TaskRead';
 import type { AcceptRecommendationRequest } from '@/types/generated/models/AcceptRecommendationRequest';
@@ -7,6 +6,7 @@ import type { RejectionCategory } from '@/types/generated/models/RejectionCatego
 import type { app__api__routes__admin_auth__UserSummary } from '@/types/generated/models/app__api__routes__admin_auth__UserSummary';
 import type { TimelineItemType } from '@/types/drafts';
 import type { UIState } from '@/utils/statusHelpers';
+import type { ClosedAlertStatus } from '@/utils/statusLabels';
 
 // Define a compatible user type since UserAccountRead might be missing or different
 export type UnifiedUser = app__api__routes__admin_auth__UserSummary | any;
@@ -86,9 +86,9 @@ export interface UnifiedTimelineProps {
 
   /** Handler for closing a case with linked alert closure updates and closure tags */
   onCloseCaseWithDetails?: (payload: {
-    alert_closure_updates: Array<{ alert_id: number; status: AlertStatus }>;
+    status: ClosedAlertStatus;
     tags: string[];
-    closure_summary?: string;
+    note?: string;
   }) => void;
   
   /** Handler for reopening a closed entity */

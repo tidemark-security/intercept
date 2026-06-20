@@ -13,10 +13,11 @@ import { cn } from "@/utils/cn";
 import { CLOSED_ALERT_STATUS_OPTIONS } from "@/utils/statusLabels";
 
 import type { AlertStatus } from "@/types/generated/models/AlertStatus";
+import type { ClosedAlertStatus } from "@/utils/statusLabels";
 
 import { Bell, Check, CheckCircle, Copy, HelpCircle, List, X, XCircle } from "lucide-react";
 
-const CLOSURE_STATUS_OPTIONS: Array<{ value: AlertStatus; label: string; icon: React.ReactNode }> = [
+const CLOSURE_STATUS_OPTIONS: Array<{ value: ClosedAlertStatus; label: string; icon: React.ReactNode }> = [
   { ...CLOSED_ALERT_STATUS_OPTIONS[0], icon: <Check className="h-4 w-4" /> },
   { ...CLOSED_ALERT_STATUS_OPTIONS[1], icon: <CheckCircle className="h-4 w-4" /> },
   { ...CLOSED_ALERT_STATUS_OPTIONS[2], icon: <XCircle className="h-4 w-4" /> },
@@ -48,9 +49,9 @@ interface CaseClosureModalProps {
   initialTags: string[];
   isSubmitting?: boolean;
   onConfirm: (payload: {
-    alert_closure_updates: Array<{ alert_id: number; status: AlertStatus }>;
+    status: ClosedAlertStatus;
     tags: string[];
-    closure_summary?: string;
+    note?: string;
   }) => void;
 }
 
@@ -70,29 +71,19 @@ export function CaseClosureModal({
     ? featureFlags.case_closure_recommended_tags
     : SUGGESTED_TAGS;
 
-  const [statusByAlertId, setStatusByAlertId] = React.useState<Record<number, AlertStatus | undefined>>({});
+  const [selectedStatus, setSelectedStatus] = React.useState<ClosedAlertStatus | undefined>();
   const [selectedTags, setSelectedTags] = React.useState<string[]>([]);
-  const [closureSummary, setClosureSummary] = React.useState("");
+  const [analystNote, setAnalystNote] = React.useState("");
 
   React.useEffect(() => {
     if (!open) {
       return;
     }
 
-    const initialSelections: Record<number, AlertStatus | undefined> = {};
-    linkedAlerts.forEach((alert) => {
-      if (CLOSURE_STATUS_OPTIONS.some((option) => option.value === alert.status)) {
-        initialSelections[alert.id] = alert.status;
-      } else {
-        initialSelections[alert.id] = undefined;
-      }
-    });
-    setStatusByAlertId(initialSelections);
+    setSelectedStatus(undefined);
     setSelectedTags(initialTags);
-    setClosureSummary("");
+    setAnalystNote("");
   }, [open, linkedAlerts, initialTags]);
-
-  const hasAllSelections = linkedAlerts.every((alert) => Boolean(statusByAlertId[alert.id]));
 
   const toggleTag = (tag: string) => {
     setSelectedTags((prev) => {
@@ -104,27 +95,14 @@ export function CaseClosureModal({
   };
 
   const handleConfirm = () => {
-    if (!hasAllSelections) {
+    if (!selectedStatus) {
       return;
     }
 
-    const alertClosureUpdates = linkedAlerts
-      .map((alert) => {
-        const selectedStatus = statusByAlertId[alert.id];
-        if (!selectedStatus) {
-          return null;
-        }
-        return {
-          alert_id: alert.id,
-          status: selectedStatus,
-        };
-      })
-      .filter((value): value is { alert_id: number; status: AlertStatus } => value !== null);
-
     onConfirm({
-      alert_closure_updates: alertClosureUpdates,
+      status: selectedStatus,
       tags: selectedTags,
-      closure_summary: closureSummary.trim() || undefined,
+      note: analystNote.trim() || undefined,
     });
   };
 
@@ -153,6 +131,27 @@ export function CaseClosureModal({
           </div>
 
           <div className="flex w-full flex-col items-start gap-3">
+            <span className="text-caption-bold font-caption-bold text-subtext-color">ALERT RESOLUTION</span>
+
+            <Select
+              className="w-full"
+              label=""
+              placeholder="Select resolution"
+              value={selectedStatus}
+              onValueChange={(value: string) => setSelectedStatus(value as ClosedAlertStatus)}
+            >
+              {CLOSURE_STATUS_OPTIONS.map((option) => (
+                <Select.Item key={option.value} value={option.value}>
+                  <span className="flex items-center gap-2">
+                    {option.icon}
+                    <span>{option.label}</span>
+                  </span>
+                </Select.Item>
+              ))}
+            </Select>
+          </div>
+
+          <div className="flex w-full flex-col items-start gap-3">
             <span className="text-caption-bold font-caption-bold text-subtext-color">LINKED ALERTS</span>
 
             <div className="flex max-h-[260px] w-full flex-col items-start gap-2 overflow-auto rounded-md border border-solid border-neutral-border bg-neutral-50 px-3 py-3">
@@ -170,28 +169,6 @@ export function CaseClosureModal({
                       <span className={cn("text-caption-bold font-caption-bold", isDarkTheme ? "text-brand-primary" : "text-default-font")}>{alert.human_id}</span>
                       <span className="line-clamp-1 text-caption font-caption text-default-font">{alert.title}</span>
                     </div>
-
-                    <Select
-                      className="h-auto w-48 flex-none"
-                      label=""
-                      placeholder="Closure Code"
-                      value={statusByAlertId[alert.id]}
-                      onValueChange={(value: string) => {
-                        setStatusByAlertId((prev) => ({
-                          ...prev,
-                          [alert.id]: value as AlertStatus,
-                        }));
-                      }}
-                    >
-                      {CLOSURE_STATUS_OPTIONS.map((option) => (
-                        <Select.Item key={option.value} value={option.value}>
-                          <span className="flex items-center gap-2">
-                            {option.icon}
-                            <span>{option.label}</span>
-                          </span>
-                        </Select.Item>
-                      ))}
-                    </Select>
                   </div>
                 ))
               )}
@@ -227,13 +204,13 @@ export function CaseClosureModal({
           </div>
 
           <div className="flex w-full flex-col items-start gap-3">
-            <span className="text-caption-bold font-caption-bold text-subtext-color">CLOSURE SUMMARY</span>
+            <span className="text-caption-bold font-caption-bold text-subtext-color">ANALYST NOTE</span>
 
             <textarea
               className="min-h-32 w-full resize-y rounded-md border border-solid border-neutral-border bg-neutral-50 px-3 py-2 text-body font-body text-default-font outline-none transition-colors placeholder:text-subtext-color focus:border-brand-primary"
-              placeholder="Add optional markdown summary"
-              value={closureSummary}
-              onChange={(event) => setClosureSummary(event.target.value)}
+              placeholder="Add optional analyst note"
+              value={analystNote}
+              onChange={(event) => setAnalystNote(event.target.value)}
               disabled={isSubmitting}
             />
           </div>
@@ -243,7 +220,7 @@ export function CaseClosureModal({
           <Button variant="neutral-secondary" icon={<X />} onClick={() => onOpenChange(false)} disabled={isSubmitting}>
             Cancel
           </Button>
-          <Button icon={<Check />} onClick={handleConfirm} disabled={!hasAllSelections || isSubmitting} loading={isSubmitting}>
+          <Button icon={<Check />} onClick={handleConfirm} disabled={!selectedStatus || isSubmitting} loading={isSubmitting}>
             Close Case
           </Button>
         </div>
