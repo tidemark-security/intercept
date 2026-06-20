@@ -41,8 +41,8 @@ export interface EntityListProps<T, F = FilterState> {
   /** Callback when the visible page selection changes */
   onSelectVisible?: (selected: boolean, ids: number[]) => void;
 
-  /** Optional bulk-action panel rendered above rows */
-  bulkActions?: React.ReactNode;
+  /** Optional multi-select or contextual actions rendered in the filter header */
+  toolbarActions?: React.ReactNode;
   
   /** Current filter state */
   filters: F;
