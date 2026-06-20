@@ -45,7 +45,7 @@ export class CasesService {
      * Get cases with optional filtering and pagination.
      *
      * Returns a paginated response with items, total count, page information.
-     * Search parameter matches against case title or description using case-insensitive partial matching.
+     * Search parameter matches against case ID, human ID, title, or description using case-insensitive partial matching.
      * Date filtering expects UTC ISO8601 strings with 'Z' suffix (e.g., "2025-10-20T14:30:00Z").
      * Cases are filtered by created_at timestamp.
      * @returns Page_CaseRead_ Successful Response
@@ -80,7 +80,7 @@ export class CasesService {
          */
         excludeTags?: (Array<string> | null),
         /**
-         * Search cases by title or description (case-insensitive partial match)
+         * Search cases by ID, human ID, title, or description (case-insensitive partial match)
          */
         search?: (string | null),
         /**

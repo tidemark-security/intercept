@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, cast, String
+from sqlalchemy import select, func, and_, or_, cast, String, case
 from sqlalchemy.orm import selectinload, defer
 from sqlmodel import col
 from typing import List, Optional, Set, Dict, Any, Tuple
@@ -189,7 +189,7 @@ class CaseService:
             assignee: Filter by assignee username (exact match)
             include_tags: Tags cases must include
             exclude_tags: Tags cases must exclude
-            search: Search string to match against case title or description (case-insensitive partial match)
+            search: Search string to match against case ID, human ID, title, or description (case-insensitive partial match)
             start_date: Filter cases created after this UTC datetime (ISO8601 format with 'Z' suffix)
             end_date: Filter cases created before this UTC datetime (ISO8601 format with 'Z' suffix)
         """
@@ -230,10 +230,20 @@ class CaseService:
                     logger.warning(f"Invalid end_date format: {end_date}")
             
             if search:
-                # Search in title or description (case-insensitive)
+                # Search in ID, human ID, title, or description (case-insensitive)
                 search_pattern = f"%{search}%"
+                case_id_text = cast(Case.id, String)
+                padded_case_id = case(
+                    (func.length(case_id_text) < 7, func.lpad(case_id_text, 7, "0")),
+                    else_=case_id_text,
+                )
                 filters.append(
                     or_(
+                        case_id_text.ilike(search_pattern),  # type: ignore[arg-type]
+                        func.concat(
+                            "CAS-",
+                            padded_case_id,
+                        ).ilike(search_pattern),
                         col(Case.title).ilike(search_pattern),
                         cast(Case.description, String).ilike(search_pattern)  # type: ignore[arg-type]
                     )
