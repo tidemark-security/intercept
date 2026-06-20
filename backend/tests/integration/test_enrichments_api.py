@@ -11,6 +11,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import select
 
 from app.models.models import Alert, Case, EnrichmentAlias, EnrichmentCacheEntry, QueueJobRead, Task
+from app.core.security import initialize_encryption_service
 from app.models.enums import RealtimeEventType, SettingType
 from app.models.models import AppSetting
 from app.services.enrichment.base import EnrichmentResult
@@ -436,6 +437,88 @@ async def test_search_aliases_returns_matches_for_authenticated_users(
     assert len(payload) == 1
     assert payload[0]["canonical_value"] == "alice@example.com"
     assert payload[0]["canonical_display"] == "Alice Analyst"
+
+
+@pytest.mark.asyncio
+async def test_provider_statuses_include_service_now(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    admin = admin_user_factory(username="admin.servicenow-status")
+    register_providers()
+
+    async with session_maker() as session:
+        session.add(admin)
+        await session.commit()
+
+    session_cookie = await _login(client, admin.username)
+    response = await client.get(
+        "/api/v1/admin/enrichments/providers",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    service_now = next(provider for provider in response.json() if provider["provider_id"] == "servicenow")
+    assert service_now["display_name"] == "ServiceNow"
+    assert service_now["item_types"] == ["internal_actor", "system"]
+    assert service_now["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_configure_service_now_saves_settings(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    initialize_encryption_service(b"test-master-key")
+    admin = admin_user_factory(username="admin.servicenow-configure")
+
+    async with session_maker() as session:
+        session.add(admin)
+        await session.commit()
+
+    session_cookie = await _login(client, admin.username)
+    response = await client.post(
+        "/api/v1/admin/enrichments/service-now/configure",
+        cookies={"intercept_session": session_cookie},
+        json={
+            "instance_url": "https://example.service-now.com/",
+            "username": "svc-user",
+            "password": "svc-pass",
+            "user_query_field": "email",
+            "ttl_seconds": 3600,
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "instance_url": "https://example.service-now.com",
+        "settings_saved": 14,
+        "enabled": True,
+    }
+
+    async with session_maker() as session:
+        rows = (
+            await session.execute(
+                select(AppSetting).where(AppSetting.key.in_([
+                    "enrichment.servicenow.instance_url",
+                    "enrichment.servicenow.password",
+                    "enrichment.servicenow.lookup_query_template",
+                    "enrichment.servicenow.ttl_seconds",
+                    "enrichment.servicenow.enabled",
+                ]))
+            )
+        ).scalars().all()
+
+    by_key = {row.key: row for row in rows}
+    assert by_key["enrichment.servicenow.instance_url"].value == "https://example.service-now.com"
+    assert by_key["enrichment.servicenow.lookup_query_template"].value == "email={value}^active=true"
+    assert by_key["enrichment.servicenow.ttl_seconds"].value == "3600"
+    assert by_key["enrichment.servicenow.enabled"].value == "true"
+    assert by_key["enrichment.servicenow.password"].is_secret is True
+    assert by_key["enrichment.servicenow.password"].value != "svc-pass"
 
 
 @pytest.mark.asyncio

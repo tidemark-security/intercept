@@ -2195,6 +2195,48 @@ class MaxMindConfigureResponse(SQLModel):
     task_id: Optional[str] = None
 
 
+class ServiceNowConfigureRequest(SQLModel):
+    """Admin request payload for ServiceNow enrichment configuration."""
+
+    instance_url: str = Field(min_length=1)
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+    user_table: str = "sys_user"
+    user_query_field: str = "user_name"
+    user_vip_field: str = "vip"
+    user_privileged_field: str = "u_privileged_user"
+    cmdb_table: str = "cmdb_ci"
+    cmdb_query_field: str = "name"
+    cmdb_criticality_field: str = "criticality"
+    cmdb_privileged_field: str = "u_privileged_system"
+    active_only: bool = True
+    ttl_seconds: int = Field(default=86400, ge=60)
+    enabled: bool = True
+
+
+class ServiceNowConfigureResponse(SQLModel):
+    """Summary of saved ServiceNow enrichment configuration."""
+
+    instance_url: str
+    settings_saved: int = 0
+    enabled: bool = True
+
+
+class ServiceNowPreviewRequest(ServiceNowConfigureRequest):
+    """Preview a ServiceNow lookup without saving configuration."""
+
+    item: Dict[str, Any]
+
+
+class ServiceNowPreviewResponse(SQLModel):
+    """ServiceNow enrichment preview payload."""
+
+    provider_id: str
+    cache_key: str
+    enrichment_data: Dict[str, Any] = Field(default_factory=dict)
+    aliases: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 class MaxMindDatabaseStatus(SQLModel):
     """Current worker/storage status for a configured MaxMind database."""
 
