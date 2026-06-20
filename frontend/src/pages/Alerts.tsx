@@ -6,6 +6,7 @@ import { CheckCircle2, Copy, FolderPlus, Link2, Tags, X } from 'lucide-react';
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { Button } from "@/components/buttons/Button";
 import { Select } from "@/components/forms/Select";
+import { AssigneeSelector } from "@/components/forms/AssigneeSelector";
 import { TagsManager } from "@/components/forms/TagsManager";
 import { TextArea } from "@/components/forms/TextArea";
 import { TextField } from "@/components/forms/TextField";
@@ -523,6 +524,19 @@ function Alerts() {
     });
   };
 
+  const handleBulkAssignToMe = () => {
+    if (!currentUser) return;
+    handleBulkAssignToUser(currentUser);
+  };
+
+  const handleBulkAssignToUser = (username: string) => {
+    bulkAlertActionMutation.mutate({
+      alert_ids: bulkSelectedIds,
+      action: 'assign',
+      assignee: username,
+    });
+  };
+
   const handleBulkTagsClose = () => {
     setBulkTags([]);
     setBulkDialog(null);
@@ -750,6 +764,18 @@ function Alerts() {
       >
         Tags
       </Button>
+      <AssigneeSelector
+        mode="assign"
+        size="small"
+        currentAssignee={null}
+        currentUser={currentUser}
+        users={users}
+        isLoadingUsers={isLoadingUsers}
+        disabled={bulkAlertActionMutation.isPending}
+        onAssignToMe={handleBulkAssignToMe}
+        onAssignToUser={handleBulkAssignToUser}
+        unassignedLabel="Assign"
+      />
       <Button
         size="small"
         variant="neutral-tertiary"
