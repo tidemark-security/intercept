@@ -143,6 +143,8 @@ export type { SearchResultItem } from './models/SearchResultItem';
 export type { SessionStatus } from './models/SessionStatus';
 export type { SessionSummary } from './models/SessionSummary';
 export type { SettingType } from './models/SettingType';
+export type { SidebarBadgeCount } from './models/SidebarBadgeCount';
+export type { SidebarBadgeCountsResponse } from './models/SidebarBadgeCountsResponse';
 export type { SOCMetricsResponse } from './models/SOCMetricsResponse';
 export type { SOCMetricsSummary } from './models/SOCMetricsSummary';
 export type { SOCMetricsWindow } from './models/SOCMetricsWindow';

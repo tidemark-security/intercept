@@ -35,6 +35,21 @@ class DashboardStatsResponse(BaseModel):
     critical_cases: int
 
 
+class SidebarBadgeCount(BaseModel):
+    """Open and unassigned counts for one sidebar entity."""
+
+    open: int
+    unassigned: int
+
+
+class SidebarBadgeCountsResponse(BaseModel):
+    """Response model for sidebar badge counts."""
+
+    alerts: SidebarBadgeCount
+    cases: SidebarBadgeCount
+    tasks: SidebarBadgeCount
+
+
 class RecentItem(BaseModel):
     """A recent item for the dashboard."""
     
@@ -52,6 +67,22 @@ class RecentItemsResponse(BaseModel):
     
     items: List[RecentItem]
     truncated: bool = False
+
+
+@router.get("/sidebar-badge-counts", response_model=SidebarBadgeCountsResponse)
+async def get_sidebar_badge_counts(
+    db: AsyncSession = Depends(get_db),
+    _current_user: UserAccount = Depends(require_authenticated_user)
+):
+    """Get authoritative sidebar badge counts for open and unassigned work."""
+    try:
+        return await dashboard_service.get_sidebar_badge_counts(db)
+    except Exception as e:
+        logger.error(f"Error fetching sidebar badge counts: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching sidebar badge counts: {str(e)}",
+        )
 
 
 @router.get("/stats", response_model=DashboardStatsResponse)
