@@ -12,6 +12,7 @@ import { TextField } from "@/components/forms/TextField";
 import { Dialog } from "@/components/overlays/Dialog";
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
+import { getPersistedWidth } from "@/components/layout/ColumnRail";
 import { EntityList } from "@/components/data-display/EntityList";
 import { UnifiedTimeline } from "@/components/timeline/UnifiedTimeline";
 import { RightDock } from '@/components/layout/RightDock';
@@ -112,6 +113,7 @@ function Alerts() {
   // On tablet/desktop: typically 'left+center' | 'center+right' based on dock state
   // On ultrawide: typically 'all' for three columns
   const [visibleColumns, setVisibleColumns] = useState<VisibleColumns>(() => getInitialVisibleColumns());
+  const [alertListWidth, setAlertListWidth] = useState<number>(() => getPersistedWidth(768));
 
   // Right Dock state for three-column layout (with automatic persistence per alert)
   const {
@@ -158,9 +160,15 @@ function Alerts() {
       return;
     }
 
-    // On desktop/tablet, dock floats as drawer over center column
-    // Show center+right when dock is open (right will float), otherwise just center
-    if (breakpoint === 'desktop' || breakpoint === 'tablet') {
+    // On desktop, keep list + timeline visible so the split pane can resize them.
+    // Tablet remains focused on the timeline because the default list width crowds it out.
+    if (breakpoint === 'desktop') {
+      setVisibleColumns(dockOpen ? 'all' : 'left+center');
+      return;
+    }
+
+    // On tablet, dock floats as drawer over center column.
+    if (breakpoint === 'tablet') {
       setVisibleColumns(dockOpen ? 'center+right' : 'center');
     }
     // On mobile, keep current single column (don't auto-switch)
@@ -177,7 +185,9 @@ function Alerts() {
         // Set appropriate columns based on current breakpoint
         if (breakpoint === 'ultrawide') {
           setVisibleColumns('left+center');
-        } else if (breakpoint === 'desktop' || breakpoint === 'tablet') {
+        } else if (breakpoint === 'desktop') {
+          setVisibleColumns('left+center');
+        } else if (breakpoint === 'tablet') {
           setVisibleColumns('center');
         } else {
           // Mobile: switch to center (timeline) view when alert is selected via URL
@@ -231,6 +241,10 @@ function Alerts() {
     detailError.message?.includes('404') ||
     detailError.message?.includes('not found')
   );
+
+  const handleAlertListRailToggle = () => {
+    // The alerts split pane is resizable but not collapsible.
+  };
 
   // Alert update mutation for assignment operations
   const updateAlertMutation = useUpdateAlert(selectedAlertId, {
@@ -868,8 +882,12 @@ function Alerts() {
         }
         visibleColumns={visibleColumns}
         onVisibleColumnsChange={setVisibleColumns}
-        columnConfig={getColumnConfig(selectedAlertId)}
+        columnConfig={getColumnConfig(selectedAlertId, selectedAlertId ? alertListWidth : undefined)}
         dimLeftColumn={!!selectedAlertId}
+        showLeftRail={!!selectedAlertId}
+        onLeftRailToggle={handleAlertListRailToggle}
+        leftColumnWidth={alertListWidth}
+        onLeftColumnWidthChange={setAlertListWidth}
       />
 
       {/* Case Selector Modal */}
