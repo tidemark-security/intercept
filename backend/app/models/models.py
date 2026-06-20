@@ -733,6 +733,13 @@ class CaseAlertClosureUpdate(SQLModel):
     status: AlertStatus
 
 
+class CaseLinkedAlertResolutionRequest(SQLModel):
+    """Bulk resolution to apply to open alerts linked to a case."""
+
+    status: AlertStatus
+    note: Optional[str] = None
+
+
 class CaseUpdate(SQLModel):
     """Schema for updating a case."""
 

@@ -13,6 +13,8 @@ from app.models.models import (
     CaseRead,
     CaseReadWithAlerts,
     CaseTimelineItem,
+    CaseLinkedAlertResolutionRequest,
+    AlertBulkActionResponse,
     UserAccount,
     PresignedUploadRequest,
     PresignedUploadResponse,
@@ -216,6 +218,33 @@ async def update_case(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating case: {str(e)}")
+
+
+@router.post("/{case_id}/resolve-linked-alerts", response_model=AlertBulkActionResponse)
+@handle_human_id()
+async def resolve_linked_alerts(
+    case_id: int,
+    request: Request,  # pylint: disable=unused-argument
+    resolution: CaseLinkedAlertResolutionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_non_auditor_user),
+):
+    """Apply one resolution to all open alerts linked to a case."""
+    try:
+        response = await case_service.resolve_linked_alerts(
+            db, case_id, resolution, current_user.username
+        )
+        if response is None:
+            raise HTTPException(status_code=404, detail="Case not found")
+        return response
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error resolving linked alerts: {str(e)}"
+        )
 
 
 @router.delete("/{case_id}")
