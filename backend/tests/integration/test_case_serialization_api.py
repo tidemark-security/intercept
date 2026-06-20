@@ -47,7 +47,11 @@ async def test_create_case_serializes_response_after_reload(
     session_maker: Any,
     analyst_user_factory,
 ) -> None:
-    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+    session_cookie = await _login_and_get_session_cookie(
+        client,
+        session_maker,
+        analyst_user_factory,
+    )
 
     response = await client.post(
         "/api/v1/cases",
@@ -96,6 +100,51 @@ async def test_get_cases_serializes_legacy_list_backed_timeline_items(
     payload = response.json()
     matching_case = next(item for item in payload["items"] if item["title"] == "Legacy list-backed case")
     assert matching_case["timeline_items"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "search_template",
+    ["CAS-{case_id:07d}", "cas-{case_id:07d}", "{case_id}"],
+)
+async def test_get_cases_search_matches_case_human_id(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    search_template: str,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        matching_case = Case(
+            title="Human ID target",
+            description="Should be found by case number",
+            created_by="seed-user",
+        )
+        other_case = Case(
+            title="Different case",
+            description="Does not mention the target number",
+            created_by="seed-user",
+        )
+        session.add_all([matching_case, other_case])
+        await session.flush()
+        assert matching_case.id is not None
+        assert other_case.id is not None
+        matching_case_id = matching_case.id
+        other_case_id = other_case.id
+        await session.commit()
+
+    response = await client.get(
+        "/api/v1/cases",
+        params={"search": search_template.format(case_id=matching_case_id)},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    result_ids = {item["id"] for item in payload["items"]}
+    assert matching_case_id in result_ids
+    assert other_case_id not in result_ids
 
 
 @pytest.mark.asyncio

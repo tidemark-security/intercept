@@ -189,7 +189,7 @@ class CaseService:
             assignee: Filter by assignee username (exact match)
             include_tags: Tags cases must include
             exclude_tags: Tags cases must exclude
-            search: Search string to match against case title or description (case-insensitive partial match)
+            search: Search string to match against case ID, human ID, title, or description (case-insensitive partial match)
             start_date: Filter cases created after this UTC datetime (ISO8601 format with 'Z' suffix)
             end_date: Filter cases created before this UTC datetime (ISO8601 format with 'Z' suffix)
         """
@@ -230,10 +230,15 @@ class CaseService:
                     logger.warning(f"Invalid end_date format: {end_date}")
             
             if search:
-                # Search in title or description (case-insensitive)
+                # Search in ID, human ID, title, or description (case-insensitive)
                 search_pattern = f"%{search}%"
                 filters.append(
                     or_(
+                        cast(Case.id, String).ilike(search_pattern),  # type: ignore[arg-type]
+                        func.concat(
+                            "CAS-",
+                            func.lpad(cast(Case.id, String), 7, "0"),
+                        ).ilike(search_pattern),
                         col(Case.title).ilike(search_pattern),
                         cast(Case.description, String).ilike(search_pattern)  # type: ignore[arg-type]
                     )
