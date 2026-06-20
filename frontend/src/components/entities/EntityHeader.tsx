@@ -6,6 +6,7 @@ import { useTheme } from "@/contexts/ThemeContext";
 import { cn } from "@/utils/cn";
 import { Button } from "@/components/buttons/Button";
 import { IconButton } from "@/components/buttons/IconButton";
+import { LinkButton } from "@/components/timeline/LinkButton";
 import { DropdownMenu, DropdownMenuRoot, DropdownMenuTrigger, DropdownMenuContent } from "@/components/overlays/DropdownMenu";
 import { Priority } from "@/components/misc/Priority";
 import { AssigneeSelector } from "@/components/forms/AssigneeSelector";
@@ -21,6 +22,7 @@ import type { TaskStatus } from "@/types/generated/models/TaskStatus";
 import type { TriageRecommendationRead } from "@/types/generated/models/TriageRecommendationRead";
 import type { Priority as PriorityType } from "@/types/generated/models/Priority";
 import type { TimelineItem } from "@/types/timeline";
+import type { GeneratedLink } from "@/utils/linkTemplates";
 import type { UIState } from "@/utils/statusHelpers";
 import { ALERT_STATUS_LABELS } from "@/utils/statusLabels";
 
@@ -113,6 +115,7 @@ interface EntityHeaderRootProps
   linkedCaseAlerts?: LinkedCaseAlert[];
   linkedTaskCount?: number;
   caseTags?: string[];
+  customLinks?: GeneratedLink[];
   className?: string;
 }
 
@@ -173,6 +176,7 @@ const EntityHeaderRoot = React.forwardRef<
     linkedCaseAlerts = [],
     linkedTaskCount = 0,
     caseTags = [],
+    customLinks = [],
     className,
     ...otherProps
   }: EntityHeaderRootProps,
@@ -371,6 +375,21 @@ const EntityHeaderRoot = React.forwardRef<
               {buttonSize === "medium" ? "Unlink from Case" : "Unlink"}
             </Button>
           )}
+          {customLinks.length > 0 ? (
+            <div className="flex flex-none items-center justify-end gap-1 self-stretch mobile:min-w-[min(100%,10rem)] mobile:flex-1 mobile:basis-40">
+              {customLinks.map((link) => (
+                <LinkButton
+                  key={link.id}
+                  href={link.url}
+                  icon={link.icon}
+                  tooltip={link.tooltip || link.name}
+                  size={buttonSize}
+                  variant="brand-tertiary"
+                  className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 flex-1"}
+                />
+              ))}
+            </div>
+          ) : null}
           {/* Assignee Selector - Always shown and functional */}
           {showAssignmentControls && (
             <div className="flex flex-none items-center justify-end gap-2 self-stretch mobile:min-w-[min(100%,10rem)] mobile:flex-1 mobile:basis-40">

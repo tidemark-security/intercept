@@ -15,7 +15,7 @@ import { ReplyProvider } from '@/contexts/ReplyProvider';
 import { useReplyMode } from '@/contexts/ReplyContext';
 import { usePresence } from '@/contexts/WebSocketContext';
 import { useAutoScrollToTimelineItem, groupTimelineItems } from '@/components/timeline/timelineUtils';
-import { useLinkTemplates } from '@/hooks/useLinkTemplates';
+import { useResolvedLinkTemplates } from '@/hooks/useUserLinkTemplates';
 import { TriageRecommendationCard } from '@/components/triage/TriageRecommendationCard';
 import { TriageRequestCard } from '@/components/triage/TriageRequestCard';
 // Import handlers to ensure they're registered
@@ -189,8 +189,17 @@ function UnifiedTimelineInner({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isInReplyMode, exitReplyMode]);
   
-  // Fetch link templates for timeline items
-  const { data: linkTemplates = [] } = useLinkTemplates(true);
+  const linkTemplates = useMemo(() => [], []);
+  const headerLinkContext = useMemo<Record<string, unknown>>(() => ({
+    type: entityType,
+    entity_type: entityType,
+    id: selectedEntityId,
+    entity_id: selectedEntityId,
+    human_id: entityDetail?.human_id,
+    title: entityDetail?.title,
+    status: entityDetail?.status,
+  }), [entityDetail?.human_id, entityDetail?.status, entityDetail?.title, entityType, selectedEntityId]);
+  const { data: headerLinks = [] } = useResolvedLinkTemplates(headerLinkContext, Boolean(entityDetail));
 
   // Auto-scroll to newly created timeline item by ID
   useAutoScrollToTimelineItem(scrollToItemId, entityDetail, isEditable);
@@ -665,6 +674,7 @@ function UnifiedTimelineInner({
           linkedCaseAlerts={linkedCaseAlerts}
           linkedTaskCount={linkedTaskCount}
           caseTags={caseTags}
+          customLinks={headerLinks}
           showTimelineFilter={true}
           timelineItems={getTimelineItems(entityDetail)}
           selectedType={selectedType}

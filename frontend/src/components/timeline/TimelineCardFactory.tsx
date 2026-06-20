@@ -20,7 +20,7 @@ import { getTimelineIcon } from '@/utils/timelineIcons';
 import { Badge } from '@/components/data-display/Badge';
 import type { CopyTarget } from '@/components/cards/BaseCard';
 import { LoaderCircle } from 'lucide-react';
-import { combineWithAutoLinks } from './linkUtils';
+import { combineWithAutoLinks, ResolvedLinkButtons } from './linkUtils';
 import type { LinkTemplate } from '@/utils/linkTemplates';
 import { CardActionsMenu } from './CardActionsMenu';
 import { isTimelineItemEnrichmentActive } from './timelineUtils';
@@ -183,6 +183,8 @@ export interface CardFactoryOptions {
   actionButtons?: React.ReactNode;
   /** Link templates from API for auto-generating link buttons */
   linkTemplates?: LinkTemplate[];
+  /** Resolve link actions on the server for this item */
+  resolveLinkTemplates?: boolean;
   /** Characteristics configuration for automatic processing */
   characteristics?: CharacteristicsConfig;
   /** Alert ID for context-dependent features (e.g., attachment downloads) */
@@ -363,6 +365,15 @@ export function createTimelineCard(
       finalActionButtons,
       options.linkTemplates,
       item
+    );
+  }
+
+  if (options.resolveLinkTemplates) {
+    finalActionButtons = (
+      <ResolvedLinkButtons
+        item={item as Record<string, unknown>}
+        customButtons={finalActionButtons}
+      />
     );
   }
   
