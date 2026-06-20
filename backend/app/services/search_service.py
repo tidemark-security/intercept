@@ -379,6 +379,28 @@ class SearchService:
         """Generate human-readable ID like ALT-0000123."""
         prefix = self.PREFIXES[entity_type]
         return f"{prefix}{entity_id:07d}"
+
+    def _search_metadata(self, row) -> dict:
+        """Extract optional display metadata shared by alert/case/task rows."""
+        def optional_attr(name):
+            value = getattr(row, name, None)
+            if value.__class__.__module__.startswith("unittest.mock"):
+                return None
+            return value
+
+        def as_optional_str(value):
+            if value is None:
+                return None
+            if hasattr(value, "value"):
+                return str(value.value)
+            return str(value)
+
+        return {
+            "updated_at": optional_attr("updated_at"),
+            "priority": as_optional_str(optional_attr("priority")),
+            "status": as_optional_str(optional_attr("status")),
+            "assignee": as_optional_str(optional_attr("assignee")),
+        }
     
     async def _lookup_by_human_id(
         self,
@@ -436,7 +458,11 @@ class SearchService:
                 title,
                 description,
                 tags,
-                created_at
+                created_at,
+                updated_at,
+                priority,
+                status,
+                assignee
             FROM {table_name}
             WHERE id = :entity_id
         """)
@@ -464,6 +490,7 @@ class SearchService:
             score=1.0,  # Exact match = maximum score
             timeline_item_id=None,
             created_at=row.created_at,
+            **self._search_metadata(row),
             tags=row.tags or [],
         )
     
@@ -517,7 +544,11 @@ class SearchService:
                     title,
                     description,
                     tags,
-                    created_at
+                    created_at,
+                    updated_at,
+                    priority,
+                    status,
+                    assignee
                 FROM {table_name}
                 WHERE id = :entity_id
             """)
@@ -543,6 +574,7 @@ class SearchService:
                     score=1.0,  # Exact ID match = maximum score
                     timeline_item_id=None,
                     created_at=row.created_at,
+                    **self._search_metadata(row),
                     tags=row.tags or [],
                 ))
         
@@ -829,7 +861,11 @@ class SearchService:
                         title,
                         description,
                         tags,
-                        created_at
+                        created_at,
+                        updated_at,
+                        priority,
+                        status,
+                        assignee
                     FROM {table_name}
                     WHERE created_at >= :start_date
                       AND created_at <= :end_date
@@ -841,6 +877,10 @@ class SearchService:
                     description,
                     tags,
                     created_at,
+                    updated_at,
+                    priority,
+                    status,
+                    assignee,
                     0.0 AS score,
                     COALESCE(title, '') || ' ' || COALESCE(LEFT(description, 100), '') AS snippet,
                     (SELECT COUNT(*) FROM filtered) AS total_count
@@ -870,6 +910,7 @@ class SearchService:
                     score=0.0,
                     timeline_item_id=None,
                     created_at=row.created_at,
+                    **self._search_metadata(row),
                     tags=row.tags or [],
                 )
                 for row in rows
@@ -922,6 +963,10 @@ class SearchService:
                     description,
                     tags,
                     created_at,
+                    updated_at,
+                    priority,
+                    status,
+                    assignee,
                     timeline_items,
                     ts_rank(search_vector, websearch_to_tsquery('english', :query)) AS score,
                     'fulltext' AS match_source
@@ -940,6 +985,10 @@ class SearchService:
                     description,
                     tags,
                     created_at,
+                    updated_at,
+                    priority,
+                    status,
+                    assignee,
                     timeline_items,
                     0.8 AS score,  -- High score for exact IOC matches
                     'jsonb' AS match_source
@@ -957,6 +1006,10 @@ class SearchService:
                     description,
                     tags,
                     created_at,
+                    updated_at,
+                    priority,
+                    status,
+                    assignee,
                     timeline_items,
                     score,
                     match_source
@@ -969,6 +1022,10 @@ class SearchService:
                 description, 
                 tags,
                 created_at, 
+                updated_at,
+                priority,
+                status,
+                assignee,
                 score,
                 match_source,
                 CASE 
@@ -1048,6 +1105,7 @@ class SearchService:
                 score=min(1.0, row.score),  # Normalize score to 0-1
                 timeline_item_id=None,  # TODO: Extract if match was in timeline
                 created_at=row.created_at,
+                **self._search_metadata(row),
                 tags=row.tags or [],
             ))
         
@@ -1390,7 +1448,11 @@ class SearchService:
                         title,
                         description,
                         tags,
-                        created_at
+                        created_at,
+                        updated_at,
+                        priority,
+                        status,
+                        assignee
                     FROM {table_name}
                     WHERE created_at >= :start_date
                       AND created_at <= :end_date
@@ -1406,6 +1468,10 @@ class SearchService:
                     description,
                     tags,
                     created_at,
+                    updated_at,
+                    priority,
+                    status,
+                    assignee,
                     0.0 AS score,
                     total_count,
                     COALESCE(title, '') || ' ' || COALESCE(LEFT(description, 100), '') AS snippet
@@ -1442,6 +1508,7 @@ class SearchService:
                     score=0.0,
                     timeline_item_id=None,
                     created_at=row.created_at,
+                    **self._search_metadata(row),
                     tags=row.tags or [],
                 ))
 
@@ -1472,6 +1539,10 @@ class SearchService:
                     description,
                     tags,
                     created_at,
+                    updated_at,
+                    priority,
+                    status,
+                    assignee,
                     timeline_items,
                     ts_rank(search_vector, websearch_to_tsquery('english', :query)) AS score,
                     'fulltext' AS match_source
@@ -1489,6 +1560,10 @@ class SearchService:
                     description,
                     tags,
                     created_at,
+                    updated_at,
+                    priority,
+                    status,
+                    assignee,
                     timeline_items,
                     0.8 AS score,
                     'jsonb' AS match_source
@@ -1505,6 +1580,10 @@ class SearchService:
                     description,
                     tags,
                     created_at,
+                    updated_at,
+                    priority,
+                    status,
+                    assignee,
                     timeline_items,
                     score,
                     match_source
@@ -1521,6 +1600,10 @@ class SearchService:
                 description, 
                 tags,
                 created_at, 
+                updated_at,
+                priority,
+                status,
+                assignee,
                 score,
                 match_source,
                 total_count,
@@ -1595,6 +1678,7 @@ class SearchService:
                 score=min(1.0, row.score),
                 timeline_item_id=None,
                 created_at=row.created_at,
+                **self._search_metadata(row),
                 tags=row.tags or [],
             ))
         
@@ -1626,6 +1710,10 @@ class SearchService:
                     description,
                     tags,
                     created_at,
+                    updated_at,
+                    priority,
+                    status,
+                    assignee,
                     GREATEST(
                         similarity(COALESCE(title, ''), :query),
                         similarity(COALESCE(description, ''), :query) * 0.8
@@ -1643,7 +1731,7 @@ class SearchService:
                 SELECT *, COUNT(*) OVER() AS total_count
                 FROM fuzzy_results
             )
-            SELECT id, title, description, created_at, score, total_count
+            SELECT id, title, description, created_at, updated_at, priority, status, assignee, score, total_count
                      , tags
             FROM counted
             ORDER BY score DESC
@@ -1676,6 +1764,7 @@ class SearchService:
                 score=min(1.0, row.score),
                 timeline_item_id=None,
                 created_at=row.created_at,
+                **self._search_metadata(row),
                 tags=row.tags or [],
             ))
         

@@ -5,6 +5,7 @@ without requiring a full database setup.
 """
 import pytest
 from datetime import datetime, timezone, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services.search_service import SearchService, classify_query, QueryType
@@ -310,6 +311,55 @@ class TestSearchServiceEntityTypes:
         assert 'alerts' in tables_queried
         assert 'cases' in tables_queried
         assert 'tasks' not in tables_queried
+
+
+class TestSearchServiceResultMetadata:
+    """Tests for search result display metadata used by frontend rows."""
+
+    @pytest.mark.asyncio
+    async def test_paginated_alert_search_includes_assignee_metadata(self):
+        """Alert search rows should carry the same assignee metadata as alert detail."""
+        service = SearchService()
+        mock_db = AsyncMock()
+        created_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        updated_at = datetime.now(timezone.utc)
+
+        result = MagicMock()
+        result.fetchall.return_value = [
+            SimpleNamespace(
+                id=42,
+                title="Suspicious login",
+                description="Suspicious login from an unusual location",
+                tags=["identity"],
+                created_at=created_at,
+                updated_at=updated_at,
+                priority="HIGH",
+                status="IN_PROGRESS",
+                assignee="analyst1",
+                score=0.0,
+                total_count=1,
+                snippet="Suspicious login",
+            )
+        ]
+        mock_db.execute.return_value = result
+
+        items, total = await service._search_entity_paginated(
+            db=mock_db,
+            table_name="alerts",
+            entity_type=EntityType.ALERT,
+            query="*",
+            start_date=created_at - timedelta(days=1),
+            end_date=updated_at + timedelta(days=1),
+            skip=0,
+            limit=20,
+        )
+
+        assert total == 1
+        assert len(items) == 1
+        assert items[0].assignee == "analyst1"
+        assert items[0].status == "IN_PROGRESS"
+        assert items[0].priority == "HIGH"
+        assert items[0].updated_at == updated_at
 
 
 class TestSearchServiceTagFilters:
