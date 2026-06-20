@@ -12,6 +12,7 @@ import { useCaseDetail } from "@/hooks/useCaseDetail";
 import { convertHumanIdToNumeric } from "@/utils/caseHelpers";
 import { useUsers } from "@/hooks/useUsers";
 import { useUpdateCase } from "@/hooks/useUpdateCase";
+import { useResolveLinkedAlerts } from "@/hooks/useResolveLinkedAlerts";
 import { useUpdateTimelineItem } from "@/hooks/useUpdateTimelineItem";
 import { useDeleteTimelineItem } from "@/hooks/useDeleteTimelineItem";
 import { useQuickTerminalSubmit } from "@/hooks/useQuickTerminalSubmit";
@@ -25,11 +26,11 @@ import { useStatusHandlers } from "@/hooks/useStatusHandlers";
 import { findTimelineItem, mapItemTypeToDockType } from "@/utils/timelineUtils";
 import { getTimelineItems } from "@/utils/timelineHelpers";
 import type { TimelineItemType } from '@/types/drafts';
-import type { AlertStatus } from '@/types/generated/models/AlertStatus';
 import type { CaseStatus } from '@/types/generated/models/CaseStatus';
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { NotFoundError } from "@/pages/NotFoundError";
 import { AiChat } from "@/components/ai";
+import type { ClosedAlertStatus } from "@/utils/statusLabels";
 
 /**
  * Case Detail Page - View and edit a specific case
@@ -153,6 +154,12 @@ function CaseDetailPage() {
     },
   });
 
+  const resolveLinkedAlertsMutation = useResolveLinkedAlerts(selectedCaseId, {
+    onError: (error) => {
+      console.error("Failed to resolve linked alerts:", error);
+    },
+  });
+
   // Timeline item mutations
   const updateTimelineItemMutation = useUpdateTimelineItem(selectedCaseId, 'case', {
     onError: (error) => {
@@ -224,19 +231,24 @@ function CaseDetailPage() {
   };
 
   const handleCloseCaseWithDetails = useCallback((payload: {
-    alert_closure_updates: Array<{ alert_id: number; status: AlertStatus }>;
+    status: ClosedAlertStatus;
     tags: string[];
-    closure_summary?: string;
+    note?: string;
   }) => {
     if (!selectedCaseId) return;
 
-    updateCaseMutation.mutate({
-      status: 'CLOSED',
-      alert_closure_updates: payload.alert_closure_updates,
-      tags: payload.tags,
-      closure_summary: payload.closure_summary,
+    resolveLinkedAlertsMutation.mutateAsync({
+      status: payload.status,
+      note: payload.note,
+    }).then(() => {
+      updateCaseMutation.mutate({
+        status: 'CLOSED',
+        tags: payload.tags,
+      });
+    }).catch(() => {
+      // Error handling is centralized in the mutation's onError callback.
     });
-  }, [selectedCaseId, updateCaseMutation]);
+  }, [selectedCaseId, resolveLinkedAlertsMutation, updateCaseMutation]);
 
   // Timeline item handler functions
   const handleFlagItem = (itemId: string) => {
@@ -454,7 +466,7 @@ function CaseDetailPage() {
               error={detailError}
               users={users}
               usersLoading={isLoadingUsers}
-              isUpdating={updateCaseMutation.isPending}
+              isUpdating={updateCaseMutation.isPending || resolveLinkedAlertsMutation.isPending}
               isOverlayOpen={dockOpen}
               mode={isAuditor ? 'readonly' : 'editable'}
               onFlagItem={handleFlagItem}

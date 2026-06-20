@@ -19,6 +19,7 @@ import type { Priority as PriorityType } from "@/types/generated/models/Priority
 import type { TimelineItem } from "@/types/timeline";
 import type { UIState } from "@/utils/statusHelpers";
 import { ALERT_STATUS_LABELS } from "@/utils/statusLabels";
+import type { ClosedAlertStatus } from "@/utils/statusLabels";
 
 import { ArrowRight, ArrowUp, Check, CheckCircle, ChevronLeft, Copy, Edit2, HelpCircle, Link, Link2Off, List, Network, Users, X, XCircle } from 'lucide-react';
 // Unified status type that works for alerts, cases, and tasks (API format: UPPERCASE)
@@ -69,9 +70,9 @@ interface EntityHeaderRootProps
   // onCloseAlert receives UIState (lowercase) values - caller should convert to API format
   onCloseAlert?: (status: UIState) => void;
   onCloseCaseWithDetails?: (payload: {
-    alert_closure_updates: Array<{ alert_id: number; status: AlertStatus }>;
+    status: ClosedAlertStatus;
     tags: string[];
-    closure_summary?: string;
+    note?: string;
   }) => void;
   onReopenAlert?: () => void;
   onPrimaryAction?: () => void;
