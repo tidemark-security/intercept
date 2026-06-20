@@ -46,11 +46,14 @@ class ServiceNowProvider(EnrichmentProvider):
             identifier = self._get_system_identifier(item)
             if not identifier:
                 raise ValueError("Cannot determine identifier for ServiceNow system cache key")
-            return f"system:{identifier}"
+            return self._build_system_cache_key(identifier)
         identifier = self._get_identifier(item)
         if not identifier:
             raise ValueError("Cannot determine identifier for ServiceNow user cache key")
         return f"user:{identifier}"
+
+    def _build_system_cache_key(self, identifier: str) -> str:
+        return f"system:{identifier.strip().lower()}"
 
     def _get_identifier(self, item: Dict[str, Any]) -> str:
         for key in ("user_id", "contact_email", "name"):
@@ -404,6 +407,7 @@ class ServiceNowProvider(EnrichmentProvider):
             cache_key = self.build_cache_key(item)
             async with httpx.AsyncClient(timeout=20, auth=(cfg["username"], cfg["password"])) as client:
                 for source, field, identifier in candidates:
+                    candidate_cache_key = self._build_system_cache_key(identifier)
                     params = {
                         "sysparm_query": f"{field}={self._escape_query_value(identifier)}",
                         "sysparm_fields": cfg["cmdb_fields"],
@@ -415,20 +419,18 @@ class ServiceNowProvider(EnrichmentProvider):
                         resp.raise_for_status()
                         records = resp.json().get("result") or []
                     except httpx.HTTPError as exc:
-                        return EnrichmentResult(
-                            provider_id=self.provider_id,
-                            cache_key=cache_key,
-                            enrichment_data={
-                                "status": "lookup_error",
+                        logger.warning(
+                            "ServiceNow CMDB lookup failed",
+                            extra={
                                 "source_table": str(cfg["cmdb_table"]),
                                 "matched_identifier": {"source": source, "field": field, "value": identifier},
-                                "error": f"CMDB lookup failed: {exc}",
                             },
                         )
+                        raise exc
                     if len(records) > 1:
                         return EnrichmentResult(
                             provider_id=self.provider_id,
-                            cache_key=cache_key,
+                            cache_key=candidate_cache_key,
                             enrichment_data={
                                 "status": "ambiguous",
                                 "source_table": str(cfg["cmdb_table"]),
@@ -440,7 +442,7 @@ class ServiceNowProvider(EnrichmentProvider):
                     if records:
                         return self._build_system_result(
                             records[0],
-                            cache_key=cache_key,
+                            cache_key=candidate_cache_key,
                             cfg=cfg,
                             matched_identifier={"source": source, "field": field, "value": identifier},
                         )

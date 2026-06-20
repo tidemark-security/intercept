@@ -218,6 +218,7 @@ async def test_cmdb_lookup_uses_deterministic_identifier_precedence(monkeypatch:
         "field": "ip_address",
         "value": "10.0.0.5",
     }
+    assert result.cache_key == "system:10.0.0.5"
     assert result.enrichment_data["source_table"] == "cmdb_ci"
     assert result.enrichment_data["record_id"] == "sn-ci-1"
     assert result.enrichment_data["record_link"].endswith("/nav_to.do?uri=/cmdb_ci.do?sys_id=sn-ci-1")
@@ -250,6 +251,7 @@ async def test_cmdb_lookup_uses_configured_identifier_fields(monkeypatch: pytest
         "field": "asset_tag",
         "value": "asset-42",
     }
+    assert result.cache_key == "system:asset-42"
 
 
 @pytest.mark.asyncio
@@ -298,24 +300,21 @@ async def test_cmdb_lookup_returns_non_terminal_ambiguous_payload(monkeypatch: p
 
 
 @pytest.mark.asyncio
-async def test_cmdb_lookup_returns_error_payload_for_failed_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_cmdb_lookup_raises_transient_http_failures(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = servicenow_provider.__class__()
     CMDBFakeAsyncClient.requests = []
     CMDBFakeAsyncClient.responses = {}
     CMDBFakeAsyncClient.fail_on_query = "name=dc01"
     monkeypatch.setattr("app.services.enrichment.providers.servicenow.httpx.AsyncClient", CMDBFakeAsyncClient)
 
-    result = await provider.enrich(
-        db=None,  # type: ignore[arg-type]
-        settings=_settings(),  # type: ignore[arg-type]
-        item={"type": "system", "hostname": "dc01"},
-        entity_type="alert",
-        entity_id=1,
-    )
-
-    assert result.enrichment_data["status"] == "lookup_error"
-    assert "CMDB lookup failed" in result.enrichment_data["error"]
-    assert result.aliases == []
+    with pytest.raises(httpx.HTTPError):
+        await provider.enrich(
+            db=None,  # type: ignore[arg-type]
+            settings=_settings(),  # type: ignore[arg-type]
+            item={"type": "system", "hostname": "dc01"},
+            entity_type="alert",
+            entity_id=1,
+        )
 
 
 def test_service_applies_successful_cmdb_system_fields_independently() -> None:
