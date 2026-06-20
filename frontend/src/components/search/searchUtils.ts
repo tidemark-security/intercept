@@ -10,10 +10,10 @@ export const MIN_SEARCH_QUERY_LENGTH = 2;
  * Extended search result with optional metadata fields
  */
 export interface ExtendedSearchResultItem extends SearchResultItem {
-  priority?: string;
-  status?: string;
-  assignee?: string;
-  updated_at?: string;
+  priority?: string | null;
+  status?: string | null;
+  assignee?: string | null;
+  updated_at?: string | null;
 }
 
 /**
