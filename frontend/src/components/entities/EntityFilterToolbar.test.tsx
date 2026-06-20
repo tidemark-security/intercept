@@ -72,6 +72,27 @@ describe("EntityFilterToolbar", () => {
     expect(screen.getByRole("button", { name: /reset clear all/i })).toBeInTheDocument();
   });
 
+  it("renders generic actions below the filter controls", () => {
+    renderWithProviders(
+      <EntityFilterToolbar
+        filters={{
+          search: "",
+          assignee: null,
+          status: ["NEW", "IN_PROGRESS"],
+          includeTags: null,
+          excludeTags: null,
+          dateRange: null,
+        }}
+        onFilterChange={vi.fn()}
+        assignees={users}
+        assigneesLoading={false}
+        actions={<button type="button">Bulk status</button>}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /bulk status/i })).toBeInTheDocument();
+  });
+
   it("does not mark the default open statuses as modified", () => {
     renderToolbar();
 
