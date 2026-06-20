@@ -18,6 +18,7 @@ import type { TaskStatus } from "@/types/generated/models/TaskStatus";
 import type { Priority as PriorityType } from "@/types/generated/models/Priority";
 import type { TimelineItem } from "@/types/timeline";
 import type { UIState } from "@/utils/statusHelpers";
+import { ALERT_STATUS_LABELS } from "@/utils/statusLabels";
 
 import { ArrowRight, ArrowUp, Check, CheckCircle, ChevronLeft, Copy, Edit2, HelpCircle, Link, Link2Off, List, Network, Users, X, XCircle } from 'lucide-react';
 // Unified status type that works for alerts, cases, and tasks (API format: UPPERCASE)
@@ -417,27 +418,27 @@ const EntityHeaderRoot = React.forwardRef<
                               <>
                                 <DropdownMenu.DropdownItem
                                   icon={<Check />}
-                                  label="True Positive"
+                                  label={ALERT_STATUS_LABELS.CLOSED_TP}
                                   onClick={() => onCloseAlert?.("closed_true_positive")}
                                 />
                                 <DropdownMenu.DropdownItem
                                   icon={<CheckCircle />}
-                                  label="True Positive Benign"
+                                  label={ALERT_STATUS_LABELS.CLOSED_BP}
                                   onClick={() => onCloseAlert?.("closed_benign_positive")}
                                 />
                                 <DropdownMenu.DropdownItem
                                   icon={<XCircle />}
-                                  label="False Positive"
+                                  label={ALERT_STATUS_LABELS.CLOSED_FP}
                                   onClick={() => onCloseAlert?.("closed_false_positive")}
                                 />
                                 <DropdownMenu.DropdownItem
                                   icon={<HelpCircle />}
-                                  label="Unresolved"
+                                  label={ALERT_STATUS_LABELS.CLOSED_UNRESOLVED}
                                   onClick={() => onCloseAlert?.("closed_unresolved")}
                                 />
                                 <DropdownMenu.DropdownItem
                                   icon={<Copy />}
-                                  label="Duplicate"
+                                  label={ALERT_STATUS_LABELS.CLOSED_DUPLICATE}
                                   onClick={() => onCloseAlert?.("closed_duplicate")}
                                 />
                               </>

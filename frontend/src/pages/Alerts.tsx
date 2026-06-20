@@ -54,6 +54,7 @@ import type { FilterState } from "@/types/filters";
 import type { TimelineItemType } from '@/types/drafts';
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { alertStatusToUIState, priorityToUIPriority, uiStateToAlertStatus, type UIState } from "@/utils/statusHelpers";
+import { ALERT_STATUS_OPTIONS } from "@/utils/statusLabels";
 import { NotFoundError } from "@/pages/NotFoundError";
 
 /**
@@ -915,12 +916,11 @@ function Alerts() {
               value={bulkStatus}
               onValueChange={(value) => setBulkStatus(value as AlertStatus)}
             >
-              <Select.Item value="NEW">New</Select.Item>
-              <Select.Item value="IN_PROGRESS">In Progress</Select.Item>
-              <Select.Item value="CLOSED_TP">Closed: True Positive</Select.Item>
-              <Select.Item value="CLOSED_BP">Closed: Benign Positive</Select.Item>
-              <Select.Item value="CLOSED_FP">Closed: False Positive</Select.Item>
-              <Select.Item value="CLOSED_UNRESOLVED">Closed: Unresolved</Select.Item>
+              {ALERT_STATUS_OPTIONS.map((option) => (
+                <Select.Item key={option.value} value={option.value}>
+                  {option.label}
+                </Select.Item>
+              ))}
             </Select>
           </div>
           <div className="flex w-full items-center justify-end gap-2 border-t border-solid border-neutral-border px-6 py-4">

@@ -21,6 +21,7 @@ import type { TaskRead } from "@/types/generated/models/TaskRead";
 import type { TaskFilterState } from "@/types/filters";
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { taskStatusToUIState, priorityToUIPriority, taskStateToMenuCardState } from "@/utils/statusHelpers";
+import { TASK_STATUS_OPTIONS } from "@/utils/statusLabels";
 
 /**
  * Tasks List Page - Browse and filter tasks with optional preview
@@ -195,11 +196,7 @@ function TasksListPage() {
             onFilterChange={setFilters}
             enableTagFilters
             onTagClick={handleFilterByTag}
-            statusOptions={[
-              { value: 'TODO', label: 'To Do' },
-              { value: 'IN_PROGRESS', label: 'In Progress' },
-              { value: 'DONE', label: 'Done' },
-            ]}
+            statusOptions={TASK_STATUS_OPTIONS}
             currentPage={currentPage}
             totalPages={totalPages}
             totalItems={tasksData?.total}
