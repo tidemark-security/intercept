@@ -86,13 +86,16 @@ export function useGlobalSearch(
     isDebouncing,
     clearSearch,
   } = useSearchCore();
+  const hasTagFilters = (tags?.length ?? 0) > 0;
+  const canSearch = isQueryValid || hasTagFilters;
+  const apiQuery = isQueryValid ? debouncedQuery : '*';
 
   // Build the query - use the unified /search endpoint (same as search page)
   const queryResult = useQuery({
     queryKey: ['unifiedSearch', debouncedQuery, entityTypes, startDate, endDate, limit, tags],
     queryFn: () =>
       SearchService.unifiedSearchApiV1SearchGet({
-        q: debouncedQuery,
+        q: apiQuery,
         entityType: entityTypes,
         skip: 0,
         limit,
@@ -100,7 +103,7 @@ export function useGlobalSearch(
         endDate,
         tags,
       }),
-    enabled: enabled && isQueryValid,
+    enabled: enabled && canSearch,
     staleTime: 30_000, // 30 seconds
     gcTime: 60_000, // 1 minute (renamed from cacheTime in v5)
     retry: 1,
@@ -111,7 +114,7 @@ export function useGlobalSearch(
   }, [queryResult.data?.results]);
 
   const total = queryResult.data?.total || 0;
-  const hasResults = isQueryValid && total > 0;
+  const hasResults = canSearch && total > 0;
 
   return {
     query,

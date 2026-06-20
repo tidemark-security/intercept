@@ -1,39 +1,20 @@
-import { fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
 
 import { renderWithProviders } from "../../../tests/test-utils";
 import { MenuCard } from "@/components/cards/MenuCard";
 
 describe("MenuCard", () => {
-  it("routes tag clicks to include and modified clicks to exclude", () => {
-    const onTagClick = vi.fn();
-
+  it("renders tags as search links", () => {
     const { container } = renderWithProviders(
-      <MenuCard id="ALT-0000001" title="Suspicious login" tags={["phishing"]} onTagClick={onTagClick} />
+      <MenuCard id="ALT-0000001" title="Suspicious login" tags={["phishing"]} />
     );
 
-    const tagButton = screen.getByRole("button", { name: /add phishing to include tag filter/i });
+    const tagLink = screen.getByRole("link", { name: "phishing" });
 
-    expect(container.querySelector(".lucide-plus")).toBeInTheDocument();
-    expect(container.querySelector(".lucide-minus")).not.toBeInTheDocument();
-
-    fireEvent.keyDown(window, { key: "Control" });
-    expect(screen.getByRole("button", { name: /add phishing to exclude tag filter/i })).toBeInTheDocument();
-    expect(container.querySelector(".lucide-minus")).toBeInTheDocument();
+    expect(tagLink).toHaveAttribute("href", "/search?tag=phishing");
     expect(container.querySelector(".lucide-plus")).not.toBeInTheDocument();
-
-    fireEvent.keyUp(window, { key: "Control" });
-    expect(screen.getByRole("button", { name: /add phishing to include tag filter/i })).toBeInTheDocument();
-    expect(container.querySelector(".lucide-plus")).toBeInTheDocument();
     expect(container.querySelector(".lucide-minus")).not.toBeInTheDocument();
-
-    fireEvent.click(tagButton);
-    fireEvent.click(tagButton, { ctrlKey: true });
-    fireEvent.click(tagButton, { metaKey: true });
-
-    expect(onTagClick).toHaveBeenNthCalledWith(1, "phishing", "include");
-    expect(onTagClick).toHaveBeenNthCalledWith(2, "phishing", "exclude");
-    expect(onTagClick).toHaveBeenNthCalledWith(3, "phishing", "exclude");
   });
 
   it("keeps priority colors partially visible", () => {

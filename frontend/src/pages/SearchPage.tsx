@@ -87,7 +87,7 @@ export function SearchPage() {
     navigate(path);
   }, [navigate]);
 
-  const isQueryValid = isSearchQueryValid(debouncedQuery);
+  const canSearch = isSearchQueryValid(debouncedQuery) || selectedTags.length > 0;
 
   const results = queryResult.data?.results || [];
 
@@ -145,7 +145,7 @@ export function SearchPage() {
 
         {/* Results */}
         <div className="flex-1 w-full overflow-auto">
-          {!isQueryValid ? (
+          {!canSearch ? (
             <SearchPrompt variant="page" />
           ) : queryResult.isError ? (
             <SearchError 
