@@ -986,6 +986,93 @@ async def test_run_item_enrichment_emits_timeline_updated_event(
 
 
 @pytest.mark.asyncio
+async def test_servicenow_enrichment_updates_internal_actor_risk_flags(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    analyst = analyst_user_factory(username="analyst.servicenow-flags")
+    item = {
+        "id": "item-servicenow-1",
+        "type": "internal_actor",
+        "timestamp": "2026-03-14T00:00:00Z",
+        "created_at": "2026-03-14T00:00:00Z",
+        "created_by": analyst.username,
+        "user_id": "alice@example.com",
+        "is_vip": False,
+        "is_privileged": False,
+        "enrichment_status": "pending",
+        "enrichments": {},
+    }
+    alert = Alert(
+        title="Alert with ServiceNow actor enrichment",
+        description="Test alert",
+        source="unit-test",
+        timeline_items=[item],
+        created_by=analyst.username,
+    )
+    register_providers()
+
+    async with session_maker() as session:
+        session.add(analyst)
+        session.add(alert)
+        session.add(
+            AppSetting(
+                key="enrichment.servicenow.enabled",
+                value="true",
+                value_type=SettingType.BOOLEAN,
+                is_secret=False,
+                description="Enable ServiceNow enrichment provider",
+                category="enrichment",
+            )
+        )
+        await session.commit()
+        await session.refresh(alert)
+
+    async def fake_enrich(*, db: AsyncSession, settings: object, item: dict[str, object], entity_type: str, entity_id: int) -> EnrichmentResult:
+        return EnrichmentResult(
+            provider_id="servicenow",
+            cache_key="user:alice@example.com",
+            enrichment_data={
+                "source_table": "sys_user",
+                "record_id": "sn-user-1",
+                "record_link": "https://example.service-now.com/sys_user.do?sys_id=sn-user-1",
+                "matched_identifier": "alice@example.com",
+                "is_vip": True,
+                "is_privileged": True,
+                "mapped_fields": {
+                    "vip": {"field": "vip", "value": "true", "mapped": True},
+                    "privileged": {"field": "u_privileged_user", "value": "1", "mapped": True},
+                },
+            },
+        )
+
+    monkeypatch.setattr("app.services.enrichment.providers.servicenow.servicenow_provider.enrich", fake_enrich)
+
+    async with session_maker() as session:
+        await enrichment_service.run_item_enrichment(
+            session,
+            entity_type="alert",
+            entity_id=alert.id,
+            item_id="item-servicenow-1",
+        )
+
+    async with session_maker() as session:
+        refreshed_alert = await session.get(Alert, alert.id)
+        assert refreshed_alert is not None
+        stored_item = next(
+            item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-servicenow-1"
+        )
+
+    assert stored_item["enrichment_status"] == "complete"
+    assert stored_item["is_vip"] is True
+    assert stored_item["is_privileged"] is True
+    assert stored_item["enrichments"]["servicenow"]["source_table"] == "sys_user"
+    assert stored_item["enrichments"]["servicenow"]["record_id"] == "sn-user-1"
+    assert stored_item["enrichments"]["servicenow"]["matched_identifier"] == "alice@example.com"
+
+
+@pytest.mark.asyncio
 async def test_run_item_enrichment_keeps_pending_status_on_retryable_failure(
     session_maker: async_sessionmaker[AsyncSession],
     analyst_user_factory,

@@ -159,7 +159,19 @@ class ServiceNowProvider(EnrichmentProvider):
         value = self._str_field(record, field).strip().lower()
         return value in {"true", "1", "yes", "y", "on"}
 
-    def _build_result(self, record: Dict[str, Any], *, cache_key: str, cfg: Dict[str, Any] | None = None) -> EnrichmentResult:
+    def _record_link(self, cfg: Dict[str, Any], table: str, sys_id: str) -> str:
+        if not sys_id:
+            return ""
+        return f"{cfg['instance_url']}/{quote(table, safe='')}.do?sys_id={quote(sys_id, safe='')}"
+
+    def _build_result(
+        self,
+        record: Dict[str, Any],
+        *,
+        cache_key: str,
+        cfg: Dict[str, Any] | None = None,
+        matched_identifier: str = "",
+    ) -> EnrichmentResult:
         cfg = cfg or {}
         sys_id = self._str_field(record, "sys_id")
         user_name = self._str_field(record, "user_name")
@@ -170,7 +182,16 @@ class ServiceNowProvider(EnrichmentProvider):
         department = self._str_field(record, "department.name") or self._str_field(record, "department")
         company = self._str_field(record, "company.name") or self._str_field(record, "company")
 
+        vip_field = str(cfg.get("user_vip_field") or "vip")
+        privileged_field = str(cfg.get("user_privileged_field") or "u_privileged_user")
+        is_vip = self._bool_field(record, vip_field)
+        is_privileged = self._bool_field(record, privileged_field)
+
         enrichment_data = {
+            "source_table": str(cfg.get("table") or _DEFAULT_TABLE),
+            "record_id": sys_id,
+            "record_link": self._record_link(cfg, str(cfg.get("table") or _DEFAULT_TABLE), sys_id) if cfg else "",
+            "matched_identifier": matched_identifier,
             "sys_id": sys_id,
             "user_name": user_name,
             "email": email,
@@ -183,11 +204,16 @@ class ServiceNowProvider(EnrichmentProvider):
             "phone": self._str_field(record, "phone"),
             "mobile_phone": self._str_field(record, "mobile_phone"),
             "active": self._str_field(record, "active"),
-            "is_vip": self._bool_field(record, str(cfg.get("user_vip_field") or "vip")),
-            "is_privileged": self._bool_field(
-                record,
-                str(cfg.get("user_privileged_field") or "u_privileged_user"),
-            ),
+            "is_vip": is_vip,
+            "is_privileged": is_privileged,
+            "mapped_fields": {
+                "vip": {"field": vip_field, "value": self._str_field(record, vip_field), "mapped": is_vip},
+                "privileged": {
+                    "field": privileged_field,
+                    "value": self._str_field(record, privileged_field),
+                    "mapped": is_privileged,
+                },
+            },
         }
 
         canonical_value = email.lower() or user_name.lower() or sys_id or cache_key
@@ -196,8 +222,8 @@ class ServiceNowProvider(EnrichmentProvider):
             "department": department,
             "job_title": enrichment_data["job_title"],
             "display_name": display_name,
-            "is_vip": enrichment_data["is_vip"],
-            "is_privileged": enrichment_data["is_privileged"],
+            "is_vip": is_vip,
+            "is_privileged": is_privileged,
         }
         aliases: List[AliasMapping] = []
 
@@ -379,7 +405,7 @@ class ServiceNowProvider(EnrichmentProvider):
             "sysparm_query": self._build_lookup_query(cfg["lookup_query_template"], identifier),
             "sysparm_fields": cfg["fields"],
             "sysparm_display_value": "all",
-            "sysparm_limit": 1,
+            "sysparm_limit": 2,
         }
         async with httpx.AsyncClient(timeout=20, auth=(cfg["username"], cfg["password"])) as client:
             resp = await client.get(self._table_url(cfg), params=params)
@@ -392,7 +418,18 @@ class ServiceNowProvider(EnrichmentProvider):
                 cache_key=self.build_cache_key(item),
                 enrichment_data={"error": f"User not found: {identifier}"},
             )
-        return self._build_result(records[0], cache_key=self.build_cache_key(item), cfg=cfg)
+        if len(records) > 1:
+            return EnrichmentResult(
+                provider_id=self.provider_id,
+                cache_key=self.build_cache_key(item),
+                enrichment_data={"error": f"Ambiguous user lookup: {identifier}", "matched_identifier": identifier},
+            )
+        return self._build_result(
+            records[0],
+            cache_key=self.build_cache_key(item),
+            cfg=cfg,
+            matched_identifier=identifier,
+        )
 
     async def bulk_sync(self, *, db: AsyncSession, settings: SettingsService) -> List[EnrichmentResult]:
         cfg = await self._get_settings(settings)
@@ -430,7 +467,14 @@ class ServiceNowProvider(EnrichmentProvider):
                         ).strip().lower()
                         if not canonical:
                             continue
-                        results.append(self._build_result(record, cache_key=f"user:{canonical}", cfg=cfg))
+                        results.append(
+                            self._build_result(
+                                record,
+                                cache_key=f"user:{canonical}",
+                                cfg=cfg,
+                                matched_identifier=canonical,
+                            )
+                        )
                     except Exception as exc:
                         logger.warning("ServiceNow: skipping user %s: %s", record.get("sys_id"), exc)
 
