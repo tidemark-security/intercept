@@ -5,7 +5,7 @@ Uses the ServiceNow Table API for sys_user-style directory lookups.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -21,7 +21,7 @@ _DEFAULT_FIELDS = (
     "sys_id,user_name,email,name,first_name,last_name,title,department,department.name,"
     "company,company.name,phone,mobile_phone,active,vip,u_privileged_user"
 )
-_DEFAULT_CMDB_FIELDS = "sys_id,name,fqdn,ip_address,asset_tag,classification,criticality,u_privileged_system,install_status"
+_DEFAULT_CMDB_FIELDS = "sys_id,name,fqdn,ip_address,asset_tag,sys_class_name,classification,criticality,u_privileged_system,install_status"
 
 
 class ServiceNowProvider(EnrichmentProvider):
@@ -60,11 +60,37 @@ class ServiceNowProvider(EnrichmentProvider):
         return ""
 
     def _get_system_identifier(self, item: Dict[str, Any]) -> str:
-        for key in ("cmdb_id", "hostname", "ip_address"):
+        for key in ("hostname", "ip_address", "cmdb_id"):
             value = item.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip().lower()
         return ""
+
+    def _split_fields(self, value: Any, default: str) -> List[str]:
+        fields = [
+            field.strip()
+            for field in str(value or default).split(",")
+            if field.strip()
+        ]
+        return list(dict.fromkeys(fields)) or [default]
+
+    def _get_system_lookup_candidates(self, item: Dict[str, Any], cfg: Dict[str, Any]) -> List[Tuple[str, str, str]]:
+        candidates: List[Tuple[str, str, str]] = []
+
+        def _add(kind: str, fields: List[str], value: Any) -> None:
+            if not isinstance(value, str) or not value.strip():
+                return
+            normalized_value = value.strip().lower()
+            for field in fields:
+                candidate = (kind, field, normalized_value)
+                if candidate not in candidates:
+                    candidates.append(candidate)
+
+        configured_fields = self._split_fields(cfg.get("cmdb_query_field"), "name")
+        _add("hostname", list(dict.fromkeys(["name", "fqdn", *configured_fields])), item.get("hostname"))
+        _add("ip_address", list(dict.fromkeys(["ip_address", *configured_fields])), item.get("ip_address"))
+        _add("cmdb_id", configured_fields, item.get("cmdb_id"))
+        return candidates
 
     async def _get_settings(self, settings: SettingsService) -> Dict[str, Any] | None:
         instance_url = str(await settings.get(f"{self.settings_prefix}.instance_url", "") or "").strip().rstrip("/")
@@ -138,6 +164,10 @@ class ServiceNowProvider(EnrichmentProvider):
     def _cmdb_table_url(self, cfg: Dict[str, Any]) -> str:
         table = quote(str(cfg["cmdb_table"]), safe="")
         return f"{cfg['instance_url']}/api/now/table/{table}"
+
+    def _cmdb_record_url(self, cfg: Dict[str, Any], sys_id: str) -> str:
+        table = quote(str(cfg["cmdb_table"]), safe="")
+        return f"{cfg['instance_url']}/nav_to.do?uri=/{table}.do?sys_id={quote(sys_id, safe='')}"
 
     def _escape_query_value(self, value: str) -> str:
         return value.replace("\\", "\\\\").replace("^", "\\^").replace("=", "\\=")
@@ -226,24 +256,41 @@ class ServiceNowProvider(EnrichmentProvider):
             aliases=aliases,
         )
 
-    def _build_system_result(self, record: Dict[str, Any], *, cache_key: str, cfg: Dict[str, Any]) -> EnrichmentResult:
+    def _build_system_result(
+        self,
+        record: Dict[str, Any],
+        *,
+        cache_key: str,
+        cfg: Dict[str, Any],
+        matched_identifier: Dict[str, str],
+    ) -> EnrichmentResult:
         sys_id = self._str_field(record, "sys_id")
         name = self._str_field(record, "name")
         fqdn = self._str_field(record, "fqdn")
         ip_address = self._str_field(record, "ip_address")
         criticality = self._str_field(record, str(cfg["cmdb_criticality_field"]))
+        privileged_field = str(cfg["cmdb_privileged_field"])
+        privilege_value = self._str_field(record, privileged_field)
         is_critical = self._boolish_criticality(criticality)
-        is_privileged = self._bool_field(record, str(cfg["cmdb_privileged_field"]))
+        is_privileged = self._bool_field(record, privileged_field)
 
         enrichment_data = {
+            "status": "matched",
+            "source_table": str(cfg["cmdb_table"]),
             "sys_id": sys_id,
+            "record_id": sys_id,
+            "record_link": self._cmdb_record_url(cfg, sys_id) if sys_id else "",
+            "matched_identifier": matched_identifier,
             "name": name,
             "fqdn": fqdn,
             "ip_address": ip_address,
             "asset_tag": self._str_field(record, "asset_tag"),
+            "ci_class": self._str_field(record, "sys_class_name"),
+            "ci_type": self._str_field(record, "sys_class_name") or self._str_field(record, "classification"),
             "classification": self._str_field(record, "classification"),
             "criticality": criticality,
             "install_status": self._str_field(record, "install_status"),
+            "privilege_fields": {privileged_field: privilege_value},
             "is_critical": is_critical,
             "is_privileged": is_privileged,
         }
@@ -351,26 +398,66 @@ class ServiceNowProvider(EnrichmentProvider):
 
     async def _lookup(self, cfg: Dict[str, Any], item: Dict[str, Any]) -> EnrichmentResult:
         if item.get("type") == "system":
-            identifier = self._get_system_identifier(item)
-            if not identifier:
+            candidates = self._get_system_lookup_candidates(item, cfg)
+            if not candidates:
                 raise ValueError("Cannot determine identifier for ServiceNow CMDB lookup")
-            params = {
-                "sysparm_query": f"{cfg['cmdb_query_field']}={self._escape_query_value(identifier)}",
-                "sysparm_fields": cfg["cmdb_fields"],
-                "sysparm_display_value": "all",
-                "sysparm_limit": 1,
-            }
+            cache_key = self.build_cache_key(item)
             async with httpx.AsyncClient(timeout=20, auth=(cfg["username"], cfg["password"])) as client:
-                resp = await client.get(self._cmdb_table_url(cfg), params=params)
-                resp.raise_for_status()
-                records = resp.json().get("result") or []
-            if not records:
+                for source, field, identifier in candidates:
+                    params = {
+                        "sysparm_query": f"{field}={self._escape_query_value(identifier)}",
+                        "sysparm_fields": cfg["cmdb_fields"],
+                        "sysparm_display_value": "all",
+                        "sysparm_limit": 2,
+                    }
+                    try:
+                        resp = await client.get(self._cmdb_table_url(cfg), params=params)
+                        resp.raise_for_status()
+                        records = resp.json().get("result") or []
+                    except httpx.HTTPError as exc:
+                        return EnrichmentResult(
+                            provider_id=self.provider_id,
+                            cache_key=cache_key,
+                            enrichment_data={
+                                "status": "lookup_error",
+                                "source_table": str(cfg["cmdb_table"]),
+                                "matched_identifier": {"source": source, "field": field, "value": identifier},
+                                "error": f"CMDB lookup failed: {exc}",
+                            },
+                        )
+                    if len(records) > 1:
+                        return EnrichmentResult(
+                            provider_id=self.provider_id,
+                            cache_key=cache_key,
+                            enrichment_data={
+                                "status": "ambiguous",
+                                "source_table": str(cfg["cmdb_table"]),
+                                "matched_identifier": {"source": source, "field": field, "value": identifier},
+                                "error": f"CMDB lookup returned multiple records for {field}={identifier}",
+                                "record_count": len(records),
+                            },
+                        )
+                    if records:
+                        return self._build_system_result(
+                            records[0],
+                            cache_key=cache_key,
+                            cfg=cfg,
+                            matched_identifier={"source": source, "field": field, "value": identifier},
+                        )
+
                 return EnrichmentResult(
                     provider_id=self.provider_id,
-                    cache_key=self.build_cache_key(item),
-                    enrichment_data={"error": f"CMDB item not found: {identifier}"},
+                    cache_key=cache_key,
+                    enrichment_data={
+                        "status": "not_found",
+                        "source_table": str(cfg["cmdb_table"]),
+                        "lookup_identifiers": [
+                            {"source": source, "field": field, "value": identifier}
+                            for source, field, identifier in candidates
+                        ],
+                        "error": "CMDB item not found",
+                    },
                 )
-            return self._build_system_result(records[0], cache_key=self.build_cache_key(item), cfg=cfg)
 
         identifier = self._get_identifier(item)
         if not identifier:
