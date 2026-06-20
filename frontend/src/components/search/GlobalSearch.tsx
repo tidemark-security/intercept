@@ -98,7 +98,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
     limit: 10,
   });
 
-  const isQueryValidShared = isSearchQueryValid(debouncedQuery);
+  const canSearch = isSearchQueryValid(debouncedQuery) || selectedTags.length > 0;
 
   // Results are already a flat list sorted by score (from the API)
   const allResults = useMemo(() => results ?? [], [results]);
@@ -144,7 +144,9 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   // Navigate to search page with current query (for "View more results" link)
   const handleViewMore = useCallback(() => {
     const params = new URLSearchParams();
-    params.set('q', debouncedQuery);
+    if (debouncedQuery) {
+      params.set('q', debouncedQuery);
+    }
     if (selectedEntityType !== 'all') {
       params.set('type', selectedEntityType);
     }
@@ -238,7 +240,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
 
         {/* Results */}
         <div className="flex min-h-0 grow w-full flex-col items-start gap-2 py-4 overflow-auto" role="listbox">
-          {!isQueryValidShared ? (
+          {!canSearch ? (
             <SearchPrompt variant="modal" />
           ) : queryResult.isError ? (
             <SearchError 

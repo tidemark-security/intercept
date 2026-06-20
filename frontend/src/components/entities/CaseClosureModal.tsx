@@ -207,7 +207,7 @@ export function CaseClosureModal({
                 <div className="flex w-full flex-wrap items-center gap-2">
                   {suggestedTags.map((tag) => (
                     <button key={tag} type="button" className="cursor-pointer" onClick={() => toggleTag(tag)}>
-                      <Tag tagText={tag} showDelete={false} />
+                      <Tag tagText={tag} showDelete={false} searchable={false} />
                     </button>
                   ))}
                 </div>

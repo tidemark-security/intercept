@@ -185,12 +185,15 @@ export function useSearchPage(
 
   // Build the entity type array for API - null/undefined means all types
   const apiEntityTypes = entityType === 'all' ? null : [entityType];
+  const hasTagFilters = selectedTags.length > 0;
+  const canSearch = isQueryValid || hasTagFilters;
+  const apiQuery = isQueryValid ? debouncedQuery : '*';
   
   const queryResult = useQuery({
     queryKey: ['unifiedSearch', debouncedQuery, entityType, page, pageSize, dateRange.start, dateRange.end, selectedTags],
     queryFn: () =>
       SearchService.unifiedSearchApiV1SearchGet({
-        q: debouncedQuery,
+        q: apiQuery,
         entityType: apiEntityTypes,
         skip: page * pageSize,
         limit: pageSize,
@@ -198,7 +201,7 @@ export function useSearchPage(
         endDate: dateRange.end,
         tags: selectedTags.length > 0 ? selectedTags : null,
       }),
-    enabled: isQueryValid,
+    enabled: canSearch,
     staleTime: 30_000, // 30 seconds
     gcTime: 60_000, // 1 minute
     retry: 1,
@@ -206,9 +209,9 @@ export function useSearchPage(
   });
 
   // Only consider results if query is valid - prevents stale results showing after clear
-  const totalResults = isQueryValid ? (queryResult.data?.total || 0) : 0;
+  const totalResults = canSearch ? (queryResult.data?.total || 0) : 0;
   const totalPages = Math.ceil(totalResults / pageSize);
-  const hasResults = isQueryValid && totalResults > 0;
+  const hasResults = canSearch && totalResults > 0;
 
   const clearSearch = useCallback(() => {
     clearCoreSearch();
