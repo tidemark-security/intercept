@@ -24,6 +24,7 @@ from app.services.alert_triage_apply_service import (
 )
 from app.services.timeline_service import timeline_service
 from app.services.realtime_service import emit_event
+from app.services.tag_filter_utils import merge_persisted_tags, normalize_persisted_tags
 
 
 CLOSED_ALERT_STATUSES = {
@@ -156,8 +157,8 @@ async def create_or_replace_recommendation(
         existing.suggested_status = AlertStatus(data["suggested_status"]) if data.get("suggested_status") else None
         existing.suggested_priority = Priority(data["suggested_priority"]) if data.get("suggested_priority") else None
         existing.suggested_assignee = data.get("suggested_assignee")
-        existing.suggested_tags_add = data.get("suggested_tags_add", [])
-        existing.suggested_tags_remove = data.get("suggested_tags_remove", [])
+        existing.suggested_tags_add = normalize_persisted_tags(data.get("suggested_tags_add", []))
+        existing.suggested_tags_remove = normalize_persisted_tags(data.get("suggested_tags_remove", []))
         existing.request_escalate_to_case = data.get("request_escalate_to_case", False)
         existing.applied_context_entries = data.get(
             "applied_context_entries",
@@ -194,8 +195,8 @@ async def create_or_replace_recommendation(
         suggested_status=AlertStatus(data["suggested_status"]) if data.get("suggested_status") else None,
         suggested_priority=Priority(data["suggested_priority"]) if data.get("suggested_priority") else None,
         suggested_assignee=data.get("suggested_assignee"),
-        suggested_tags_add=data.get("suggested_tags_add", []),
-        suggested_tags_remove=data.get("suggested_tags_remove", []),
+        suggested_tags_add=normalize_persisted_tags(data.get("suggested_tags_add", [])),
+        suggested_tags_remove=normalize_persisted_tags(data.get("suggested_tags_remove", [])),
         request_escalate_to_case=data.get("request_escalate_to_case", False),
         applied_context_entries=data.get("applied_context_entries", []),
         created_by=created_by,
@@ -440,11 +441,13 @@ async def accept_recommendation(
     
     if apply_tags:
         # Apply tag changes
-        current_tags = set(alert.tags or [])
+        add_tags = normalize_persisted_tags(recommendation.suggested_tags_add)
+        remove_tags = normalize_persisted_tags(recommendation.suggested_tags_remove)
+        remove_tag_keys = {tag.lower() for tag in remove_tags}
+        current_tags = merge_persisted_tags(alert.tags, add_tags)
         
         # Add tags
-        for tag in recommendation.suggested_tags_add:
-            current_tags.add(tag)
+        for tag in add_tags:
             applied_changes.append({
                 "field": "tags",
                 "action": "add",
@@ -452,15 +455,14 @@ async def accept_recommendation(
             })
         
         # Remove tags
-        for tag in recommendation.suggested_tags_remove:
-            current_tags.discard(tag)
+        for tag in remove_tags:
             applied_changes.append({
                 "field": "tags",
                 "action": "remove",
                 "value": tag
             })
         
-        alert.tags = list(current_tags)
+        alert.tags = [tag for tag in current_tags if tag.lower() not in remove_tag_keys]
 
     apply_triage_state(
         alert,

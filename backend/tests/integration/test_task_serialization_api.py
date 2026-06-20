@@ -99,7 +99,10 @@ async def test_update_task_serializes_response_after_reload(
 
     response = await client.put(
         f"/api/v1/tasks/{task_id}",
-        json={"title": "Updated task title"},
+        json={
+            "title": "Updated task title",
+            "tags": [" Review ", "review", "Null", "escalated"],
+        },
         cookies={"intercept_session": session_cookie},
     )
 
@@ -107,6 +110,7 @@ async def test_update_task_serializes_response_after_reload(
     payload = response.json()
     assert payload["id"] == task_id
     assert payload["title"] == "Updated task title"
+    assert payload["tags"] == ["Review", "escalated"]
     assert payload["human_id"].startswith("TSK-")
 
 

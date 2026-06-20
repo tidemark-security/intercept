@@ -16,7 +16,7 @@ from app.services.timeline_add_service import add_timeline_item_and_commit, upda
 from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
-from app.services.tag_filter_utils import append_tag_filters
+from app.services.tag_filter_utils import append_tag_filters, normalize_persisted_tags
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +292,8 @@ class TaskService:
             
             for field, new_value in update_data.items():
                 if hasattr(db_task, field):
+                    if field == "tags":
+                        new_value = normalize_persisted_tags(new_value)
                     # Normalize status to TaskStatus enum
                     if field == 'status' and new_value is not None:
                         if isinstance(new_value, str):

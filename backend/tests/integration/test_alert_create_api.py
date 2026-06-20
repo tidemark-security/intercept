@@ -95,13 +95,17 @@ async def test_update_alert_serializes_loaded_triage_recommendation(
 
     response = await client.put(
         f"/api/v1/alerts/{alert_id}",
-        json={"title": "Updated title"},
+        json={
+            "title": "Updated title",
+            "tags": [" Review ", "review", "Null", "escalated"],
+        },
         cookies={"intercept_session": session_cookie},
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["title"] == "Updated title"
+    assert payload["tags"] == ["Review", "escalated"]
     assert payload["triage_recommendation"] is not None
     assert payload["triage_recommendation"]["alert_id"] == alert_id
 
