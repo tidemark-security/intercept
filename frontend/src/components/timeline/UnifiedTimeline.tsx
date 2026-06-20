@@ -652,6 +652,11 @@ function UnifiedTimelineInner({
           onLinkToCase={onLinkToCase}
           onUnlinkFromCase={onUnlinkFromCase}
           onPrimaryAction={onOpenEntity}
+          triageRecommendation={entityType === 'alert' ? (entityDetail as AlertRead)?.triage_recommendation : null}
+          onAcceptTriageRecommendation={onAcceptTriageRecommendation}
+          onRejectTriageRecommendation={onRejectTriageRecommendation}
+          isAcceptingRecommendation={isAcceptingRecommendation}
+          isRejectingRecommendation={isRejectingRecommendation}
           onEdit={onEditEntity}
           showTimelineViewToggle={supportsGraphView}
           timelineViewMode={timelineViewMode}
