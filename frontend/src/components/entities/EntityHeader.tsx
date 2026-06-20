@@ -11,10 +11,14 @@ import { Priority } from "@/components/misc/Priority";
 import { AssigneeSelector } from "@/components/forms/AssigneeSelector";
 import { TimelineFilter } from "@/components/timeline/TimelineFilter";
 import { CaseClosureModal } from "@/components/entities/CaseClosureModal";
+import { TriageRejectionDialog } from "@/components/triage/TriageRejectionDialog";
 
 import type { AlertStatus } from "@/types/generated/models/AlertStatus";
+import type { AcceptRecommendationRequest } from "@/types/generated/models/AcceptRecommendationRequest";
 import type { CaseStatus } from "@/types/generated/models/CaseStatus";
+import type { RejectionCategory } from "@/types/generated/models/RejectionCategory";
 import type { TaskStatus } from "@/types/generated/models/TaskStatus";
+import type { TriageRecommendationRead } from "@/types/generated/models/TriageRecommendationRead";
 import type { Priority as PriorityType } from "@/types/generated/models/Priority";
 import type { TimelineItem } from "@/types/timeline";
 import type { UIState } from "@/utils/statusHelpers";
@@ -76,6 +80,11 @@ interface EntityHeaderRootProps
   }) => void;
   onReopenAlert?: () => void;
   onPrimaryAction?: () => void;
+  triageRecommendation?: TriageRecommendationRead | null;
+  onAcceptTriageRecommendation?: (options: AcceptRecommendationRequest) => void;
+  onRejectTriageRecommendation?: (category: RejectionCategory, reason?: string) => void;
+  isAcceptingRecommendation?: boolean;
+  isRejectingRecommendation?: boolean;
   onLinkToCase?: () => void;
   onUnlinkFromCase?: () => void;
   onEdit?: () => void;
@@ -135,6 +144,11 @@ const EntityHeaderRoot = React.forwardRef<
     onCloseCaseWithDetails,
     onReopenAlert,
     onPrimaryAction: onPrimaryAction,
+    triageRecommendation,
+    onAcceptTriageRecommendation,
+    onRejectTriageRecommendation,
+    isAcceptingRecommendation = false,
+    isRejectingRecommendation = false,
     onLinkToCase,
     onUnlinkFromCase,
     onEdit,
@@ -197,6 +211,7 @@ const EntityHeaderRoot = React.forwardRef<
 
   const isEscalated = status === 'ESCALATED' || (isAlert && !!caseId);
   const [isCaseClosureModalOpen, setIsCaseClosureModalOpen] = React.useState(false);
+  const [isTriageRejectDialogOpen, setIsTriageRejectDialogOpen] = React.useState(false);
   const showAssignmentControls = Boolean(onAssignToMe || onAssignToUser || onUnassign);
 
   // Detect mobile screen size
@@ -238,11 +253,34 @@ const EntityHeaderRoot = React.forwardRef<
 
   // Determine if we should show the primary action button (Escalate/Open Case/Open Task)
   const showPrimaryAction = (isAlert && !isEscalated && !isClosed) || ((isCase || isTask) && isReadOnly);
+  const showAiEscalationDecision = Boolean(
+    isAlert &&
+    !isEscalated &&
+    !isClosed &&
+    triageRecommendation?.status === 'PENDING' &&
+    triageRecommendation.request_escalate_to_case &&
+    onAcceptTriageRecommendation &&
+    onRejectTriageRecommendation
+  );
   const primaryActionLabel = isTask && isReadOnly
     ? "View Task"
     : isCase && isReadOnly
       ? "View Case"
       : (buttonSize === "medium" ? "Escalate to Case" : "Escalate");
+
+  const handleAcceptAiEscalation = () => {
+    onAcceptTriageRecommendation?.({
+      apply_status: true,
+      apply_priority: true,
+      apply_assignee: true,
+      apply_tags: true,
+    });
+  };
+
+  const handleRejectAiEscalation = (category: RejectionCategory, reason?: string) => {
+    onRejectTriageRecommendation?.(category, reason);
+    onPrimaryAction?.();
+  };
 
   return (
     <div
@@ -467,12 +505,37 @@ const EntityHeaderRoot = React.forwardRef<
                   {buttonSize === "medium" ? "Link to Case" : "Link"}
                 </Button>
               )}
-              {showPrimaryAction && onPrimaryAction && (
+              {showAiEscalationDecision ? (
+                <>
+                  <Button
+                    className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
+                    variant="destructive-secondary"
+                    size={buttonSize}
+                    icon={<X />}
+                    onClick={() => setIsTriageRejectDialogOpen(true)}
+                    disabled={isUpdating || isAcceptingRecommendation || isRejectingRecommendation}
+                    loading={isRejectingRecommendation}
+                  >
+                    {buttonSize === "medium" ? "Escalate to Case (Reject AI)" : "Reject AI"}
+                  </Button>
+                  <Button
+                    className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
+                    size={buttonSize}
+                    iconRight={<ArrowRight />}
+                    onClick={handleAcceptAiEscalation}
+                    disabled={isUpdating || isAcceptingRecommendation || isRejectingRecommendation}
+                    loading={isAcceptingRecommendation}
+                  >
+                    {buttonSize === "medium" ? "Escalate to Case (Accept AI)" : "Accept AI"}
+                  </Button>
+                </>
+              ) : showPrimaryAction && onPrimaryAction && (
                 <Button
                   className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
                   size={buttonSize}
                   iconRight={<ArrowRight />}
                   onClick={onPrimaryAction}
+                  disabled={isUpdating}
                 >
                   {primaryActionLabel}
                 </Button>
@@ -537,6 +600,11 @@ const EntityHeaderRoot = React.forwardRef<
           }}
         />
       )}
+      <TriageRejectionDialog
+        open={showAiEscalationDecision && isTriageRejectDialogOpen}
+        onOpenChange={setIsTriageRejectDialogOpen}
+        onReject={handleRejectAiEscalation}
+      />
     </div>
   );
 });

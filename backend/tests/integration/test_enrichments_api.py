@@ -495,7 +495,7 @@ async def test_configure_service_now_saves_settings(
     assert response.status_code == 200
     assert response.json() == {
         "instance_url": "https://example.service-now.com",
-        "settings_saved": 14,
+        "settings_saved": 16,
         "enabled": True,
     }
 
@@ -1597,7 +1597,7 @@ async def test_admin_provider_status_includes_servicenow_counts(
     assert servicenow["settings_prefix"] == "enrichment.servicenow"
     assert servicenow["enabled"] is True
     assert servicenow["supports_bulk_sync"] is True
-    assert servicenow["item_types"] == ["internal_actor"]
+    assert servicenow["item_types"] == ["internal_actor", "system"]
     assert servicenow["cache_entry_count"] == 1
     assert servicenow["alias_count"] == 1
     assert servicenow["last_activity_at"] is not None

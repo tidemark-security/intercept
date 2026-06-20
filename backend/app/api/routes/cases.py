@@ -13,6 +13,8 @@ from app.models.models import (
     CaseRead,
     CaseReadWithAlerts,
     CaseTimelineItem,
+    CaseLinkedAlertResolutionRequest,
+    AlertBulkActionResponse,
     UserAccount,
     PresignedUploadRequest,
     PresignedUploadResponse,
@@ -81,7 +83,7 @@ async def get_cases(
     exclude_tags: Optional[List[str]] = Query(None, description="Require cases to exclude all of these tags"),
     search: Optional[str] = Query(
         None,
-        description="Search cases by title or description (case-insensitive partial match)",
+        description="Search cases by ID, human ID, title, or description (case-insensitive partial match)",
     ),
     start_date: Optional[str] = Query(
         None,
@@ -96,7 +98,7 @@ async def get_cases(
     """Get cases with optional filtering and pagination.
 
     Returns a paginated response with items, total count, page information.
-    Search parameter matches against case title or description using case-insensitive partial matching.
+    Search parameter matches against case ID, human ID, title, or description using case-insensitive partial matching.
     Date filtering expects UTC ISO8601 strings with 'Z' suffix (e.g., "2025-10-20T14:30:00Z").
     Cases are filtered by created_at timestamp.
     """
@@ -216,6 +218,33 @@ async def update_case(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating case: {str(e)}")
+
+
+@router.post("/{case_id}/resolve-linked-alerts", response_model=AlertBulkActionResponse)
+@handle_human_id()
+async def resolve_linked_alerts(
+    case_id: int,
+    request: Request,  # pylint: disable=unused-argument
+    resolution: CaseLinkedAlertResolutionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_non_auditor_user),
+):
+    """Apply one resolution to all open alerts linked to a case."""
+    try:
+        response = await case_service.resolve_linked_alerts(
+            db, case_id, resolution, current_user.username
+        )
+        if response is None:
+            raise HTTPException(status_code=404, detail="Case not found")
+        return response
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error resolving linked alerts: {str(e)}"
+        )
 
 
 @router.delete("/{case_id}")

@@ -88,6 +88,21 @@ function getTimelineTags(item: TimelineItem): string[] {
   return Array.isArray(tags) ? tags : [];
 }
 
+function isAutomationNote(item: TimelineItem): boolean {
+  if (!isNoteItem(item)) {
+    return false;
+  }
+
+  const creator = item.created_by?.trim().toLowerCase();
+  const tags = getTimelineTags(item).map(tag => tag.toLowerCase());
+
+  return (
+    !creator ||
+    ['api_user', 'automation', 'langflow', 'system', 'tidemark_ai'].includes(creator) ||
+    tags.some(tag => tag.startsWith('automation-') || ['automation', 'bulk-action', 'enrichment', 'status-change', 'system'].includes(tag))
+  );
+}
+
 function getLinkedEntityDescription(item: TimelineItem): string | undefined {
   const entityDescription = (item as TimelineItem & { entity_description?: string | null }).entity_description;
 
@@ -218,6 +233,66 @@ function clearCardLines(
   if (options.clearCharacterFlags) {
     cardConfig.characterFlags = undefined;
   }
+}
+
+function renderNoteCard(
+  currentItem: TimelineItem,
+  options: {
+    entityId: number | null;
+    entityType?: 'alert' | 'case' | 'task';
+    linkTemplates?: LinkTemplate[];
+    compactPreview?: boolean;
+    isGrouped?: boolean;
+    itemKey?: React.Key;
+  }
+): React.ReactNode {
+  const isAutomation = isAutomationNote(currentItem);
+  const currentTags = getTimelineTags(currentItem);
+  const noteCardConfig = createTimelineCard(currentItem, {
+    size: 'x-large',
+    alertId: options.entityId,
+    entityType: options.entityType,
+    linkTemplates: options.linkTemplates,
+  });
+  const { children: cardChildren, actionButtons: cardActionButtons, ...baseCardProps } = noteCardConfig;
+  const badgeVariant = isAutomation ? 'warning' : 'neutral';
+  const badgeText = isAutomation ? 'Automation' : 'Human';
+  const badges = (
+    <div className="flex w-full flex-wrap items-center gap-2">
+      <Badge variant={badgeVariant}>{badgeText}</Badge>
+      {currentTags.map(tag => (
+        <Badge key={tag} variant="neutral">{tag}</Badge>
+      ))}
+      {cardActionButtons}
+    </div>
+  );
+
+  clearCardLines(baseCardProps);
+  baseCardProps.title = isAutomation ? 'Automation note' : 'Analyst note';
+  baseCardProps.size = 'x-large';
+  baseCardProps.system = isAutomation ? 'warning' : 'default';
+  baseCardProps.className = cn(
+    baseCardProps.className,
+    'min-h-0 w-full',
+    TIMELINE_ITEM_MAX_WIDTH_CLASS,
+    isAutomation
+      ? 'border-warning-600 bg-warning-primary-blush'
+      : 'border-accent-1-600 bg-neutral-0',
+    options.compactPreview && 'max-w-none !border-0 !bg-transparent',
+    options.isGrouped && 'flex-1 self-stretch min-w-40',
+  );
+  baseCardProps.enableCopyInteractions = false;
+
+  return (
+    <BaseCard key={options.itemKey} {...baseCardProps} actionButtons={badges}>
+      <div className="flex w-full flex-1 flex-col gap-3">
+        {hasText(currentItem.description) ? (
+          <MarkdownContent content={currentItem.description} />
+        ) : null}
+        {cardChildren}
+      </div>
+    </BaseCard>
+  );
 }
 
 function buildEntityTitle(
@@ -765,8 +840,15 @@ export function TimelineItemRenderer({
     const timelineCurrentItem = currentItem as TimelineItem;
     const itemKey = timelineCurrentItem.id || `item-${cardIndex}`;
 
-    if ((timelineCurrentItem as any).type === 'note') {
-      return null;
+    if (timelineCurrentItem.type === 'note') {
+      return renderNoteCard(timelineCurrentItem, {
+        entityId,
+        entityType,
+        linkTemplates,
+        compactPreview,
+        isGrouped,
+        itemKey,
+      });
     }
 
     const isEnrichable = !!entityType && entityId !== null && isTimelineItemEnrichable(timelineCurrentItem);
@@ -818,7 +900,7 @@ export function TimelineItemRenderer({
     baseCardProps.enableCopyInteractions = !isAlertItem(timelineCurrentItem) && !isTaskItem(timelineCurrentItem) && !isCaseItem(timelineCurrentItem);
 
     const description = timelineCurrentItem.description;
-    const shouldRenderInlineDescription = hasText(description) && timelineCurrentItem.type !== 'ttp';
+    const shouldRenderInlineDescription = hasText(description) && (timelineCurrentItem.type as string | undefined) !== 'ttp';
     const currentTags = getTimelineTags(timelineCurrentItem);
     const shouldRenderTags = currentTags.length > 0;
     const shouldUseFooter = !isAlertItem(timelineCurrentItem) && !isTaskItem(timelineCurrentItem) && !isCaseItem(timelineCurrentItem) && (shouldRenderInlineDescription || shouldRenderTags || !!cardActionButtons);
@@ -944,20 +1026,27 @@ export function TimelineItemRenderer({
   const renderReplyContents = (reply: TimelineItem): React.ReactNode => {
     const timelineReply = reply as TimelineItem;
 
-    if (isDeletedItem(timelineReply)) {
+    if (timelineReply.type === '_deleted') {
       return null;
     }
 
-    if ((timelineReply as any).type === 'note') {
-      return hasText(timelineReply.description) ? (
-        <div className={cn("w-full", TIMELINE_ITEM_MAX_WIDTH_CLASS)}>
-          <MarkdownContent content={timelineReply.description} />
+    if (timelineReply.type === 'note') {
+      return (
+        <div className="flex w-full flex-col items-start gap-3">
+          {renderNoteCard(timelineReply, {
+            entityId,
+            entityType,
+            linkTemplates,
+            compactPreview,
+          })}
         </div>
-      ) : null;
+      );
     }
 
-    if (isLinkedTimelineType(timelineReply.type)) {
-      const collapsedReplyCard = renderCollapsedLinkedEntityCard(timelineReply);
+    const replyItem = timelineReply as TimelineItem;
+
+    if (isLinkedTimelineType(replyItem.type)) {
+      const collapsedReplyCard = renderCollapsedLinkedEntityCard(replyItem);
       if (collapsedReplyCard) {
         return (
           <div className="flex w-full flex-col items-start gap-3">
@@ -967,19 +1056,19 @@ export function TimelineItemRenderer({
       }
     }
 
-    const replyDescription = timelineReply.description;
-    const shouldRenderInlineDescription = hasText(replyDescription) && timelineReply.type !== 'ttp';
-    const replyTags = getTimelineTags(timelineReply);
-    const canRefreshEnrichment = !!entityType && entityId !== null && isTimelineItemEnrichable(timelineReply);
-    const isReplyEnrichmentActive = isTimelineItemEnrichmentActive(timelineReply);
-    const replyRefreshEnrichmentButton = renderRefreshEnrichmentAction(timelineReply, {
+    const replyDescription = replyItem.description;
+    const shouldRenderInlineDescription = hasText(replyDescription) && (replyItem.type as string | undefined) !== 'ttp';
+    const replyTags = getTimelineTags(replyItem);
+    const canRefreshEnrichment = !!entityType && entityId !== null && isTimelineItemEnrichable(replyItem);
+    const isReplyEnrichmentActive = isTimelineItemEnrichmentActive(replyItem);
+    const replyRefreshEnrichmentButton = renderRefreshEnrichmentAction(replyItem, {
       enabled: canRefreshEnrichment,
       isActive: isReplyEnrichmentActive,
       isPending: enqueueItemEnrichment.isPending,
       pendingItemId: enqueueItemEnrichment.variables?.itemId,
       onEnqueue: (itemId) => enqueueItemEnrichment.mutate({ itemId }),
     });
-    const replyCardConfig = createTimelineCard(timelineReply, {
+    const replyCardConfig = createTimelineCard(replyItem, {
       size: 'x-large',
       alertId: entityId,
       entityType,
@@ -989,13 +1078,13 @@ export function TimelineItemRenderer({
 
     const { children: replyCardChildren, actionButtons: replyCardActionButtons, ...baseReplyCardProps } = replyCardConfig;
 
-    if (isAlertItem(timelineReply) || isTaskItem(timelineReply) || isCaseItem(timelineReply)) {
+    if (isAlertItem(replyItem) || isTaskItem(replyItem) || isCaseItem(replyItem)) {
       baseReplyCardProps.size = 'x-large';
     }
 
-    baseReplyCardProps.enableCopyInteractions = !isAlertItem(timelineReply) && !isTaskItem(timelineReply) && !isCaseItem(timelineReply);
+    baseReplyCardProps.enableCopyInteractions = !isAlertItem(replyItem) && !isTaskItem(replyItem) && !isCaseItem(replyItem);
 
-    const shouldUseFooter = !isAlertItem(timelineReply) && !isTaskItem(timelineReply) && !isCaseItem(timelineReply) && (shouldRenderInlineDescription || replyTags.length > 0 || !!replyCardActionButtons);
+    const shouldUseFooter = !isAlertItem(replyItem) && !isTaskItem(replyItem) && !isCaseItem(replyItem) && (shouldRenderInlineDescription || replyTags.length > 0 || !!replyCardActionButtons);
     const descriptionNode = shouldUseFooter ? (
       <TimelineDescriptionBlock actionButtons={replyCardActionButtons} tags={replyTags} className="mt-auto">
         {shouldRenderInlineDescription ? <MarkdownContent content={replyDescription} /> : null}
@@ -1009,42 +1098,42 @@ export function TimelineItemRenderer({
       </div>
     ) : null;
 
-    let children: React.ReactNode = withEnrichmentBlocks(timelineReply, replyCardBody, descriptionNode);
+    let children: React.ReactNode = withEnrichmentBlocks(replyItem, replyCardBody, descriptionNode);
 
-    if (isAlertItem(timelineReply)) {
+    if (isAlertItem(replyItem)) {
       baseReplyCardProps.size = 'x-large';
       clearCardLines(baseReplyCardProps);
 
       const replyAlertData: Partial<AlertRead> & { title: string } = {
-        id: timelineReply.alert_id || 0,
-        human_id: timelineReply.alert_id ? convertNumericToAlertId(timelineReply.alert_id) : undefined,
+        id: replyItem.alert_id || 0,
+        human_id: replyItem.alert_id ? convertNumericToAlertId(replyItem.alert_id) : undefined,
         title:
-          timelineReply.title ||
-          (timelineReply.alert_id ? convertNumericToAlertId(timelineReply.alert_id) : 'Alert'),
-        description: getLinkedEntityDescription(timelineReply),
-        priority: timelineReply.priority,
-        status: ((timelineReply as TimelineItem & { status?: AlertStatus | null }).status ?? 'NEW') as AlertStatus,
-        created_at: timelineReply.created_at || '',
+          replyItem.title ||
+          (replyItem.alert_id ? convertNumericToAlertId(replyItem.alert_id) : 'Alert'),
+        description: getLinkedEntityDescription(replyItem),
+        priority: replyItem.priority,
+        status: ((replyItem as TimelineItem & { status?: AlertStatus | null }).status ?? 'NEW') as AlertStatus,
+        created_at: replyItem.created_at || '',
         updated_at:
-          (timelineReply as TimelineItem & { updated_at?: string }).updated_at ||
-          timelineReply.created_at ||
+          (replyItem as TimelineItem & { updated_at?: string }).updated_at ||
+          replyItem.created_at ||
           '',
-        assignee: timelineReply.assignee,
-        source: (timelineReply as TimelineItem & { source?: string }).source,
-        case_id: (timelineReply as TimelineItem & { case_id?: number }).case_id,
+        assignee: replyItem.assignee,
+        source: (replyItem as TimelineItem & { source?: string }).source,
+        case_id: (replyItem as TimelineItem & { case_id?: number }).case_id,
       };
 
-      children = withEnrichmentBlocks(timelineReply, (
+      children = withEnrichmentBlocks(replyItem, (
         <div className="w-full pt-2 flex flex-col gap-3">
-          <AlertCard alertId={timelineReply.alert_id || 0} data={replyAlertData} showTags={false} />
+          <AlertCard alertId={replyItem.alert_id || 0} data={replyAlertData} showTags={false} />
         </div>
-      ), renderLinkedEntityFooter(timelineReply, replyCardActionButtons));
+      ), renderLinkedEntityFooter(replyItem, replyCardActionButtons));
       renderedReplyActionButtons = undefined;
     }
 
     const baseCardElement = <BaseCard {...baseReplyCardProps} actionButtons={renderedReplyActionButtons}>{children}</BaseCard>;
-    const wrappedCardElement = isAlertItem(timelineReply) || isTaskItem(timelineReply) || isCaseItem(timelineReply)
-      ? renderLinkedEntityCardShell(timelineReply, baseCardElement, false)
+    const wrappedCardElement = isAlertItem(replyItem) || isTaskItem(replyItem) || isCaseItem(replyItem)
+      ? renderLinkedEntityCardShell(replyItem, baseCardElement, false)
       : baseCardElement;
 
     return (
@@ -1059,32 +1148,21 @@ export function TimelineItemRenderer({
   let contents: React.ReactNode = null;
 
   if (isNoteItem(item) && !isGrouped) {
-    // Single note displays as plain markdown content without card framing
+    // Single notes use the same card framing as other timeline item types.
     contents = (
       <div className={cn("flex w-full flex-col items-start gap-3", TIMELINE_ITEM_MAX_WIDTH_CLASS)}>
-        {item.description && (
-          <MarkdownContent content={item.description} />
-        )}
+        {renderNoteCard(item, {
+          entityId,
+          entityType,
+          linkTemplates,
+          compactPreview,
+        })}
       </div>
     );
   } else {
-    // For grouped items or non-note items:
-    // 1. Render description as markdown (if present) ONLY for notes
-    // 2. Render cards below the description (descriptions embedded in cards for non-notes)
-    const itemDescription = item.description;
-    const hasDescription = hasText(itemDescription);
-    const isNote = isNoteItem(item);
-    
+    // Grouped notes and non-note items render their descriptions inside cards.
     contents = (
       <div className={cn("flex w-full flex-col items-start gap-3", compactPreview && "min-h-full flex-1")}>
-        {/* Render description as markdown for grouped notes */}
-        {isNote && hasDescription && (
-          <div className={cn("w-full", TIMELINE_ITEM_MAX_WIDTH_CLASS)}>
-            <MarkdownContent content={itemDescription} />
-          </div>
-        )}
-        
-        {/* Render cards below description for non-note items */}
         <div className={cn("flex w-full flex-wrap items-stretch gap-3", compactPreview && "min-h-full flex-1")}>
           {itemsToRender.map((currentItem, cardIndex) => renderTopLevelCard(currentItem, cardIndex))}
         </div>
