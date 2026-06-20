@@ -13,6 +13,9 @@ import { GlobalSearch } from "@/components/search/GlobalSearch";
 import { useSession } from "@/contexts/sessionContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useTimezonePreference } from "@/contexts/TimezoneContext";
+import { useSidebarBadgeCounts } from "@/hooks/useDashboard";
+import { cn } from "@/utils/cn";
+import type { SidebarBadgeCount } from "@/types/generated/models/SidebarBadgeCount";
 
 import {
   BarChart2,
@@ -41,6 +44,7 @@ type NavigationItem = {
   to?: string;
   match?: (path: string) => boolean;
   mobileClassName?: string;
+  badgeKey?: "alerts" | "cases" | "tasks";
 };
 
 const navigationItems: NavigationItem[] = [
@@ -58,6 +62,7 @@ const navigationItems: NavigationItem[] = [
     icon: Bell,
     to: "/alerts",
     match: (path: string) => path === "/alerts" || path.startsWith("/alerts/"),
+    badgeKey: "alerts",
   },
   {
     key: "cases",
@@ -65,6 +70,7 @@ const navigationItems: NavigationItem[] = [
     icon: NotebookPen,
     to: "/cases",
     match: (path: string) => path.startsWith("/cases"),
+    badgeKey: "cases",
   },
   {
     key: "tasks",
@@ -72,6 +78,7 @@ const navigationItems: NavigationItem[] = [
     icon: List,
     to: "/tasks",
     match: (path: string) => path.startsWith("/tasks"),
+    badgeKey: "tasks",
   },
   {
     key: "ai-chat",
@@ -125,6 +132,90 @@ function SidebarNavTooltip({
         {tooltip}
       </Tooltip.Content>
     </Tooltip.Root>
+  );
+}
+
+function formatBadgeCount(count: number) {
+  return count > 99 ? "99+" : count.toString();
+}
+
+type SidebarBadgeGroupProps = {
+  counts?: SidebarBadgeCount;
+  compact?: boolean;
+};
+
+function SidebarBadgeGroup({ counts, compact = false }: SidebarBadgeGroupProps) {
+  if (!counts || (counts.open <= 0 && counts.unassigned <= 0)) {
+    return null;
+  }
+
+  const badges = [
+    {
+      key: "open",
+      label: "Open",
+      shortLabel: "O",
+      value: counts.open,
+      className: "border-brand-900 bg-brand-1100 text-brand-400",
+    },
+    {
+      key: "unassigned",
+      label: "Unassigned",
+      shortLabel: "U",
+      value: counts.unassigned,
+      className: "border-warning-900 bg-warning-1100 text-warning-400",
+    },
+  ].filter((badge) => badge.value > 0);
+
+  return (
+    <span
+      className={cn(
+        "ml-auto flex min-w-0 flex-none items-center justify-end gap-1",
+        compact && "ml-0 justify-center",
+      )}
+      aria-hidden="true"
+    >
+      {badges.map((badge) => (
+        <span
+          key={badge.key}
+          title={`${badge.label}: ${badge.value}`}
+          className={cn(
+            "inline-flex h-4 min-w-4 items-center justify-center gap-0.5 rounded-sm border px-1 text-[10px] font-monospace-body leading-none",
+            compact && "h-3.5 min-w-3.5 px-0.5 text-[9px]",
+            badge.className,
+          )}
+        >
+          <span>{badge.shortLabel}</span>
+          <span>{formatBadgeCount(badge.value)}</span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+type SidebarNavLabelProps = {
+  label: string;
+  counts?: SidebarBadgeCount;
+  compact?: boolean;
+};
+
+function SidebarNavLabel({ label, counts, compact = false }: SidebarNavLabelProps) {
+  const describedBy = counts
+    ? `${label}: ${counts.open} open, ${counts.unassigned} unassigned`
+    : label;
+
+  return (
+    <span
+      className={cn(
+        "flex min-w-0 flex-1 items-center gap-2",
+        compact && "flex-col gap-0.5",
+      )}
+    >
+      <span className={compact ? "text-[10px] leading-none" : "truncate"}>
+        {label}
+      </span>
+      <SidebarBadgeGroup counts={counts} compact={compact} />
+      {counts ? <span className="sr-only">{describedBy}</span> : null}
+    </span>
   );
 }
 
@@ -191,6 +282,7 @@ export function DesktopSidebar() {
     handleNavClick,
     handleNavKeyDown,
   } = useNavigation();
+  const { data: sidebarBadgeCounts } = useSidebarBadgeCounts();
   const { timezonePreference, setTimezonePreference } = useTimezonePreference();
   const { resolvedTheme, setThemePreference } = useTheme();
   const timezoneLabel = `Timezone (${timezonePreference === "utc" ? "UTC" : "Local"})`;
@@ -340,6 +432,7 @@ export function DesktopSidebar() {
         {visibleNavigationItems.map((item) => {
           const Icon = item.icon;
           const selected = isItemSelected(item);
+          const counts = item.badgeKey ? sidebarBadgeCounts?.[item.badgeKey] : undefined;
           return (
             <SidebarNavTooltip
               key={item.key}
@@ -357,7 +450,7 @@ export function DesktopSidebar() {
                   : undefined
               }
             >
-              {item.label}
+              <SidebarNavLabel label={item.label} counts={counts} />
             </SidebarNavTooltip>
           );
         })}
@@ -374,6 +467,7 @@ export function MobileSidebar() {
     handleNavClick,
     handleNavKeyDown,
   } = useNavigation();
+  const { data: sidebarBadgeCounts } = useSidebarBadgeCounts();
 
   return (
     <SidebarRailWithLabels
@@ -392,6 +486,7 @@ export function MobileSidebar() {
       {mobileNavItems.map((item) => {
         const Icon = item.icon;
         const selected = isItemSelected(item);
+        const counts = item.badgeKey ? sidebarBadgeCounts?.[item.badgeKey] : undefined;
         return (
           <SidebarRailWithLabels.NavItem
             key={item.key}
@@ -410,7 +505,7 @@ export function MobileSidebar() {
                 : undefined
             }
           >
-            {item.label}
+            <SidebarNavLabel label={item.label} counts={counts} compact />
           </SidebarRailWithLabels.NavItem>
         );
       })}

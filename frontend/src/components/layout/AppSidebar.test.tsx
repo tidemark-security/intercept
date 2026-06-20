@@ -10,10 +10,16 @@ import {
   type SessionContextValue,
 } from "@/contexts/sessionContext";
 
+const mockUseSidebarBadgeCounts = vi.hoisted(() => vi.fn());
+
 vi.mock("@/assets/TMS-logo-green.svg?react", () => ({
   default: (props: React.SVGProps<SVGSVGElement>) => (
     <svg {...props} data-testid="tms-logo" />
   ),
+}));
+
+vi.mock("@/hooks/useDashboard", () => ({
+  useSidebarBadgeCounts: mockUseSidebarBadgeCounts,
 }));
 
 vi.mock("@tidemark-security/ux", async () => {
@@ -159,6 +165,8 @@ vi.mock("@tidemark-security/ux", async () => {
   );
 
   return {
+    cn: (...classes: Array<string | false | null | undefined>) =>
+      classes.filter(Boolean).join(" "),
     DropdownMenu,
     SidebarRailWithLabels,
     ToggleGroup,
@@ -203,6 +211,7 @@ function renderDesktopSidebar() {
 describe("DesktopSidebar", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUseSidebarBadgeCounts.mockReturnValue({ data: undefined });
   });
 
   it("does not render duplicate visible labels before a collapsed item is active", () => {
@@ -255,5 +264,36 @@ describe("DesktopSidebar", () => {
       expect(within(screen.getByRole("tooltip")).getByText(label)).toBeVisible();
       fireEvent.blur(item);
     }
+  });
+
+  it("renders open and unassigned badges for work queue navigation items", () => {
+    mockUseSidebarBadgeCounts.mockReturnValue({
+      data: {
+        alerts: { open: 7, unassigned: 2 },
+        cases: { open: 3, unassigned: 1 },
+        tasks: { open: 11, unassigned: 0 },
+      },
+    });
+
+    renderDesktopSidebar();
+
+    const alertsItem = screen.getByLabelText("Alerts");
+    expect(within(alertsItem).getByText("O")).toBeVisible();
+    expect(within(alertsItem).getByText("7")).toBeVisible();
+    expect(within(alertsItem).getByText("U")).toBeVisible();
+    expect(within(alertsItem).getByText("2")).toBeVisible();
+
+    const casesItem = screen.getByLabelText("Cases");
+    expect(within(casesItem).getByText("O")).toBeVisible();
+    expect(within(casesItem).getByText("3")).toBeVisible();
+    expect(within(casesItem).getByText("U")).toBeVisible();
+    expect(within(casesItem).getByText("1")).toBeVisible();
+
+    const tasksItem = screen.getByLabelText("Tasks");
+    expect(within(tasksItem).getByText("O")).toBeVisible();
+    expect(within(tasksItem).getByText("11")).toBeVisible();
+    expect(within(tasksItem).queryByText("U")).not.toBeInTheDocument();
+
+    expect(within(screen.getByLabelText("AI Chat")).queryByText("O")).not.toBeInTheDocument();
   });
 });

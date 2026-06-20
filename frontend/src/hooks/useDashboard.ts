@@ -2,6 +2,7 @@ import { useQuery, UseQueryResult } from '@tanstack/react-query';
 import { DashboardService } from '@/types/generated/services/DashboardService';
 import type { DashboardStatsResponse } from '@/types/generated/models/DashboardStatsResponse';
 import type { RecentItemsResponse } from '@/types/generated/models/RecentItemsResponse';
+import type { SidebarBadgeCountsResponse } from '@/types/generated/models/SidebarBadgeCountsResponse';
 
 interface UseDashboardOptions {
   myItems?: boolean;
@@ -30,6 +31,18 @@ export function useDashboard(
     queryFn: () => DashboardService.getDashboardStatsApiV1DashboardStatsGet({ myItems }),
     staleTime: 30 * 1000, // 30 seconds - dashboard stats should be fresh
     refetchInterval: 60 * 1000, // Refetch every minute
+  });
+}
+
+/**
+ * Hook to fetch authoritative sidebar badge counts for open and unassigned work
+ */
+export function useSidebarBadgeCounts(): UseQueryResult<SidebarBadgeCountsResponse, Error> {
+  return useQuery({
+    queryKey: ['dashboard', 'sidebar-badge-counts'],
+    queryFn: () => DashboardService.getSidebarBadgeCountsApiV1DashboardSidebarBadgeCountsGet(),
+    staleTime: 30 * 1000,
+    refetchInterval: 60 * 1000,
   });
 }
 
