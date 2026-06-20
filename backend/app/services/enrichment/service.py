@@ -965,6 +965,18 @@ class EnrichmentService:
         result: EnrichmentResult,
     ) -> None:
         item.setdefault("enrichments", {})[result.provider_id] = result.enrichment_data
+        if (
+            result.provider_id == "servicenow"
+            and item.get("type") == "internal_actor"
+            and "error" not in result.enrichment_data
+        ):
+            for item_key, enrichment_key in (
+                ("is_vip", "is_vip"),
+                ("is_privileged", "is_privileged"),
+            ):
+                value = result.enrichment_data.get(enrichment_key)
+                if isinstance(value, bool):
+                    item[item_key] = value
         self._apply_system_enrichment_fields(item, result)
         await self._upsert_alias_mappings(db, result.provider_id, result.aliases)
 

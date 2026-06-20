@@ -47,7 +47,7 @@ class FakeAsyncClient:
         assert url == "https://example.service-now.com/api/now/table/sys_user"
         params = params or {}
         self.requests.append(dict(params))
-        if params.get("sysparm_limit") == 1 and "sysparm_offset" not in params:
+        if params.get("sysparm_limit") == 2 and "sysparm_offset" not in params:
             return FakeResponse(
                 200,
                 {
@@ -63,6 +63,8 @@ class FakeAsyncClient:
                             "department": {"display_value": "SOC", "value": "dept-1"},
                             "company": {"display_value": "Tidemark", "value": "company-1"},
                             "active": "true",
+                            "vip": "true",
+                            "u_privileged_user": "1",
                         }
                     ]
                 },
@@ -126,10 +128,80 @@ async def test_enrich_fetches_servicenow_user(monkeypatch: pytest.MonkeyPatch) -
 
     assert result.provider_id == "servicenow"
     assert result.cache_key == "user:alice@example.com"
+    assert result.enrichment_data["source_table"] == "sys_user"
+    assert result.enrichment_data["record_id"] == "sn-user-1"
+    assert result.enrichment_data["record_link"] == "https://example.service-now.com/sys_user.do?sys_id=sn-user-1"
+    assert result.enrichment_data["matched_identifier"] == "alice@example.com"
     assert result.enrichment_data["department"] == "SOC"
+    assert result.enrichment_data["is_vip"] is True
+    assert result.enrichment_data["is_privileged"] is True
+    assert result.enrichment_data["mapped_fields"] == {
+        "vip": {"field": "vip", "value": "true", "mapped": True},
+        "privileged": {"field": "u_privileged_user", "value": "1", "mapped": True},
+    }
     alias_values = {alias.alias_value for alias in result.aliases}
     assert {"sn-user-1", "alice", "alice@example.com", "alice analyst"} <= alias_values
     assert FakeAsyncClient.requests[0]["sysparm_query"] == "email=alice@example.com^ORuser_name=alice@example.com"
+    assert FakeAsyncClient.requests[0]["sysparm_limit"] == 2
+
+
+@pytest.mark.asyncio
+async def test_enrich_returns_error_for_ambiguous_servicenow_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    class AmbiguousAsyncClient(FakeAsyncClient):
+        async def get(self, url: str, params: dict[str, object] | None = None):
+            return FakeResponse(
+                200,
+                {
+                    "result": [
+                        {"sys_id": "sn-user-1", "email": "alice@example.com"},
+                        {"sys_id": "sn-user-2", "email": "alice@example.com"},
+                    ]
+                },
+            )
+
+    monkeypatch.setattr("app.services.enrichment.providers.servicenow.httpx.AsyncClient", AmbiguousAsyncClient)
+    provider = servicenow_provider.__class__()
+
+    result = await provider.enrich(
+        db=None,  # type: ignore[arg-type]
+        settings=_settings(),  # type: ignore[arg-type]
+        item={"type": "internal_actor", "user_id": "alice@example.com"},
+        entity_type="alert",
+        entity_id=1,
+    )
+
+    assert result.enrichment_data == {
+        "error": "Ambiguous user lookup: alice@example.com",
+        "matched_identifier": "alice@example.com",
+    }
+
+
+def test_build_result_preserves_false_vip_and_privileged_values() -> None:
+    provider = servicenow_provider.__class__()
+
+    result = provider._build_result(  # type: ignore[attr-defined]
+        {
+            "sys_id": "sn-user-4",
+            "user_name": "dan",
+            "email": "dan@example.com",
+            "name": "Dan Defender",
+            "vip": "false",
+            "u_privileged_user": "0",
+        },
+        cache_key="user:dan@example.com",
+        cfg={
+            "instance_url": "https://example.service-now.com",
+            "table": "sys_user",
+            "user_vip_field": "vip",
+            "user_privileged_field": "u_privileged_user",
+        },
+        matched_identifier="dan@example.com",
+    )
+
+    assert result.enrichment_data["is_vip"] is False
+    assert result.enrichment_data["is_privileged"] is False
+    assert result.enrichment_data["mapped_fields"]["vip"]["mapped"] is False
+    assert result.enrichment_data["mapped_fields"]["privileged"]["mapped"] is False
 
 
 @pytest.mark.asyncio
