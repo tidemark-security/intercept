@@ -14,12 +14,15 @@ from app.models.models import (
     CaseCreate, CaseUpdate, CaseRead,
     AlertCreate, AlertUpdate, AlertTriageRequest,
     CaseReadWithAlerts, AlertReadWithCase, CaseTimelineItem, CaseAlertClosureUpdate,
+    CaseLinkedAlertResolutionRequest, AlertBulkActionResponse,
 )
 from app.models.enums import CaseStatus, AlertStatus, TaskStatus, RealtimeEventType
+from app.services.alert_triage_apply_service import apply_triage_state
 from app.services.timeline_add_service import add_timeline_item_and_commit, update_timeline_item_and_commit
 from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
+from app.services import triage_recommendation_service
 from app.services.tag_filter_utils import append_tag_filters, normalize_persisted_tags
 
 logger = logging.getLogger(__name__)
@@ -607,6 +610,158 @@ class CaseService:
             "tags": ["case-closure"],
         }
         timeline_service.add_timeline_item(db_case, closure_note, created_by=closed_by)
+
+    async def resolve_linked_alerts(
+        self,
+        db: AsyncSession,
+        case_id: int,
+        resolution: CaseLinkedAlertResolutionRequest,
+        resolved_by: str,
+    ) -> Optional[AlertBulkActionResponse]:
+        """Apply one closure status to every non-closed alert linked to a case."""
+        if resolution.status not in VALID_ALERT_CLOSED_STATUSES:
+            raise ValueError("status must be a closed alert resolution")
+
+        try:
+            db_case = await db.get(Case, case_id)
+            if db_case is None:
+                return None
+
+            result = await db.execute(
+                select(Alert)
+                .where(Alert.case_id == case_id)
+                .with_for_update()
+            )
+            linked_alerts = list(result.scalars().all())
+            changed_alert_ids: list[int] = []
+            case_human_id = f"CAS-{case_id:07d}"
+
+            for alert in linked_alerts:
+                if alert.status in VALID_ALERT_CLOSED_STATUSES:
+                    continue
+
+                before = self._alert_resolution_audit_snapshot(alert)
+                apply_triage_state(
+                    alert,
+                    triaged_by=resolved_by,
+                    status=resolution.status,
+                    triage_notes=resolution.note,
+                    set_assignee=True,
+                )
+                alert.updated_at = datetime.now(timezone.utc)
+                self._add_linked_alert_resolution_note(
+                    alert, case_human_id, resolution, resolved_by
+                )
+
+                await triage_recommendation_service.auto_reject_if_pending(
+                    db, alert.id, resolved_by  # type: ignore[arg-type]
+                )
+                await self._audit_alert_resolution(db, alert, before, resolved_by)
+                await emit_event(
+                    db,
+                    entity_type="alert",
+                    entity_id=alert.id,  # type: ignore[arg-type]
+                    event_type=RealtimeEventType.ENTITY_UPDATED,
+                    performed_by=resolved_by,
+                )
+                if alert.id is not None:
+                    changed_alert_ids.append(alert.id)
+
+            await db.commit()
+            updated_alerts = await self._load_resolved_alerts(db, changed_alert_ids)
+            return AlertBulkActionResponse(
+                updated_alerts=updated_alerts,  # type: ignore[arg-type]
+                updated_count=len(updated_alerts),
+                case_id=case_id,
+                case_human_id=case_human_id,
+            )
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Error resolving linked alerts for case {case_id}: {e}")
+            raise
+
+    @staticmethod
+    def _alert_resolution_audit_snapshot(alert: Alert) -> dict[str, Any]:
+        return {
+            "status": alert.status,
+            "assignee": alert.assignee,
+            "triaged_at": alert.triaged_at,
+            "triage_notes": alert.triage_notes,
+        }
+
+    async def _audit_alert_resolution(
+        self,
+        db: AsyncSession,
+        alert: Alert,
+        before: dict[str, Any],
+        resolved_by: str,
+    ) -> None:
+        after = self._alert_resolution_audit_snapshot(alert)
+        changed_before = {
+            field: value for field, value in before.items() if value != after.get(field)
+        }
+        if not changed_before:
+            return
+
+        await get_audit_service(db).log_entity_updated(
+            entity_type="alert",
+            entity_id=alert.id,  # type: ignore[arg-type]
+            before=changed_before,
+            after={field: after.get(field) for field in changed_before},
+            user=resolved_by,
+        )
+
+    @staticmethod
+    def _add_linked_alert_resolution_note(
+        alert: Alert,
+        case_human_id: str,
+        resolution: CaseLinkedAlertResolutionRequest,
+        resolved_by: str,
+    ) -> None:
+        status_desc = ALERT_STATUS_DESCRIPTIONS.get(
+            resolution.status, resolution.status.value
+        )
+        description = (
+            resolution.note
+            or f"Alert resolved as {status_desc} during case {case_human_id} closure"
+        )
+        now = datetime.now(timezone.utc)
+        timeline_service.add_timeline_item(
+            alert,
+            {
+                "id": str(uuid4()),
+                "type": "note",
+                "description": description,
+                "created_at": now.isoformat(),
+                "timestamp": now.isoformat(),
+                "created_by": resolved_by,
+                "tags": ["bulk-action", "case-closure"],
+                "flagged": False,
+                "highlighted": False,
+                "replies": {},
+            },
+            created_by=resolved_by,
+        )
+
+    async def _load_resolved_alerts(
+        self,
+        db: AsyncSession,
+        alert_ids: list[int],
+    ) -> list[Alert]:
+        if not alert_ids:
+            return []
+
+        result = await db.execute(
+            select(Alert)
+            .options(selectinload(Alert.triage_recommendation))  # type: ignore
+            .where(col(Alert.id).in_(alert_ids))
+        )
+        alerts_by_id = {alert.id: alert for alert in result.scalars().all()}
+        return [
+            alerts_by_id[alert_id]
+            for alert_id in alert_ids
+            if alert_id in alerts_by_id
+        ]
     
     async def delete_case(self, db: AsyncSession, case_id: int, deleted_by: str) -> bool:
         """Permanently delete a case after recording an audit snapshot."""

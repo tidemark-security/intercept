@@ -5,9 +5,10 @@ from typing import Any
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 
 from app.models.enums import AlertStatus, RecommendationStatus, TriageDisposition
-from app.models.models import Alert, Case, TriageRecommendation
+from app.models.models import Alert, AuditLog, Case, TriageRecommendation
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -369,3 +370,128 @@ async def test_closing_case_with_blank_summary_creates_no_timeline_note(
 
     assert response.status_code == 200, response.text
     assert _timeline_values(response.json()["timeline_items"]) == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_linked_alerts_bulk_updates_open_case_alerts(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        case = Case(
+            title="Bulk resolution case",
+            description="Resolve linked alerts",
+            created_by="seed-user",
+        )
+        other_case = Case(
+            title="Other case",
+            description="Should not be touched",
+            created_by="seed-user",
+        )
+        session.add_all([case, other_case])
+        await session.flush()
+        assert case.id is not None
+        assert other_case.id is not None
+
+        open_alert = Alert(
+            title="Open linked alert",
+            description="Should close",
+            source="SIEM",
+            case_id=case.id,
+            status=AlertStatus.ESCALATED,
+        )
+        already_closed_alert = Alert(
+            title="Already closed linked alert",
+            description="Should stay as-is",
+            source="EDR",
+            case_id=case.id,
+            status=AlertStatus.CLOSED_TP,
+        )
+        other_alert = Alert(
+            title="Other case alert",
+            description="Should not close",
+            source="EDR",
+            case_id=other_case.id,
+            status=AlertStatus.ESCALATED,
+        )
+        session.add_all([open_alert, already_closed_alert, other_alert])
+        await session.flush()
+        open_alert_id = open_alert.id
+        already_closed_alert_id = already_closed_alert.id
+        other_alert_id = other_alert.id
+        assert open_alert_id is not None
+        assert already_closed_alert_id is not None
+        assert other_alert_id is not None
+        await session.commit()
+        case_id = case.id
+
+    response = await client.post(
+        f"/api/v1/cases/{case_id}/resolve-linked-alerts",
+        json={"status": AlertStatus.CLOSED_FP.value, "note": "Case closure resolution"},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["updated_count"] == 1
+    assert payload["case_id"] == case_id
+    assert payload["case_human_id"].startswith("CAS-")
+    assert [alert["id"] for alert in payload["updated_alerts"]] == [open_alert_id]
+
+    async with session_maker() as session:
+        open_alert = await session.get(Alert, open_alert_id)
+        already_closed_alert = await session.get(Alert, already_closed_alert_id)
+        other_alert = await session.get(Alert, other_alert_id)
+        assert open_alert is not None
+        assert already_closed_alert is not None
+        assert other_alert is not None
+
+        assert open_alert.status == AlertStatus.CLOSED_FP
+        assert open_alert.triaged_at is not None
+        assert already_closed_alert.status == AlertStatus.CLOSED_TP
+        assert other_alert.status == AlertStatus.ESCALATED
+        assert any(
+            item.get("description") == "Case closure resolution"
+            and item.get("tags") == ["bulk-action", "case-closure"]
+            for item in _timeline_values(open_alert.timeline_items)
+        )
+
+        audit_result = await session.execute(
+            select(AuditLog)
+            .where(AuditLog.entity_type == "alert")
+            .where(AuditLog.entity_id == str(open_alert_id))
+            .where(AuditLog.event_type == "entity.updated")
+        )
+        assert audit_result.scalar_one_or_none() is not None
+
+
+@pytest.mark.asyncio
+async def test_resolve_linked_alerts_rejects_non_closed_status(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        case = Case(
+            title="Invalid resolution case",
+            description="Reject non-closed status",
+            created_by="seed-user",
+        )
+        session.add(case)
+        await session.commit()
+        case_id = case.id
+        assert case_id is not None
+
+    response = await client.post(
+        f"/api/v1/cases/{case_id}/resolve-linked-alerts",
+        json={"status": AlertStatus.IN_PROGRESS.value},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "status must be a closed alert resolution"
