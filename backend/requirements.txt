@@ -6,6 +6,7 @@ asyncpg==0.31.0
 authlib>=1.7.0
 cachetools==7.0.6
 email-validator==2.3.0
+extract-msg==0.55.0
 fastapi-pagination==0.15.12
 fastapi==0.136.1
 geoip2==5.2.0

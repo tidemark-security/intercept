@@ -381,6 +381,12 @@ async def handle_update_attachment_status(
     from app.models.enums import UploadStatus
     from app.models.models import AttachmentItem
     from app.services.attachment_settings_service import get_attachment_limits
+    from app.services.email_evidence_service import (
+        EmailEvidenceParseError,
+        build_email_timeline_item,
+        is_email_evidence_file,
+        parse_email_evidence,
+    )
     from app.services.storage_service import storage_service
 
     try:
@@ -407,6 +413,8 @@ async def handle_update_attachment_status(
                 status_code=400,
                 detail=f"Cannot transition from {current_status} to {update_data.status}",
             )
+
+        email_timeline_item = None
 
         if update_data.status == UploadStatus.COMPLETE:
             storage_key = timeline_item.get("storage_key")
@@ -518,6 +526,29 @@ async def handle_update_attachment_status(
                         status_code=409,
                         detail="Uploaded file hash does not match the stored object",
                     )
+                if entity_type == "case" and is_email_evidence_file(
+                    timeline_item.get("file_name"),
+                    detected_mime_type,
+                ):
+                    try:
+                        email_bytes = await storage_service.get_object_bytes(
+                            storage_key,
+                            max_bytes=expected_size,
+                        )
+                        parsed_email = parse_email_evidence(
+                            email_bytes,
+                            timeline_item.get("file_name"),
+                            detected_mime_type,
+                        )
+                        email_timeline_item = build_email_timeline_item(
+                            parsed_email,
+                            created_by=current_user.username,
+                        )
+                    except EmailEvidenceParseError as exc:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=str(exc),
+                        ) from exc
             except HTTPException:
                 try:
                     await storage_service.delete_file(storage_key)
@@ -540,6 +571,11 @@ async def handle_update_attachment_status(
         updated = await service.update_timeline_item(
             db, parent_id, item_id, attachment_item, current_user.username,
         )
+
+        if email_timeline_item is not None:
+            updated = await service.add_timeline_item(
+                db, parent_id, email_timeline_item, current_user.username,
+            )
 
         logger.info(
             "Updated attachment status for %s %s, item %s, status %s, user %s",

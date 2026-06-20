@@ -35,7 +35,13 @@ def test_checksum_sha256_hex_rejects_invalid_checksum(headers: dict[str, str]) -
     assert StorageService._checksum_sha256_hex(headers) is None
 
 
-ALLOWED_TYPES = ("message/rfc822", "application/zip", "application/x-7z-compressed", "text/html")
+ALLOWED_TYPES = (
+    "message/rfc822",
+    "application/vnd.ms-outlook",
+    "application/zip",
+    "application/x-7z-compressed",
+    "text/html",
+)
 DENIED_TYPES = ("text/html", "application/x-7z-compressed")
 
 
@@ -43,6 +49,7 @@ DENIED_TYPES = ("text/html", "application/x-7z-compressed")
     "mime_type",
     [
         "message/rfc822",
+        "application/vnd.ms-outlook",
         "application/zip",
         "application/x-zip-compressed",
         "APPLICATION/X-ZIP-COMPRESSED",
