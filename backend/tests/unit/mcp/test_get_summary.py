@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import pytest
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.mcp import tools as mcp_tools
-from app.models.models import Case
+from app.models.enums import ContextCriterionType
+from app.models.models import Alert, Case, ContextEntry
 from app.services import mcp_service
 
 
@@ -19,6 +21,10 @@ def _assert_no_none_values(payload: object) -> None:
         for value in payload:
             assert value is not None, "Unexpected None value in list"
             _assert_no_none_values(value)
+
+
+def _criterion(criterion_type: ContextCriterionType, value: str) -> dict[str, str]:
+    return {"type": criterion_type.value, "value": value}
 
 
 @pytest.mark.asyncio
@@ -92,6 +98,8 @@ async def test_get_summary_includes_observable_items_from_timeline(
     assert result.observables.items[0].type == "IP"
     assert result.observables.items[0].value == "81.2.69.160"
     assert result.observables.items[0].count == 1
+    assert result.context.items == []
+    assert result.context.total_count == 0
 
 
 @pytest.mark.asyncio
@@ -159,6 +167,82 @@ async def test_get_summary_exposes_enrichments_for_non_observable_timeline_items
             }
         }
     }
+    assert result.context.items == []
+    assert result.context.total_count == 0
+
+
+@pytest.mark.asyncio
+async def test_get_summary_includes_matching_alert_context(
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    alert = Alert(
+        title="Temporary context alert",
+        source="edr-primary",
+        created_by="analyst",
+        tags=["maintenance-window"],
+        timeline_items=[
+            {
+                "id": "host-1",
+                "type": "system",
+                "timestamp": "2026-03-09T11:38:09.676066+00:00",
+                "hostname": "server-01.corp.local",
+            }
+        ],
+    )
+    future = datetime.now(timezone.utc) + timedelta(days=1)
+    past = datetime.now(timezone.utc) - timedelta(days=1)
+
+    async with session_maker() as session:
+        session.add(alert)
+        session.add_all(
+            [
+                ContextEntry(
+                    criteria=[_criterion(ContextCriterionType.ALERT_SOURCE, "edr-*")],
+                    body="A team member is working on this alert source.",
+                    author="analyst1",
+                    expires_at=future,
+                ),
+                ContextEntry(
+                    criteria=[_criterion(ContextCriterionType.TAG, "maintenance-*")],
+                    body="Maintenance window is active.",
+                    author="analyst2",
+                    expires_at=future,
+                ),
+                ContextEntry(
+                    criteria=[_criterion(ContextCriterionType.SYSTEM, "server-99*")],
+                    body="Should not match this host.",
+                    author="analyst3",
+                    expires_at=future,
+                ),
+                ContextEntry(
+                    criteria=[_criterion(ContextCriterionType.ALERT_SOURCE, "edr-*")],
+                    body="Expired context should be hidden.",
+                    author="analyst4",
+                    expires_at=past,
+                ),
+            ]
+        )
+        await session.commit()
+        await session.refresh(alert)
+
+        assert alert.id is not None
+
+        result = await mcp_service.get_summary(
+            db=session,
+            kind="alert",
+            id_str=str(alert.id),
+            max_timeline_items=1,
+        )
+
+    assert result.context.total_count == 2
+    assert result.context.omitted_count == 1
+    assert [entry.body for entry in result.context.items] == [
+        "A team member is working on this alert source."
+    ]
+    assert result.context.items[0].criteria == [
+        {"type": "ALERT_SOURCE", "value": "edr-*"}
+    ]
+    assert result.context.items[0].author == "analyst1"
 
 
 @pytest.mark.asyncio
@@ -234,6 +318,8 @@ async def test_get_summary_tool_omits_none_values_recursively(
     _assert_no_none_values(payload)
     note_item = next(item for item in payload["timeline"]["items"] if item["type"] == "note")
     observable_item = next(item for item in payload["timeline"]["items"] if item["type"] == "observable")
+    assert payload["context"]["items"] == []
+    assert payload["context"]["total_count"] == 0
     assert "author" not in note_item
     assert "entity_id" not in note_item
     assert "office" not in observable_item["enrichments"]["maxmind"]

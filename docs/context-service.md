@@ -122,3 +122,29 @@ Audit snapshots use the public read shape, including `criteria`.
 `ContextService.get_matching_context_for_alert(alert_id)` is used by the alert triage background task. Matching entries are serialized as snapshots containing `id`, `criteria`, `body`, `author`, `created_at`, `updated_at`, and `expires_at`.
 
 The triage task writes those snapshots to `TriageRecommendation.applied_context_entries` and passes them to LangFlow under `triage_context_entries`. Keeping this field name preserves the existing AI triage flow contract while the service itself remains generic.
+
+## MCP get_summary Consumer
+
+`get_summary` returns active context entries that match an alert under the top-level `context` section:
+
+```json
+{
+  "context": {
+    "items": [
+      {
+        "id": 12,
+        "criteria": [{ "type": "ALERT_SOURCE", "value": "edr-*" }],
+        "body": "Network team is testing this detection today.",
+        "author": "analyst1",
+        "created_at": "2026-06-08T00:00:00Z",
+        "updated_at": "2026-06-08T00:00:00Z",
+        "expires_at": "2026-06-15T00:00:00Z"
+      }
+    ],
+    "total_count": 1,
+    "omitted_count": 0
+  }
+}
+```
+
+For `case` and `task` summaries, `context.items` is empty and both counts are `0`. Alert context entries are bounded by the existing `max_timeline_items` request limit so large temporary-context sets cannot dominate the LLM payload.
