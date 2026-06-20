@@ -95,6 +95,105 @@ describe("EntityFilterToolbar", () => {
     expect(getModifiedIndicator(statusButton)).toBeInTheDocument();
   });
 
+  it("selects every open status and clears closed statuses from the status parent option", async () => {
+    const user = userEvent.setup();
+    const onFilterChange = vi.fn();
+    renderToolbar(
+      {
+        search: "",
+        assignee: null,
+        status: ["CLOSED_TP", "CLOSED_FP"],
+        includeTags: null,
+        excludeTags: null,
+        dateRange: null,
+      },
+      onFilterChange,
+    );
+
+    await user.click(screen.getByRole("button", { name: /status 2 statuses/i }));
+    await user.click(screen.getByRole("menuitem", { name: /all open/i }));
+
+    expect(onFilterChange).toHaveBeenCalledWith({
+      search: "",
+      assignee: null,
+      status: ["NEW", "IN_PROGRESS"],
+      includeTags: null,
+      excludeTags: null,
+      dateRange: null,
+    });
+  });
+
+  it("selects every closed status and clears open statuses from the status parent option", async () => {
+    const user = userEvent.setup();
+    const onFilterChange = vi.fn();
+    renderToolbar(undefined, onFilterChange);
+
+    await user.click(screen.getByRole("button", { name: /status 2 statuses/i }));
+    await user.click(screen.getByRole("menuitem", { name: /all closed/i }));
+
+    expect(onFilterChange).toHaveBeenCalledWith({
+      search: "",
+      assignee: null,
+      status: [
+        "CLOSED_TP",
+        "CLOSED_BP",
+        "CLOSED_FP",
+        "CLOSED_UNRESOLVED",
+        "CLOSED_DUPLICATE",
+      ],
+      includeTags: null,
+      excludeTags: null,
+      dateRange: null,
+    });
+  });
+
+  it("uses task status options for open and closed parent selections", async () => {
+    const user = userEvent.setup();
+    const onFilterChange = vi.fn();
+
+    renderWithProviders(
+      <EntityFilterToolbar
+        filters={{
+          search: "",
+          assignee: null,
+          status: ["TODO", "IN_PROGRESS"],
+          includeTags: null,
+          excludeTags: null,
+          dateRange: null,
+        }}
+        onFilterChange={onFilterChange}
+        assignees={users}
+        assigneesLoading={false}
+        statusOptions={[
+          { value: "TODO", label: "To Do" },
+          { value: "IN_PROGRESS", label: "In Progress" },
+          { value: "DONE", label: "Done" },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /status 2 statuses/i }));
+    await user.click(screen.getByRole("menuitem", { name: /all closed/i }));
+
+    expect(onFilterChange).toHaveBeenCalledWith({
+      search: "",
+      assignee: null,
+      status: ["DONE"],
+      includeTags: null,
+      excludeTags: null,
+      dateRange: null,
+    });
+  });
+
+  it("does not show the status clear selection control", async () => {
+    const user = userEvent.setup();
+    renderToolbar();
+
+    await user.click(screen.getByRole("button", { name: /status 2 statuses/i }));
+
+    expect(screen.queryByRole("menuitem", { name: /clear selection/i })).not.toBeInTheDocument();
+  });
+
   it("clears every filter when reset is selected", async () => {
     const user = userEvent.setup();
     const onFilterChange = vi.fn();

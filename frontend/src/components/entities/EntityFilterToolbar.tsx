@@ -151,11 +151,27 @@ function haveSameValues(left: readonly string[], right: readonly string[]) {
   return left.every((value) => rightValues.has(value));
 }
 
+function isClosedStatus(status: string) {
+  return status === "DONE" || status.startsWith("CLOSED");
+}
+
+function getStatusGroups(statusOptions: StatusOption[]) {
+  return {
+    open: statusOptions
+      .slice(0, 2)
+      .filter((option) => !isClosedStatus(option.value))
+      .map((option) => option.value),
+    closed: statusOptions
+      .filter((option) => isClosedStatus(option.value))
+      .map((option) => option.value),
+  };
+}
+
 function statusFilterDiffersFromDefault(
   filters: FilterState | undefined,
   statusOptions: StatusOption[],
 ) {
-  const defaultStatuses = statusOptions.slice(0, 2).map((option) => option.value);
+  const defaultStatuses = getStatusGroups(statusOptions).open;
   const selectedStatuses = (filters?.status ?? []) as string[];
 
   return !haveSameValues(selectedStatuses, defaultStatuses);
@@ -581,10 +597,20 @@ export function EntityFilterToolbar({
     updateFilter("status", next.length ? (next as FilterState["status"]) : null);
   };
 
+  const handleStatusGroupSelect = (statuses: string[]) => {
+    updateFilter("status", statuses as FilterState["status"]);
+  };
+
   const filteredSuggestions = availableTags.filter((tag) => {
     if (!tagSearch.trim()) return true;
     return tag.tag.toLowerCase().includes(tagSearch.toLowerCase());
   });
+  const selectedStatuses = (filters?.status ?? []) as string[];
+  const statusGroups = getStatusGroups(effectiveStatusOptions);
+  const statusGroupItems = [
+    { label: "All Open", statuses: statusGroups.open },
+    { label: "All Closed", statuses: statusGroups.closed },
+  ].filter((item) => item.statuses.length > 0);
 
   return (
     <Toolbar className={className} {...otherProps}>
@@ -606,21 +632,31 @@ export function EntityFilterToolbar({
           />
         </DropdownMenu.Trigger>
         <DropdownMenu.Content side="bottom" align="start" sideOffset={6}>
+          {statusGroupItems.map((item) => (
+            <DropdownMenu.DropdownItem
+              key={item.label}
+              icon={
+                haveSameValues(selectedStatuses, item.statuses) ? (
+                  <CheckSquare />
+                ) : (
+                  <Square />
+                )
+              }
+              label={item.label}
+              onClick={() => handleStatusGroupSelect(item.statuses)}
+              onSelect={(event) => event.preventDefault()}
+            />
+          ))}
+          <DropdownMenu.DropdownDivider />
           {effectiveStatusOptions.map((option) => (
             <DropdownMenu.DropdownItem
               key={option.value}
-              icon={(filters?.status ?? []).includes(option.value as AlertStatus) ? <CheckSquare /> : <Square />}
+              icon={selectedStatuses.includes(option.value as AlertStatus) ? <CheckSquare /> : <Square />}
               label={option.label}
               onClick={() => handleStatusToggle(option.value)}
               onSelect={(event) => event.preventDefault()}
             />
           ))}
-          <DropdownMenu.DropdownDivider />
-          <DropdownMenu.DropdownItem
-            icon={null}
-            label="Clear selection"
-            onClick={() => updateFilter("status", null)}
-          />
         </DropdownMenu.Content>
       </DropdownMenu.Root>
 
