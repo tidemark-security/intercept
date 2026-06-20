@@ -235,7 +235,11 @@ async def test_bulk_close_duplicate_requires_target_and_add_tags_merges(
 
     tag_response = await client.post(
         "/api/v1/alerts/bulk-actions",
-        json={"alert_ids": alert_ids, "action": "add_tags", "tags": ["bulk", "review"]},
+        json={
+            "alert_ids": alert_ids,
+            "action": "add_tags",
+            "tags": ["bulk", " review ", "Review", "Null"],
+        },
         cookies={"intercept_session": session_cookie},
     )
     assert tag_response.status_code == 200

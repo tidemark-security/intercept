@@ -16,6 +16,29 @@ def normalize_tag_filters(tags: Optional[List[str]]) -> List[str]:
     return normalized
 
 
+def normalize_persisted_tags(tags: Optional[List[Any]]) -> List[str]:
+    """Trim, deduplicate, and drop invalid tag values before persistence."""
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for tag in tags or []:
+        if not isinstance(tag, str):
+            continue
+
+        clean = tag.strip()
+        key = clean.lower()
+        if not clean or key == "null" or key in seen:
+            continue
+
+        normalized.append(clean)
+        seen.add(key)
+    return normalized
+
+
+def merge_persisted_tags(existing_tags: Optional[List[Any]], new_tags: Optional[List[Any]]) -> List[str]:
+    """Merge tag collections through the persisted-tag normalizer."""
+    return normalize_persisted_tags([*(existing_tags or []), *(new_tags or [])])
+
+
 def append_tag_filters(
     filters: list[Any],
     tag_column: Any,
