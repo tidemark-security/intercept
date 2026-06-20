@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, cast, String
+from sqlalchemy import select, func, and_, or_, cast, String, case
 from sqlalchemy.orm import selectinload, defer
 from sqlmodel import col
 from typing import List, Optional, Set, Dict, Any, Tuple
@@ -232,12 +232,17 @@ class CaseService:
             if search:
                 # Search in ID, human ID, title, or description (case-insensitive)
                 search_pattern = f"%{search}%"
+                case_id_text = cast(Case.id, String)
+                padded_case_id = case(
+                    (func.length(case_id_text) < 7, func.lpad(case_id_text, 7, "0")),
+                    else_=case_id_text,
+                )
                 filters.append(
                     or_(
-                        cast(Case.id, String).ilike(search_pattern),  # type: ignore[arg-type]
+                        case_id_text.ilike(search_pattern),  # type: ignore[arg-type]
                         func.concat(
                             "CAS-",
-                            func.lpad(cast(Case.id, String), 7, "0"),
+                            padded_case_id,
                         ).ilike(search_pattern),
                         col(Case.title).ilike(search_pattern),
                         cast(Case.description, String).ilike(search_pattern)  # type: ignore[arg-type]

@@ -148,6 +148,36 @@ async def test_get_cases_search_matches_case_human_id(
 
 
 @pytest.mark.asyncio
+async def test_get_cases_search_matches_long_case_human_id(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        matching_case = Case(
+            id=10000000,
+            title="Long human ID target",
+            description="Should be found by its full case number",
+            created_by="seed-user",
+        )
+        session.add(matching_case)
+        await session.commit()
+
+    response = await client.get(
+        "/api/v1/cases",
+        params={"search": "CAS-10000000"},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    result_ids = {item["id"] for item in payload["items"]}
+    assert 10000000 in result_ids
+
+
+@pytest.mark.asyncio
 async def test_get_case_serializes_nested_alert_triage_recommendation(
     client: AsyncClient,
     session_maker: Any,
