@@ -10,17 +10,18 @@ import { Tag } from "@/components/data-display/Tag";
 import { TagsManager } from "@/components/forms/TagsManager";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { cn } from "@/utils/cn";
+import { CLOSED_ALERT_STATUS_OPTIONS } from "@/utils/statusLabels";
 
 import type { AlertStatus } from "@/types/generated/models/AlertStatus";
 
 import { Bell, Check, CheckCircle, Copy, HelpCircle, List, X, XCircle } from "lucide-react";
 
 const CLOSURE_STATUS_OPTIONS: Array<{ value: AlertStatus; label: string; icon: React.ReactNode }> = [
-  { value: "CLOSED_TP", label: "True Positive", icon: <Check className="h-4 w-4" /> },
-  { value: "CLOSED_BP", label: "True Positive Benign", icon: <CheckCircle className="h-4 w-4" /> },
-  { value: "CLOSED_FP", label: "False Positive", icon: <XCircle className="h-4 w-4" /> },
-  { value: "CLOSED_UNRESOLVED", label: "Unresolved", icon: <HelpCircle className="h-4 w-4" /> },
-  { value: "CLOSED_DUPLICATE", label: "Duplicate", icon: <Copy className="h-4 w-4" /> },
+  { ...CLOSED_ALERT_STATUS_OPTIONS[0], icon: <Check className="h-4 w-4" /> },
+  { ...CLOSED_ALERT_STATUS_OPTIONS[1], icon: <CheckCircle className="h-4 w-4" /> },
+  { ...CLOSED_ALERT_STATUS_OPTIONS[2], icon: <XCircle className="h-4 w-4" /> },
+  { ...CLOSED_ALERT_STATUS_OPTIONS[3], icon: <HelpCircle className="h-4 w-4" /> },
+  { ...CLOSED_ALERT_STATUS_OPTIONS[4], icon: <Copy className="h-4 w-4" /> },
 ];
 
 const SUGGESTED_TAGS = [

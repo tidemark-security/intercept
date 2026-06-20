@@ -34,12 +34,7 @@ import {
   parseISO8601,
   parseRelativeTime,
 } from "@/utils/dateFilters";
-import { formatStatusLabel } from "@/utils/formatters";
-
-interface StatusOption {
-  value: string;
-  label: string;
-}
+import { ALERT_STATUS_OPTIONS, formatAlertStatusLabel, type StatusOption } from "@/utils/statusLabels";
 
 export interface EntityFilterToolbarProps
   extends React.HTMLAttributes<HTMLDivElement> {
@@ -53,17 +48,6 @@ export interface EntityFilterToolbarProps
 }
 
 type TagMode = "include" | "exclude";
-
-const DEFAULT_STATUS_OPTIONS: StatusOption[] = [
-  { value: "NEW", label: "New" },
-  { value: "IN_PROGRESS", label: "In Progress" },
-  { value: "ESCALATED", label: "Escalated" },
-  { value: "CLOSED_TP", label: "Closed (True Positive)" },
-  { value: "CLOSED_BP", label: "Closed (Benign Positive)" },
-  { value: "CLOSED_FP", label: "Closed (False Positive)" },
-  { value: "CLOSED_UNRESOLVED", label: "Closed (Unresolved)" },
-  { value: "CLOSED_DUPLICATE", label: "Closed (Duplicate)" },
-];
 
 function emptyFilters(): FilterState {
   return {
@@ -99,7 +83,7 @@ function statusButtonLabel(
 
   const labelFor = (status: string) =>
     statusOptions.find((option) => option.value === status)?.label ??
-    formatStatusLabel(status as AlertStatus);
+    formatAlertStatusLabel(status as AlertStatus);
 
   if (selected.length === 1) return labelFor(selected[0]);
   if (selected.length === 2) return selected.map(labelFor).join(", ");
@@ -507,7 +491,7 @@ export function EntityFilterToolbar({
   const [tagSearch, setTagSearch] = React.useState("");
   const [customTag, setCustomTag] = React.useState("");
 
-  const effectiveStatusOptions = statusOptions ?? DEFAULT_STATUS_OPTIONS;
+  const effectiveStatusOptions = statusOptions ?? ALERT_STATUS_OPTIONS;
   const includeTags = normalizeTags(filters?.includeTags);
   const excludeTags = normalizeTags(filters?.excludeTags);
   const statusFilterModified = statusFilterDiffersFromDefault(

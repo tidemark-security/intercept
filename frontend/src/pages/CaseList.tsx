@@ -25,6 +25,7 @@ import type { CaseRead } from "@/types/generated/models/CaseRead";
 import type { CaseFilterState } from "@/types/filters";
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { caseStatusToUIState, priorityToUIPriority } from "@/utils/statusHelpers";
+import { CASE_STATUS_OPTIONS } from "@/utils/statusLabels";
 import { Plus } from "lucide-react";
 
 /**
@@ -221,11 +222,7 @@ function CasesListPage() {
             onFilterChange={setFilters}
             enableTagFilters
             onTagClick={handleFilterByTag}
-            statusOptions={[
-              { value: 'NEW', label: 'New' },
-              { value: 'IN_PROGRESS', label: 'In Progress' },
-              { value: 'CLOSED', label: 'Closed' },
-            ]}
+            statusOptions={CASE_STATUS_OPTIONS}
             currentPage={currentPage}
             totalPages={totalPages}
             totalItems={casesData?.total}
