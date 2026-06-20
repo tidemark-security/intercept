@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { renderWithProviders } from "../../../tests/test-utils";
 import { EntityFilterToolbar } from "@/components/entities/EntityFilterToolbar";
-import type { FilterState } from "@/types/filters";
+import type { FilterState, TaskFilterState } from "@/types/filters";
 import type { app__api__routes__admin_auth__UserSummary } from "@/types/generated/models/app__api__routes__admin_auth__UserSummary";
 
 const users: app__api__routes__admin_auth__UserSummary[] = [
@@ -150,18 +150,19 @@ describe("EntityFilterToolbar", () => {
   it("uses task status options for open and closed parent selections", async () => {
     const user = userEvent.setup();
     const onFilterChange = vi.fn();
+    const taskFilters: TaskFilterState = {
+      search: "",
+      assignee: null,
+      status: ["TODO", "IN_PROGRESS"],
+      includeTags: null,
+      excludeTags: null,
+      dateRange: null,
+    };
 
     renderWithProviders(
       <EntityFilterToolbar
-        filters={{
-          search: "",
-          assignee: null,
-          status: ["TODO", "IN_PROGRESS"],
-          includeTags: null,
-          excludeTags: null,
-          dateRange: null,
-        }}
-        onFilterChange={onFilterChange}
+        filters={taskFilters as unknown as FilterState}
+        onFilterChange={onFilterChange as unknown as (filters: FilterState) => void}
         assignees={users}
         assigneesLoading={false}
         statusOptions={[
