@@ -22,6 +22,8 @@ from app.mcp.schemas import (
     TimelineSection,
     TimelinePreview,
     ObservablesSection,
+    ContextEntrySummary,
+    ContextSection,
     RelatedCounts,
     Resource,
     RecordTriageDecisionOutput,
@@ -37,6 +39,7 @@ from app.mcp.schemas import (
 )
 from app.services.observable_service import extract_observables, extract_high_signal_entities
 from app.services.similarity_service import count_similar_alerts
+from app.services.context_service import ContextService
 from app.services import triage_recommendation_service
 from app.services.tag_filter_utils import normalize_persisted_tags
 
@@ -395,6 +398,23 @@ async def get_summary(
         total_count=len(observables),
         omitted_count=0,  # extract_observables already limits
     )
+
+    context_items: list[ContextEntrySummary] = []
+    if kind == "alert":
+        matching_context = await ContextService(db).get_matching_context_for_alert(numeric_id)
+        context_items = [
+            ContextEntrySummary.model_validate(entry)
+            for entry in matching_context[:max_timeline_items]
+        ]
+        context_total_count = len(matching_context)
+    else:
+        context_total_count = 0
+
+    context_section = ContextSection(
+        items=context_items,
+        total_count=context_total_count,
+        omitted_count=max(0, context_total_count - len(context_items)),
+    )
     
     # Count related items
     related_counts = RelatedCounts()
@@ -444,6 +464,7 @@ async def get_summary(
         header=header,
         timeline=timeline_section,
         observables=observables_section,
+        context=context_section,
         related_counts=related_counts,
         resources=resources,
     )

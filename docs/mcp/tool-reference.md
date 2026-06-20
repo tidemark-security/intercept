@@ -76,6 +76,21 @@ Get bounded context summary for an alert, case, or task.
     "total_count": 5,
     "omitted_count": 0
   },
+  "context": {
+    "items": [
+      {
+        "id": 12,
+        "criteria": [{"type": "ALERT_SOURCE", "value": "Splunk"}],
+        "body": "Network team is testing this detection today.",
+        "author": "analyst1",
+        "created_at": "2026-01-12T09:00:00Z",
+        "updated_at": "2026-01-12T09:00:00Z",
+        "expires_at": "2026-01-13T09:00:00Z"
+      }
+    ],
+    "total_count": 1,
+    "omitted_count": 0
+  },
   "related_counts": {
     "linked_alerts": 2,
     "linked_cases": 1,
