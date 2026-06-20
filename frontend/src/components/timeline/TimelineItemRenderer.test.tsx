@@ -229,6 +229,30 @@ describe('TimelineItemRenderer enrichments', () => {
     expect(screen.getByText('Status changed from NEW to TRIAGED', { selector: 'p' })).toBeInTheDocument();
   });
 
+  it('renders generated automation task notes with automation treatment', () => {
+    const item: RecursiveTimelineItem<NoteItem> = {
+      id: 'automation-task-note',
+      type: 'note',
+      created_by: 'custom-langflow-agent',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: ['ai-agent', 'automation-completed'],
+      flagged: false,
+      highlighted: false,
+      description: 'Autonomous task completed',
+      replies: null,
+    };
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="alert" />
+    );
+
+    expect(screen.getByText('Automation note')).toBeInTheDocument();
+    expect(screen.getByText('Automation')).toBeInTheDocument();
+    expect(screen.getByText('automation-completed')).toBeInTheDocument();
+    expect(screen.getByText('Autonomous task completed', { selector: 'p' })).toBeInTheDocument();
+  });
+
   it('renders deleted replies as read-only tombstones in original timeline order', () => {
     const item: RecursiveTimelineItem<NoteItem> = {
       id: 'note-parent-with-deleted-reply',

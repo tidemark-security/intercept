@@ -99,7 +99,7 @@ function isAutomationNote(item: TimelineItem): boolean {
   return (
     !creator ||
     ['api_user', 'automation', 'langflow', 'system', 'tidemark_ai'].includes(creator) ||
-    tags.some(tag => ['automation', 'bulk-action', 'enrichment', 'status-change', 'system'].includes(tag))
+    tags.some(tag => tag.startsWith('automation-') || ['automation', 'bulk-action', 'enrichment', 'status-change', 'system'].includes(tag))
   );
 }
 
