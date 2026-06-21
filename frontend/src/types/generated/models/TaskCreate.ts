@@ -12,8 +12,9 @@ export type TaskCreate = {
     description?: (string | null);
     priority?: Priority;
     due_date?: (string | null);
+    picerl_stage?: (string | null);
     assignee?: (string | null);
     case_id?: (number | null);
     status?: (TaskStatus | null);
+    tags?: (Array<string> | null);
 };
-

@@ -52,11 +52,6 @@ import {
 
 const TIMELINE_ITEM_MAX_WIDTH_CLASS = 'max-w-[1024px]';
 
-type TaskReadWithTemplateMetadata = TaskRead & {
-  picerl_stage?: string | null;
-  source_tpl?: number | null;
-};
-
 type TaskTimelineItemWithTemplateMetadata = TimelineItem & {
   picerl_stage?: string | null;
   source_tpl?: number | null;
@@ -65,7 +60,7 @@ type TaskTimelineItemWithTemplateMetadata = TimelineItem & {
   source_timeline_items?: TaskRead['timeline_items'];
 };
 
-function getTaskTemplateMetadata(item: TimelineItem): Pick<TaskReadWithTemplateMetadata, 'picerl_stage' | 'source_tpl'> {
+function getTaskTemplateMetadata(item: TimelineItem): Pick<TaskRead, 'picerl_stage' | 'source_tpl'> {
   const taskItem = item as TaskTimelineItemWithTemplateMetadata;
 
   return {
@@ -783,7 +778,7 @@ export function TimelineItemRenderer({
 
       compactContent = <AlertCardContent data={alertData} showTags={false} variant="compact" />;
     } else if (isTaskItem(currentItem)) {
-      const taskData: TaskReadWithTemplateMetadata = {
+      const taskData: TaskRead = {
         id: currentItem.task_id || 0,
         human_id: currentItem.task_human_id || '',
         title: currentItem.title || currentItem.task_human_id || 'Task',
@@ -927,7 +922,7 @@ export function TimelineItemRenderer({
     });
 
     const isCurrentItemLinked = isLinkedTimelineType(timelineCurrentItem.type);
-    const linkedTaskData: TaskReadWithTemplateMetadata | null = isTaskItem(timelineCurrentItem) ? {
+    const linkedTaskData: TaskRead | null = isTaskItem(timelineCurrentItem) ? {
       id: timelineCurrentItem.task_id || 0,
       human_id: timelineCurrentItem.task_human_id || '',
       title: timelineCurrentItem.title || timelineCurrentItem.task_human_id || 'Task',
@@ -1051,7 +1046,7 @@ export function TimelineItemRenderer({
       baseCardProps.title = buildEntityTitle(taskId, timelineCurrentItem.title, isDarkTheme);
       clearCardLines(baseCardProps, { clearCharacterFlags: true });
 
-      const taskData: TaskReadWithTemplateMetadata = linkedTaskData ?? {
+      const taskData: TaskRead = linkedTaskData ?? {
         id: timelineCurrentItem.task_id || 0,
         human_id: timelineCurrentItem.task_human_id || '',
         title: timelineCurrentItem.title || (timelineCurrentItem.task_human_id || 'Task'),

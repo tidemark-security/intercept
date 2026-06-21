@@ -27,11 +27,13 @@ export type TaskRead = {
     description?: (string | null);
     priority?: Priority;
     due_date?: (string | null);
+    picerl_stage?: (string | null);
     id: number;
     status: TaskStatus;
     assignee?: (string | null);
     created_by: string;
     case_id?: (number | null);
+    source_tpl?: (number | null);
     linked_at?: (string | null);
     created_at: string;
     updated_at: string;
@@ -39,4 +41,3 @@ export type TaskRead = {
     tags?: (Array<string> | null);
     readonly human_id: string;
 };
-

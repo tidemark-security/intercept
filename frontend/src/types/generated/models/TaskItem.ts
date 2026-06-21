@@ -70,9 +70,10 @@ export type TaskItem = {
     priority?: (Priority | null);
     assignee?: (string | null);
     due_date?: (string | null);
+    picerl_stage?: (string | null);
+    source_tpl?: (number | null);
     /**
      * Timeline items from the linked task (populated on read with include_linked_timelines=true)
      */
     source_timeline_items?: (Record<string, Record<string, any>> | null);
 };
-
