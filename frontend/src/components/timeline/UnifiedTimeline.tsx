@@ -117,6 +117,7 @@ function UnifiedTimelineInner({
   onFlagItem,
   onHighlightItem,
   onEditItem,
+  onEditLinkedTask,
   onDeleteItem,
   onDeleteBatch,
   onAssignToMe,
@@ -796,6 +797,7 @@ function UnifiedTimelineInner({
                             onFlag={isEditable ? onFlagItem : undefined}
                             onHighlight={isEditable ? onHighlightItem : undefined}
                             onEdit={isEditable ? onEditItem : undefined}
+                            onEditLinkedTask={isEditable ? onEditLinkedTask : undefined}
                             onDelete={isEditable ? handleInternalDelete : undefined}
                             onDeleteBatch={isEditable ? handleInternalBatchDelete : undefined}
                             onReply={isEditable ? handleReply : undefined}
@@ -818,6 +820,7 @@ function UnifiedTimelineInner({
                             onFlag={isEditable ? onFlagItem : undefined}
                             onHighlight={isEditable ? onHighlightItem : undefined}
                             onEdit={isEditable ? onEditItem : undefined}
+                            onEditLinkedTask={isEditable ? onEditLinkedTask : undefined}
                             onDelete={isEditable ? handleInternalDelete : undefined}
                             onReply={isEditable ? handleReply : undefined}
                             linkTemplates={linkTemplates}

@@ -27,6 +27,7 @@ import { findTimelineItem, mapItemTypeToDockType } from "@/utils/timelineUtils";
 import { getTimelineItems } from "@/utils/timelineHelpers";
 import type { TimelineItemType } from '@/types/drafts';
 import type { CaseStatus } from '@/types/generated/models/CaseStatus';
+import type { TaskRead } from '@/types/generated/models/TaskRead';
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { NotFoundError } from "@/pages/NotFoundError";
 import { AiChat } from "@/components/ai";
@@ -229,6 +230,11 @@ function CaseDetailPage() {
     openDockForEdit('case_edit', caseDetail);
     switchToColumnOnMobile('right');
   };
+
+  const handleEditLinkedTask = useCallback((task: TaskRead) => {
+    openDockForEdit('task_edit', task);
+    switchToColumnOnMobile('right');
+  }, [openDockForEdit, switchToColumnOnMobile]);
 
   const handleCloseCaseWithDetails = useCallback((payload: {
     status: ClosedAlertStatus;
@@ -472,6 +478,7 @@ function CaseDetailPage() {
               onFlagItem={handleFlagItem}
               onHighlightItem={handleHighlightItem}
               onEditItem={handleEditItem}
+              onEditLinkedTask={handleEditLinkedTask}
               onDeleteItem={handleDeleteItem}
               onDeleteBatch={handleDeleteBatch}
               onAssignToMe={isAuditor ? undefined : handleAssignToMeWithStatusUpdate}

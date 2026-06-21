@@ -63,6 +63,9 @@ export interface UnifiedTimelineProps {
   
   /** Handler for editing a timeline item */
   onEditItem?: (itemId: string) => void;
+
+  /** Handler for editing a linked task shown on a parent case timeline */
+  onEditLinkedTask?: (task: TaskRead) => void;
   
   /** Handler for deleting a timeline item */
   onDeleteItem?: (itemId: string) => void;

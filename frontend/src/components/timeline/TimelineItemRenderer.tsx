@@ -42,7 +42,7 @@ import { cn } from '@/utils/cn';
 import { Button } from '@/components/buttons/Button';
 import { IconButton } from '@/components/buttons/IconButton';
 
-import { ArrowRight, Maximize2, MessageSquareReply as ReplyIcon, Minimize2, RefreshCw } from 'lucide-react';
+import { ArrowRight, Maximize2, MessageSquareReply as ReplyIcon, Minimize2, Pencil, RefreshCw } from 'lucide-react';
 import { Tooltip } from '@/components/overlays/Tooltip';
 import {
   isTimelineItemEnrichmentActive,
@@ -187,6 +187,10 @@ function formatTimestampForCompact(value: string | null | undefined): string {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function normalizeTaskStatus(status: unknown): TaskStatus {
+  return status === 'IN_PROGRESS' || status === 'DONE' ? status : 'TODO';
 }
 
 function flattenReplies(items: TimelineItem[]): TimelineItem[] {
@@ -404,6 +408,9 @@ export interface TimelineItemRendererProps {
   
   /** Handler for editing a timeline item */
   onEdit?: (itemId: string) => void;
+
+  /** Handler for editing a linked task shown on a parent case timeline */
+  onEditLinkedTask?: (task: TaskRead) => void;
   
   /** Handler for deleting a timeline item */
   onDelete?: (itemId: string) => void;
@@ -491,6 +498,7 @@ export function TimelineItemRenderer({
   onFlag,
   onHighlight,
   onEdit,
+  onEditLinkedTask,
   onDelete,
   onDeleteBatch,
   onReply,
@@ -622,6 +630,34 @@ export function TimelineItemRenderer({
     </div>
   );
 
+  const renderEditLinkedTaskAction = (task: TaskRead): React.ReactNode => {
+    if (!onEditLinkedTask) {
+      return null;
+    }
+
+    return (
+      <Tooltip.Provider>
+        <Tooltip.Root>
+          <Tooltip.Trigger asChild>
+            <IconButton
+              size="medium"
+              variant="neutral-tertiary"
+              icon={<Pencil className="h-4 w-4" />}
+              aria-label="Edit Task"
+              onClick={(event) => {
+                event.stopPropagation();
+                onEditLinkedTask(task);
+              }}
+            />
+          </Tooltip.Trigger>
+          <Tooltip.Content side="bottom" align="center" sideOffset={8}>
+            Edit task
+          </Tooltip.Content>
+        </Tooltip.Root>
+      </Tooltip.Provider>
+    );
+  };
+
   const renderCollapseLinkedEntityAction = (currentItem: TimelineItem, isCollapsed: boolean): React.ReactNode => {
     const collapseKey = getLinkedEntityCollapseKey(currentItem);
 
@@ -725,20 +761,25 @@ export function TimelineItemRenderer({
 
       compactContent = <AlertCardContent data={alertData} showTags={false} variant="compact" />;
     } else if (isTaskItem(currentItem)) {
-      const taskData: Partial<TaskRead> & { title: string } = {
+      const taskData: TaskRead = {
         id: currentItem.task_id || 0,
         human_id: currentItem.task_human_id || '',
         title: currentItem.title || currentItem.task_human_id || 'Task',
         description: compactDescription,
         priority: currentItem.priority ?? undefined,
-        status: (currentItem.status || 'OPEN') as TaskStatus,
+        status: normalizeTaskStatus(currentItem.status),
         created_at: currentItem.created_at || '',
         updated_at:
           (currentItem as TimelineItem & { updated_at?: string }).updated_at ||
           currentItem.created_at ||
           '',
-        assignee: currentItem.assignee,
+        assignee: currentItem.assignee ?? null,
         due_date: currentItem.due_date,
+        created_by: currentItem.created_by || 'System',
+        case_id: (currentItem as TimelineItem & { case_id?: number | null }).case_id ?? null,
+        linked_at: null,
+        timeline_items: (currentItem as TimelineItem & { source_timeline_items?: TaskRead['timeline_items'] }).source_timeline_items ?? null,
+        tags: getTimelineTags(currentItem),
       };
 
       compactContent = <TaskCardContent data={taskData} showTags={false} variant="compact" />;
@@ -863,8 +904,37 @@ export function TimelineItemRenderer({
     });
 
     const isCurrentItemLinked = isLinkedTimelineType(timelineCurrentItem.type);
+    const linkedTaskData: TaskRead | null = isTaskItem(timelineCurrentItem) ? {
+      id: timelineCurrentItem.task_id || 0,
+      human_id: timelineCurrentItem.task_human_id || '',
+      title: timelineCurrentItem.title || timelineCurrentItem.task_human_id || 'Task',
+      description: getLinkedEntityDescription(timelineCurrentItem) ?? timelineCurrentItem.description ?? null,
+      priority: timelineCurrentItem.priority ?? undefined,
+      status: normalizeTaskStatus(timelineCurrentItem.status),
+      created_at: timelineCurrentItem.created_at || '',
+      updated_at:
+        (timelineCurrentItem as TimelineItem & { updated_at?: string }).updated_at ||
+        timelineCurrentItem.created_at ||
+        '',
+      assignee: timelineCurrentItem.assignee ?? null,
+      due_date: timelineCurrentItem.due_date ?? null,
+      created_by: timelineCurrentItem.created_by || 'System',
+      case_id: (timelineCurrentItem as TimelineItem & { case_id?: number | null }).case_id ?? null,
+      linked_at: null,
+      timeline_items: (timelineCurrentItem as TimelineItem & { source_timeline_items?: TaskRead['timeline_items'] }).source_timeline_items ?? null,
+      tags: getTimelineTags(timelineCurrentItem),
+    } : null;
+    const linkedTaskEditButton = linkedTaskData && linkedTaskData.id > 0
+      ? renderEditLinkedTaskAction(linkedTaskData)
+      : null;
+    const linkedTaskActions = linkedTaskEditButton || refreshEnrichmentButton ? (
+      <div className="flex items-center gap-2">
+        {refreshEnrichmentButton}
+        {linkedTaskEditButton}
+      </div>
+    ) : null;
     const collapsedLinkedEntityCard = isCurrentItemLinked
-      ? renderCollapsedLinkedEntityCard(timelineCurrentItem, refreshEnrichmentButton)
+      ? renderCollapsedLinkedEntityCard(timelineCurrentItem, isTaskItem(timelineCurrentItem) ? linkedTaskActions : refreshEnrichmentButton)
       : null;
 
     if (collapsedLinkedEntityCard) {
@@ -957,29 +1027,32 @@ export function TimelineItemRenderer({
       baseCardProps.title = buildEntityTitle(taskId, timelineCurrentItem.title, isDarkTheme);
       clearCardLines(baseCardProps, { clearCharacterFlags: true });
 
-      const taskData: Partial<TaskRead> & { title: string } = {
+      const taskData: TaskRead = linkedTaskData ?? {
         id: timelineCurrentItem.task_id || 0,
         human_id: timelineCurrentItem.task_human_id || '',
         title: timelineCurrentItem.title || (timelineCurrentItem.task_human_id || 'Task'),
         description: getLinkedEntityDescription(timelineCurrentItem),
         priority: timelineCurrentItem.priority ?? undefined,
-        status: (timelineCurrentItem.status || 'OPEN') as TaskStatus,
+        status: normalizeTaskStatus(timelineCurrentItem.status),
         created_at: timelineCurrentItem.created_at || '',
         updated_at:
           (timelineCurrentItem as TimelineItem & { updated_at?: string }).updated_at ||
           timelineCurrentItem.created_at ||
           '',
-        assignee: timelineCurrentItem.assignee,
-        due_date: timelineCurrentItem.due_date,
+        assignee: timelineCurrentItem.assignee ?? null,
+        due_date: timelineCurrentItem.due_date ?? null,
         created_by: timelineCurrentItem.created_by || 'System',
-        case_id: (timelineCurrentItem as TimelineItem & { case_id?: number }).case_id,
+        case_id: (timelineCurrentItem as TimelineItem & { case_id?: number | null }).case_id ?? null,
+        linked_at: null,
+        timeline_items: (timelineCurrentItem as TimelineItem & { source_timeline_items?: TaskRead['timeline_items'] }).source_timeline_items ?? null,
+        tags: getTimelineTags(timelineCurrentItem),
       };
 
       children = withEnrichmentBlocks(timelineCurrentItem, (
         <div className="w-full pt-2 flex flex-col gap-3">
           <TaskCardContent data={taskData} showTags={false} variant="timeline" />
         </div>
-      ), renderLinkedEntityFooter(timelineCurrentItem, cardActionButtons));
+      ), renderLinkedEntityFooter(timelineCurrentItem, linkedTaskActions || cardActionButtons));
       renderedActionButtons = undefined;
     } else if (isCaseItem(timelineCurrentItem)) {
       baseCardProps.size = 'x-large';
