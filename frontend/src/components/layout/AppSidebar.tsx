@@ -149,53 +149,34 @@ function formatBadgeCount(count: number) {
 
 type SidebarBadgeGroupProps = {
   counts?: SidebarBadgeCount;
-  compact?: boolean;
 };
 
-function SidebarBadgeGroup({ counts, compact = false }: SidebarBadgeGroupProps) {
-  if (!counts || (counts.open <= 0 && counts.unassigned <= 0)) {
+function SidebarNotificationBadge({ counts }: SidebarBadgeGroupProps) {
+  if (!counts || counts.open <= 0) {
     return null;
   }
 
-  const badges = [
-    {
-      key: "open",
-      label: "Open",
-      shortLabel: "O",
-      value: counts.open,
-      className: "border-brand-900 bg-brand-1100 text-brand-400",
-    },
-    {
-      key: "unassigned",
-      label: "Unassigned",
-      shortLabel: "U",
-      value: counts.unassigned,
-      className: "border-warning-900 bg-warning-1100 text-warning-400",
-    },
-  ].filter((badge) => badge.value > 0);
-
   return (
     <span
-      className={cn(
-        "ml-auto flex min-w-0 flex-none items-center justify-end gap-1",
-        compact && "ml-0 justify-center",
-      )}
+      className="absolute right-0 top-0 inline-flex h-4 min-w-4 items-center justify-center border border-black bg-accent-2-primary px-1 text-[10px] font-monospace-body leading-none text-white"
       aria-hidden="true"
+      title={`Open: ${counts.open}`}
     >
-      {badges.map((badge) => (
-        <span
-          key={badge.key}
-          title={`${badge.label}: ${badge.value}`}
-          className={cn(
-            "inline-flex h-4 min-w-4 items-center justify-center gap-0.5 rounded-sm border px-1 text-[10px] font-monospace-body leading-none",
-            compact && "h-3.5 min-w-3.5 px-0.5 text-[9px]",
-            badge.className,
-          )}
-        >
-          <span>{badge.shortLabel}</span>
-          <span>{formatBadgeCount(badge.value)}</span>
-        </span>
-      ))}
+      {formatBadgeCount(counts.open)}
+    </span>
+  );
+}
+
+type SidebarIconWithBadgeProps = {
+  icon: React.ReactNode;
+  counts?: SidebarBadgeCount;
+};
+
+function SidebarIconWithBadge({ icon, counts }: SidebarIconWithBadgeProps) {
+  return (
+    <span className="inline-flex">
+      {icon}
+      <SidebarNotificationBadge counts={counts} />
     </span>
   );
 }
@@ -203,25 +184,16 @@ function SidebarBadgeGroup({ counts, compact = false }: SidebarBadgeGroupProps) 
 type SidebarNavLabelProps = {
   label: string;
   counts?: SidebarBadgeCount;
-  compact?: boolean;
 };
 
-function SidebarNavLabel({ label, counts, compact = false }: SidebarNavLabelProps) {
+function SidebarNavLabel({ label, counts }: SidebarNavLabelProps) {
   const describedBy = counts
-    ? `${label}: ${counts.open} open, ${counts.unassigned} unassigned`
+    ? `${label}: ${counts.open} open`
     : label;
 
   return (
-    <span
-      className={cn(
-        "flex min-w-0 flex-1 items-center gap-2",
-        compact && "flex-col gap-0.5",
-      )}
-    >
-      <span className={compact ? "text-[10px] leading-none" : "truncate"}>
-        {label}
-      </span>
-      <SidebarBadgeGroup counts={counts} compact={compact} />
+    <span className="flex min-w-0 flex-1 items-center gap-2">
+      <span className="truncate">{label}</span>
       {counts ? <span className="sr-only">{describedBy}</span> : null}
     </span>
   );
@@ -445,7 +417,8 @@ export function DesktopSidebar() {
             <SidebarNavTooltip
               key={item.key}
               tooltip={item.label}
-              icon={<Icon />}
+              className="relative"
+              icon={<SidebarIconWithBadge icon={<Icon />} counts={counts} />}
               selected={selected}
               aria-current={selected ? "page" : undefined}
               role={item.to ? "button" : undefined}
@@ -498,8 +471,8 @@ export function MobileSidebar() {
         return (
           <SidebarRailWithLabels.NavItem
             key={item.key}
-            className={item.mobileClassName}
-            icon={<Icon />}
+            className={cn(item.mobileClassName, "relative")}
+            icon={<SidebarIconWithBadge icon={<Icon />} counts={counts} />}
             selected={selected}
             mobile={true}
             aria-current={selected ? "page" : undefined}
@@ -513,7 +486,7 @@ export function MobileSidebar() {
                 : undefined
             }
           >
-            <SidebarNavLabel label={item.label} counts={counts} compact />
+            <SidebarNavLabel label={item.label} counts={counts} />
           </SidebarRailWithLabels.NavItem>
         );
       })}

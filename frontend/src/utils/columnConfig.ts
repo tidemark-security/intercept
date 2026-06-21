@@ -22,8 +22,8 @@ export function getInitialVisibleColumns(): VisibleColumns {
  * Generate column configuration for responsive layout
  * Handles the common pattern where desktop/tablet/ultrawide share config
  */
-export function getColumnConfig(_selectedEntityId: number | null, listWidth?: number): ColumnConfig {
-  const fixedListWidth = listWidth ? 'shrink-0' : 'w-[768px] shrink-0';
+export function getColumnConfig(_selectedEntityId: number | null, listWidth?: number, expandLeft = false): ColumnConfig {
+  const fixedListWidth = expandLeft ? 'w-full' : listWidth ? 'shrink-0' : 'w-[768px] shrink-0';
   const centerWidth = 'flex-1';
   const rightWidth = 'w-[512px] shrink-0';
 

@@ -18,6 +18,7 @@ import { useUpdateCase } from "@/hooks/useUpdateCase";
 import { useSession } from "@/contexts/sessionContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
+import { canShowSplitPaneCenter, useViewportWidth } from "@/hooks/useSplitPaneCenter";
 import { useURLFilters } from "@/hooks/useURLFilters";
 import { useTagFilterClick } from "@/hooks/useTagFilterClick";
 import { getColumnConfig, getInitialVisibleColumns } from "@/utils/columnConfig";
@@ -94,21 +95,23 @@ function CasesListPage() {
 
   // Reactive breakpoint state
   const breakpoint = useBreakpoint();
+  const viewportWidth = useViewportWidth();
+  const showSplitCenter = canShowSplitPaneCenter(viewportWidth, caseListWidth, breakpoint);
 
   // Automatically adjust visible columns based on selection and screen size
   useEffect(() => {
     if (!selectedCaseId) {
-      setVisibleColumns(breakpoint === 'mobile' ? 'left' : 'left+center');
+      setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
     } else {
-      if (breakpoint === 'ultrawide') {
+      if (breakpoint === 'mobile') {
+        setVisibleColumns('center');
+      } else if (showSplitCenter) {
         setVisibleColumns('left+center');
-      } else if (breakpoint === 'desktop' || breakpoint === 'tablet') {
-        // Match alerts behavior: focus the selected entity on desktop/tablet
+      } else {
         setVisibleColumns('center');
       }
-      // Mobile: keep current single column
     }
-  }, [selectedCaseId, breakpoint]);
+  }, [selectedCaseId, breakpoint, showSplitCenter]);
 
   // Fetch users for assignee dropdown
   const { data: users = [], isLoading: isLoadingUsers } = useUsers({});
@@ -184,12 +187,8 @@ function CasesListPage() {
   const handleCaseSelect = (caseId: number, caseHumanId: string) => {
     setSelectedCaseId(caseId);
     
-    if (breakpoint === 'mobile' || breakpoint === 'desktop' || breakpoint === 'tablet') {
-      // On mobile, desktop, and tablet, navigate directly to the detail view
+    if (breakpoint === 'mobile' || !showSplitCenter) {
       navigate(`/cases/${caseHumanId}${location.search}`);
-    } else {
-      // On ultrawide, stay in list view and show read-only timeline
-      // (visibleColumns will be updated by useEffect)
     }
   };
 
@@ -208,7 +207,7 @@ function CasesListPage() {
   // Handle back to list (for mobile only)
   const handleBackToList = () => {
     setSelectedCaseId(null);
-    setVisibleColumns('left');
+    setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
   };
 
   const handleCaseListRailToggle = () => {
@@ -235,6 +234,7 @@ function CasesListPage() {
       // Error state is handled by mutation onError callback
     }
   };
+  const isLeftOnlyView = visibleColumns === 'left';
 
   return (
     <DefaultPageLayout priority={caseDetail?.priority || undefined}>
@@ -307,12 +307,12 @@ function CasesListPage() {
         rightColumn={<div></div>}
         visibleColumns={visibleColumns}
         onVisibleColumnsChange={setVisibleColumns}
-        columnConfig={getColumnConfig(selectedCaseId, caseListWidth)}
+        columnConfig={getColumnConfig(selectedCaseId, caseListWidth, isLeftOnlyView)}
         dimLeftColumn={!!selectedCaseId}
-        showLeftRail
+        showLeftRail={!isLeftOnlyView}
         onLeftRailToggle={handleCaseListRailToggle}
-        leftColumnWidth={caseListWidth}
-        onLeftColumnWidthChange={setCaseListWidth}
+        leftColumnWidth={isLeftOnlyView ? undefined : caseListWidth}
+        onLeftColumnWidthChange={isLeftOnlyView ? undefined : setCaseListWidth}
       />
 
       <CreateCaseModal

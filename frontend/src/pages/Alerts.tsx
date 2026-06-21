@@ -45,6 +45,7 @@ import type { RejectionCategory } from "@/types/generated/models/RejectionCatego
 import { cleanupExpiredDrafts } from "@/utils/draftStorage";
 import { useDockState } from "@/hooks/useDockState";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
+import { canShowSplitPaneCenter, useViewportWidth } from "@/hooks/useSplitPaneCenter";
 import { useColumnNavigation } from "@/hooks/useColumnNavigation";
 import { useAutoScroll } from "@/hooks/useAutoScroll";
 import { findTimelineItem, mapItemTypeToDockType } from "@/utils/timelineUtils";
@@ -181,6 +182,8 @@ function Alerts() {
 
   // Reactive breakpoint state and column navigation helpers
   const breakpoint = useBreakpoint();
+  const viewportWidth = useViewportWidth();
+  const showSplitCenter = canShowSplitPaneCenter(viewportWidth, alertListWidth, breakpoint);
   const { switchToColumnOnMobile } = useColumnNavigation(setVisibleColumns);
 
   // Automatically adjust visible columns based on screen size, dock state, and alert selection
@@ -188,30 +191,21 @@ function Alerts() {
   useEffect(() => {
     // If no alert is selected
     if (!selectedAlertId) {
-      setVisibleColumns(breakpoint === 'mobile' ? 'left' : 'left+center');
+      setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
       return;
     }
 
-    // On ultrawide, show all columns when dock is open, otherwise left+center
-    if (breakpoint === 'ultrawide') {
+    if (breakpoint === 'mobile') {
+      return;
+    }
+
+    if (showSplitCenter) {
       setVisibleColumns(dockOpen ? 'all' : 'left+center');
       return;
     }
 
-    // On desktop, keep list + timeline visible so the split pane can resize them.
-    // Tablet remains focused on the timeline because the default list width crowds it out.
-    if (breakpoint === 'desktop') {
-      setVisibleColumns(dockOpen ? 'all' : 'left+center');
-      return;
-    }
-
-    // On tablet, dock floats as drawer over center column.
-    if (breakpoint === 'tablet') {
-      setVisibleColumns(dockOpen ? 'center+right' : 'center');
-    }
-    // On mobile, keep current single column (don't auto-switch)
-    // Mobile navigation is handled explicitly by user interactions
-  }, [dockOpen, selectedAlertId, breakpoint]);
+    setVisibleColumns(dockOpen ? 'center+right' : 'center');
+  }, [dockOpen, selectedAlertId, breakpoint, showSplitCenter]);
 
   // Initialize selectedAlertId from URL parameter if present
   useEffect(() => {
@@ -221,28 +215,20 @@ function Alerts() {
         setSelectedAlertId(numericId);
 
         // Set appropriate columns based on current breakpoint
-        if (breakpoint === 'ultrawide') {
-          setVisibleColumns('left+center');
-        } else if (breakpoint === 'desktop') {
-          setVisibleColumns('left+center');
-        } else if (breakpoint === 'tablet') {
+        if (breakpoint === 'mobile') {
           setVisibleColumns('center');
+        } else if (showSplitCenter) {
+          setVisibleColumns('left+center');
         } else {
-          // Mobile: switch to center (timeline) view when alert is selected via URL
           setVisibleColumns('center');
         }
       }
     } else {
       // No humanId in URL - clear selected alert
       setSelectedAlertId(null);
-      // Show left+center on ultrawide to display empty state, otherwise just left
-      if (breakpoint === 'ultrawide') {
-        setVisibleColumns('left+center');
-      } else {
-        setVisibleColumns('left');
-      }
+      setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
     }
-  }, [humanId, breakpoint]);
+  }, [humanId, breakpoint, showSplitCenter]);
 
   // Fetch users for assignee dropdown
   const { data: users = [], isLoading: isLoadingUsers } = useUsers({});
@@ -827,6 +813,7 @@ function Alerts() {
       />
     </div>
   ) : null;
+  const isLeftOnlyView = visibleColumns === 'left';
 
   // Show 404 error if alert not found (when viewing a specific alert)
   if (is404Error) {
@@ -953,12 +940,12 @@ function Alerts() {
         }
         visibleColumns={visibleColumns}
         onVisibleColumnsChange={setVisibleColumns}
-        columnConfig={getColumnConfig(selectedAlertId, alertListWidth)}
+        columnConfig={getColumnConfig(selectedAlertId, alertListWidth, isLeftOnlyView)}
         dimLeftColumn={!!selectedAlertId}
-        showLeftRail
+        showLeftRail={!isLeftOnlyView}
         onLeftRailToggle={handleAlertListRailToggle}
-        leftColumnWidth={alertListWidth}
-        onLeftColumnWidthChange={setAlertListWidth}
+        leftColumnWidth={isLeftOnlyView ? undefined : alertListWidth}
+        onLeftColumnWidthChange={isLeftOnlyView ? undefined : setAlertListWidth}
       />
 
       {/* Case Selector Modal */}

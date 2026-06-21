@@ -14,6 +14,7 @@ import { useUsers } from "@/hooks/useUsers";
 import { useUpdateTask } from "@/hooks/useUpdateTask";
 import { useSession } from "@/contexts/sessionContext";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
+import { canShowSplitPaneCenter, useViewportWidth } from "@/hooks/useSplitPaneCenter";
 import { useURLFilters } from "@/hooks/useURLFilters";
 import { useTagFilterClick } from "@/hooks/useTagFilterClick";
 import { getColumnConfig, getInitialVisibleColumns } from "@/utils/columnConfig";
@@ -86,21 +87,23 @@ function TasksListPage() {
 
   // Reactive breakpoint state
   const breakpoint = useBreakpoint();
+  const viewportWidth = useViewportWidth();
+  const showSplitCenter = canShowSplitPaneCenter(viewportWidth, taskListWidth, breakpoint);
 
   // Automatically adjust visible columns based on selection and screen size
   useEffect(() => {
     if (!selectedTaskId) {
-      setVisibleColumns(breakpoint === 'mobile' ? 'left' : 'left+center');
+      setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
     } else {
-      if (breakpoint === 'ultrawide') {
+      if (breakpoint === 'mobile') {
+        setVisibleColumns('center');
+      } else if (showSplitCenter) {
         setVisibleColumns('left+center');
-      } else if (breakpoint === 'desktop' || breakpoint === 'tablet') {
-        // Match alerts behavior: focus the selected entity on desktop/tablet
+      } else {
         setVisibleColumns('center');
       }
-      // Mobile: keep current single column
     }
-  }, [selectedTaskId, breakpoint]);
+  }, [selectedTaskId, breakpoint, showSplitCenter]);
 
   // Fetch users for assignee dropdown
   const { data: users = [], isLoading: isLoadingUsers } = useUsers({});
@@ -179,12 +182,8 @@ function TasksListPage() {
   const handleTaskSelect = (taskId: number, taskHumanId: string) => {
     setSelectedTaskId(taskId);
     
-    if (breakpoint === 'mobile' || breakpoint === 'desktop' || breakpoint === 'tablet') {
-      // On mobile, desktop, and tablet, navigate directly to the detail view
+    if (breakpoint === 'mobile' || !showSplitCenter) {
       navigate(`/tasks/${taskHumanId}${location.search}`);
-    } else {
-      // On ultrawide, stay in list view and show read-only timeline
-      // (visibleColumns will be updated by useEffect)
     }
   };
 
@@ -203,12 +202,13 @@ function TasksListPage() {
   // Handle back to list (for mobile only)
   const handleBackToList = () => {
     setSelectedTaskId(null);
-    setVisibleColumns('left');
+    setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
   };
 
   const handleTaskListRailToggle = () => {
     // The task list/detail split pane is resizable but not collapsible.
   };
+  const isLeftOnlyView = visibleColumns === 'left';
 
   return (
     <DefaultPageLayout priority={taskDetail?.priority || undefined}>
@@ -271,12 +271,12 @@ function TasksListPage() {
         rightColumn={<div></div>}
         visibleColumns={visibleColumns}
         onVisibleColumnsChange={setVisibleColumns}
-        columnConfig={getColumnConfig(selectedTaskId, taskListWidth)}
+        columnConfig={getColumnConfig(selectedTaskId, taskListWidth, isLeftOnlyView)}
         dimLeftColumn={!!selectedTaskId}
-        showLeftRail
+        showLeftRail={!isLeftOnlyView}
         onLeftRailToggle={handleTaskListRailToggle}
-        leftColumnWidth={taskListWidth}
-        onLeftColumnWidthChange={setTaskListWidth}
+        leftColumnWidth={isLeftOnlyView ? undefined : taskListWidth}
+        onLeftColumnWidthChange={isLeftOnlyView ? undefined : setTaskListWidth}
       />
     </DefaultPageLayout>
   );

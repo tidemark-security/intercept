@@ -266,34 +266,45 @@ describe("DesktopSidebar", () => {
     }
   });
 
-  it("renders open and unassigned badges for work queue navigation items", () => {
+  it("renders open notification badges for work queue navigation items", () => {
     mockUseSidebarBadgeCounts.mockReturnValue({
       data: {
         alerts: { open: 7, unassigned: 2 },
         cases: { open: 3, unassigned: 1 },
-        tasks: { open: 11, unassigned: 0 },
+        tasks: { open: 108, unassigned: 0 },
       },
     });
 
     renderDesktopSidebar();
 
     const alertsItem = screen.getByLabelText("Alerts");
-    expect(within(alertsItem).getByText("O")).toBeVisible();
     expect(within(alertsItem).getByText("7")).toBeVisible();
-    expect(within(alertsItem).getByText("U")).toBeVisible();
-    expect(within(alertsItem).getByText("2")).toBeVisible();
 
     const casesItem = screen.getByLabelText("Cases");
-    expect(within(casesItem).getByText("O")).toBeVisible();
     expect(within(casesItem).getByText("3")).toBeVisible();
-    expect(within(casesItem).getByText("U")).toBeVisible();
-    expect(within(casesItem).getByText("1")).toBeVisible();
 
     const tasksItem = screen.getByLabelText("Tasks");
-    expect(within(tasksItem).getByText("O")).toBeVisible();
-    expect(within(tasksItem).getByText("11")).toBeVisible();
-    expect(within(tasksItem).queryByText("U")).not.toBeInTheDocument();
+    expect(within(tasksItem).getByText("99+")).toBeVisible();
 
-    expect(within(screen.getByLabelText("AI Chat")).queryByText("O")).not.toBeInTheDocument();
+    expect(within(alertsItem).queryByText("O")).not.toBeInTheDocument();
+    expect(within(alertsItem).queryByText("U")).not.toBeInTheDocument();
+    expect(within(alertsItem).queryByText("2")).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText("AI Chat")).queryByText("7")).not.toBeInTheDocument();
+  });
+
+  it("does not render notification badges when there are no open items", () => {
+    mockUseSidebarBadgeCounts.mockReturnValue({
+      data: {
+        alerts: { open: 0, unassigned: 2 },
+        cases: { open: 0, unassigned: 1 },
+        tasks: { open: 0, unassigned: 0 },
+      },
+    });
+
+    renderDesktopSidebar();
+
+    expect(within(screen.getByLabelText("Alerts")).queryByText("0")).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText("Alerts")).queryByText("2")).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText("Cases")).queryByText("1")).not.toBeInTheDocument();
   });
 });
