@@ -18,7 +18,7 @@ import {
 import type { CaseTemplatePayload, CaseTemplateRead, CaseTemplateStatus, PICERLStage, TemplateTaskDefinition } from '@/types/caseTemplates';
 import { PICERL_STAGES } from '@/types/caseTemplates';
 import { cn } from '@/utils/cn';
-import { ArrowDown, ArrowUp, BookTemplate, Plus, Save, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Plus, Save, Trash2 } from 'lucide-react';
 
 const PICERL_STAGE_LABELS: Record<PICERLStage, string> = {
   Preparation: 'Preparation',
@@ -128,14 +128,11 @@ export default function CaseTemplatesPage() {
 
   return (
     <DefaultPageLayout withContainer>
-      <div className="flex w-full flex-col gap-6 py-8">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <BookTemplate className="h-6 w-6 text-brand-primary" />
-            <div className="flex flex-col">
-              <h1 className="text-heading-1 font-heading-1 text-default-font">Case Templates</h1>
-              <span className="text-caption font-caption text-subtext-color">Reusable response work structures</span>
-            </div>
+      <div className="container max-w-none flex h-full w-full flex-col items-start gap-6 py-8">
+        <div className="flex w-full flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-col gap-1">
+            <span className="text-heading-1 font-heading-1 text-default-font">Case Templates</span>
+            <span className="text-body text-subtext-color">Reusable response work structures</span>
           </div>
           {isAdmin ? (
             <Button
@@ -152,7 +149,7 @@ export default function CaseTemplatesPage() {
           ) : null}
         </div>
 
-        <div className="grid min-h-[640px] grid-cols-[minmax(280px,360px)_1fr] gap-4 mobile:grid-cols-1">
+        <div className="grid min-h-[640px] w-full grid-cols-[minmax(280px,360px)_1fr] gap-4 mobile:grid-cols-1">
           <div className="flex min-w-0 flex-col gap-3 border border-neutral-border bg-default-background p-3">
             <TextField className="h-auto w-full">
               <TextField.Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search templates" />

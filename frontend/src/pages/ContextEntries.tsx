@@ -192,11 +192,11 @@ export default function ContextEntries() {
 
   return (
     <DefaultPageLayout withContainer>
-      <div className="mx-auto flex h-full w-full max-w-7xl flex-col gap-6 px-6 py-8 mobile:px-4 mobile:py-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className="container max-w-none flex h-full w-full flex-col items-start gap-6 py-8">
+        <div className="flex w-full flex-wrap items-start justify-between gap-4">
           <div className="flex min-w-0 flex-col gap-1">
-            <h1 className="text-heading-1 font-heading-1 text-default-font">Context Entries</h1>
-            <p className="text-body text-subtext-color">Shared context applied to matching workflows</p>
+            <span className="text-heading-1 font-heading-1 text-default-font">Context Entries</span>
+            <span className="text-body text-subtext-color">Shared context applied to matching workflows</span>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             {!isAuditor && (
@@ -207,7 +207,7 @@ export default function ContextEntries() {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-end gap-3 rounded-md border border-neutral-border bg-default-background p-3">
+        <div className="flex w-full flex-wrap items-end gap-3 rounded-md border border-neutral-border bg-default-background p-3">
           <TextField className="min-w-72 flex-1" icon={<Search />}>
             <input
               className="h-full w-full bg-transparent text-body text-default-font outline-none placeholder:text-subtext-color"
@@ -235,7 +235,7 @@ export default function ContextEntries() {
           </Button>
         </div>
 
-        <div className="overflow-hidden rounded-md border border-neutral-border bg-default-background">
+        <div className="w-full overflow-hidden rounded-md border border-neutral-border bg-default-background">
           <div className="overflow-x-auto">
             <div className="min-w-[860px]">
               <div className="grid grid-cols-[minmax(220px,300px)_1fr_180px_150px] border-b border-neutral-border px-4 py-3 text-caption-bold font-caption-bold text-subtext-color">
