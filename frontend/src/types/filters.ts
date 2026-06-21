@@ -6,6 +6,13 @@ import type { AlertStatus } from './generated/models/AlertStatus';
 import type { CaseStatus } from './generated/models/CaseStatus';
 import type { TaskStatus } from './generated/models/TaskStatus';
 
+export type SortOrder = 'asc' | 'desc';
+
+export interface SortState {
+  sortBy?: string | null;
+  sortOrder?: SortOrder | null;
+}
+
 /**
  * Date range filter value
  * All dates are stored as UTC ISO8601 strings with 'Z' suffix
@@ -31,7 +38,7 @@ export interface DateRange {
  * Alert list filter state
  * Used to control entity list filters and alert API requests
  */
-export interface FilterState {
+export interface FilterState extends SortState {
   /** Search query for alert description/source */
   search: string;
   /**
@@ -61,7 +68,7 @@ export interface FilterState {
  * Case list filter state
  * Used to control filter components and filter cases API requests
  */
-export interface CaseFilterState {
+export interface CaseFilterState extends SortState {
   /** Search query for case title/description */
   search: string;
   /**
@@ -91,7 +98,7 @@ export interface CaseFilterState {
  * Task list filter state
  * Used to control filter components and filter tasks API requests
  */
-export interface TaskFilterState {
+export interface TaskFilterState extends SortState {
   /** Search query for task title/description */
   search: string;
   /**

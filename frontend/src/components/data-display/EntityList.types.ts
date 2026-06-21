@@ -1,4 +1,5 @@
 import type { FilterState } from '@/types/filters';
+import type { SortOption } from '@/components/entities/EntityFilterToolbar';
 import React from 'react';
 
 /**
@@ -52,6 +53,9 @@ export interface EntityListProps<T, F = FilterState> {
   
   /** Options for the status filter dropdown */
   statusOptions?: { value: string; label: string }[];
+
+  /** Options for the sort dropdown */
+  sortOptions?: SortOption[];
 
   /** Show include/exclude tag filters in the compact filter bar */
   enableTagFilters?: boolean;

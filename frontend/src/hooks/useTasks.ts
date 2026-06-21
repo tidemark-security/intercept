@@ -16,6 +16,8 @@ export interface UseTasksParams {
   search?: string | null;
   startDate?: string | null;
   endDate?: string | null;
+  sortBy?: string;
+  sortOrder?: string;
 }
 
 /**
@@ -43,11 +45,13 @@ export function useTasks({
   search = null,
   startDate = null,
   endDate = null,
+  sortBy = 'created_at',
+  sortOrder = 'desc',
 }: UseTasksParams = {}) {
   const { isConnected } = useWebSocket();
 
   return useQuery<Page_TaskRead_, Error>({
-    queryKey: ['tasks', { page, size, status, assignee, caseId, includeTags, excludeTags, search, startDate, endDate }],
+    queryKey: ['tasks', { page, size, status, assignee, caseId, includeTags, excludeTags, search, startDate, endDate, sortBy, sortOrder }],
     queryFn: async () => {
       const response = await TasksService.getTasksApiV1TasksGet({
         page,
@@ -60,6 +64,8 @@ export function useTasks({
         search: search || undefined,
         startDate: startDate || undefined,
         endDate: endDate || undefined,
+        sortBy,
+        sortOrder,
       });
 
       return response as Page_TaskRead_;

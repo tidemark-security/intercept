@@ -28,6 +28,29 @@ import { caseStatusToUIState, priorityToUIPriority } from "@/utils/statusHelpers
 import { CASE_STATUS_OPTIONS } from "@/utils/statusLabels";
 import { Plus } from "lucide-react";
 
+const CASE_SORT_OPTIONS = [
+  {
+    value: "created_at",
+    label: "Created",
+    directionLabel: { desc: "Newest first", asc: "Oldest first" },
+  },
+  {
+    value: "updated_at",
+    label: "Updated",
+    directionLabel: { desc: "Recently updated", asc: "Least recently updated" },
+  },
+  {
+    value: "priority",
+    label: "Priority",
+    directionLabel: { desc: "Highest priority", asc: "Lowest priority" },
+  },
+  {
+    value: "status",
+    label: "Status",
+    directionLabel: { desc: "Status Z-A", asc: "Status A-Z" },
+  },
+];
+
 /**
  * Cases List Page - Browse and filter cases with optional preview
  * 
@@ -55,6 +78,8 @@ function CasesListPage() {
       includeTags: null,
       excludeTags: null,
       dateRange: null,
+      sortBy: "created_at",
+      sortOrder: "desc",
     },
   });
   const [selectedCaseId, setSelectedCaseId] = useState<number | null>(null);
@@ -101,6 +126,8 @@ function CasesListPage() {
     search: filters.search || null,
     startDate: filters.dateRange?.start || null,
     endDate: filters.dateRange?.end || null,
+    sortBy: filters.sortBy ?? "created_at",
+    sortOrder: filters.sortOrder ?? "desc",
     page: currentPage,
     size: pageSize,
   });
@@ -223,6 +250,7 @@ function CasesListPage() {
             enableTagFilters
             onTagClick={handleFilterByTag}
             statusOptions={CASE_STATUS_OPTIONS}
+            sortOptions={CASE_SORT_OPTIONS}
             currentPage={currentPage}
             totalPages={totalPages}
             totalItems={casesData?.total}

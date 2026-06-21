@@ -181,7 +181,9 @@ class CaseService:
         exclude_tags: Optional[List[str]] = None,
         search: Optional[str] = None,
         start_date: Optional[str] = None,
-        end_date: Optional[str] = None
+        end_date: Optional[str] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc"
     ) -> Page[Case]:
         """Get cases with optional filtering and pagination.
         
@@ -197,10 +199,10 @@ class CaseService:
             end_date: Filter cases created before this UTC datetime (ISO8601 format with 'Z' suffix)
         """
         try:
-            # Build base query with ordering
+            # Build base query
             # Defer timeline_items - not needed for list view and can cause validation 
             # errors if malformed data exists. Detail view fetches them separately.
-            query = select(Case).options(defer(Case.timeline_items)).order_by(col(Case.created_at).desc())  # type: ignore[arg-type]
+            query = select(Case).options(defer(Case.timeline_items))
             
             # Apply filters
             filters = []
@@ -258,6 +260,24 @@ class CaseService:
             # Apply all filters if any exist
             if filters:
                 query = query.where(and_(*filters))
+
+            allowed_sort_columns = {
+                "id": Case.id,
+                "title": Case.title,
+                "status": Case.status,
+                "priority": Case.priority,
+                "assignee": Case.assignee,
+                "created_at": Case.created_at,
+                "updated_at": Case.updated_at,
+            }
+            if sort_by not in allowed_sort_columns:
+                raise ValueError(f"Unsupported case sort column: {sort_by}")
+
+            sort_column = allowed_sort_columns[sort_by]
+            if sort_order.lower() == "asc":
+                query = query.order_by(sort_column.asc())  # type: ignore
+            else:
+                query = query.order_by(sort_column.desc())  # type: ignore
             
             # Use fastapi-pagination's paginate function
             # This automatically handles skip/limit from query parameters

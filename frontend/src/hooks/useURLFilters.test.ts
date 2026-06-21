@@ -31,6 +31,31 @@ describe("useURLFilters helpers", () => {
     expect(params.get("page")).toBe("2");
   });
 
+  it("parses and serializes queue sort params", () => {
+    const parsed = parseFiltersFromURL(
+      new URLSearchParams("sort_by=created_at&sort_order=asc")
+    ) as Partial<FilterState>;
+
+    expect(parsed.sortBy).toBe("created_at");
+    expect(parsed.sortOrder).toBe("asc");
+
+    const filters: FilterState = {
+      search: "",
+      assignee: null,
+      status: ["NEW", "IN_PROGRESS"],
+      includeTags: null,
+      excludeTags: null,
+      dateRange: null,
+      sortBy: "priority",
+      sortOrder: "desc",
+    };
+
+    const params = filtersToURLParams(filters);
+
+    expect(params.get("sort_by")).toBe("priority");
+    expect(params.get("sort_order")).toBe("desc");
+  });
+
   it("serializes preset date ranges as timeframe params", () => {
     const filters: FilterState = {
       search: "",

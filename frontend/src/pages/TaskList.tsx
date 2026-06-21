@@ -23,6 +23,29 @@ import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types
 import { taskStatusToUIState, priorityToUIPriority, taskStateToMenuCardState } from "@/utils/statusHelpers";
 import { TASK_STATUS_OPTIONS } from "@/utils/statusLabels";
 
+const TASK_SORT_OPTIONS = [
+  {
+    value: "created_at",
+    label: "Created",
+    directionLabel: { desc: "Newest first", asc: "Oldest first" },
+  },
+  {
+    value: "updated_at",
+    label: "Updated",
+    directionLabel: { desc: "Recently updated", asc: "Least recently updated" },
+  },
+  {
+    value: "priority",
+    label: "Priority",
+    directionLabel: { desc: "Highest priority", asc: "Lowest priority" },
+  },
+  {
+    value: "status",
+    label: "Status",
+    directionLabel: { desc: "Status Z-A", asc: "Status A-Z" },
+  },
+];
+
 /**
  * Tasks List Page - Browse and filter tasks with optional preview
  * 
@@ -49,6 +72,8 @@ function TasksListPage() {
       includeTags: null,
       excludeTags: null,
       dateRange: null,
+      sortBy: "created_at",
+      sortOrder: "desc",
     },
   });
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
@@ -93,6 +118,8 @@ function TasksListPage() {
     search: filters.search || null,
     startDate: filters.dateRange?.start || null,
     endDate: filters.dateRange?.end || null,
+    sortBy: filters.sortBy ?? "created_at",
+    sortOrder: filters.sortOrder ?? "desc",
     page: currentPage,
     size: pageSize,
   });
@@ -197,6 +224,7 @@ function TasksListPage() {
             enableTagFilters
             onTagClick={handleFilterByTag}
             statusOptions={TASK_STATUS_OPTIONS}
+            sortOptions={TASK_SORT_OPTIONS}
             currentPage={currentPage}
             totalPages={totalPages}
             totalItems={tasksData?.total}

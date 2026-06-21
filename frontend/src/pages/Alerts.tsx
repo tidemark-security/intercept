@@ -59,6 +59,29 @@ import { alertStatusToUIState, priorityToUIPriority, uiStateToAlertStatus, type 
 import { ALERT_STATUS_OPTIONS } from "@/utils/statusLabels";
 import { NotFoundError } from "@/pages/NotFoundError";
 
+const ALERT_SORT_OPTIONS = [
+  {
+    value: "created_at",
+    label: "Created",
+    directionLabel: { desc: "Newest first", asc: "Oldest first" },
+  },
+  {
+    value: "updated_at",
+    label: "Updated",
+    directionLabel: { desc: "Recently updated", asc: "Least recently updated" },
+  },
+  {
+    value: "priority",
+    label: "Priority",
+    directionLabel: { desc: "Highest priority", asc: "Lowest priority" },
+  },
+  {
+    value: "status",
+    label: "Status",
+    directionLabel: { desc: "Status Z-A", asc: "Status A-Z" },
+  },
+];
+
 /**
  * Alerts page component for displaying and managing security alerts.
  *
@@ -97,6 +120,8 @@ function Alerts() {
       includeTags: null,
       excludeTags: null,
       dateRange: null,
+      sortBy: "created_at",
+      sortOrder: "desc",
     },
   });
   const [selectedAlertId, setSelectedAlertId] = useState<number | null>(null);
@@ -220,6 +245,8 @@ function Alerts() {
     search: filters.search || null,
     includeTags: filters.includeTags || null,
     excludeTags: filters.excludeTags || null,
+    sortBy: filters.sortBy ?? "created_at",
+    sortOrder: filters.sortOrder ?? "desc",
     page: currentPage,
     size: pageSize,
   });
@@ -815,6 +842,7 @@ function Alerts() {
             toolbarActions={bulkActionsPanel}
             filters={filters}
             onFilterChange={setFilters}
+            sortOptions={ALERT_SORT_OPTIONS}
             currentPage={currentPage}
             totalPages={totalPages}
             totalItems={alertsData?.total}
