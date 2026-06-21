@@ -216,6 +216,54 @@ describe("EntityFilterToolbar", () => {
     expect(screen.queryByRole("menuitem", { name: /clear selection/i })).not.toBeInTheDocument();
   });
 
+  it("changes sort order from the reusable sort menu", async () => {
+    const user = userEvent.setup();
+    const onFilterChange = vi.fn();
+    renderWithProviders(
+      <EntityFilterToolbar
+        filters={{
+          search: "",
+          assignee: null,
+          status: ["NEW", "IN_PROGRESS"],
+          includeTags: null,
+          excludeTags: null,
+          dateRange: null,
+          sortBy: "created_at",
+          sortOrder: "desc",
+        }}
+        onFilterChange={onFilterChange}
+        assignees={users}
+        assigneesLoading={false}
+        sortOptions={[
+          {
+            value: "created_at",
+            label: "Created",
+            directionLabel: { desc: "Newest first", asc: "Oldest first" },
+          },
+          {
+            value: "priority",
+            label: "Priority",
+            directionLabel: { desc: "Highest priority", asc: "Lowest priority" },
+          },
+        ]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /sort newest first/i }));
+    await user.click(screen.getByRole("menuitem", { name: /oldest first/i }));
+
+    expect(onFilterChange).toHaveBeenCalledWith({
+      search: "",
+      assignee: null,
+      status: ["NEW", "IN_PROGRESS"],
+      includeTags: null,
+      excludeTags: null,
+      dateRange: null,
+      sortBy: "created_at",
+      sortOrder: "asc",
+    });
+  });
+
   it("clears every filter when reset is selected", async () => {
     const user = userEvent.setup();
     const onFilterChange = vi.fn();

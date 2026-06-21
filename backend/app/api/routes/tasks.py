@@ -80,6 +80,8 @@ async def get_tasks(
     search: Optional[str] = Query(None, description="Search tasks by title or description (case-insensitive partial match)"),
     start_date: Optional[str] = Query(None, description="Filter tasks created after this UTC datetime (ISO8601 format with 'Z' suffix)"),
     end_date: Optional[str] = Query(None, description="Filter tasks created before this UTC datetime (ISO8601 format with 'Z' suffix)"),
+    sort_by: str = Query("created_at", description="Field to sort by"),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
     db: AsyncSession = Depends(get_db)
 ):
     """Get tasks with optional filtering and pagination.
@@ -93,7 +95,8 @@ async def get_tasks(
         tasks = await task_service.get_tasks(
             db, skip=skip, limit=limit, status=status, assignee=assignee,
             case_id=case_id, include_tags=include_tags, exclude_tags=exclude_tags,
-            search=search, start_date=start_date, end_date=end_date
+            search=search, start_date=start_date, end_date=end_date,
+            sort_by=sort_by, sort_order=sort_order
         )
         return tasks
     except Exception as e:

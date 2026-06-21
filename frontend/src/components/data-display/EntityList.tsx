@@ -24,6 +24,7 @@ export function EntityList<T, F = FilterState>({
   filters,
   onFilterChange,
   statusOptions,
+  sortOptions,
   enableTagFilters = false,
   currentPage,
   totalPages,
@@ -79,6 +80,7 @@ export function EntityList<T, F = FilterState>({
             assignees={users}
             assigneesLoading={usersLoading}
             statusOptions={statusOptions}
+            sortOptions={sortOptions}
             showTagFilters={enableTagFilters}
             availableTags={visibleTagCounts}
             actions={toolbarActions}

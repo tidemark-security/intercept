@@ -15,6 +15,8 @@ export interface UseCasesParams {
   search?: string | null;
   startDate?: string | null;
   endDate?: string | null;
+  sortBy?: string;
+  sortOrder?: string;
 }
 
 /**
@@ -41,11 +43,13 @@ export function useCases({
   search = null,
   startDate = null,
   endDate = null,
+  sortBy = 'created_at',
+  sortOrder = 'desc',
 }: UseCasesParams = {}) {
   const { isConnected } = useWebSocket();
 
   return useQuery<Page_CaseRead_, Error>({
-    queryKey: ['cases', { page, size, status, assignee, includeTags, excludeTags, search, startDate, endDate }],
+    queryKey: ['cases', { page, size, status, assignee, includeTags, excludeTags, search, startDate, endDate, sortBy, sortOrder }],
     queryFn: async () => {
       const response = await CasesService.getCasesApiV1CasesGet({
         page,
@@ -57,6 +61,8 @@ export function useCases({
         search: search || undefined,
         startDate: startDate || undefined,
         endDate: endDate || undefined,
+        sortBy,
+        sortOrder,
       });
 
       return response as Page_CaseRead_;

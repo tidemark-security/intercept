@@ -93,6 +93,8 @@ async def get_cases(
         None,
         description="Filter cases created before this UTC datetime (ISO8601 format with 'Z' suffix)",
     ),
+    sort_by: str = Query("created_at", description="Field to sort by"),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
     db: AsyncSession = Depends(get_db),
 ):
     """Get cases with optional filtering and pagination.
@@ -114,6 +116,8 @@ async def get_cases(
             search=search,
             start_date=start_date,
             end_date=end_date,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
         return cases
     except Exception as e:

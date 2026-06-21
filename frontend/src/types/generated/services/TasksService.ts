@@ -63,6 +63,8 @@ export class TasksService {
         search,
         startDate,
         endDate,
+        sortBy = 'created_at',
+        sortOrder = 'desc',
         page = 1,
         size = 50,
     }: {
@@ -98,6 +100,14 @@ export class TasksService {
          */
         endDate?: (string | null),
         /**
+         * Field to sort by
+         */
+        sortBy?: string,
+        /**
+         * Sort order
+         */
+        sortOrder?: string,
+        /**
          * Page number
          */
         page?: number,
@@ -120,6 +130,8 @@ export class TasksService {
                 'search': search,
                 'start_date': startDate,
                 'end_date': endDate,
+                'sort_by': sortBy,
+                'sort_order': sortOrder,
                 'page': page,
                 'size': size,
             },

@@ -2,6 +2,9 @@
 
 import React from "react";
 import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
   Calendar,
   Check,
   CheckSquare,
@@ -21,7 +24,7 @@ import { Button } from "@/components/buttons/Button";
 import { TextField } from "@/components/forms/TextField";
 import { DropdownMenu } from "@/components/overlays/DropdownMenu";
 import { Accordion } from "@/components/misc/Accordion";
-import type { FilterState } from "@/types/filters";
+import type { FilterState, SortOrder } from "@/types/filters";
 import type { AlertStatus } from "@/types/generated/models/AlertStatus";
 import type { app__api__routes__admin_auth__UserSummary } from "@/types/generated/models/app__api__routes__admin_auth__UserSummary";
 import { cn } from "@/utils/cn";
@@ -46,9 +49,19 @@ export interface EntityFilterToolbarProps
   showTagFilters?: boolean;
   availableTags?: Array<{ tag: string; count: number }>;
   actions?: React.ReactNode;
+  sortOptions?: SortOption[];
 }
 
 type TagMode = "include" | "exclude";
+
+export interface SortOption {
+  value: string;
+  label: string;
+  directionLabel?: {
+    asc: string;
+    desc: string;
+  };
+}
 
 function emptyFilters(): FilterState {
   return {
@@ -128,6 +141,20 @@ function compactTimeLabel(value: FilterState["dateRange"]) {
 function compactTagLabel(includeTags: string[], excludeTags: string[]) {
   if (!includeTags.length && !excludeTags.length) return "No tags";
   return `+${includeTags.length} -${excludeTags.length}`;
+}
+
+function compactSortLabel(
+  filters: FilterState | undefined,
+  sortOptions: SortOption[],
+) {
+  const selectedOption = sortOptions.find(
+    (option) => option.value === filters?.sortBy,
+  );
+  const sortOrder = filters?.sortOrder ?? "desc";
+
+  if (!selectedOption) return "Default";
+
+  return selectedOption.directionLabel?.[sortOrder] ?? selectedOption.label;
 }
 
 function haveSameValues(left: readonly string[], right: readonly string[]) {
@@ -493,6 +520,63 @@ function TimeFilterDropdown({
   );
 }
 
+function SortDropdown({
+  filters,
+  options,
+  onChange,
+}: {
+  filters?: FilterState;
+  options: SortOption[];
+  onChange: (sortBy: string, sortOrder: SortOrder) => void;
+}) {
+  const selectedSortBy = filters?.sortBy ?? options[0]?.value;
+  const selectedSortOrder = filters?.sortOrder ?? "desc";
+
+  if (!options.length) return null;
+
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
+        <ToolbarButton
+          icon={<ArrowUpDown />}
+          label="Sort"
+          value={compactSortLabel(filters, options)}
+          chevron
+          active={!!filters?.sortBy || !!filters?.sortOrder}
+        />
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Content side="bottom" align="start" sideOffset={6}>
+        {options.map((option) => (
+          <React.Fragment key={option.value}>
+            <DropdownMenu.DropdownItem
+              icon={
+                selectedSortBy === option.value && selectedSortOrder === "desc" ? (
+                  <Check />
+                ) : (
+                  <ArrowDown />
+                )
+              }
+              label={option.directionLabel?.desc ?? `${option.label}, descending`}
+              onClick={() => onChange(option.value, "desc")}
+            />
+            <DropdownMenu.DropdownItem
+              icon={
+                selectedSortBy === option.value && selectedSortOrder === "asc" ? (
+                  <Check />
+                ) : (
+                  <ArrowUp />
+                )
+              }
+              label={option.directionLabel?.asc ?? `${option.label}, ascending`}
+              onClick={() => onChange(option.value, "asc")}
+            />
+          </React.Fragment>
+        ))}
+      </DropdownMenu.Content>
+    </DropdownMenu.Root>
+  );
+}
+
 export function EntityFilterToolbar({
   className,
   filters,
@@ -503,6 +587,7 @@ export function EntityFilterToolbar({
   showTagFilters = false,
   availableTags = [],
   actions,
+  sortOptions = [],
   ...otherProps
 }: EntityFilterToolbarProps) {
   const [tagMode, setTagMode] = React.useState<TagMode>("include");
@@ -587,6 +672,15 @@ export function EntityFilterToolbar({
     updateFilter("status", statuses as FilterState["status"]);
   };
 
+  const handleSortChange = (sortBy: string, sortOrder: SortOrder) => {
+    onFilterChange?.({
+      ...emptyFilters(),
+      ...filters,
+      sortBy,
+      sortOrder,
+    } as FilterState);
+  };
+
   const filteredSuggestions = availableTags.filter((tag) => {
     if (!tagSearch.trim()) return true;
     return tag.tag.toLowerCase().includes(tagSearch.toLowerCase());
@@ -650,6 +744,12 @@ export function EntityFilterToolbar({
         <TimeFilterDropdown
           value={filters?.dateRange ?? null}
           onChange={(value) => updateFilter("dateRange", value)}
+        />
+
+        <SortDropdown
+          filters={filters}
+          options={sortOptions}
+          onChange={handleSortChange}
         />
 
         {showTagFilters ? (

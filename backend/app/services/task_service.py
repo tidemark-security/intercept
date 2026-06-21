@@ -153,7 +153,9 @@ class TaskService:
         exclude_tags: Optional[List[str]] = None,
         search: Optional[str] = None,
         start_date: Optional[str] = None,
-        end_date: Optional[str] = None
+        end_date: Optional[str] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc"
     ) -> Page[Task]:
         """Get tasks with optional filtering and pagination.
         
@@ -170,10 +172,10 @@ class TaskService:
             end_date: Filter tasks created before this UTC datetime (ISO8601 format with 'Z' suffix)
         """
         try:
-            # Build base query with ordering
+            # Build base query
             # Defer timeline_items - not needed for list view and can cause validation 
             # errors if malformed data exists. Detail view fetches them separately.
-            query = select(Task).options(defer(Task.timeline_items)).order_by(col(Task.created_at).desc())  # type: ignore[arg-type]
+            query = select(Task).options(defer(Task.timeline_items))
             
             # Apply filters
             filters = []
@@ -244,6 +246,24 @@ class TaskService:
             # Apply all filters if any exist
             if filters:
                 query = query.where(and_(*filters))
+
+            allowed_sort_columns = {
+                "id": Task.id,
+                "title": Task.title,
+                "status": Task.status,
+                "priority": Task.priority,
+                "assignee": Task.assignee,
+                "created_at": Task.created_at,
+                "updated_at": Task.updated_at,
+            }
+            if sort_by not in allowed_sort_columns:
+                raise ValueError(f"Unsupported task sort column: {sort_by}")
+
+            sort_column = allowed_sort_columns[sort_by]
+            if sort_order.lower() == "asc":
+                query = query.order_by(sort_column.asc())  # type: ignore
+            else:
+                query = query.order_by(sort_column.desc())  # type: ignore
             
             # Use fastapi-pagination's paginate function
             return await paginate(db, query)

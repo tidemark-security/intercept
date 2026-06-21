@@ -37,6 +37,16 @@ export function parseFiltersFromURL(searchParams: URLSearchParams): Partial<AnyF
     alertFilters.excludeTags = excludeTags;
   }
 
+  const sortBy = searchParams.get('sort_by');
+  if (sortBy) {
+    filters.sortBy = sortBy;
+  }
+
+  const sortOrder = searchParams.get('sort_order');
+  if (sortOrder === 'asc' || sortOrder === 'desc') {
+    filters.sortOrder = sortOrder;
+  }
+
   const timeframe = searchParams.get('timeframe');
   const relativeRange = timeframe ? parseRelativeTime(timeframe) : null;
   if (timeframe && relativeRange) {
@@ -109,6 +119,14 @@ export function filtersToURLParams(filters: AnyFilterState, page?: number): URLS
     }
   }
 
+  if (filters.sortBy) {
+    params.set('sort_by', filters.sortBy);
+  }
+
+  if (filters.sortOrder) {
+    params.set('sort_order', filters.sortOrder);
+  }
+
   // Only add page to URL if it's greater than 1 (page 1 is the default)
   if (page && page > 1) {
     params.set('page', String(page));
@@ -173,6 +191,8 @@ export function useURLFilters<T extends AnyFilterState>(
       // Handle alert tag filters specially - only override if URL has tag params
       includeTags: parsedAlertFilters.includeTags !== undefined ? parsedAlertFilters.includeTags : defaultAlertFilters.includeTags,
       excludeTags: parsedAlertFilters.excludeTags !== undefined ? parsedAlertFilters.excludeTags : defaultAlertFilters.excludeTags,
+      sortBy: urlFilters.sortBy !== undefined ? urlFilters.sortBy : defaults.sortBy,
+      sortOrder: urlFilters.sortOrder !== undefined ? urlFilters.sortOrder : defaults.sortOrder,
     } as T;
   }, [defaults, urlFilters]);
 
