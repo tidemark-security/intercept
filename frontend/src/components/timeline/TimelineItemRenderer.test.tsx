@@ -418,6 +418,182 @@ describe('TimelineItemRenderer enrichments', () => {
     expect(screen.getByText('Active')).toBeInTheDocument();
   });
 
+  it('renders servicenow user enrichment content for internal actors without duplicate VIP or privileged badges', () => {
+    const item = {
+      id: 'actor-servicenow-1',
+      type: 'internal_actor',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      user_id: 'alice@example.com',
+      is_vip: true,
+      is_privileged: true,
+      enrichments: {
+        servicenow: {
+          source_table: 'sys_user',
+          record_id: 'sn-user-1',
+          record_link: 'https://example.service-now.com/sys_user.do?sys_id=sn-user-1',
+          matched_identifier: 'alice@example.com',
+          user_name: 'alice',
+          email: 'alice@example.com',
+          display_name: 'Alice Analyst',
+          job_title: 'Security Analyst',
+          department: 'SOC',
+          company: 'Tidemark',
+          phone: '+1-555-0100',
+          mobile_phone: '+1-555-0101',
+          active: 'true',
+          is_vip: true,
+          is_privileged: true,
+          mapped_fields: {
+            vip: { field: 'vip', value: 'true', mapped: true },
+            privileged: { field: 'u_privileged_user', value: '1', mapped: true },
+          },
+        },
+      },
+    } as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="alert" />
+    );
+
+    expect(screen.getByText('ServiceNow Enrichment')).toBeInTheDocument();
+    expect(screen.getByText('sys_user')).toBeInTheDocument();
+    expect(screen.getByText('sn-user-1')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open record' })).toHaveAttribute(
+      'href',
+      'https://example.service-now.com/sys_user.do?sys_id=sn-user-1',
+    );
+    expect(screen.getByText('Alice Analyst')).toBeInTheDocument();
+    expect(screen.getAllByText('alice@example.com').length).toBeGreaterThan(0);
+    expect(screen.getByText('Security Analyst')).toBeInTheDocument();
+    expect(screen.getByText('Tidemark')).toBeInTheDocument();
+    expect(screen.getByText('SOC')).toBeInTheDocument();
+    expect(screen.getByText('vip')).toBeInTheDocument();
+    expect(screen.getByText('u_privileged_user')).toBeInTheDocument();
+    expect(screen.getAllByText('VIP')).toHaveLength(2);
+    expect(screen.getAllByText('Privileged')).toHaveLength(1);
+  });
+
+  it('renders servicenow CMDB enrichment content for system cards', () => {
+    const item = {
+      id: 'system-servicenow-1',
+      type: 'system',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      hostname: 'mail-gateway-01',
+      ip_address: '10.20.30.40',
+      is_critical: true,
+      enrichments: {
+        servicenow: {
+          status: 'matched',
+          source_table: 'cmdb_ci',
+          record_id: 'cmdb-system-1',
+          record_link: 'https://example.service-now.com/nav_to.do?uri=/cmdb_ci.do?sys_id=cmdb-system-1',
+          matched_identifier: { source: 'hostname', field: 'name', value: 'mail-gateway-01' },
+          name: 'mail-gateway-01',
+          fqdn: 'mail-gateway-01.example.com',
+          ip_address: '10.20.30.40',
+          asset_tag: 'ASSET-7788',
+          ci_type: 'cmdb_ci_server',
+          criticality: 'critical',
+          install_status: 'Installed',
+          privilege_fields: {
+            u_privileged_system: 'false',
+          },
+        },
+      },
+    } as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="alert" />
+    );
+
+    expect(screen.getByText('ServiceNow Enrichment')).toBeInTheDocument();
+    expect(screen.getByText('cmdb_ci')).toBeInTheDocument();
+    expect(screen.getByText('matched')).toBeInTheDocument();
+    expect(screen.getByText('cmdb-system-1')).toBeInTheDocument();
+    expect(screen.getByText('hostname / name: mail-gateway-01')).toBeInTheDocument();
+    expect(screen.getAllByText('mail-gateway-01.example.com').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('10.20.30.40').length).toBeGreaterThan(0);
+    expect(screen.getByText('ASSET-7788')).toBeInTheDocument();
+    expect(screen.getByText('cmdb_ci_server')).toBeInTheDocument();
+    expect(screen.getByText('critical')).toBeInTheDocument();
+    expect(screen.getByText('Installed')).toBeInTheDocument();
+    expect(screen.getByText('u_privileged_system')).toBeInTheDocument();
+  });
+
+  it('renders servicenow lookup errors without source record details', () => {
+    const item = {
+      id: 'actor-servicenow-error-1',
+      type: 'internal_actor',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      user_id: 'missing@example.com',
+      enrichments: {
+        servicenow: {
+          error: 'User not found: missing@example.com',
+          matched_identifier: 'missing@example.com',
+        },
+      },
+    } as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="alert" />
+    );
+
+    expect(screen.getByText('ServiceNow Enrichment')).toBeInTheDocument();
+    expect(screen.getByText('User not found: missing@example.com')).toBeInTheDocument();
+    expect(screen.getAllByText('missing@example.com').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('link', { name: 'Open record' })).not.toBeInTheDocument();
+  });
+
+  it('does not render servicenow enrichment for absent or empty payloads', () => {
+    const absentItem = {
+      id: 'actor-servicenow-absent-1',
+      type: 'internal_actor',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      user_id: 'absent@example.com',
+    } as TimelineItem;
+    const emptyItem = {
+      ...absentItem,
+      id: 'actor-servicenow-empty-1',
+      enrichments: { servicenow: {} },
+    } as TimelineItem;
+
+    const { rerender } = renderWithProviders(
+      <TimelineItemRenderer item={absentItem} index={0} total={1} entityId={38} entityType="alert" />
+    );
+
+    expect(screen.queryByText('ServiceNow Enrichment')).not.toBeInTheDocument();
+
+    rerender(
+      <TimelineItemRenderer item={emptyItem} index={0} total={1} entityId={38} entityType="alert" />
+    );
+
+    expect(screen.queryByText('ServiceNow Enrichment')).not.toBeInTheDocument();
+  });
+
   it('prioritizes internal actor identity and organization metadata before phone details', () => {
     const item = {
       id: 'actor-priority-1',
