@@ -111,6 +111,32 @@ async def test_case_template_management_defaults_filters_and_admin_writes(
     )
     assert analyst_write.status_code == 403
 
+    disable_response = await client.post(
+        f"/api/v1/case-templates/{template['id']}/disable",
+        cookies={"intercept_session": admin_cookie},
+    )
+    assert disable_response.status_code == 200
+    assert disable_response.json()["status"] == "DISABLED"
+
+    disabled_list = await client.get(
+        "/api/v1/case-templates?status=DISABLED",
+        cookies={"intercept_session": analyst_cookie},
+    )
+    assert disabled_list.status_code == 200
+    assert [item["title"] for item in disabled_list.json()["items"]] == ["DLP Exfiltration"]
+
+    delete_response = await client.delete(
+        f"/api/v1/case-templates/{template['id']}",
+        cookies={"intercept_session": admin_cookie},
+    )
+    assert delete_response.status_code == 200
+    tombstone = delete_response.json()
+    assert tombstone["status"] == "DELETED"
+    assert tombstone["title"] is None
+    assert tombstone["description"] is None
+    assert tombstone["case_tags"] == []
+    assert tombstone["template_tasks"] == []
+
     async with session_maker() as session:
         audit_events = (
             await session.execute(
@@ -123,6 +149,8 @@ async def test_case_template_management_defaults_filters_and_admin_writes(
             "case_template.created",
             "case_template.published",
             "case_template.updated",
+            "case_template.disabled",
+            "case_template.deleted",
         ]
 
 
