@@ -12,6 +12,8 @@ from pydantic import EmailStr, computed_field, field_validator, model_validator
 from app.models.enums import (
     CaseStatus,
     Priority,
+    CaseTemplateStatus,
+    PICERLStage,
     AlertStatus,
     ObservableType,
     TaskStatus,
@@ -529,6 +531,8 @@ class TaskItem(ItemBase):
         default=None,
         sa_column=Column(DateTime(timezone=True))
     )
+    picerl_stage: Optional[PICERLStage] = None
+    source_tpl: Optional[int] = None
     # Optionally embedded timeline items from the linked task (populated when include_linked_timelines=true)
     source_timeline_items: Optional[TimelineItemStorage] = Field(
         default=None,
@@ -1077,6 +1081,105 @@ class TriageRecommendationRead(SQLModel):
     applied_context_entries: List[Dict[str, Any]] = []
 
 
+class TemplateTaskDefinition(SQLModel):
+    """Task definition stored inside a case template JSONB document."""
+
+    title: str = Field(min_length=1, max_length=200)
+    description: Optional[str] = None
+    picerl_stage: PICERLStage
+    relative_due_seconds: Optional[int] = None
+    priority: Optional[Priority] = None
+    tags: List[str] = Field(default_factory=list)
+
+
+class TemplateTaskOverride(SQLModel):
+    """Per-task override supplied when applying a case template."""
+
+    index: int = Field(ge=0)
+    selected: bool = True
+    assignee: Optional[str] = None
+    due_date: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+
+
+class CaseTemplateBase(SQLModel):
+    title: Optional[str] = Field(default=None, max_length=200)
+    description: Optional[str] = None
+    status: CaseTemplateStatus = Field(default=CaseTemplateStatus.DRAFT)
+    case_tags: List[str] = Field(default_factory=list)
+    template_tasks: List[TemplateTaskDefinition] = Field(default_factory=list)
+
+
+class CaseTemplate(CaseTemplateBase, table=True):
+    """Reusable case work template."""
+
+    __tablename__ = "case_templates"  # type: ignore
+    __table_args__ = (
+        Index("ix_case_templates_status", "status"),
+        Index("ix_case_templates_title_normalized", "title_normalized"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    title: Optional[str] = Field(default=None, sa_column=Column(String(200), nullable=True))
+    title_normalized: Optional[str] = Field(default=None, max_length=200)
+    status: CaseTemplateStatus = Field(
+        default=CaseTemplateStatus.DRAFT,
+        sa_column=Column(SAEnum(CaseTemplateStatus, name="casetemplatestatus"), nullable=False),
+    )
+    case_tags: List[str] = Field(default_factory=list, sa_column=Column(JSONB, nullable=False))
+    template_tasks: List[Dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSONB, nullable=False))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
+    created_by: str = Field(max_length=100)
+    updated_by: str = Field(max_length=100)
+
+
+class CaseTemplateCreate(CaseTemplateBase):
+    status: Optional[CaseTemplateStatus] = None
+
+
+class CaseTemplateUpdate(SQLModel):
+    title: Optional[str] = Field(default=None, max_length=200)
+    description: Optional[str] = None
+    status: Optional[CaseTemplateStatus] = None
+    case_tags: Optional[List[str]] = None
+    template_tasks: Optional[List[TemplateTaskDefinition]] = None
+
+
+class CaseTemplateRead(CaseTemplateBase):
+    id: int
+    title_normalized: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    created_by: str
+    updated_by: str
+
+    @computed_field
+    @property
+    def human_id(self) -> str:
+        return f"TPL-{self.id:07d}"
+
+
+class CaseTemplateApplyRequest(SQLModel):
+    task_overrides: List[TemplateTaskOverride] = Field(default_factory=list)
+
+
+class CaseTemplateApplyTaskWarning(SQLModel):
+    index: int
+    title: str
+    duplicate: bool = False
+    reasons: List[str] = Field(default_factory=list)
+
+
+class CaseTemplateApplyResponse(SQLModel):
+    case_id: int
+    case_human_id: str
+    template_id: int
+    template_human_id: str
+    created_task_ids: List[int]
+    skipped_task_titles: List[str]
+    duplicate_warnings: List[CaseTemplateApplyTaskWarning] = Field(default_factory=list)
+
+
 class ContextCriterion(SQLModel):
     """Single narrowing criterion for an analyst-authored context entry."""
 
@@ -1256,6 +1359,10 @@ class TaskBase(SQLModel):
         default=None,
         sa_column=Column(DateTime(timezone=True))
     )
+    picerl_stage: Optional[PICERLStage] = Field(
+        default=None,
+        sa_column=Column(SAEnum(PICERLStage, name="picerlstage"), nullable=True),
+    )
 
 
 class Task(TaskBase, table=True):
@@ -1278,6 +1385,7 @@ class Task(TaskBase, table=True):
     # Case relationship (optional - tasks can be standalone)
     case_id: Optional[int] = Field(default=None, foreign_key="cases.id")
     case: Optional[Case] = Relationship(back_populates="tasks")
+    source_tpl: Optional[int] = Field(default=None, foreign_key="case_templates.id", index=True)
     linked_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True))
@@ -1312,6 +1420,7 @@ class TaskCreate(TaskBase):
     assignee: Optional[str] = None
     case_id: Optional[int] = None
     status: Optional[TaskStatus] = None
+    tags: Optional[List[str]] = None
 
 
 class TaskUpdate(SQLModel):
@@ -1323,7 +1432,9 @@ class TaskUpdate(SQLModel):
     priority: Optional[Priority] = None
     assignee: Optional[str] = None
     due_date: Optional[datetime] = None
+    picerl_stage: Optional[PICERLStage] = None
     case_id: Optional[int] = None
+    source_tpl: Optional[int] = None
     timeline_items: Optional[Dict[str, TaskTimelineItem]] = None
     tags: Optional[List[str]] = None
 
@@ -1341,6 +1452,7 @@ class TaskRead(TaskBase):
     assignee: Optional[str] = None
     created_by: str
     case_id: Optional[int] = None
+    source_tpl: Optional[int] = None
     linked_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime

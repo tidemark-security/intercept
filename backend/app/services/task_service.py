@@ -82,11 +82,14 @@ class TaskService:
                 description=task_data.description,
                 priority=priority,
                 due_date=task_data.due_date,
+                picerl_stage=task_data.picerl_stage,
                 status=status,
                 assignee=assignee,
                 case_id=task_data.case_id,
+                source_tpl=getattr(task_data, "source_tpl", None),
                 linked_at=datetime.now(timezone.utc) if task_data.case_id else None,
-                created_by=created_by
+                created_by=created_by,
+                tags=normalize_persisted_tags(task_data.tags),
             )
             
             db.add(db_task)

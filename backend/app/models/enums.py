@@ -44,6 +44,22 @@ class TaskStatus(str, Enum):
     DONE = "DONE"
 
 
+class CaseTemplateStatus(str, Enum):
+    DRAFT = "DRAFT"
+    PUBLISHED = "PUBLISHED"
+    DISABLED = "DISABLED"
+    DELETED = "DELETED"
+
+
+class PICERLStage(str, Enum):
+    PREPARATION = "Preparation"
+    IDENTIFICATION = "Identification"
+    CONTAINMENT = "Containment"
+    ERADICATION = "Eradication"
+    RECOVERY = "Recovery"
+    LESSONS_LEARNED = "Lessons Learned"
+
+
 class ActorType(str, Enum):
     INTERNAL = "INTERNAL"
     EXTERNAL = "EXTERNAL"

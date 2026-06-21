@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # These should NOT be stored in the timeline JSON (snapshots)
 TASK_SNAPSHOT_FIELDS: Set[str] = {
     "title", "status", "priority", "assignee", "due_date",
-    "task_human_id", "description",
+    "task_human_id", "description", "picerl_stage", "source_tpl",
 }
 
 # Fields that should be preserved in the timeline JSON for task items
@@ -372,6 +372,8 @@ class TimelineService:
                             "assignee": task.assignee,
                             "entity_description": task.description,
                             "due_date": task.due_date.isoformat() if task.due_date else None,
+                            "picerl_stage": task.picerl_stage.value if task.picerl_stage else None,
+                            "source_tpl": task.source_tpl,
                             "created_at": task.linked_at.isoformat() if task.linked_at else task.created_at.isoformat(),
                             "timestamp": task.linked_at.isoformat() if task.linked_at else task.created_at.isoformat(),
                             "created_by": task.created_by or "system",
@@ -545,6 +547,8 @@ class TimelineService:
         item["priority"] = task.priority.value if task.priority else None
         item["assignee"] = task.assignee
         item["due_date"] = task.due_date.isoformat() if task.due_date else None
+        item["picerl_stage"] = task.picerl_stage.value if task.picerl_stage else None
+        item["source_tpl"] = task.source_tpl
         
         # Use Task's created_at/created_by as the canonical source
         item["created_at"] = task.created_at.isoformat() if task.created_at else item.get("created_at")
@@ -693,7 +697,7 @@ class TimelineService:
         """
         from app.services.task_service import task_service
         from app.models.models import TaskCreate
-        from app.models.enums import Priority, TaskStatus
+        from app.models.enums import PICERLStage, Priority, TaskStatus
         
         # Extract task data from the timeline item
         # Prioritize title field, only fall back to description if title is None or empty
@@ -734,6 +738,13 @@ class TimelineService:
                     due_date = datetime.fromisoformat(due_date_val.replace("Z", "+00:00"))
                 except ValueError:
                     pass
+
+        picerl_stage = None
+        if item.get("picerl_stage"):
+            try:
+                picerl_stage = PICERLStage(item["picerl_stage"]) if isinstance(item["picerl_stage"], str) else item["picerl_stage"]
+            except (ValueError, TypeError):
+                pass
         
         task_create = TaskCreate(
             title=title,
@@ -742,7 +753,9 @@ class TimelineService:
             status=status,
             assignee=item.get("assignee"),
             due_date=due_date,
+            picerl_stage=picerl_stage,
             case_id=case_id,
+            tags=item.get("tags") or [],
         )
         
         task = await task_service.create_task(db, task_create, created_by)
