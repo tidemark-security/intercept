@@ -4,10 +4,12 @@ import { Badge } from '@/components/data-display/Badge';
 import { RelativeTime } from '@/components/data-display/RelativeTime';
 import { Button } from '@/components/buttons/Button';
 import { IconButton } from '@/components/buttons/IconButton';
+import { Select } from '@/components/forms/Select';
 import { Priority } from '@/components/misc/Priority';
 import { Progress } from '@/components/feedback/Progress';
 import { State } from '@/components/misc/State';
 import { useTheme } from '@/contexts/ThemeContext';
+import { useCaseTemplates } from '@/hooks/useCaseTemplates';
 import { cn } from '@/utils/cn';
 import type { TriageRecommendationRead } from '@/types/generated/models/TriageRecommendationRead';
 import type { AcceptRecommendationRequest } from '@/types/generated/models/AcceptRecommendationRequest';
@@ -127,6 +129,7 @@ interface TriageRecommendationCardProps {
   onReject: (category: RejectionCategory, reason?: string) => void;
   onRetry?: () => void;
   onNavigateToCase?: (caseHumanId: string) => void;
+  acceptError?: string | null;
   isAccepting?: boolean;
   isRejecting?: boolean;
   isRetrying?: boolean;
@@ -140,6 +143,7 @@ export function TriageRecommendationCard({
   onReject,
   onRetry,
   onNavigateToCase,
+  acceptError,
   isAccepting = false,
   isRejecting = false,
   isRetrying = false,
@@ -157,6 +161,7 @@ export function TriageRecommendationCard({
   
   // Collapse/expand state - reviewed recommendations start collapsed by default
   const [isExpanded, setIsExpanded] = useState(isReviewed ? defaultExpanded : true);
+  const [replacementTemplateId, setReplacementTemplateId] = useState<string>('');
   
   // Rejection dialog state
   const [showRejectDialog, setShowRejectDialog] = useState(false);
@@ -183,18 +188,30 @@ export function TriageRecommendationCard({
     recommendation.suggested_tags_remove,
   ]);
   
-  const handleAccept = () => {
-    onAccept({
+  const buildAcceptOptions = (patch: Partial<AcceptRecommendationRequest> = {}): AcceptRecommendationRequest => ({
       apply_status: true,
       apply_priority: true,
       apply_assignee: true,
       apply_tags: true,
-    });
+      ...patch,
+  });
+
+  const handleAccept = () => {
+    onAccept(buildAcceptOptions());
   };
   
   // Get inferred action for display
   const recommendedAction = useMemo(() => getRecommendedAction(recommendation), [recommendation]);
   const appliedContextEntries = recommendation.applied_context_entries ?? [];
+  const shouldShowTemplateRecovery = Boolean(
+    isPending &&
+    canReview &&
+    recommendation.request_escalate_to_case &&
+    acceptError &&
+    acceptError.toLowerCase().includes('template')
+  );
+  const { data: publishedTemplatesData, isLoading: isLoadingTemplates } = useCaseTemplates(['PUBLISHED'], null);
+  const publishedTemplates = publishedTemplatesData?.items ?? [];
   
   useEffect(() => {
     const previousStatus = previousRecommendationStatusRef.current;
@@ -203,6 +220,13 @@ export function TriageRecommendationCard({
     }
     previousRecommendationStatusRef.current = recommendation.status;
   }, [recommendation.status]);
+
+  useEffect(() => {
+    if (!shouldShowTemplateRecovery || replacementTemplateId || publishedTemplates.length === 0) {
+      return;
+    }
+    setReplacementTemplateId(String(publishedTemplates[0].id));
+  }, [publishedTemplates, replacementTemplateId, shouldShowTemplateRecovery]);
 
   // QUEUED state - show processing indicator
   if (isQueued) {
@@ -583,6 +607,55 @@ export function TriageRecommendationCard({
               ))}
             </div>
           </div>
+        </>
+      )}
+
+      {shouldShowTemplateRecovery && (
+        <>
+          <div className="flex w-full flex-col gap-4 border border-warning-500 bg-warning-100 px-4 py-3">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="mt-0.5 h-5 w-5 flex-none text-warning-700" />
+              <div className="flex min-w-0 flex-1 flex-col gap-1">
+                <span className="text-body-bold font-body-bold text-default-font">
+                  Case Template unavailable
+                </span>
+                <span className="text-body font-body text-default-font">
+                  {acceptError}
+                </span>
+              </div>
+            </div>
+            <div className="grid w-full gap-3 md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-end">
+              <Select
+                className="w-full"
+                label="Replacement Template"
+                placeholder={isLoadingTemplates ? 'Loading templates' : 'Choose a published template'}
+                value={replacementTemplateId}
+                onValueChange={setReplacementTemplateId}
+              >
+                {publishedTemplates.map((template) => (
+                  <Select.Item key={template.id} value={String(template.id)}>
+                    {template.title || template.human_id}
+                  </Select.Item>
+                ))}
+              </Select>
+              <Button
+                variant="brand-secondary"
+                disabled={isAccepting || isRejecting || !replacementTemplateId}
+                loading={isAccepting}
+                onClick={() => onAccept(buildAcceptOptions({ case_template_id: Number(replacementTemplateId) }))}
+              >
+                Apply Replacement
+              </Button>
+              <Button
+                variant="neutral-secondary"
+                disabled={isAccepting || isRejecting}
+                onClick={() => onAccept(buildAcceptOptions({ skip_case_template: true }))}
+              >
+                Continue Without Template
+              </Button>
+            </div>
+          </div>
+          <div className="flex h-px w-full flex-none bg-neutral-border" />
         </>
       )}
       

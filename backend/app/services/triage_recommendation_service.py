@@ -442,23 +442,45 @@ async def accept_recommendation(
     before_tags = list(alert.tags or [])
     before_case_id = alert.case_id
 
-    recommended_template: CaseTemplate | None = None
-    if recommendation.recommended_case_template_id is not None:
-        recommended_template = await db.get(CaseTemplate, recommendation.recommended_case_template_id)
-        if recommended_template is None or recommended_template.status != CaseTemplateStatus.PUBLISHED:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "The recommended Case Template is no longer published. "
-                    "Choose another published template or continue without a template."
-                ),
-            )
-    
     # Track what was applied
     applied_changes = []
     result_case_id = None
     tasks_created = 0
     effective_suggested_status = get_effective_suggested_status(recommendation)
+
+    requested_template_id = options.get("case_template_id")
+    skip_case_template = bool(options.get("skip_case_template"))
+    if requested_template_id is not None and skip_case_template:
+        raise HTTPException(status_code=400, detail="case_template_id and skip_case_template are mutually exclusive")
+    if (requested_template_id is not None or skip_case_template) and not recommendation.request_escalate_to_case:
+        raise HTTPException(status_code=400, detail="Case Template overrides require an escalating recommendation")
+
+    recommended_template: CaseTemplate | None = None
+    effective_template_id = requested_template_id or recommendation.recommended_case_template_id
+    if effective_template_id is not None and not skip_case_template:
+        recommended_template = await db.get(CaseTemplate, effective_template_id)
+        if recommended_template is None or recommended_template.status != CaseTemplateStatus.PUBLISHED:
+            detail = (
+                "The selected Case Template is no longer published. "
+                "Choose another published template or continue without a template."
+            ) if requested_template_id is not None else (
+                "The recommended Case Template is no longer published. "
+                "Choose another published template or continue without a template."
+            )
+            raise HTTPException(status_code=409, detail=detail)
+        if requested_template_id is not None and requested_template_id != recommendation.recommended_case_template_id:
+            applied_changes.append({
+                "field": "case_template",
+                "action": "replaced_recommended_template",
+                "template_id": requested_template_id,
+            })
+    elif skip_case_template and recommendation.recommended_case_template_id is not None:
+        applied_changes.append({
+            "field": "case_template",
+            "action": "skipped",
+            "reason": "Analyst continued without the unavailable recommended Case Template",
+            "template_id": recommendation.recommended_case_template_id,
+        })
     
     # Apply suggested changes based on options (default: apply all)
     apply_status = options.get("apply_status", True)

@@ -192,6 +192,9 @@ export interface UnifiedTimelineProps {
   
   /** Whether reject recommendation is in progress */
   isRejectingRecommendation?: boolean;
+
+  /** Error message from the last triage recommendation accept attempt */
+  acceptRecommendationError?: string | null;
   
   /**
    * Handler for retrying a failed triage recommendation

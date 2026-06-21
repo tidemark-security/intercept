@@ -22,5 +22,12 @@ export type AcceptRecommendationRequest = {
      * Apply suggested tag changes
      */
     apply_tags?: boolean;
+    /**
+     * Published Case Template ID to apply instead of the recommended template
+     */
+    case_template_id?: (number | null);
+    /**
+     * Continue escalation without applying the recommended Case Template
+     */
+    skip_case_template?: boolean;
 };
-

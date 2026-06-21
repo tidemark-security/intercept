@@ -57,6 +57,7 @@ import type { TimelineItemType } from '@/types/drafts';
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { alertStatusToUIState, priorityToUIPriority, uiStateToAlertStatus, type UIState } from "@/utils/statusHelpers";
 import { ALERT_STATUS_OPTIONS } from "@/utils/statusLabels";
+import { ApiError } from "@/types/generated/core/ApiError";
 import { NotFoundError } from "@/pages/NotFoundError";
 
 const ALERT_SORT_OPTIONS = [
@@ -81,6 +82,22 @@ const ALERT_SORT_OPTIONS = [
     directionLabel: { desc: "Status Z-A", asc: "Status A-Z" },
   },
 ];
+
+function getApiErrorMessage(error: Error, fallback: string): string {
+  if (error instanceof ApiError) {
+    if (error.body && typeof error.body === 'object' && 'detail' in error.body) {
+      const detail = error.body.detail;
+      if (typeof detail === 'string') return detail;
+      if (detail && typeof detail === 'object' && 'message' in detail && typeof detail.message === 'string') {
+        return detail.message;
+      }
+    }
+    if (error.body && typeof error.body === 'object' && 'message' in error.body && typeof error.body.message === 'string') {
+      return error.body.message;
+    }
+  }
+  return error.message || fallback;
+}
 
 /**
  * Alerts page component for displaying and managing security alerts.
@@ -133,6 +150,7 @@ function Alerts() {
   const [bulkCaseTitle, setBulkCaseTitle] = useState('');
   const [bulkCaseDescription, setBulkCaseDescription] = useState('');
   const [bulkTags, setBulkTags] = useState<string[]>([]);
+  const [acceptRecommendationError, setAcceptRecommendationError] = useState<string | null>(null);
 
   // Column visibility state: controls which columns are visible
   // On mobile (<768px): typically 'left' | 'center' | 'right' for single column
@@ -357,6 +375,7 @@ function Alerts() {
   // Triage recommendation mutations
   const acceptTriageRecommendationMutation = useAcceptTriageRecommendation(selectedAlertId, {
     onSuccess: (data) => {
+      setAcceptRecommendationError(null);
       // If a case was created, navigate to it
       if (data.case_human_id) {
         navigate(`/cases/${data.case_human_id}`);
@@ -364,6 +383,7 @@ function Alerts() {
     },
     onError: (error) => {
       console.error("Failed to accept triage recommendation:", error);
+      setAcceptRecommendationError(getApiErrorMessage(error, "Failed to accept triage recommendation"));
     },
   });
 
@@ -578,6 +598,7 @@ function Alerts() {
   // Triage recommendation handlers
   const handleAcceptTriageRecommendation = (options: import('@/types/generated/models/AcceptRecommendationRequest').AcceptRecommendationRequest) => {
     if (!selectedAlertId) return;
+    setAcceptRecommendationError(null);
     acceptTriageRecommendationMutation.mutate(options);
   };
 
@@ -910,6 +931,7 @@ function Alerts() {
             onNavigateToCase={handleNavigateToCase}
             isAcceptingRecommendation={acceptTriageRecommendationMutation.isPending}
             isRejectingRecommendation={rejectTriageRecommendationMutation.isPending}
+            acceptRecommendationError={acceptRecommendationError}
             onRetryTriage={isAuditor ? undefined : handleRetryTriage}
             onRequestTriage={isAuditor ? undefined : handleRequestTriage}
             isEnqueuingTriage={enqueueTriageMutation.isPending}

@@ -488,3 +488,134 @@ async def test_accept_recommendation_with_published_case_template_applies_tasks(
         assert case.tags == ["dlp", "exfiltration"]
         notes = _timeline_values(case.timeline_items)
         assert any("Applied Case Template" in (item.get("description") or "") for item in notes)
+
+
+@pytest.mark.asyncio
+async def test_accept_stale_case_template_recommendation_allows_skip_or_replacement(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        stale_template = CaseTemplate(
+            title="Retired Response",
+            title_normalized="retired response",
+            description="No longer active",
+            status=CaseTemplateStatus.DISABLED,
+            case_tags=["retired"],
+            template_tasks=[
+                {"title": "Retired task", "picerl_stage": PICERLStage.IDENTIFICATION.value},
+            ],
+            created_by="admin",
+            updated_by="admin",
+        )
+        replacement_template = CaseTemplate(
+            title="Replacement Response",
+            title_normalized="replacement response",
+            description="Active response",
+            status=CaseTemplateStatus.PUBLISHED,
+            case_tags=["replacement"],
+            template_tasks=[
+                {"title": "Replacement task", "picerl_stage": PICERLStage.CONTAINMENT.value},
+            ],
+            created_by="admin",
+            updated_by="admin",
+        )
+        blocked_alert = Alert(
+            title="Blocked stale recommendation",
+            description="Recommended template has been disabled",
+            priority=Priority.HIGH,
+            source="EDR",
+            status=AlertStatus.NEW,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        replacement_alert = Alert(
+            title="Replacement stale recommendation",
+            description="Analyst selects a different template",
+            priority=Priority.HIGH,
+            source="EDR",
+            status=AlertStatus.NEW,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        session.add_all([stale_template, replacement_template, blocked_alert, replacement_alert])
+        await session.flush()
+        assert stale_template.id is not None
+        assert replacement_template.id is not None
+        assert blocked_alert.id is not None
+        assert replacement_alert.id is not None
+
+        session.add_all([
+            TriageRecommendation(
+                alert_id=blocked_alert.id,
+                disposition=TriageDisposition.NEEDS_INVESTIGATION,
+                confidence=0.77,
+                reasoning_bullets=["Template was available when recommended"],
+                recommended_actions=[],
+                recommended_case_template_id=stale_template.id,
+                suggested_status=AlertStatus.ESCALATED,
+                request_escalate_to_case=True,
+                created_by="test-ai",
+                status=RecommendationStatus.PENDING,
+                created_at=datetime.now(timezone.utc),
+            ),
+            TriageRecommendation(
+                alert_id=replacement_alert.id,
+                disposition=TriageDisposition.NEEDS_INVESTIGATION,
+                confidence=0.79,
+                reasoning_bullets=["Template was available when recommended"],
+                recommended_actions=[],
+                recommended_case_template_id=stale_template.id,
+                suggested_status=AlertStatus.ESCALATED,
+                request_escalate_to_case=True,
+                created_by="test-ai",
+                status=RecommendationStatus.PENDING,
+                created_at=datetime.now(timezone.utc),
+            ),
+        ])
+        await session.commit()
+        blocked_alert_id = blocked_alert.id
+        replacement_alert_id = replacement_alert.id
+        replacement_template_id = replacement_template.id
+
+    blocked_response = await client.post(
+        f"/api/v1/alerts/{blocked_alert_id}/triage-recommendation/accept",
+        json={},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert blocked_response.status_code == 409
+    assert "continue without a template" in blocked_response.json()["detail"]
+
+    skip_response = await client.post(
+        f"/api/v1/alerts/{blocked_alert_id}/triage-recommendation/accept",
+        json={"skip_case_template": True},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert skip_response.status_code == 200
+    assert skip_response.json()["case_id"] is not None
+    assert skip_response.json()["tasks_created"] == 0
+
+    replacement_response = await client.post(
+        f"/api/v1/alerts/{replacement_alert_id}/triage-recommendation/accept",
+        json={"case_template_id": replacement_template_id},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert replacement_response.status_code == 200
+    replacement_data = replacement_response.json()
+    assert replacement_data["tasks_created"] == 1
+
+    async with session_maker() as session:
+        tasks = (
+            await session.execute(
+                select(Task).where(Task.case_id == replacement_data["case_id"])
+            )
+        ).scalars().all()
+        assert [task.title for task in tasks] == ["Replacement task"]
+        assert tasks[0].source_tpl == replacement_template_id
+        assert tasks[0].picerl_stage == PICERLStage.CONTAINMENT

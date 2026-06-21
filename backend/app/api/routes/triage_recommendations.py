@@ -45,6 +45,14 @@ class AcceptRecommendationRequest(BaseModel):
         default=True, description="Apply suggested assignee change"
     )
     apply_tags: bool = Field(default=True, description="Apply suggested tag changes")
+    case_template_id: Optional[int] = Field(
+        default=None,
+        description="Published Case Template ID to apply instead of the recommended template",
+    )
+    skip_case_template: bool = Field(
+        default=False,
+        description="Continue escalation without applying the recommended Case Template",
+    )
 
 
 class RejectRecommendationRequest(BaseModel):
@@ -145,6 +153,8 @@ async def accept_triage_recommendation(
             "apply_priority": request.apply_priority,
             "apply_assignee": request.apply_assignee,
             "apply_tags": request.apply_tags,
+            "case_template_id": request.case_template_id,
+            "skip_case_template": request.skip_case_template,
         },
         reviewed_by=current_user.username,
     )

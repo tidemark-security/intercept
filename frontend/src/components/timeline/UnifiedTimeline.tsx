@@ -314,6 +314,7 @@ function UnifiedTimelineInner({
   onNavigateToCase,
   isAcceptingRecommendation,
   isRejectingRecommendation,
+  acceptRecommendationError,
   onRetryTriage,
   onRequestTriage,
   isEnqueuingTriage,
@@ -936,6 +937,7 @@ function UnifiedTimelineInner({
                         onNavigateToCase={onNavigateToCase}
                         isAccepting={isAcceptingRecommendation}
                         isRejecting={isRejectingRecommendation}
+                        acceptError={acceptRecommendationError}
                         isRetrying={isEnqueuingTriage}
                         canReview={canReviewTriage}
                       />
