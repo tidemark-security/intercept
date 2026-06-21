@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { DefaultPageLayout } from '@/components/layout/DefaultPageLayout';
 import { Button } from '@/components/buttons/Button';
+import { IconButton } from '@/components/buttons/IconButton';
 import { TextField } from '@/components/forms/TextField';
 import { TextArea } from '@/components/forms/TextArea';
 import { Badge } from '@/components/data-display/Badge';
@@ -17,7 +18,7 @@ import {
 import type { CaseTemplatePayload, CaseTemplateRead, CaseTemplateStatus, PICERLStage, TemplateTaskDefinition } from '@/types/caseTemplates';
 import { PICERL_STAGES } from '@/types/caseTemplates';
 import { cn } from '@/utils/cn';
-import { BookTemplate, Plus, Save, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, BookTemplate, Plus, Save, Trash2 } from 'lucide-react';
 
 const PICERL_STAGE_LABELS: Record<PICERLStage, string> = {
   Preparation: 'Preparation',
@@ -95,6 +96,18 @@ export default function CaseTemplatesPage() {
         taskIndex === index ? { ...task, ...patch } : task
       ),
     }));
+  };
+
+  const moveTask = (index: number, direction: -1 | 1) => {
+    setDraft((current) => {
+      const tasks = [...(current.template_tasks ?? [])];
+      const nextIndex = index + direction;
+      if (nextIndex < 0 || nextIndex >= tasks.length) {
+        return current;
+      }
+      [tasks[index], tasks[nextIndex]] = [tasks[nextIndex], tasks[index]];
+      return { ...current, template_tasks: tasks };
+    });
   };
 
   const save = async () => {
@@ -234,6 +247,31 @@ export default function CaseTemplatesPage() {
               </div>
               {(draft.template_tasks ?? []).map((task, index) => (
                 <div key={index} className="grid gap-3 border border-neutral-border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-caption-bold font-caption-bold text-subtext-color">
+                      Task {index + 1}
+                    </span>
+                    {editable ? (
+                      <div className="flex items-center gap-1">
+                        <IconButton
+                          aria-label="Move task up"
+                          size="small"
+                          variant="neutral-tertiary"
+                          icon={<ArrowUp />}
+                          disabled={index === 0}
+                          onClick={() => moveTask(index, -1)}
+                        />
+                        <IconButton
+                          aria-label="Move task down"
+                          size="small"
+                          variant="neutral-tertiary"
+                          icon={<ArrowDown />}
+                          disabled={index === (draft.template_tasks ?? []).length - 1}
+                          onClick={() => moveTask(index, 1)}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
                   <div className="grid grid-cols-[1fr_180px_160px] gap-2 mobile:grid-cols-1">
                     <TextField className="h-auto w-full">
                       <TextField.Input disabled={!editable} value={task.title} onChange={(event) => updateTask(index, { title: event.target.value })} placeholder="Task title" />
