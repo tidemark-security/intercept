@@ -74,13 +74,6 @@ const navigationItems: NavigationItem[] = [
     badgeKey: "cases",
   },
   {
-    key: "case-templates",
-    label: "Templates",
-    icon: BookTemplate,
-    to: "/case-templates",
-    match: (path: string) => path.startsWith("/case-templates"),
-  },
-  {
     key: "tasks",
     label: "Tasks",
     icon: List,
@@ -96,6 +89,13 @@ const navigationItems: NavigationItem[] = [
     match: (path: string) => path.startsWith("/ai-chat"),
   },
   {
+    key: "reports",
+    label: "Reports",
+    icon: BarChart2,
+    to: "/reports",
+    match: (path: string) => path.startsWith("/reports"),
+  },
+  {
     key: "context-entries",
     label: "Context",
     icon: BrainCircuit,
@@ -103,11 +103,11 @@ const navigationItems: NavigationItem[] = [
     match: (path: string) => path.startsWith("/context-entries"),
   },
   {
-    key: "reports",
-    label: "Reports",
-    icon: BarChart2,
-    to: "/reports",
-    match: (path: string) => path.startsWith("/reports"),
+    key: "case-templates",
+    label: "Templates",
+    icon: BookTemplate,
+    to: "/case-templates",
+    match: (path: string) => path.startsWith("/case-templates"),
   },
   {
     key: "admin",
