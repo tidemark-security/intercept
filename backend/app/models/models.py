@@ -2407,7 +2407,10 @@ class ServiceNowConfigureRequest(SQLModel):
 
     instance_url: str = Field(min_length=1)
     username: str = Field(min_length=1)
-    password: str = Field(min_length=1)
+    password: str = ""
+    auth_type: str = "basic"
+    oauth_client_id: str = ""
+    oauth_client_secret: str = ""
     user_table: str = "sys_user"
     user_query_field: str = "user_name"
     user_vip_field: str = "vip"

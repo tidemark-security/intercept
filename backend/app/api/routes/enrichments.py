@@ -271,8 +271,19 @@ async def configure_service_now(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        normalized = servicenow_provider.normalize_config(request.model_dump())
         settings_service = SettingsService(db)  # type: ignore[arg-type]
+        request_data = request.model_dump()
+        for key_suffix in ("password", "oauth_client_secret"):
+            if request_data.get(key_suffix):
+                continue
+            existing = await settings_service.get_setting(
+                f"enrichment.servicenow.{key_suffix}",
+                include_secret=True,
+            )
+            if existing and existing.value:
+                request_data[key_suffix] = existing.value
+
+        normalized = servicenow_provider.normalize_config(request_data)
         audit_context = AuditContext(
             ip_address=http_request.client.host if http_request.client else None,
             user_agent=http_request.headers.get("user-agent"),
@@ -282,8 +293,11 @@ async def configure_service_now(
         setting_values = {
             "instance_url": normalized["instance_url"],
             "username": normalized["username"],
-            "password": normalized["password"],
+            "auth_type": normalized["auth_type"],
+            "oauth_client_id": normalized["oauth_client_id"],
             "table": normalized["table"],
+            "user_query_field": request.user_query_field.strip(),
+            "active_only": "true" if request.active_only else "false",
             "fields": normalized["fields"],
             "lookup_query_template": normalized["lookup_query_template"],
             "bulk_sync_query": normalized["bulk_sync_query"],
@@ -297,9 +311,13 @@ async def configure_service_now(
             "ttl_seconds": str(request.ttl_seconds),
             "enabled": "true" if request.enabled else "false",
         }
-        boolean_keys = {"enabled"}
+        if request.password:
+            setting_values["password"] = normalized["password"]
+        if request.oauth_client_secret:
+            setting_values["oauth_client_secret"] = normalized["oauth_client_secret"]
+        boolean_keys = {"enabled", "active_only"}
         number_keys = {"ttl_seconds"}
-        secret_keys = {"password"}
+        secret_keys = {"password", "oauth_client_secret"}
 
         for key_suffix, value in setting_values.items():
             await _upsert_setting(

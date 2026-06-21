@@ -6,6 +6,9 @@ export interface ServiceNowConfigureRequest {
   instance_url: string;
   username: string;
   password: string;
+  auth_type: "basic" | "oauth_password";
+  oauth_client_id: string;
+  oauth_client_secret: string;
   user_table: string;
   user_query_field: string;
   user_vip_field: string;
@@ -15,6 +18,7 @@ export interface ServiceNowConfigureRequest {
   cmdb_criticality_field: string;
   cmdb_privileged_field: string;
   active_only: boolean;
+  ttl_seconds: number;
   enabled: boolean;
 }
 

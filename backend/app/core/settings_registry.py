@@ -885,10 +885,42 @@ _register(
         default=None,
     ),
     _def(
+        "enrichment.servicenow.auth_type",
+        category="enrichment",
+        description="ServiceNow authentication mode: basic or oauth_password",
+        default="basic",
+    ),
+    _def(
+        "enrichment.servicenow.oauth_client_id",
+        category="enrichment",
+        description="ServiceNow OAuth application client ID",
+        default=None,
+    ),
+    _def(
+        "enrichment.servicenow.oauth_client_secret",
+        is_secret=True,
+        category="enrichment",
+        description="ServiceNow OAuth application client secret",
+        default=None,
+    ),
+    _def(
         "enrichment.servicenow.table",
         category="enrichment",
         description="ServiceNow table used for user enrichment lookups",
         default="sys_user",
+    ),
+    _def(
+        "enrichment.servicenow.user_query_field",
+        category="enrichment",
+        description="ServiceNow user table field matched by the simplified setup form",
+        default="user_name",
+    ),
+    _def(
+        "enrichment.servicenow.active_only",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Append active=true to simplified ServiceNow user lookups",
+        default=True,
     ),
     _def(
         "enrichment.servicenow.fields",

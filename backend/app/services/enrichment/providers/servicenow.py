@@ -5,6 +5,7 @@ Uses the ServiceNow Table API for sys_user-style directory lookups.
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Tuple
 from urllib.parse import quote, urlparse
 
@@ -99,6 +100,9 @@ class ServiceNowProvider(EnrichmentProvider):
         instance_url = str(await settings.get(f"{self.settings_prefix}.instance_url", "") or "").strip().rstrip("/")
         username = str(await settings.get(f"{self.settings_prefix}.username", "") or "").strip()
         password = str(await settings.get(f"{self.settings_prefix}.password", "") or "")
+        auth_type = str(await settings.get(f"{self.settings_prefix}.auth_type", "basic") or "basic").strip()
+        oauth_client_id = str(await settings.get(f"{self.settings_prefix}.oauth_client_id", "") or "").strip()
+        oauth_client_secret = str(await settings.get(f"{self.settings_prefix}.oauth_client_secret", "") or "")
         table = str(await settings.get(f"{self.settings_prefix}.table", _DEFAULT_TABLE) or _DEFAULT_TABLE).strip()
         fields = str(await settings.get(f"{self.settings_prefix}.fields", _DEFAULT_FIELDS) or _DEFAULT_FIELDS).strip()
         lookup_query_template = str(
@@ -124,11 +128,16 @@ class ServiceNowProvider(EnrichmentProvider):
 
         if not (instance_url and username and password and table):
             return None
+        if auth_type == "oauth_password" and not (oauth_client_id and oauth_client_secret):
+            return None
 
         return {
             "instance_url": instance_url,
             "username": username,
             "password": password,
+            "auth_type": auth_type,
+            "oauth_client_id": oauth_client_id,
+            "oauth_client_secret": oauth_client_secret,
             "table": table,
             "fields": fields,
             "lookup_query_template": lookup_query_template,
@@ -171,6 +180,41 @@ class ServiceNowProvider(EnrichmentProvider):
     def _cmdb_record_url(self, cfg: Dict[str, Any], sys_id: str) -> str:
         table = quote(str(cfg["cmdb_table"]), safe="")
         return f"{cfg['instance_url']}/nav_to.do?uri=/{table}.do?sys_id={quote(sys_id, safe='')}"
+
+    async def _oauth_access_token(self, cfg: Dict[str, Any]) -> str:
+        try:
+            import pysnow
+        except ImportError as exc:
+            raise ValueError("pysnow is required for ServiceNow OAuth authentication") from exc
+
+        parsed = urlparse(str(cfg["instance_url"]))
+        client = pysnow.OAuthClient(
+            host=parsed.netloc,
+            use_ssl=parsed.scheme == "https",
+            client_id=str(cfg["oauth_client_id"]),
+            client_secret=str(cfg["oauth_client_secret"]),
+        )
+        token = client.generate_token(str(cfg["username"]), str(cfg["password"]))
+        client.set_token(token)
+        access_token = str(token.get("access_token") or "")
+        if not access_token:
+            raise ValueError("ServiceNow OAuth token response did not include an access token")
+        return access_token
+
+    @asynccontextmanager
+    async def _http_client(self, cfg: Dict[str, Any], *, timeout: int):
+        auth_type = str(cfg.get("auth_type") or "basic")
+        if auth_type == "oauth_password":
+            access_token = await self._oauth_access_token(cfg)
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                headers={"Authorization": f"Bearer {access_token}"},
+            ) as client:
+                yield client
+            return
+
+        async with httpx.AsyncClient(timeout=timeout, auth=(cfg["username"], cfg["password"])) as client:
+            yield client
 
     def _escape_query_value(self, value: str) -> str:
         return value.replace("\\", "\\\\").replace("^", "\\^").replace("=", "\\=")
@@ -383,10 +427,17 @@ class ServiceNowProvider(EnrichmentProvider):
             )
         )
 
-        return {
+        auth_type = str(config.get("auth_type") or "basic").strip()
+        if auth_type not in {"basic", "oauth_password"}:
+            raise ValueError("ServiceNow auth_type must be basic or oauth_password")
+
+        normalized = {
             "instance_url": instance_url,
             "username": str(config.get("username") or "").strip(),
             "password": str(config.get("password") or ""),
+            "auth_type": auth_type,
+            "oauth_client_id": str(config.get("oauth_client_id") or "").strip(),
+            "oauth_client_secret": str(config.get("oauth_client_secret") or ""),
             "table": str(config.get("user_table") or config.get("table") or _DEFAULT_TABLE).strip(),
             "fields": fields,
             "lookup_query_template": lookup_query_template,
@@ -401,11 +452,16 @@ class ServiceNowProvider(EnrichmentProvider):
             "cmdb_criticality_field": str(config.get("cmdb_criticality_field") or "criticality").strip(),
             "cmdb_privileged_field": str(config.get("cmdb_privileged_field") or "u_privileged_system").strip(),
         }
+        if not normalized["username"] or not normalized["password"]:
+            raise ValueError("ServiceNow username and password are required")
+        if auth_type == "oauth_password" and not (
+            normalized["oauth_client_id"] and normalized["oauth_client_secret"]
+        ):
+            raise ValueError("ServiceNow OAuth client ID and client secret are required")
+        return normalized
 
     async def preview(self, *, config: Dict[str, Any], item: Dict[str, Any]) -> EnrichmentResult:
         cfg = self.normalize_config(config)
-        if not cfg["username"] or not cfg["password"]:
-            raise ValueError("ServiceNow username and password are required")
         if not self.can_enrich(item):
             raise ValueError("ServiceNow preview requires an internal_actor or system item with a lookup identifier")
         return await self._lookup(cfg, item)
@@ -431,7 +487,7 @@ class ServiceNowProvider(EnrichmentProvider):
             if not candidates:
                 raise ValueError("Cannot determine identifier for ServiceNow CMDB lookup")
             cache_key = self.build_cache_key(item)
-            async with httpx.AsyncClient(timeout=20, auth=(cfg["username"], cfg["password"])) as client:
+            async with self._http_client(cfg, timeout=20) as client:
                 for source, field, identifier in candidates:
                     candidate_cache_key = self._build_system_cache_key(identifier)
                     params = {
@@ -496,7 +552,7 @@ class ServiceNowProvider(EnrichmentProvider):
             "sysparm_display_value": "all",
             "sysparm_limit": 2,
         }
-        async with httpx.AsyncClient(timeout=20, auth=(cfg["username"], cfg["password"])) as client:
+        async with self._http_client(cfg, timeout=20) as client:
             resp = await client.get(self._table_url(cfg), params=params)
             resp.raise_for_status()
             records = resp.json().get("result") or []
@@ -529,7 +585,7 @@ class ServiceNowProvider(EnrichmentProvider):
         remaining = int(cfg["max_records"])
         offset = 0
 
-        async with httpx.AsyncClient(timeout=30, auth=(cfg["username"], cfg["password"])) as client:
+        async with self._http_client(cfg, timeout=30) as client:
             while remaining > 0:
                 limit = min(int(cfg["page_size"]), remaining)
                 params = {

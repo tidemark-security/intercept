@@ -495,7 +495,7 @@ async def test_configure_service_now_saves_settings(
     assert response.status_code == 200
     assert response.json() == {
         "instance_url": "https://example.service-now.com",
-        "settings_saved": 16,
+        "settings_saved": 20,
         "enabled": True,
     }
 
@@ -504,7 +504,11 @@ async def test_configure_service_now_saves_settings(
             await session.execute(
                 select(AppSetting).where(AppSetting.key.in_([
                     "enrichment.servicenow.instance_url",
+                    "enrichment.servicenow.auth_type",
                     "enrichment.servicenow.password",
+                    "enrichment.servicenow.table",
+                    "enrichment.servicenow.user_query_field",
+                    "enrichment.servicenow.active_only",
                     "enrichment.servicenow.lookup_query_template",
                     "enrichment.servicenow.ttl_seconds",
                     "enrichment.servicenow.enabled",
@@ -514,11 +518,47 @@ async def test_configure_service_now_saves_settings(
 
     by_key = {row.key: row for row in rows}
     assert by_key["enrichment.servicenow.instance_url"].value == "https://example.service-now.com"
+    assert by_key["enrichment.servicenow.auth_type"].value == "basic"
+    assert by_key["enrichment.servicenow.table"].value == "sys_user"
+    assert by_key["enrichment.servicenow.user_query_field"].value == "email"
+    assert by_key["enrichment.servicenow.active_only"].value == "true"
     assert by_key["enrichment.servicenow.lookup_query_template"].value == "email={value}^active=true"
     assert by_key["enrichment.servicenow.ttl_seconds"].value == "3600"
     assert by_key["enrichment.servicenow.enabled"].value == "true"
     assert by_key["enrichment.servicenow.password"].is_secret is True
     assert by_key["enrichment.servicenow.password"].value != "svc-pass"
+    stored_password = by_key["enrichment.servicenow.password"].value
+
+    response = await client.post(
+        "/api/v1/admin/enrichments/service-now/configure",
+        cookies={"intercept_session": session_cookie},
+        json={
+            "instance_url": "https://example.service-now.com/",
+            "username": "svc-user-updated",
+            "password": "",
+            "user_query_field": "email",
+            "ttl_seconds": 7200,
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+
+    async with session_maker() as session:
+        rows = (
+            await session.execute(
+                select(AppSetting).where(AppSetting.key.in_([
+                    "enrichment.servicenow.username",
+                    "enrichment.servicenow.password",
+                    "enrichment.servicenow.ttl_seconds",
+                ]))
+            )
+        ).scalars().all()
+
+    by_key = {row.key: row for row in rows}
+    assert by_key["enrichment.servicenow.username"].value == "svc-user-updated"
+    assert by_key["enrichment.servicenow.password"].value == stored_password
+    assert by_key["enrichment.servicenow.ttl_seconds"].value == "7200"
 
 
 @pytest.mark.asyncio

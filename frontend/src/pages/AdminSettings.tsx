@@ -85,6 +85,9 @@ const SERVICE_NOW_DEFAULT_CONFIG: ServiceNowConfigureRequest = {
   instance_url: "",
   username: "",
   password: "",
+  auth_type: "basic",
+  oauth_client_id: "",
+  oauth_client_secret: "",
   user_table: "sys_user",
   user_query_field: "user_name",
   user_vip_field: "vip",
@@ -94,6 +97,7 @@ const SERVICE_NOW_DEFAULT_CONFIG: ServiceNowConfigureRequest = {
   cmdb_criticality_field: "criticality",
   cmdb_privileged_field: "u_privileged_system",
   active_only: true,
+  ttl_seconds: 86400,
   enabled: true,
 };
 
@@ -157,20 +161,23 @@ const CUSTOM_KEYS = new Set([
   "enrichment.ldap.ttl_seconds",
   "enrichment.ldap.bulk_sync_enabled",
   "enrichment.ldap.bulk_sync_time_utc",
-  "enrichment.service_now.enabled",
-  "enrichment.service_now.instance_url",
-  "enrichment.service_now.username",
-  "enrichment.service_now.password",
-  "enrichment.service_now.user_table",
-  "enrichment.service_now.user_query_field",
-  "enrichment.service_now.user_vip_field",
-  "enrichment.service_now.user_privileged_field",
-  "enrichment.service_now.cmdb_table",
-  "enrichment.service_now.cmdb_query_field",
-  "enrichment.service_now.cmdb_criticality_field",
-  "enrichment.service_now.cmdb_privileged_field",
-  "enrichment.service_now.active_only",
-  "enrichment.service_now.ttl_seconds",
+  "enrichment.servicenow.enabled",
+  "enrichment.servicenow.instance_url",
+  "enrichment.servicenow.username",
+  "enrichment.servicenow.password",
+  "enrichment.servicenow.auth_type",
+  "enrichment.servicenow.oauth_client_id",
+  "enrichment.servicenow.oauth_client_secret",
+  "enrichment.servicenow.table",
+  "enrichment.servicenow.user_query_field",
+  "enrichment.servicenow.user_vip_field",
+  "enrichment.servicenow.user_privileged_field",
+  "enrichment.servicenow.cmdb_table",
+  "enrichment.servicenow.cmdb_query_field",
+  "enrichment.servicenow.cmdb_criticality_field",
+  "enrichment.servicenow.cmdb_privileged_field",
+  "enrichment.servicenow.active_only",
+  "enrichment.servicenow.ttl_seconds",
   "enrichment.cross_case_observable.enabled",
   "enrichment.cross_case_observable.max_lookback_days",
   "enrichment.maxmind.enabled",
@@ -794,41 +801,55 @@ function AdminSettings() {
     passwordOverride: string = "",
   ): ServiceNowConfigureRequest => ({
     instance_url:
-      getSetting("enrichment.service_now.instance_url") ||
+      getSetting("enrichment.servicenow.instance_url") ||
       SERVICE_NOW_DEFAULT_CONFIG.instance_url,
     username:
-      getSetting("enrichment.service_now.username") ||
+      getSetting("enrichment.servicenow.username") ||
       SERVICE_NOW_DEFAULT_CONFIG.username,
     password: passwordOverride,
+    auth_type:
+      (getSetting("enrichment.servicenow.auth_type") as
+        | "basic"
+        | "oauth_password") || SERVICE_NOW_DEFAULT_CONFIG.auth_type,
+    oauth_client_id:
+      getSetting("enrichment.servicenow.oauth_client_id") ||
+      SERVICE_NOW_DEFAULT_CONFIG.oauth_client_id,
+    oauth_client_secret: "",
     user_table:
-      getSetting("enrichment.service_now.user_table") ||
+      getSetting("enrichment.servicenow.table") ||
       SERVICE_NOW_DEFAULT_CONFIG.user_table,
     user_query_field:
-      getSetting("enrichment.service_now.user_query_field") ||
+      getSetting("enrichment.servicenow.user_query_field") ||
       SERVICE_NOW_DEFAULT_CONFIG.user_query_field,
     user_vip_field:
-      getSetting("enrichment.service_now.user_vip_field") ||
+      getSetting("enrichment.servicenow.user_vip_field") ||
       SERVICE_NOW_DEFAULT_CONFIG.user_vip_field,
     user_privileged_field:
-      getSetting("enrichment.service_now.user_privileged_field") ||
+      getSetting("enrichment.servicenow.user_privileged_field") ||
       SERVICE_NOW_DEFAULT_CONFIG.user_privileged_field,
     cmdb_table:
-      getSetting("enrichment.service_now.cmdb_table") ||
+      getSetting("enrichment.servicenow.cmdb_table") ||
       SERVICE_NOW_DEFAULT_CONFIG.cmdb_table,
     cmdb_query_field:
-      getSetting("enrichment.service_now.cmdb_query_field") ||
+      getSetting("enrichment.servicenow.cmdb_query_field") ||
       SERVICE_NOW_DEFAULT_CONFIG.cmdb_query_field,
     cmdb_criticality_field:
-      getSetting("enrichment.service_now.cmdb_criticality_field") ||
+      getSetting("enrichment.servicenow.cmdb_criticality_field") ||
       SERVICE_NOW_DEFAULT_CONFIG.cmdb_criticality_field,
     cmdb_privileged_field:
-      getSetting("enrichment.service_now.cmdb_privileged_field") ||
+      getSetting("enrichment.servicenow.cmdb_privileged_field") ||
       SERVICE_NOW_DEFAULT_CONFIG.cmdb_privileged_field,
     active_only: parseBooleanValue(
-      getSetting("enrichment.service_now.active_only") || "true",
+      getSetting("enrichment.servicenow.active_only") || "true",
     ),
+    ttl_seconds:
+      Number.parseInt(
+        getSetting("enrichment.servicenow.ttl_seconds") ||
+          String(SERVICE_NOW_DEFAULT_CONFIG.ttl_seconds),
+        10,
+      ) || SERVICE_NOW_DEFAULT_CONFIG.ttl_seconds,
     enabled: parseBooleanValue(
-      getSetting("enrichment.service_now.enabled") || "false",
+      getSetting("enrichment.servicenow.enabled") || "false",
     ),
   });
 
@@ -859,6 +880,9 @@ function AdminSettings() {
       instance_url: serviceNowDraft.instance_url.trim(),
       username: serviceNowDraft.username.trim(),
       password: serviceNowDraft.password,
+      auth_type: serviceNowDraft.auth_type,
+      oauth_client_id: serviceNowDraft.oauth_client_id.trim(),
+      oauth_client_secret: serviceNowDraft.oauth_client_secret,
       user_table: serviceNowDraft.user_table.trim(),
       user_query_field: serviceNowDraft.user_query_field.trim(),
       user_vip_field: serviceNowDraft.user_vip_field.trim(),
@@ -869,12 +893,29 @@ function AdminSettings() {
       cmdb_privileged_field: serviceNowDraft.cmdb_privileged_field.trim(),
     };
 
-    if (!trimmedConfig.password.trim()) {
+    if (
+      !trimmedConfig.password.trim() &&
+      !getSetting("enrichment.servicenow.password")
+    ) {
       setServiceNowConfigureStatus({
         variant: "warning",
         title: "ServiceNow password required",
         description:
           "Enter the ServiceNow API password before saving configuration.",
+      });
+      return;
+    }
+    if (
+      trimmedConfig.auth_type === "oauth_password" &&
+      (!trimmedConfig.oauth_client_id ||
+        (!trimmedConfig.oauth_client_secret.trim() &&
+          !getSetting("enrichment.servicenow.oauth_client_secret")))
+    ) {
+      setServiceNowConfigureStatus({
+        variant: "warning",
+        title: "ServiceNow OAuth credentials required",
+        description:
+          "Enter the OAuth client ID and client secret, or switch authentication back to basic.",
       });
       return;
     }
@@ -1255,8 +1296,8 @@ function AdminSettings() {
     parseBooleanValue(getSetting("enrichment.ldap.enabled")),
   );
   const serviceNowEnabled = isProviderEnabled(
-    "service_now",
-    parseBooleanValue(getSetting("enrichment.service_now.enabled")),
+    "servicenow",
+    parseBooleanValue(getSetting("enrichment.servicenow.enabled")),
   );
   const anyDirectoryEnabled =
     directoryProviderStatuses.some((provider) => provider.enabled) ||
@@ -1281,9 +1322,12 @@ function AdminSettings() {
     Boolean(getSetting("enrichment.ldap.bind_password")) &&
     Boolean(getSetting("enrichment.ldap.search_base"));
   const serviceNowConfigured =
-    Boolean(getSetting("enrichment.service_now.instance_url")) &&
-    Boolean(getSetting("enrichment.service_now.username")) &&
-    Boolean(getSetting("enrichment.service_now.password"));
+    Boolean(getSetting("enrichment.servicenow.instance_url")) &&
+    Boolean(getSetting("enrichment.servicenow.username")) &&
+    Boolean(getSetting("enrichment.servicenow.password")) &&
+    (getSetting("enrichment.servicenow.auth_type") !== "oauth_password" ||
+      (Boolean(getSetting("enrichment.servicenow.oauth_client_id")) &&
+        Boolean(getSetting("enrichment.servicenow.oauth_client_secret"))));
   const anyEnabledDirectoryConfigured =
     (entraEnabled && entraConfigured) ||
     (googleWorkspaceEnabled && googleWorkspaceConfigured) ||
@@ -2795,24 +2839,24 @@ function AdminSettings() {
                         <ServiceNowSummaryField
                           label="Instance"
                           value={
-                            getSetting("enrichment.service_now.instance_url") ||
+                            getSetting("enrichment.servicenow.instance_url") ||
                             "Not configured"
                           }
                         />
                         <ServiceNowSummaryField
                           label="Username"
                           value={
-                            getSetting("enrichment.service_now.username") ||
+                            getSetting("enrichment.servicenow.username") ||
                             "Not configured"
                           }
                         />
                         <ServiceNowSummaryField
                           label="User lookup"
-                          value={`${getSetting("enrichment.service_now.user_table") || SERVICE_NOW_DEFAULT_CONFIG.user_table}.${getSetting("enrichment.service_now.user_query_field") || SERVICE_NOW_DEFAULT_CONFIG.user_query_field}`}
+                          value={`${getSetting("enrichment.servicenow.table") || SERVICE_NOW_DEFAULT_CONFIG.user_table}.${getSetting("enrichment.servicenow.user_query_field") || SERVICE_NOW_DEFAULT_CONFIG.user_query_field}`}
                         />
                         <ServiceNowSummaryField
                           label="CMDB lookup"
-                          value={`${getSetting("enrichment.service_now.cmdb_table") || SERVICE_NOW_DEFAULT_CONFIG.cmdb_table}.${getSetting("enrichment.service_now.cmdb_query_field") || SERVICE_NOW_DEFAULT_CONFIG.cmdb_query_field}`}
+                          value={`${getSetting("enrichment.servicenow.cmdb_table") || SERVICE_NOW_DEFAULT_CONFIG.cmdb_table}.${getSetting("enrichment.servicenow.cmdb_query_field") || SERVICE_NOW_DEFAULT_CONFIG.cmdb_query_field}`}
                         />
                       </div>
                     </div>
@@ -2820,17 +2864,17 @@ function AdminSettings() {
                     <BooleanSettingField
                       label="Enable ServiceNow Enrichment"
                       description={
-                        settingMeta("enrichment.service_now.enabled")
+                        settingMeta("enrichment.servicenow.enabled")
                           .description
                       }
-                      source={settingMeta("enrichment.service_now.enabled").source}
+                      source={settingMeta("enrichment.servicenow.enabled").source}
                       readOnly={
-                        settingMeta("enrichment.service_now.enabled").readOnly
+                        settingMeta("enrichment.servicenow.enabled").readOnly
                       }
                       value={serviceNowEnabled}
                       onSave={(value) =>
                         handleSaveSetting(
-                          "enrichment.service_now.enabled",
+                          "enrichment.servicenow.enabled",
                           value ? "true" : "false",
                           false,
                           "BOOLEAN",
@@ -2841,36 +2885,35 @@ function AdminSettings() {
                     <BooleanSettingField
                       label="Active Users Only"
                       description={
-                        settingMeta("enrichment.service_now.active_only")
+                        settingMeta("enrichment.servicenow.active_only")
                           .description
                       }
                       source={
-                        settingMeta("enrichment.service_now.active_only").source
+                        settingMeta("enrichment.servicenow.active_only").source
                       }
                       readOnly={
-                        settingMeta("enrichment.service_now.active_only")
+                        settingMeta("enrichment.servicenow.active_only")
                           .readOnly
                       }
                       value={parseBooleanValue(
-                        getSetting("enrichment.service_now.active_only") ||
+                        getSetting("enrichment.servicenow.active_only") ||
                           "true",
                       )}
-                      onSave={(value) =>
-                        handleSaveSetting(
-                          "enrichment.service_now.active_only",
-                          value ? "true" : "false",
-                          false,
-                          "BOOLEAN",
-                        )
-                      }
+                      onSave={(value) => {
+                        const config = getServiceNowConfigFromSettings("");
+                        serviceNowConfigureMutation.mutate({
+                          ...config,
+                          active_only: value,
+                        });
+                      }}
                     />
 
                     <SettingField
                       label="Enrichment TTL (seconds)"
-                      {...settingMeta("enrichment.service_now.ttl_seconds")}
+                      {...settingMeta("enrichment.servicenow.ttl_seconds")}
                       onSave={(value) =>
                         handleSaveSetting(
-                          "enrichment.service_now.ttl_seconds",
+                          "enrichment.servicenow.ttl_seconds",
                           value,
                           false,
                           "NUMBER",
@@ -3325,9 +3368,56 @@ function AdminSettings() {
                   label="Password"
                   value={serviceNowDraft.password}
                   onChange={(value) => updateServiceNowDraft("password", value)}
-                  placeholder="ServiceNow API password"
+                  placeholder={
+                    getSetting("enrichment.servicenow.password")
+                      ? "Leave blank to keep saved password"
+                      : "ServiceNow API password"
+                  }
                   type="password"
                 />
+                <label className="flex flex-col gap-2">
+                  <span className="text-caption-bold font-caption-bold text-subtext-color">
+                    Authentication
+                  </span>
+                  <select
+                    className="h-10 rounded-md border border-neutral-border bg-default-background px-3 text-body font-body text-default-font"
+                    value={serviceNowDraft.auth_type}
+                    onChange={(event) =>
+                      updateServiceNowDraft(
+                        "auth_type",
+                        event.target.value as "basic" | "oauth_password",
+                      )
+                    }
+                  >
+                    <option value="basic">Basic username/password</option>
+                    <option value="oauth_password">OAuth password grant</option>
+                  </select>
+                </label>
+                {serviceNowDraft.auth_type === "oauth_password" && (
+                  <>
+                    <ServiceNowDraftField
+                      label="OAuth Client ID"
+                      value={serviceNowDraft.oauth_client_id}
+                      onChange={(value) =>
+                        updateServiceNowDraft("oauth_client_id", value)
+                      }
+                      placeholder="ServiceNow OAuth client ID"
+                    />
+                    <ServiceNowDraftField
+                      label="OAuth Client Secret"
+                      value={serviceNowDraft.oauth_client_secret}
+                      onChange={(value) =>
+                        updateServiceNowDraft("oauth_client_secret", value)
+                      }
+                      placeholder={
+                        getSetting("enrichment.servicenow.oauth_client_secret")
+                          ? "Leave blank to keep saved client secret"
+                          : "ServiceNow OAuth client secret"
+                      }
+                      type="password"
+                    />
+                  </>
+                )}
                 <div className="flex items-end">
                   <BooleanSettingField
                     label="Enable after save"
