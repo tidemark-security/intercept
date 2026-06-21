@@ -11,6 +11,7 @@ import { CaseCardContent } from '@/components/timeline/CaseCardContent';
 import { TimelineDescriptionBlock } from '@/components/timeline/TimelineDescriptionBlock';
 import { GoogleWorkspaceEnrichmentBlock } from '@/components/timeline/GoogleWorkspaceEnrichmentBlock';
 import { MaxMindEnrichmentBlock } from '@/components/timeline/MaxMindEnrichmentBlock';
+import { ServiceNowEnrichmentBlock } from '@/components/timeline/ServiceNowEnrichmentBlock';
 import { CrossCaseObservableEnrichmentBlock } from '@/components/timeline/CrossCaseObservableEnrichmentBlock';
 import {
   getLinkedEntityCollapseKey,
@@ -120,6 +121,7 @@ function withEnrichmentBlocks(
       <CrossCaseObservableEnrichmentBlock item={item} />
       <GoogleWorkspaceEnrichmentBlock item={item} />
       <MaxMindEnrichmentBlock item={item} />
+      <ServiceNowEnrichmentBlock item={item} />
       {footerChildren}
     </div>
   );
