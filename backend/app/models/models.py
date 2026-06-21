@@ -1014,6 +1014,7 @@ class TriageRecommendation(SQLModel, table=True):
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning_bullets: List[str] = Field(default_factory=list, sa_column=Column(JSONB))
     recommended_actions: List[Dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSONB))
+    recommended_case_template_id: Optional[int] = Field(default=None, foreign_key="case_templates.id")
     
     # Suggested patches (all optional)
     suggested_status: Optional[AlertStatus] = Field(default=None, sa_column=Column(SAEnum(AlertStatus), nullable=True))
@@ -1063,6 +1064,7 @@ class TriageRecommendationRead(SQLModel):
     confidence: float
     reasoning_bullets: List[str] = []
     recommended_actions: List[Any] = []  # Supports both legacy str and new {title, description} format
+    recommended_case_template_id: Optional[int] = None
     suggested_status: Optional[AlertStatus] = None
     suggested_priority: Optional[Priority] = None
     suggested_assignee: Optional[str] = None

@@ -140,6 +140,7 @@ class RecordTriageDecisionInput(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning_bullets: Optional[List[str]] = None
     recommended_actions: Optional[List[RecommendedAction]] = None
+    recommended_case_template_id: Optional[str | int] = None
     suggested_status: Optional[str] = None
     suggested_priority: Optional[str] = None
     suggested_assignee: Optional[str] = None
@@ -163,6 +164,51 @@ class RecordTriageDecisionOutput(BaseModel):
     suggested_patches: List[SuggestedPatch]
     status: Literal["PENDING", "ACCEPTED", "REJECTED", "SUPERSEDED"]
     message: str
+
+
+class SearchCaseTemplatesInput(BaseModel):
+    """Input schema for search_case_templates tool."""
+
+    query: Optional[str] = None
+    limit: int = Field(default=10, ge=1, le=25)
+
+
+class CaseTemplateSearchResult(BaseModel):
+    id: int
+    human_id: str
+    title: str
+    description: Optional[str] = None
+    case_tags: List[str] = Field(default_factory=list)
+    template_task_count: int
+    picerl_stages: List[str] = Field(default_factory=list)
+
+
+class SearchCaseTemplatesOutput(BaseModel):
+    items: List[CaseTemplateSearchResult]
+
+
+class GetCaseTemplateInput(BaseModel):
+    """Input schema for get_case_template tool."""
+
+    id: str
+
+
+class LeanTemplateTask(BaseModel):
+    title: str
+    description: Optional[str] = None
+    picerl_stage: str
+    relative_due_seconds: Optional[int] = None
+    priority: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+
+
+class GetCaseTemplateOutput(BaseModel):
+    id: int
+    human_id: str
+    title: str
+    description: Optional[str] = None
+    case_tags: List[str] = Field(default_factory=list)
+    template_tasks: List[LeanTemplateTask] = Field(default_factory=list)
 
 
 # ============================================================================

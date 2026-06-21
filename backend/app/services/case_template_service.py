@@ -243,6 +243,7 @@ class CaseTemplateService:
         overrides: list[TemplateTaskOverride],
         user: str,
         applied_at: datetime | None = None,
+        commit: bool = True,
     ) -> CaseTemplateApplyResponse:
         template = await self.get_template(db, template_id)
         if template is None:
@@ -314,7 +315,10 @@ class CaseTemplateService:
             },
             performed_by=user,
         )
-        await db.commit()
+        if commit:
+            await db.commit()
+        else:
+            await db.flush()
 
         return CaseTemplateApplyResponse(
             case_id=case_id,

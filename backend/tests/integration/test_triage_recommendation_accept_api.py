@@ -5,9 +5,10 @@ from typing import Any
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 
-from app.models.enums import AlertStatus, CaseStatus, Priority, RecommendationStatus, TriageDisposition
-from app.models.models import Alert, Case, TriageRecommendation
+from app.models.enums import AlertStatus, CaseStatus, CaseTemplateStatus, PICERLStage, Priority, RecommendationStatus, TriageDisposition
+from app.models.models import Alert, Case, CaseTemplate, Task, TriageRecommendation
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -390,3 +391,100 @@ async def test_accept_escalation_on_already_linked_alert_reuses_case(
         assert refreshed_alert is not None
         assert refreshed_alert.case_id == existing_case_id
         assert refreshed_alert.status == AlertStatus.ESCALATED
+
+
+@pytest.mark.asyncio
+async def test_accept_recommendation_with_published_case_template_applies_tasks(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        alert = Alert(
+            title="DLP exfiltration",
+            description="Possible sensitive file download",
+            priority=Priority.HIGH,
+            source="DLP",
+            status=AlertStatus.NEW,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            tags=["dlp"],
+        )
+        template = CaseTemplate(
+            title="DLP Response",
+            title_normalized="dlp response",
+            description="DLP response steps",
+            status=CaseTemplateStatus.PUBLISHED,
+            case_tags=["exfiltration"],
+            template_tasks=[
+                {
+                    "title": "Collect evidence",
+                    "picerl_stage": PICERLStage.IDENTIFICATION.value,
+                },
+                {
+                    "title": "Contain account",
+                    "picerl_stage": PICERLStage.CONTAINMENT.value,
+                    "priority": Priority.CRITICAL.value,
+                },
+            ],
+            created_by="admin",
+            updated_by="admin",
+        )
+        session.add_all([alert, template])
+        await session.flush()
+        assert alert.id is not None
+        assert template.id is not None
+
+        recommendation = TriageRecommendation(
+            alert_id=alert.id,
+            disposition=TriageDisposition.NEEDS_INVESTIGATION,
+            confidence=0.88,
+            reasoning_bullets=["Template response is appropriate"],
+            recommended_actions=[],
+            recommended_case_template_id=template.id,
+            suggested_status=AlertStatus.ESCALATED,
+            request_escalate_to_case=True,
+            created_by="test-ai",
+            status=RecommendationStatus.PENDING,
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(recommendation)
+        await session.commit()
+        alert_id = alert.id
+        template_id = template.id
+
+    response = await client.post(
+        f"/api/v1/alerts/{alert_id}/triage-recommendation/accept",
+        json={
+            "apply_status": True,
+            "apply_priority": True,
+            "apply_assignee": True,
+            "apply_tags": True,
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["case_id"] is not None
+    assert data["tasks_created"] == 2
+
+    async with session_maker() as session:
+        tasks = (
+            await session.execute(
+                select(Task).where(Task.case_id == data["case_id"]).order_by(Task.linked_at.asc())
+            )
+        ).scalars().all()
+        assert [task.title for task in tasks] == ["Collect evidence", "Contain account"]
+        assert all(task.source_tpl == template_id for task in tasks)
+        assert tasks[0].assignee is None
+        assert tasks[0].picerl_stage == PICERLStage.IDENTIFICATION
+        assert tasks[1].priority == Priority.CRITICAL
+
+        case = await session.get(Case, data["case_id"])
+        assert case is not None
+        assert case.tags == ["dlp", "exfiltration"]
+        notes = _timeline_values(case.timeline_items)
+        assert any("Applied Case Template" in (item.get("description") or "") for item in notes)

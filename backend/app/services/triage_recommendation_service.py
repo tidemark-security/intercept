@@ -11,12 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException
 
 from app.models.models import (
-    TriageRecommendation, Alert, Task, TaskCreate
+    TriageRecommendation, Alert, CaseTemplate, Task, TaskCreate
 )
 from app.models.enums import (
-    RecommendationStatus, TriageDisposition, AlertStatus, Priority, TaskStatus,
+    RecommendationStatus, TriageDisposition, AlertStatus, CaseTemplateStatus, Priority, TaskStatus,
     RejectionCategory, RealtimeEventType
 )
+from app.services.case_template_service import case_template_service
 from app.services.alert_triage_apply_service import (
     apply_triage_state,
     create_case_from_alert,
@@ -40,6 +41,30 @@ DISPOSITION_TO_CLOSED_STATUS: Dict[TriageDisposition, AlertStatus] = {
     TriageDisposition.BENIGN: AlertStatus.CLOSED_BP,
     TriageDisposition.DUPLICATE: AlertStatus.CLOSED_DUPLICATE,
 }
+
+
+def validate_recommendation_contract(data: Dict[str, Any]) -> None:
+    recommended_actions = data.get("recommended_actions") or []
+    recommended_case_template_id = data.get("recommended_case_template_id")
+    request_escalate_to_case = bool(data.get("request_escalate_to_case", False))
+    suggested_status = data.get("suggested_status")
+    suggested_status_value = suggested_status.value if hasattr(suggested_status, "value") else suggested_status
+
+    if recommended_actions and recommended_case_template_id is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="recommended_case_template_id and recommended_actions are mutually exclusive",
+        )
+    if (recommended_actions or recommended_case_template_id is not None) and not request_escalate_to_case:
+        raise HTTPException(
+            status_code=400,
+            detail="Work recommendations require request_escalate_to_case=true",
+        )
+    if request_escalate_to_case and suggested_status_value not in {None, AlertStatus.ESCALATED.value}:
+        raise HTTPException(
+            status_code=400,
+            detail="Escalating recommendations require suggested_status to be omitted or ESCALATED",
+        )
 
 
 def get_effective_suggested_status(recommendation: TriageRecommendation) -> Optional[AlertStatus]:
@@ -145,7 +170,8 @@ async def create_or_replace_recommendation(
             status_code=404,
             detail=f"Alert {alert_id} not found"
         )
-    
+    validate_recommendation_contract(data)
+
     # Check for existing recommendation
     existing = await get_by_alert_id(db, alert_id)
     if existing:
@@ -154,6 +180,7 @@ async def create_or_replace_recommendation(
         existing.confidence = float(data.get("confidence", 0.0))
         existing.reasoning_bullets = data.get("reasoning_bullets", [])
         existing.recommended_actions = data.get("recommended_actions", [])
+        existing.recommended_case_template_id = data.get("recommended_case_template_id")
         existing.suggested_status = AlertStatus(data["suggested_status"]) if data.get("suggested_status") else None
         existing.suggested_priority = Priority(data["suggested_priority"]) if data.get("suggested_priority") else None
         existing.suggested_assignee = data.get("suggested_assignee")
@@ -192,6 +219,7 @@ async def create_or_replace_recommendation(
         confidence=float(data.get("confidence", 0.0)),
         reasoning_bullets=data.get("reasoning_bullets", []),
         recommended_actions=data.get("recommended_actions", []),
+        recommended_case_template_id=data.get("recommended_case_template_id"),
         suggested_status=AlertStatus(data["suggested_status"]) if data.get("suggested_status") else None,
         suggested_priority=Priority(data["suggested_priority"]) if data.get("suggested_priority") else None,
         suggested_assignee=data.get("suggested_assignee"),
@@ -413,6 +441,18 @@ async def accept_recommendation(
     before_assignee = alert.assignee
     before_tags = list(alert.tags or [])
     before_case_id = alert.case_id
+
+    recommended_template: CaseTemplate | None = None
+    if recommendation.recommended_case_template_id is not None:
+        recommended_template = await db.get(CaseTemplate, recommendation.recommended_case_template_id)
+        if recommended_template is None or recommended_template.status != CaseTemplateStatus.PUBLISHED:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The recommended Case Template is no longer published. "
+                    "Choose another published template or continue without a template."
+                ),
+            )
     
     # Track what was applied
     applied_changes = []
@@ -506,6 +546,22 @@ async def accept_recommendation(
                 "reason": "Alert already linked to case",
                 "case_id": alert.case_id,
             })
+            if recommended_template is not None:
+                apply_response = await case_template_service.apply_template(
+                    db,
+                    case_id=alert.case_id,
+                    template_id=recommended_template.id,  # type: ignore[arg-type]
+                    overrides=[],
+                    user=reviewed_by,
+                    commit=False,
+                )
+                tasks_created += len(apply_response.created_task_ids)
+                applied_changes.append({
+                    "field": "case_template",
+                    "action": "applied",
+                    "template_id": recommended_template.id,
+                    "created_task_ids": apply_response.created_task_ids,
+                })
         else:
             # Create new case from alert directly (not using case_service to avoid nested commits)
             case_priority = recommendation.suggested_priority or alert.priority or Priority.MEDIUM
@@ -526,9 +582,26 @@ async def accept_recommendation(
                 "action": "created_case",
                 "case_id": new_case.id
             })
+
+            if recommended_template is not None and new_case.id is not None:
+                apply_response = await case_template_service.apply_template(
+                    db,
+                    case_id=new_case.id,
+                    template_id=recommended_template.id,  # type: ignore[arg-type]
+                    overrides=[],
+                    user=reviewed_by,
+                    commit=False,
+                )
+                tasks_created += len(apply_response.created_task_ids)
+                applied_changes.append({
+                    "field": "case_template",
+                    "action": "applied",
+                    "template_id": recommended_template.id,
+                    "created_task_ids": apply_response.created_task_ids,
+                })
             
             # Create tasks from recommended_actions using TaskCreate for validation
-            for action in recommendation.recommended_actions:
+            for action in ([] if recommended_template is not None else recommendation.recommended_actions):
                 # Extract title and description from action object
                 action_title = action.get("title", "") if isinstance(action, dict) else str(action)
                 action_description = action.get("description", "") if isinstance(action, dict) else ""

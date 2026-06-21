@@ -15,6 +15,8 @@ from app.mcp.tools import (
     get_summary_tool,
     list_work_tool,
     find_related_tool,
+    search_case_templates_tool,
+    get_case_template_tool,
     record_triage_decision_tool,
     add_timeline_item_tool,
     get_item_tool,
@@ -170,6 +172,30 @@ async def find_related(
     return await find_related_tool(seed_kind, seed_id, max_matches)
 
 
+@mcp.tool(annotations={"readOnlyHint": True})
+async def search_case_templates(
+    query: str | None = None,
+    limit: int = 10,
+) -> dict:
+    """Search published Case Templates by template and task text.
+
+    Args:
+        query: Optional text search. Empty query returns published templates by title.
+        limit: Max templates to return (1-25, default: 10).
+    """
+    return await search_case_templates_tool(query, limit)
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def get_case_template(id: str) -> dict:
+    """Get lean detail for one published Case Template.
+
+    Args:
+        id: Case Template ID in forgiving format, e.g. "123" or "TPL-0000123".
+    """
+    return await get_case_template_tool(id)
+
+
 @mcp.tool()
 async def record_triage_decision(
     alert_id: str,
@@ -177,6 +203,7 @@ async def record_triage_decision(
     confidence: float,
     reasoning_bullets: list[str] | None = None,
     recommended_actions: list[dict] | None = None,
+    recommended_case_template_id: int | str | None = None,
     suggested_status: str | None = None,
     suggested_priority: str | None = None,
     suggested_assignee: str | None = None,
@@ -202,6 +229,7 @@ async def record_triage_decision(
         confidence: Agent confidence (0.0-1.0)
         reasoning_bullets: Why this disposition (list of strings). Use markdown links for evidence references, e.g. [ALT-0000123:item-uuid](/alerts/ALT-0000123#timeline-item-uuid)
         recommended_actions: Suggested next steps. Each action is an object with 'title' (required, max 200 chars) and 'description' (optional, markdown supported)
+        recommended_case_template_id: Published Case Template ID to apply on escalation. Mutually exclusive with recommended_actions.
         suggested_status: Optional alert status patch. Valid values: NEW, IN_PROGRESS, ESCALATED, CLOSED_TP, CLOSED_BP, CLOSED_FP, CLOSED_UNRESOLVED, CLOSED_DUPLICATE
         suggested_priority: Optional priority patch. Valid values: INFO, LOW, MEDIUM, HIGH, CRITICAL, EXTREME
         suggested_assignee: Optional assignee patch (username)
@@ -212,7 +240,7 @@ async def record_triage_decision(
     """
     return await record_triage_decision_tool(
         alert_id, disposition, confidence, reasoning_bullets,
-        recommended_actions, suggested_status, suggested_priority, suggested_assignee,
+        recommended_actions, recommended_case_template_id, suggested_status, suggested_priority, suggested_assignee,
         suggested_tags_add, suggested_tags_remove, request_escalate_to_case, commit
     )
 
