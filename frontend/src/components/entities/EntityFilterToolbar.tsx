@@ -147,14 +147,28 @@ function compactSortLabel(
   filters: FilterState | undefined,
   sortOptions: SortOption[],
 ) {
+  const selectedSortBy = filters?.sortBy ?? sortOptions[0]?.value;
   const selectedOption = sortOptions.find(
-    (option) => option.value === filters?.sortBy,
+    (option) => option.value === selectedSortBy,
   );
   const sortOrder = filters?.sortOrder ?? "desc";
 
   if (!selectedOption) return "Default";
 
   return selectedOption.directionLabel?.[sortOrder] ?? selectedOption.label;
+}
+
+function sortFilterDiffersFromDefault(
+  filters: FilterState | undefined,
+  sortOptions: SortOption[],
+) {
+  const defaultSortBy = sortOptions[0]?.value;
+  if (!defaultSortBy) return false;
+
+  const selectedSortBy = filters?.sortBy ?? defaultSortBy;
+  const selectedSortOrder = filters?.sortOrder ?? "desc";
+
+  return selectedSortBy !== defaultSortBy || selectedSortOrder !== "desc";
 }
 
 function haveSameValues(left: readonly string[], right: readonly string[]) {
@@ -169,8 +183,12 @@ function isClosedStatus(status: string) {
 
 function getStatusGroups(statusOptions: StatusOption[]) {
   return {
-    open: statusOptions
+    all: statusOptions.map((option) => option.value),
+    defaultOpen: statusOptions
       .slice(0, 2)
+      .filter((option) => !isClosedStatus(option.value))
+      .map((option) => option.value),
+    open: statusOptions
       .filter((option) => !isClosedStatus(option.value))
       .map((option) => option.value),
     closed: statusOptions
@@ -183,7 +201,7 @@ function statusFilterDiffersFromDefault(
   filters: FilterState | undefined,
   statusOptions: StatusOption[],
 ) {
-  const defaultStatuses = getStatusGroups(statusOptions).open;
+  const defaultStatuses = getStatusGroups(statusOptions).defaultOpen;
   const selectedStatuses = (filters?.status ?? []) as string[];
 
   return !haveSameValues(selectedStatuses, defaultStatuses);
@@ -542,7 +560,7 @@ function SortDropdown({
           label="Sort"
           value={compactSortLabel(filters, options)}
           chevron
-          active={!!filters?.sortBy || !!filters?.sortOrder}
+          active={sortFilterDiffersFromDefault(filters, options)}
         />
       </DropdownMenu.Trigger>
       <DropdownMenu.Content side="bottom" align="start" sideOffset={6}>
@@ -688,6 +706,7 @@ export function EntityFilterToolbar({
   const selectedStatuses = (filters?.status ?? []) as string[];
   const statusGroups = getStatusGroups(effectiveStatusOptions);
   const statusGroupItems = [
+    { label: "All", statuses: statusGroups.all },
     { label: "All Open", statuses: statusGroups.open },
     { label: "All Closed", statuses: statusGroups.closed },
   ].filter((item) => item.statuses.length > 0);

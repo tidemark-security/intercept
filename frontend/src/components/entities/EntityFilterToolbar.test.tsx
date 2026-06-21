@@ -116,6 +116,33 @@ describe("EntityFilterToolbar", () => {
     expect(getModifiedIndicator(statusButton)).toBeInTheDocument();
   });
 
+  it("selects every status from the all status parent option", async () => {
+    const user = userEvent.setup();
+    const onFilterChange = vi.fn();
+    renderToolbar(undefined, onFilterChange);
+
+    await user.click(screen.getByRole("button", { name: /status 2 statuses/i }));
+    await user.click(screen.getByRole("menuitem", { name: /^all$/i }));
+
+    expect(onFilterChange).toHaveBeenCalledWith({
+      search: "",
+      assignee: null,
+      status: [
+        "NEW",
+        "IN_PROGRESS",
+        "ESCALATED",
+        "CLOSED_TP",
+        "CLOSED_BP",
+        "CLOSED_FP",
+        "CLOSED_UNRESOLVED",
+        "CLOSED_DUPLICATE",
+      ],
+      includeTags: null,
+      excludeTags: null,
+      dateRange: null,
+    });
+  });
+
   it("selects every open status and clears closed statuses from the status parent option", async () => {
     const user = userEvent.setup();
     const onFilterChange = vi.fn();
@@ -137,7 +164,7 @@ describe("EntityFilterToolbar", () => {
     expect(onFilterChange).toHaveBeenCalledWith({
       search: "",
       assignee: null,
-      status: ["NEW", "IN_PROGRESS"],
+      status: ["NEW", "IN_PROGRESS", "ESCALATED"],
       includeTags: null,
       excludeTags: null,
       dateRange: null,
@@ -162,6 +189,42 @@ describe("EntityFilterToolbar", () => {
         "CLOSED_UNRESOLVED",
         "CLOSED_DUPLICATE",
       ],
+      includeTags: null,
+      excludeTags: null,
+      dateRange: null,
+    });
+  });
+
+  it("keeps status grouping options mutually exclusive", async () => {
+    const user = userEvent.setup();
+    const onFilterChange = vi.fn();
+    renderToolbar(
+      {
+        search: "",
+        assignee: null,
+        status: [
+          "NEW",
+          "IN_PROGRESS",
+          "CLOSED_TP",
+          "CLOSED_BP",
+          "CLOSED_FP",
+          "CLOSED_UNRESOLVED",
+          "CLOSED_DUPLICATE",
+        ],
+        includeTags: null,
+        excludeTags: null,
+        dateRange: null,
+      },
+      onFilterChange,
+    );
+
+    await user.click(screen.getByRole("button", { name: /status 7 statuses/i }));
+    await user.click(screen.getByRole("menuitem", { name: /all open/i }));
+
+    expect(onFilterChange).toHaveBeenCalledWith({
+      search: "",
+      assignee: null,
+      status: ["NEW", "IN_PROGRESS", "ESCALATED"],
       includeTags: null,
       excludeTags: null,
       dateRange: null,
@@ -262,6 +325,78 @@ describe("EntityFilterToolbar", () => {
       sortBy: "created_at",
       sortOrder: "asc",
     });
+  });
+
+  it("does not mark the default newest-first sort as modified", () => {
+    renderWithProviders(
+      <EntityFilterToolbar
+        filters={{
+          search: "",
+          assignee: null,
+          status: ["NEW", "IN_PROGRESS"],
+          includeTags: null,
+          excludeTags: null,
+          dateRange: null,
+          sortBy: "created_at",
+          sortOrder: "desc",
+        }}
+        onFilterChange={vi.fn()}
+        assignees={users}
+        assigneesLoading={false}
+        sortOptions={[
+          {
+            value: "created_at",
+            label: "Created",
+            directionLabel: { desc: "Newest first", asc: "Oldest first" },
+          },
+          {
+            value: "priority",
+            label: "Priority",
+            directionLabel: { desc: "Highest priority", asc: "Lowest priority" },
+          },
+        ]}
+      />,
+    );
+
+    const sortButton = screen.getByRole("button", { name: /sort newest first/i });
+
+    expect(getModifiedIndicator(sortButton)).not.toBeInTheDocument();
+  });
+
+  it("marks sort as modified when it differs from newest first", () => {
+    renderWithProviders(
+      <EntityFilterToolbar
+        filters={{
+          search: "",
+          assignee: null,
+          status: ["NEW", "IN_PROGRESS"],
+          includeTags: null,
+          excludeTags: null,
+          dateRange: null,
+          sortBy: "created_at",
+          sortOrder: "asc",
+        }}
+        onFilterChange={vi.fn()}
+        assignees={users}
+        assigneesLoading={false}
+        sortOptions={[
+          {
+            value: "created_at",
+            label: "Created",
+            directionLabel: { desc: "Newest first", asc: "Oldest first" },
+          },
+          {
+            value: "priority",
+            label: "Priority",
+            directionLabel: { desc: "Highest priority", asc: "Lowest priority" },
+          },
+        ]}
+      />,
+    );
+
+    const sortButton = screen.getByRole("button", { name: /sort oldest first/i });
+
+    expect(getModifiedIndicator(sortButton)).toBeInTheDocument();
   });
 
   it("clears every filter when reset is selected", async () => {

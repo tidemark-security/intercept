@@ -1,5 +1,5 @@
 import React from 'react';
-import { X } from 'lucide-react';
+import { Minus, Plus, X } from 'lucide-react';
 import { cn } from '@/utils/cn';
 
 export function getTagSearchHref(tag: string): string {
@@ -8,12 +8,17 @@ export function getTagSearchHref(tag: string): string {
   return `/search?${params.toString()}`;
 }
 
+type TagAction = 'plus' | 'minus' | 'cross';
+
 interface ConditionalDeleteButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   mode?: 'default' | 'light' | 'dark';
+  action?: TagAction;
 }
 
 const ConditionalDeleteButton = React.forwardRef<HTMLButtonElement, ConditionalDeleteButtonProps>(
-  function ConditionalDeleteButton({ mode = 'default', className, onClick, ...otherProps }, ref) {
+  function ConditionalDeleteButton({ mode = 'default', action = 'cross', className, onClick, ...otherProps }, ref) {
+    const Icon = action === 'plus' ? Plus : action === 'minus' ? Minus : X;
+
     return (
       <button
         type="button"
@@ -30,7 +35,7 @@ const ConditionalDeleteButton = React.forwardRef<HTMLButtonElement, ConditionalD
         }}
         {...otherProps}
       >
-        <X className={cn('text-body font-body text-white', { 'text-black': mode === 'dark' })} />
+        <Icon className={cn('text-body font-body text-white', { 'text-black': mode === 'dark' })} />
       </button>
     );
   },
@@ -43,6 +48,10 @@ export interface TagProps extends React.HTMLAttributes<HTMLSpanElement> {
   onDelete?: () => void;
   searchHref?: string;
   searchable?: boolean;
+  action?: TagAction;
+  showAction?: boolean;
+  actionLabel?: string;
+  onAction?: (event: React.MouseEvent<HTMLButtonElement>) => void;
 }
 
 const TagRoot = React.forwardRef<HTMLSpanElement, TagProps>(function TagRoot(
@@ -56,6 +65,10 @@ const TagRoot = React.forwardRef<HTMLSpanElement, TagProps>(function TagRoot(
     onDelete,
     searchHref,
     searchable = true,
+    action = showDelete ? 'cross' : undefined,
+    showAction = showDelete,
+    actionLabel,
+    onAction,
     ...otherProps
   },
   ref,
@@ -74,6 +87,21 @@ const TagRoot = React.forwardRef<HTMLSpanElement, TagProps>(function TagRoot(
       'text-white': p === '1' || p === '0',
     },
   );
+  const hasCustomClick = typeof onClick === 'function';
+  const actionButtonMode = p === '5' || p === '4' || p === '3' || p === '2' ? 'dark' : 'light';
+  const actionAriaLabel =
+    actionLabel ??
+    (typeof tagText === 'string'
+      ? action === 'plus'
+        ? `Include ${tagText}`
+        : action === 'minus'
+          ? `Exclude ${tagText}`
+          : `Remove ${tagText}`
+      : action === 'plus'
+        ? 'Include tag'
+        : action === 'minus'
+          ? 'Exclude tag'
+          : 'Remove tag');
 
   return (
     <span
@@ -106,6 +134,10 @@ const TagRoot = React.forwardRef<HTMLSpanElement, TagProps>(function TagRoot(
           className={textClassName}
           href={tagSearchHref}
           onClick={(event) => {
+            if (hasCustomClick) {
+              event.preventDefault();
+              onClick?.(event as unknown as React.MouseEvent<HTMLSpanElement>);
+            }
             event.stopPropagation();
           }}
           onAuxClick={(event) => {
@@ -117,14 +149,25 @@ const TagRoot = React.forwardRef<HTMLSpanElement, TagProps>(function TagRoot(
       ) : tagText ? (
         <span className={textClassName}>{tagText}</span>
       ) : null}
-      <span className={cn('hidden h-4 w-4 flex-none items-center justify-center gap-1', { flex: showDelete })}>
-        <ConditionalDeleteButton
-          aria-label={typeof tagText === 'string' ? `Remove ${tagText}` : 'Remove tag'}
-          className={cn('hidden', { flex: showDelete })}
-          mode={p === '5' || p === '4' || p === '3' || p === '2' ? 'dark' : 'light'}
-          onClick={onDelete}
-        />
-      </span>
+      {action ? (
+        <span className={cn('hidden h-4 w-4 flex-none items-center justify-center gap-1', { flex: showAction })}>
+          <ConditionalDeleteButton
+            aria-label={actionAriaLabel}
+            action={action}
+            className={cn('hidden', { flex: showAction })}
+            mode={actionButtonMode}
+            onClick={(event) => {
+              if (onAction) {
+                onAction(event);
+                return;
+              }
+              if (action === 'cross') {
+                onDelete?.();
+              }
+            }}
+          />
+        </span>
+      ) : null}
     </span>
   );
 });

@@ -13,7 +13,9 @@ export function useTagFilterClick<T extends TagFilterable>(
 ) {
   return useCallback((tag: string, mode: TagFilterMode) => {
     const key = mode === "include" ? "includeTags" : "excludeTags";
+    const otherKey = mode === "include" ? "excludeTags" : "includeTags";
     const current = filters[key] || [];
+    const other = filters[otherKey] || [];
     if (current.includes(tag)) {
       return;
     }
@@ -21,6 +23,7 @@ export function useTagFilterClick<T extends TagFilterable>(
     setFilters({
       ...filters,
       [key]: [...current, tag],
+      [otherKey]: other.filter((candidate) => candidate !== tag),
     });
   }, [filters, setFilters]);
 }

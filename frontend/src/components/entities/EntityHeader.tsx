@@ -22,6 +22,7 @@ import type { TaskStatus } from "@/types/generated/models/TaskStatus";
 import type { TriageRecommendationRead } from "@/types/generated/models/TriageRecommendationRead";
 import type { Priority as PriorityType } from "@/types/generated/models/Priority";
 import type { TimelineItem } from "@/types/timeline";
+import type { PICERLStage } from "@/types/caseTemplates";
 import type { GeneratedLink } from "@/utils/linkTemplates";
 import type { UIState } from "@/utils/statusHelpers";
 import { ALERT_STATUS_LABELS } from "@/utils/statusLabels";
@@ -106,6 +107,9 @@ interface EntityHeaderRootProps
   onSortChange?: (sortBy: SortOption, direction: SortDirection) => void;
   groupSimilar?: boolean;
   onGroupSimilarChange?: (enabled: boolean) => void;
+  picerlStages?: PICERLStage[];
+  selectedPICERLStage?: PICERLStage;
+  onPICERLStageChange?: (stage: PICERLStage | undefined) => void;
   hasLinkedEntityCards?: boolean;
   onCollapseLinkedEntityCards?: () => void;
   onExpandLinkedEntityCards?: () => void;
@@ -168,8 +172,11 @@ const EntityHeaderRoot = React.forwardRef<
     sortBy = 'timestamp',
     sortDirection = 'asc',
     onSortChange,
-    groupSimilar = true,
+    groupSimilar = false,
     onGroupSimilarChange,
+    picerlStages = [],
+    selectedPICERLStage,
+    onPICERLStageChange,
     hasLinkedEntityCards = false,
     onCollapseLinkedEntityCards,
     onExpandLinkedEntityCards,
@@ -607,6 +614,9 @@ const EntityHeaderRoot = React.forwardRef<
             onSortChange={onSortChange}
             groupSimilar={groupSimilar}
             onGroupSimilarChange={onGroupSimilarChange}
+            picerlStages={picerlStages}
+            selectedPICERLStage={selectedPICERLStage}
+            onPICERLStageChange={onPICERLStageChange}
             hasLinkedEntityCards={hasLinkedEntityCards}
             onCollapseLinkedEntityCards={onCollapseLinkedEntityCards}
             onExpandLinkedEntityCards={onExpandLinkedEntityCards}

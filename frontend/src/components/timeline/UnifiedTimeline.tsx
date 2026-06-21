@@ -39,7 +39,7 @@ import { PICERL_STAGES, type PICERLStage } from '@/types/caseTemplates';
 import { Badge } from '@/components/data-display/Badge';
 
 
-import { AlertTriangle, ArrowRight } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 
 const TIMELINE_VIEW_STORAGE_KEY = 'intercept.timeline-view';
 const PICERL_STAGE_LABELS: Record<PICERLStage, string> = {
@@ -64,67 +64,16 @@ function getPICERLStage(item: TimelineItem): PICERLStage | null {
   return isPICERLStage(stage) ? stage : null;
 }
 
-function isDoneTask(item: TimelineItem): boolean {
-  return String((item as any).status ?? '').toUpperCase() === 'DONE';
-}
-
 function isAttentionTask(item: TimelineItem): boolean {
   if ((item as any).highlighted || (item as any).flagged) {
     return true;
   }
   const dueDate = (item as any).due_date;
-  if (!dueDate || isDoneTask(item)) {
+  if (!dueDate || String((item as any).status ?? '').toUpperCase() === 'DONE') {
     return false;
   }
   const dueTime = new Date(dueDate).getTime();
   return Number.isFinite(dueTime) && dueTime < Date.now();
-}
-
-function PICERLStageBands({
-  stagedItems,
-  selectedStage,
-  onSelectStage,
-}: {
-  stagedItems: TimelineItem[];
-  selectedStage?: PICERLStage;
-  onSelectStage: (stage: PICERLStage | undefined) => void;
-}) {
-  return (
-    <div className="flex w-full flex-col gap-2 border-b border-solid border-neutral-border bg-default-background px-6 py-3 mobile:px-2">
-      <div className="grid w-full grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))] gap-2">
-        {PICERL_STAGES.map((stage) => {
-          const stageItems = stagedItems.filter((item) => getPICERLStage(item) === stage);
-          const doneCount = stageItems.filter(isDoneTask).length;
-          const hasAttention = stageItems.some(isAttentionTask);
-          const isActive = selectedStage === stage;
-          return (
-            <button
-              key={stage}
-              type="button"
-              className={cn(
-                "flex min-h-16 min-w-0 flex-col items-start gap-2 border border-solid p-3 text-left transition-colors",
-                isActive
-                  ? "border-brand-primary bg-brand-1100 text-default-font"
-                  : "border-neutral-border bg-neutral-50 hover:border-brand-primary hover:bg-neutral-100",
-                hasAttention && !isActive && "border-warning-700 bg-warning-50/40"
-              )}
-              onClick={() => onSelectStage(isActive ? undefined : stage)}
-            >
-              <span className="flex w-full min-w-0 items-center justify-between gap-2">
-                <span className="min-w-0 truncate text-caption-bold font-caption-bold text-default-font">
-                  {PICERL_STAGE_LABELS[stage]}
-                </span>
-                {hasAttention ? <AlertTriangle className="h-3.5 w-3.5 flex-none text-warning-700" /> : null}
-              </span>
-              <span className="text-heading-3 font-heading-3 text-default-font">
-                {doneCount}/{stageItems.length}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
 }
 
 function PICERLSwimlaneView({
@@ -414,12 +363,12 @@ function UnifiedTimelineInner({
 
   const supportsGraphView = entityType === 'case' || entityType === 'task';
 
-  // Timeline filter and sort state - defaults: Timestamp / Ascending / All / Grouped
+  // Timeline filter and sort state - defaults: Timestamp / Oldest first / All / Ungrouped
   const [selectedType, setSelectedType] = useState<string | undefined>(undefined);
   const [selectedPICERLStage, setSelectedPICERLStage] = useState<PICERLStage | undefined>(undefined);
   const [sortBy, setSortBy] = useState<SortOption>('timestamp');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
-  const [groupSimilar, setGroupSimilar] = useState<boolean>(true);
+  const [groupSimilar, setGroupSimilar] = useState<boolean>(false);
   const [timelineViewMode, setTimelineViewMode] = useState<TimelineViewMode>('timeline');
   const [linkedEntityCollapseState, setLinkedEntityCollapseState] = useState<LinkedEntityCollapseState>(() =>
     typeof window === 'undefined' ? {} : loadLinkedEntityCollapseState(window.localStorage)
@@ -874,6 +823,9 @@ function UnifiedTimelineInner({
           onSortChange={handleSortChange}
           groupSimilar={groupSimilar}
           onGroupSimilarChange={setGroupSimilar}
+          picerlStages={hasPICERLStages ? PICERL_STAGES : []}
+          selectedPICERLStage={selectedPICERLStage}
+          onPICERLStageChange={hasPICERLStages ? setSelectedPICERLStage : undefined}
           hasLinkedEntityCards={hasVisibleLinkedEntityCards}
           onCollapseLinkedEntityCards={collapseVisibleLinkedEntityCards}
           onExpandLinkedEntityCards={expandVisibleLinkedEntityCards}
@@ -966,14 +918,6 @@ function UnifiedTimelineInner({
                       onUpdateTags={onUpdateTags}
                     />
                   </div>
-
-                  {hasPICERLStages ? (
-                    <PICERLStageBands
-                      stagedItems={stagedTaskItems}
-                      selectedStage={selectedPICERLStage}
-                      onSelectStage={setSelectedPICERLStage}
-                    />
-                  ) : null}
 
                   {/* Timeline Items */}
                   <div className="flex w-full flex-col items-start p-6 mobile:p-2">

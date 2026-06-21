@@ -66,7 +66,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
       variant = "default",
       showDescription = false,
       description,
-      onTagClick: _onTagClick,
+      onTagClick,
       className,
       ...otherProps
     }: MenuCardRootProps,
@@ -84,6 +84,44 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
         : [];
       return list;
     }, [tags]);
+    const [isExcludeModifierActive, setIsExcludeModifierActive] = React.useState(false);
+
+    React.useEffect(() => {
+      if (!onTagClick) return;
+
+      const handleKeyDown = (event: KeyboardEvent) => {
+        if (event.metaKey || event.ctrlKey) {
+          setIsExcludeModifierActive(true);
+        }
+      };
+      const handleKeyUp = (event: KeyboardEvent) => {
+        if (!event.metaKey && !event.ctrlKey) {
+          setIsExcludeModifierActive(false);
+        }
+      };
+      const handleBlur = () => setIsExcludeModifierActive(false);
+
+      window.addEventListener("keydown", handleKeyDown);
+      window.addEventListener("keyup", handleKeyUp);
+      window.addEventListener("blur", handleBlur);
+
+      return () => {
+        window.removeEventListener("keydown", handleKeyDown);
+        window.removeEventListener("keyup", handleKeyUp);
+        window.removeEventListener("blur", handleBlur);
+      };
+    }, [onTagClick]);
+
+    const handleTagClick = React.useCallback(
+      (event: React.MouseEvent, tag: string) => {
+        if (!onTagClick) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        onTagClick(tag, event.metaKey || event.ctrlKey ? "exclude" : "include");
+      },
+      [onTagClick],
+    );
 
     const formattedTimestamp = React.useMemo(() => {
       if (typeof timestamp !== "string") {
@@ -186,7 +224,13 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
                 <Tag
                   key={`${tag}-${index}`}
                   tagText={tag}
-                  showDelete={false}
+                  action={onTagClick ? (isExcludeModifierActive ? "minus" : "plus") : undefined}
+                  actionLabel={onTagClick ? `${isExcludeModifierActive ? "Exclude" : "Include"} ${tag}` : undefined}
+                  showAction={Boolean(onTagClick)}
+                  onAction={(event) => handleTagClick(event, tag)}
+                  onClick={(event) => handleTagClick(event, tag)}
+                  onMouseEnter={(event) => setIsExcludeModifierActive(event.metaKey || event.ctrlKey)}
+                  onMouseMove={(event) => setIsExcludeModifierActive(event.metaKey || event.ctrlKey)}
                   p="0"
                   className="shrink-0"
                 />
