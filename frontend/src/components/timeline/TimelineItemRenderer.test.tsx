@@ -134,6 +134,57 @@ describe('TimelineItemRenderer enrichments', () => {
     expect(onLinkedEntityCollapseChange).toHaveBeenCalledWith('task:42', true);
   });
 
+  it('opens a linked task for inline editing from the case timeline', () => {
+    const onEditLinkedTask = vi.fn();
+    const item = {
+      id: 'linked-task-edit-item',
+      type: 'task',
+      task_id: 42,
+      task_human_id: 'TSK-0000042',
+      created_by: 'System',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      updated_at: '2026-03-14T12:50:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      title: 'Contain endpoint',
+      description: 'Open task from timeline card',
+      tags: ['containment'],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      priority: 'HIGH',
+      status: 'IN_PROGRESS',
+      assignee: 'bob',
+      due_date: '2026-03-15T12:00:00Z',
+      case_id: 38,
+    } as unknown as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer
+        item={item}
+        index={0}
+        total={1}
+        entityId={38}
+        entityType="case"
+        onEditLinkedTask={onEditLinkedTask}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit Task' }));
+
+    expect(onEditLinkedTask).toHaveBeenCalledWith(expect.objectContaining({
+      id: 42,
+      human_id: 'TSK-0000042',
+      title: 'Contain endpoint',
+      description: 'Open task from timeline card',
+      priority: 'HIGH',
+      status: 'IN_PROGRESS',
+      assignee: 'bob',
+      due_date: '2026-03-15T12:00:00Z',
+      case_id: 38,
+      tags: ['containment'],
+    }));
+  });
+
   it('renders nested replies without duplicating descendant replies', () => {
     const item: RecursiveTimelineItem<NoteItem> = {
       id: 'note-parent',
