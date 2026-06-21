@@ -51,6 +51,28 @@ import {
 } from './timelineUtils';
 
 const TIMELINE_ITEM_MAX_WIDTH_CLASS = 'max-w-[1024px]';
+
+type TaskReadWithTemplateMetadata = TaskRead & {
+  picerl_stage?: string | null;
+  source_tpl?: number | null;
+};
+
+type TaskTimelineItemWithTemplateMetadata = TimelineItem & {
+  picerl_stage?: string | null;
+  source_tpl?: number | null;
+  case_id?: number | null;
+  updated_at?: string;
+  source_timeline_items?: TaskRead['timeline_items'];
+};
+
+function getTaskTemplateMetadata(item: TimelineItem): Pick<TaskReadWithTemplateMetadata, 'picerl_stage' | 'source_tpl'> {
+  const taskItem = item as TaskTimelineItemWithTemplateMetadata;
+
+  return {
+    picerl_stage: taskItem.picerl_stage ?? null,
+    source_tpl: taskItem.source_tpl ?? null,
+  };
+}
 /**
  * Type guard for CaseItem
  */
@@ -761,7 +783,7 @@ export function TimelineItemRenderer({
 
       compactContent = <AlertCardContent data={alertData} showTags={false} variant="compact" />;
     } else if (isTaskItem(currentItem)) {
-      const taskData: TaskRead = {
+      const taskData: TaskReadWithTemplateMetadata = {
         id: currentItem.task_id || 0,
         human_id: currentItem.task_human_id || '',
         title: currentItem.title || currentItem.task_human_id || 'Task',
@@ -780,6 +802,7 @@ export function TimelineItemRenderer({
         linked_at: null,
         timeline_items: (currentItem as TimelineItem & { source_timeline_items?: TaskRead['timeline_items'] }).source_timeline_items ?? null,
         tags: getTimelineTags(currentItem),
+        ...getTaskTemplateMetadata(currentItem),
       };
 
       compactContent = <TaskCardContent data={taskData} showTags={false} variant="compact" />;
@@ -904,7 +927,7 @@ export function TimelineItemRenderer({
     });
 
     const isCurrentItemLinked = isLinkedTimelineType(timelineCurrentItem.type);
-    const linkedTaskData: TaskRead | null = isTaskItem(timelineCurrentItem) ? {
+    const linkedTaskData: TaskReadWithTemplateMetadata | null = isTaskItem(timelineCurrentItem) ? {
       id: timelineCurrentItem.task_id || 0,
       human_id: timelineCurrentItem.task_human_id || '',
       title: timelineCurrentItem.title || timelineCurrentItem.task_human_id || 'Task',
@@ -923,6 +946,7 @@ export function TimelineItemRenderer({
       linked_at: null,
       timeline_items: (timelineCurrentItem as TimelineItem & { source_timeline_items?: TaskRead['timeline_items'] }).source_timeline_items ?? null,
       tags: getTimelineTags(timelineCurrentItem),
+      ...getTaskTemplateMetadata(timelineCurrentItem),
     } : null;
     const linkedTaskEditButton = linkedTaskData && linkedTaskData.id > 0
       ? renderEditLinkedTaskAction(linkedTaskData)
@@ -1027,7 +1051,7 @@ export function TimelineItemRenderer({
       baseCardProps.title = buildEntityTitle(taskId, timelineCurrentItem.title, isDarkTheme);
       clearCardLines(baseCardProps, { clearCharacterFlags: true });
 
-      const taskData: TaskRead = linkedTaskData ?? {
+      const taskData: TaskReadWithTemplateMetadata = linkedTaskData ?? {
         id: timelineCurrentItem.task_id || 0,
         human_id: timelineCurrentItem.task_human_id || '',
         title: timelineCurrentItem.title || (timelineCurrentItem.task_human_id || 'Task'),
@@ -1046,6 +1070,7 @@ export function TimelineItemRenderer({
         linked_at: null,
         timeline_items: (timelineCurrentItem as TimelineItem & { source_timeline_items?: TaskRead['timeline_items'] }).source_timeline_items ?? null,
         tags: getTimelineTags(timelineCurrentItem),
+        ...getTaskTemplateMetadata(timelineCurrentItem),
       };
 
       children = withEnrichmentBlocks(timelineCurrentItem, (

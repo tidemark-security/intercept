@@ -162,6 +162,8 @@ describe('TimelineItemRenderer enrichments', () => {
       assignee: 'bob',
       due_date: '2026-03-15T12:00:00Z',
       case_id: 38,
+      picerl_stage: 'Containment',
+      source_tpl: 7,
     } as unknown as TimelineItem;
 
     renderWithProviders(
@@ -188,7 +190,48 @@ describe('TimelineItemRenderer enrichments', () => {
       due_date: '2026-03-15T12:00:00Z',
       case_id: 38,
       tags: ['containment'],
+      picerl_stage: 'Containment',
+      source_tpl: 7,
     }));
+  });
+
+  it('shows a task PICERL stage on expanded case timeline task cards', () => {
+    const item = {
+      id: 'linked-task-picerl-item',
+      type: 'task',
+      task_id: 84,
+      task_human_id: 'TSK-0000084',
+      created_by: 'System',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      updated_at: '2026-03-14T12:50:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      title: 'Collect endpoint evidence',
+      description: 'Template-created task',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      priority: 'HIGH',
+      status: 'TODO',
+      assignee: null,
+      due_date: null,
+      case_id: 38,
+      picerl_stage: 'Identification',
+      source_tpl: 12,
+    } as unknown as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer
+        item={item}
+        index={0}
+        total={1}
+        entityId={38}
+        entityType="case"
+      />
+    );
+
+    expect(screen.getByText('PICERL Stage')).toBeInTheDocument();
+    expect(screen.getByText('Identification')).toBeInTheDocument();
   });
 
   it('renders nested replies without duplicating descendant replies', () => {
