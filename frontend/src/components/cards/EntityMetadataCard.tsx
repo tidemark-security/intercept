@@ -159,9 +159,15 @@ export function EntityMetadataCard({
       className={cn(
         "group flex min-w-0 items-start gap-2 border-l border-solid border-neutral-border pl-3",
         dueStatus === 'overdue'
-          ? "border-l-error-600 bg-error-50/40 pr-2 py-1.5"
+          ? cn(
+              "border-l-error-600 pr-2 py-1.5",
+              isDarkTheme ? "bg-error-1000" : "bg-error-50/40",
+            )
           : dueStatus === 'due_soon'
-            ? "border-l-warning-600 bg-warning-50/40 pr-2 py-1.5"
+            ? cn(
+                "border-l-warning-600 pr-2 py-1.5",
+                isDarkTheme ? "bg-warning-1100" : "bg-warning-50/40",
+              )
             : null,
         isCompactVariant ? "gap-1.5 pl-2" : "py-1",
         className,
@@ -170,8 +176,8 @@ export function EntityMetadataCard({
       <span
         className={cn(
           "mt-0.5 flex-none text-subtext-color transition-colors group-hover:text-default-font",
-          dueStatus === 'overdue' && "text-error-1000",
-          dueStatus === 'due_soon' && "text-warning-1000",
+          dueStatus === 'overdue' && (isDarkTheme ? "text-error-500" : "text-error-1000"),
+          dueStatus === 'due_soon' && (isDarkTheme ? "text-warning-400" : "text-warning-1000"),
         )}
       >
         {icon}
@@ -180,8 +186,8 @@ export function EntityMetadataCard({
         <span
           className={cn(
             "font-monospace-body text-[10px] font-medium uppercase leading-none tracking-normal text-subtext-color",
-            dueStatus === 'overdue' && "text-error-1000",
-            dueStatus === 'due_soon' && "text-warning-1000",
+            dueStatus === 'overdue' && (isDarkTheme ? "text-error-500" : "text-error-1000"),
+            dueStatus === 'due_soon' && (isDarkTheme ? "text-warning-400" : "text-warning-1000"),
           )}
         >
           {label}
@@ -197,9 +203,9 @@ export function EntityMetadataCard({
     }
 
     const timestampTextClassName = dueStatus === 'overdue'
-      ? 'text-error-1000'
+      ? isDarkTheme ? 'text-error-400' : 'text-error-1000'
       : dueStatus === 'due_soon'
-        ? 'text-warning-1000'
+        ? isDarkTheme ? 'text-warning-300' : 'text-warning-1000'
         : undefined;
 
     return (

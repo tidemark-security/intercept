@@ -85,6 +85,9 @@ function PICERLSwimlaneView({
   selectedStage?: PICERLStage;
   onSelectStage: (stage: PICERLStage | undefined) => void;
 }) {
+  const { resolvedTheme } = useTheme();
+  const isDarkTheme = resolvedTheme === 'dark';
+
   return (
     <div className="flex w-full grow overflow-auto p-6 mobile:p-2">
       <div className="grid min-w-[960px] grow grid-cols-6 gap-3">
@@ -115,7 +118,11 @@ function PICERLSwimlaneView({
                     key={item.id}
                     className={cn(
                       "flex min-w-0 flex-col gap-2 border border-solid border-neutral-border bg-default-background p-3",
-                      isAttentionTask(item) && "border-warning-700 bg-warning-50/40"
+                      isAttentionTask(item) && (
+                        isDarkTheme
+                          ? "border-warning-600 bg-warning-1100"
+                          : "border-warning-700 bg-warning-50/40"
+                      )
                     )}
                   >
                     <div className="flex min-w-0 flex-col gap-1">
@@ -128,7 +135,12 @@ function PICERLSwimlaneView({
                       </div>
                     </div>
                     {(item as any).due_date ? (
-                      <span className={cn("text-caption font-caption text-subtext-color", isAttentionTask(item) && "text-warning-1000")}>
+                      <span
+                        className={cn(
+                          "text-caption font-caption text-subtext-color",
+                          isAttentionTask(item) && (isDarkTheme ? "text-warning-300" : "text-warning-1000")
+                        )}
+                      >
                         Due {new Date((item as any).due_date).toLocaleString()}
                       </span>
                     ) : null}
@@ -373,6 +385,7 @@ function UnifiedTimelineInner({
   const [linkedEntityCollapseState, setLinkedEntityCollapseState] = useState<LinkedEntityCollapseState>(() =>
     typeof window === 'undefined' ? {} : loadLinkedEntityCollapseState(window.localStorage)
   );
+  const defaultCollapsedCaseIdRef = useRef<number | null>(null);
 
   React.useEffect(() => {
     if (typeof window === 'undefined') {
@@ -517,6 +530,29 @@ function UnifiedTimelineInner({
   }, [filteredAndSortedItems]);
 
   const hasVisibleLinkedEntityCards = visibleLinkedEntityCollapseKeys.length > 0;
+
+  React.useEffect(() => {
+    if (entityType !== 'case' || selectedEntityId === null) {
+      defaultCollapsedCaseIdRef.current = null;
+      return;
+    }
+
+    if (
+      defaultCollapsedCaseIdRef.current === selectedEntityId ||
+      visibleLinkedEntityCollapseKeys.length === 0
+    ) {
+      return;
+    }
+
+    defaultCollapsedCaseIdRef.current = selectedEntityId;
+    updateLinkedEntityCollapseState((current) => {
+      const next = { ...current };
+      visibleLinkedEntityCollapseKeys.forEach((key) => {
+        next[key] = true;
+      });
+      return next;
+    });
+  }, [entityType, selectedEntityId, updateLinkedEntityCollapseState, visibleLinkedEntityCollapseKeys]);
 
   const collapseVisibleLinkedEntityCards = React.useCallback(() => {
     updateLinkedEntityCollapseState((current) => {

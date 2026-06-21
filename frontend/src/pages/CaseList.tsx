@@ -5,6 +5,7 @@ import { useLocation } from "react-router-dom";
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
+import { getPersistedWidth } from "@/components/layout/ColumnRail";
 import { EntityList } from "@/components/data-display/EntityList";
 import { Button } from "@/components/buttons/Button";
 import { CreateCaseModal } from "@/components/entities/CreateCaseModal";
@@ -89,6 +90,7 @@ function CasesListPage() {
 
   // Column visibility state
   const [visibleColumns, setVisibleColumns] = useState<VisibleColumns>(() => getInitialVisibleColumns());
+  const [caseListWidth, setCaseListWidth] = useState<number>(() => getPersistedWidth(768));
 
   // Reactive breakpoint state
   const breakpoint = useBreakpoint();
@@ -96,12 +98,7 @@ function CasesListPage() {
   // Automatically adjust visible columns based on selection and screen size
   useEffect(() => {
     if (!selectedCaseId) {
-      // On ultrawide, show left+center to display the empty state
-      if (breakpoint === 'ultrawide') {
-        setVisibleColumns('left+center');
-      } else {
-        setVisibleColumns('left');
-      }
+      setVisibleColumns(breakpoint === 'mobile' ? 'left' : 'left+center');
     } else {
       if (breakpoint === 'ultrawide') {
         setVisibleColumns('left+center');
@@ -214,6 +211,10 @@ function CasesListPage() {
     setVisibleColumns('left');
   };
 
+  const handleCaseListRailToggle = () => {
+    // The case list/detail split pane is resizable but not collapsible.
+  };
+
   const handleCreateCase = async (payload: {
     title: string;
     description: string;
@@ -306,8 +307,12 @@ function CasesListPage() {
         rightColumn={<div></div>}
         visibleColumns={visibleColumns}
         onVisibleColumnsChange={setVisibleColumns}
-        columnConfig={getColumnConfig(selectedCaseId)}
+        columnConfig={getColumnConfig(selectedCaseId, caseListWidth)}
         dimLeftColumn={!!selectedCaseId}
+        showLeftRail
+        onLeftRailToggle={handleCaseListRailToggle}
+        leftColumnWidth={caseListWidth}
+        onLeftColumnWidthChange={setCaseListWidth}
       />
 
       <CreateCaseModal

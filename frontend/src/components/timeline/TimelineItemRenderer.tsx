@@ -1,5 +1,5 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useTheme } from '@/contexts/ThemeContext';
 import { ActivityItem } from '@/components/data-display/ActivityItem';
 import { BaseCard } from '@/components/cards/BaseCard';
@@ -8,6 +8,8 @@ import { AlertCard } from '@/components/timeline/AlertCard';
 import { AlertCardContent } from '@/components/timeline/AlertCardContent';
 import { TaskCardContent } from '@/components/timeline/TaskCardContent';
 import { CaseCardContent } from '@/components/timeline/CaseCardContent';
+import { Priority } from '@/components/misc/Priority';
+import { State } from '@/components/misc/State';
 import { TimelineDescriptionBlock } from '@/components/timeline/TimelineDescriptionBlock';
 import { GoogleWorkspaceEnrichmentBlock } from '@/components/timeline/GoogleWorkspaceEnrichmentBlock';
 import { MaxMindEnrichmentBlock } from '@/components/timeline/MaxMindEnrichmentBlock';
@@ -26,6 +28,7 @@ import type { TaskRead } from '@/types/generated/models/TaskRead';
 import type { TaskStatus } from '@/types/generated/models/TaskStatus';
 import type { CaseRead } from '@/types/generated/models/CaseRead';
 import type { CaseStatus } from '@/types/generated/models/CaseStatus';
+import type { Priority as PriorityType } from '@/types/generated/models/Priority';
 import type { LinkTemplate } from '@/utils/linkTemplates';
 import {
   getTimelineItemIcon,
@@ -36,13 +39,18 @@ import { compareTimelineItems, getTimelineItems } from '@/utils/timelineHelpers'
 import { isAlertItem, isDeletedItem, isNoteItem, isTaskItem } from '@/types/timeline';
 import type { CaseItem } from '@/types/generated/models/CaseItem';
 import { convertNumericToAlertId, convertNumericToHumanId } from '@/utils/caseHelpers';
+import {
+  alertStatusToUIState,
+  caseStatusToUIState,
+  priorityToUIPriority,
+  taskStatusToUIState,
+} from '@/utils/statusHelpers';
 import { useEnqueueItemEnrichment } from '@/hooks/useEnqueueItemEnrichment';
 import { cn } from '@/utils/cn';
 
-import { Button } from '@/components/buttons/Button';
 import { IconButton } from '@/components/buttons/IconButton';
 
-import { ArrowRight, Maximize2, MessageSquareReply as ReplyIcon, Minimize2, Pencil, RefreshCw } from 'lucide-react';
+import { ArrowRight, Bot, Maximize2, MessageSquareReply as ReplyIcon, Minimize2, Pencil, RefreshCw } from 'lucide-react';
 import { Tooltip } from '@/components/overlays/Tooltip';
 import {
   isTimelineItemEnrichmentActive,
@@ -119,6 +127,10 @@ function isAutomationNote(item: TimelineItem): boolean {
     ['api_user', 'automation', 'langflow', 'system', 'tidemark_ai'].includes(creator) ||
     tags.some(tag => tag.startsWith('automation-') || ['automation', 'bulk-action', 'enrichment', 'status-change', 'system'].includes(tag))
   );
+}
+
+function getTimelineActorLabel(item: TimelineItem): string {
+  return isAutomationNote(item) ? 'system' : item.created_by || 'System';
 }
 
 function getLinkedEntityDescription(item: TimelineItem): string | undefined {
@@ -240,6 +252,72 @@ function collectItemIds(items: TimelineItem[], targetSet: Set<string>): void {
   }
 }
 
+function isCurrentEntityTimelineItem(
+  currentItem: TimelineItem,
+  options: { entityId: number | null; entityType?: 'alert' | 'case' | 'task' },
+): boolean {
+  if (options.entityId === null) {
+    return false;
+  }
+
+  if (options.entityType === 'alert' && isAlertItem(currentItem)) {
+    return currentItem.alert_id === options.entityId;
+  }
+
+  if (options.entityType === 'case' && isCaseItem(currentItem)) {
+    return currentItem.case_id === options.entityId;
+  }
+
+  if (options.entityType === 'task' && isTaskItem(currentItem)) {
+    return currentItem.task_id === options.entityId;
+  }
+
+  return false;
+}
+
+function omitCurrentEntityTimelineItems(
+  items: TimelineItem[],
+  options: { entityId: number | null; entityType?: 'alert' | 'case' | 'task' },
+): TimelineItem[] {
+  const filterItems = (currentItems: TimelineItem[]): { items: TimelineItem[]; changed: boolean } => {
+    let changed = false;
+    const filteredItems: TimelineItem[] = [];
+
+    for (const currentItem of currentItems) {
+      if (isCurrentEntityTimelineItem(currentItem, options)) {
+        changed = true;
+        continue;
+      }
+
+      const nestedReplies = getTimelineItems({ timeline_items: currentItem.replies ?? null });
+      if (nestedReplies.length === 0) {
+        filteredItems.push(currentItem);
+        continue;
+      }
+
+      const filteredReplies = filterItems(nestedReplies);
+      if (!filteredReplies.changed) {
+        filteredItems.push(currentItem);
+        continue;
+      }
+
+      changed = true;
+      filteredItems.push({
+        ...currentItem,
+        replies: Object.fromEntries(
+          filteredReplies.items
+            .filter((reply): reply is TimelineItem & { id: string } => !!reply.id)
+            .map((reply) => [reply.id, reply])
+        ),
+      } as TimelineItem);
+    }
+
+    return { items: filteredItems, changed };
+  };
+
+  return filterItems(items).items;
+}
+
 function clearCardLines(
   cardConfig: ReturnType<typeof createTimelineCard>,
   options: { clearCharacterFlags?: boolean } = {}
@@ -271,6 +349,7 @@ function renderNoteCard(
 ): React.ReactNode {
   const isAutomation = isAutomationNote(currentItem);
   const currentTags = getTimelineTags(currentItem);
+  const noteDescription = hasText(currentItem.description) ? currentItem.description : null;
   const noteCardConfig = createTimelineCard(currentItem, {
     size: 'x-large',
     alertId: options.entityId,
@@ -278,41 +357,33 @@ function renderNoteCard(
     resolveLinkTemplates: true,
   });
   const { children: cardChildren, actionButtons: cardActionButtons, ...baseCardProps } = noteCardConfig;
-  const badgeVariant = isAutomation ? 'warning' : 'neutral';
-  const badgeText = isAutomation ? 'Automation' : 'Human';
-  const badges = (
-    <div className="flex w-full flex-wrap items-center gap-2">
-      <Badge variant={badgeVariant}>{badgeText}</Badge>
-      {currentTags.map(tag => (
-        <Badge key={tag} variant="neutral">{tag}</Badge>
-      ))}
-      {cardActionButtons}
-    </div>
-  );
+  const shouldRenderFooter = !!noteDescription || currentTags.length > 0 || !!cardActionButtons;
+  const footer = shouldRenderFooter ? (
+    <TimelineDescriptionBlock actionButtons={cardActionButtons} tags={currentTags} className="mt-auto">
+      {noteDescription ? <MarkdownContent content={noteDescription} /> : null}
+    </TimelineDescriptionBlock>
+  ) : null;
 
   clearCardLines(baseCardProps);
   baseCardProps.title = isAutomation ? 'Automation note' : 'Analyst note';
+  baseCardProps.baseIcon = isAutomation ? <Bot /> : baseCardProps.baseIcon;
   baseCardProps.size = 'x-large';
-  baseCardProps.system = isAutomation ? 'warning' : 'default';
+  baseCardProps.system = 'default';
   baseCardProps.className = cn(
     baseCardProps.className,
     'min-h-0 w-full',
     TIMELINE_ITEM_MAX_WIDTH_CLASS,
-    isAutomation
-      ? 'border-warning-600 bg-warning-primary-blush'
-      : 'border-accent-1-600 bg-neutral-0',
+    !isAutomation && 'border-neutral-1000',
     options.compactPreview && 'max-w-none !border-0 !bg-transparent',
     options.isGrouped && 'flex-1 self-stretch min-w-40',
   );
   baseCardProps.enableCopyInteractions = false;
 
   return (
-    <BaseCard key={options.itemKey} {...baseCardProps} actionButtons={badges}>
+    <BaseCard key={options.itemKey} {...baseCardProps}>
       <div className="flex w-full flex-1 flex-col gap-3">
-        {hasText(currentItem.description) ? (
-          <MarkdownContent content={currentItem.description} />
-        ) : null}
         {cardChildren}
+        {footer}
       </div>
     </BaseCard>
   );
@@ -343,6 +414,32 @@ function getSourceEntityDisplayLabel(item: TimelineItem): 'Alert' | 'Task' | 'Ca
     return 'Task';
   }
   return 'Case';
+}
+
+function getLinkedEntityState(item: TimelineItem): React.ComponentProps<typeof State>['state'] | null {
+  const status = (item as TimelineItem & { status?: string | null }).status;
+
+  if (!status) {
+    return null;
+  }
+
+  if (isAlertItem(item)) {
+    return alertStatusToUIState(status as AlertStatus) as React.ComponentProps<typeof State>['state'];
+  }
+
+  if (isTaskItem(item)) {
+    return taskStatusToUIState(status as TaskStatus) as React.ComponentProps<typeof State>['state'];
+  }
+
+  if (isCaseItem(item)) {
+    return caseStatusToUIState(status as CaseStatus) as React.ComponentProps<typeof State>['state'];
+  }
+
+  return null;
+}
+
+function getLinkedEntityUpdatedAt(item: TimelineItem): string | null {
+  return (item as TimelineItem & { updated_at?: string | null }).updated_at || item.created_at || null;
 }
 
 function renderRefreshEnrichmentAction(
@@ -527,16 +624,16 @@ export function TimelineItemRenderer({
   linkedEntityCollapseState = {},
   onLinkedEntityCollapseChange,
 }: TimelineItemRendererProps) {
-  const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === 'dark';
 
   const Icon = getTimelineItemIcon(item.type || 'note');
+  const ActivityIcon = isAutomationNote(item) ? Bot : Icon;
   
   const action = `${getTimelineItemAction(item.type || 'note')} ${getTimelineItemLabel(item.type || 'note')}`;
 
   // Determine username based on item type
-  const username = item.created_by || 'System';
+  const username = getTimelineActorLabel(item);
 
   // Determine variant based on item type
   const variant = undefined;
@@ -632,18 +729,20 @@ export function TimelineItemRenderer({
 
   const renderOpenEntityAction = (href: string, label: string): React.ReactNode => (
     <div className="ml-auto flex items-center gap-2">
-      <Button
-        variant="neutral-tertiary"
-        size="small"
+      <Link
+        to={href}
+        className={cn(
+          "group/3b777358 flex h-6 w-auto cursor-pointer flex-row flex-nowrap items-center justify-center gap-1 rounded-md border-none bg-transparent px-2 py-0 hover:bg-neutral-100 active:bg-neutral-50",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
+        )}
         aria-label={label}
-        onClick={(event) => {
-          event.stopPropagation();
-          navigate(href);
-        }}
-        iconRight={<ArrowRight className="h-3.5 w-3.5" />}
+        onClick={(event) => event.stopPropagation()}
       >
-        {label}
-      </Button>
+        <span className="whitespace-nowrap text-caption-bold font-caption-bold text-neutral-900">
+          {label}
+        </span>
+        <ArrowRight className="h-3.5 w-3.5 text-neutral-900" />
+      </Link>
     </div>
   );
 
@@ -752,96 +851,53 @@ export function TimelineItemRenderer({
     const entityLabel = getSourceEntityDisplayLabel(currentItem);
     const href = getItemDetailHref(currentItem);
     const openAction = href ? renderOpenEntityAction(href, `Open ${entityLabel}`) : null;
-    const title = buildEntityTitle(
-      getLinkedEntityIdentifier(currentItem),
-      (currentItem as TimelineItem & { title?: string | null }).title,
-      isDarkTheme,
-    );
-    const compactDescription = getLinkedEntityDescription(currentItem) || currentItem.description || undefined;
-    let compactContent: React.ReactNode = null;
-
-    if (isAlertItem(currentItem)) {
-      const alertData: Partial<AlertRead> & { title: string } = {
-        id: currentItem.alert_id || 0,
-        human_id: currentItem.alert_id ? convertNumericToAlertId(currentItem.alert_id) : undefined,
-        title: currentItem.title || (currentItem.alert_id ? convertNumericToAlertId(currentItem.alert_id) : 'Alert'),
-        description: compactDescription,
-        priority: currentItem.priority,
-        status: ((currentItem as TimelineItem & { status?: AlertStatus | null }).status ?? 'NEW') as AlertStatus,
-        created_at: currentItem.created_at || '',
-        updated_at:
-          (currentItem as TimelineItem & { updated_at?: string }).updated_at ||
-          currentItem.created_at ||
-          '',
-        assignee: currentItem.assignee,
-      };
-
-      compactContent = <AlertCardContent data={alertData} showTags={false} variant="compact" />;
-    } else if (isTaskItem(currentItem)) {
-      const taskData: TaskRead = {
-        id: currentItem.task_id || 0,
-        human_id: currentItem.task_human_id || '',
-        title: currentItem.title || currentItem.task_human_id || 'Task',
-        description: compactDescription,
-        priority: currentItem.priority ?? undefined,
-        status: normalizeTaskStatus(currentItem.status),
-        created_at: currentItem.created_at || '',
-        updated_at:
-          (currentItem as TimelineItem & { updated_at?: string }).updated_at ||
-          currentItem.created_at ||
-          '',
-        assignee: currentItem.assignee ?? null,
-        due_date: currentItem.due_date,
-        created_by: currentItem.created_by || 'System',
-        case_id: (currentItem as TimelineItem & { case_id?: number | null }).case_id ?? null,
-        linked_at: null,
-        timeline_items: (currentItem as TimelineItem & { source_timeline_items?: TaskRead['timeline_items'] }).source_timeline_items ?? null,
-        tags: getTimelineTags(currentItem),
-        ...getTaskTemplateMetadata(currentItem),
-      };
-
-      compactContent = <TaskCardContent data={taskData} showTags={false} variant="compact" />;
-    } else if (isCaseItem(currentItem)) {
-      const caseHumanId = convertNumericToHumanId(currentItem.case_id);
-      const caseData: Partial<CaseRead> & { title: string } = {
-        id: currentItem.case_id,
-        human_id: caseHumanId,
-        title: currentItem.title || caseHumanId,
-        description: compactDescription,
-        priority: currentItem.priority ?? undefined,
-        status: ((currentItem as TimelineItem & { status?: CaseStatus | null }).status ?? 'NEW') as CaseStatus,
-        created_at: currentItem.created_at || '',
-        updated_at:
-          (currentItem as TimelineItem & { updated_at?: string }).updated_at ||
-          currentItem.created_at ||
-          '',
-        assignee: currentItem.assignee,
-      };
-
-      compactContent = <CaseCardContent data={caseData} showTags={false} variant="compact" />;
-    }
+    const identifier = getLinkedEntityIdentifier(currentItem);
+    const title = (currentItem as TimelineItem & { title?: string | null }).title;
+    const state = getLinkedEntityState(currentItem);
+    const priority = (currentItem as TimelineItem & { priority?: PriorityType | null }).priority;
+    const assignee = (currentItem as TimelineItem & { assignee?: string | null }).assignee;
+    const updatedAt = getLinkedEntityUpdatedAt(currentItem);
 
     const collapsedCard = (
-      <BaseCard
-        title={title}
-        baseIcon={<EntityIcon />}
-        size="large"
+      <div
         className={cn(
-          'min-h-0 w-full',
+          'w-full rounded-md border border-neutral-border bg-default-background px-2.5 py-2',
           TIMELINE_ITEM_MAX_WIDTH_CLASS,
           isGrouped && 'flex-1 self-stretch min-w-40',
         )}
-        actionButtons={(
-          <div className="ml-auto flex items-center gap-2">
+      >
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <EntityIcon className="h-3.5 w-3.5 flex-none text-subtext-color" />
+              <span className="min-w-0 truncate text-caption-bold font-caption-bold text-default-font">
+                {identifier}
+              </span>
+              {state ? <State state={state} variant="small" /> : null}
+              {priority ? <Priority priority={priorityToUIPriority(priority)} size="mini" /> : null}
+              {assignee ? (
+                <span className="min-w-0 truncate text-caption-bold font-caption-bold text-subtext-color">
+                  {assignee}
+                </span>
+              ) : null}
+            </div>
+            {title ? (
+              <div className="mt-1 line-clamp-1 text-body font-body text-default-font">
+                {title}
+              </div>
+            ) : null}
+            {updatedAt ? (
+              <div className="mt-1 text-caption font-caption text-subtext-color">
+                Updated {new Date(updatedAt).toLocaleString()}
+              </div>
+            ) : null}
+          </div>
+          <div className="ml-auto flex flex-none items-center gap-2">
             {existingActionButtons}
             {openAction}
           </div>
-        )}
-      >
-        <div className="w-full min-w-0">
-          {compactContent}
         </div>
-      </BaseCard>
+      </div>
     );
 
     return renderLinkedEntityCardShell(currentItem, collapsedCard, true, currentItem.id || collapseKey);
@@ -849,7 +905,13 @@ export function TimelineItemRenderer({
 
   const renderLinkedEntityFooter = (currentItem: TimelineItem, existingActionButtons?: React.ReactNode): React.ReactNode => {
     const currentDescription = currentItem.description;
-    const hasDescriptionContent = hasText(currentDescription);
+    const linkedEntityDescription = getLinkedEntityDescription(currentItem);
+    const renderedEntityDescription = linkedEntityDescription || (isTaskItem(currentItem) ? currentDescription : undefined);
+    const hasDuplicateEntityDescription =
+      hasText(currentDescription) &&
+      hasText(renderedEntityDescription) &&
+      currentDescription.trim() === renderedEntityDescription.trim();
+    const hasDescriptionContent = hasText(currentDescription) && !hasDuplicateEntityDescription;
     const currentTags = getTimelineTags(currentItem);
     const href = getItemDetailHref(currentItem);
     const openAction = href ? renderOpenEntityAction(href, `Open ${getSourceEntityDisplayLabel(currentItem)}`) : null;
@@ -990,7 +1052,7 @@ export function TimelineItemRenderer({
     baseCardProps.enableCopyInteractions = !isAlertItem(timelineCurrentItem) && !isTaskItem(timelineCurrentItem) && !isCaseItem(timelineCurrentItem);
 
     const description = timelineCurrentItem.description;
-    const shouldRenderInlineDescription = hasText(description) && (timelineCurrentItem.type as string | undefined) !== 'ttp';
+    const shouldRenderInlineDescription = hasText(description);
     const currentTags = getTimelineTags(timelineCurrentItem);
     const shouldRenderTags = currentTags.length > 0;
     const shouldUseFooter = !isAlertItem(timelineCurrentItem) && !isTaskItem(timelineCurrentItem) && !isCaseItem(timelineCurrentItem) && (shouldRenderInlineDescription || shouldRenderTags || !!cardActionButtons);
@@ -1272,7 +1334,12 @@ export function TimelineItemRenderer({
   );
   
   // Expanded linked entity cards render their source timeline; collapsed cards hide it.
-  const sourceTimelineItems = shouldRenderReplies ? getTimelineItems({ timeline_items: (item as any).source_timeline_items ?? null }) : [];
+  const sourceTimelineItems = shouldRenderReplies
+    ? omitCurrentEntityTimelineItems(
+      getTimelineItems({ timeline_items: (item as any).source_timeline_items ?? null }),
+      { entityId, entityType },
+    )
+    : [];
   const shouldShowSourceTimeline = sourceTimelineItems.length > 0 && !isLinkedEntityCollapsed && !compactPreview;
   
   // Track IDs of source timeline items (these should be read-only since they belong to the linked entity)
@@ -1297,12 +1364,16 @@ export function TimelineItemRenderer({
     <>
       {flattenedReplies.map((reply: TimelineItem, replyIndex: number) => {
         const isReplyDeleted = isDeletedItem(reply);
-        const ReplyItemIcon = isReplyDeleted ? getTimelineItemIcon(reply.original_type || 'note') : ReplyIcon;
+        const ReplyItemIcon = isReplyDeleted
+          ? getTimelineItemIcon(reply.original_type || 'note')
+          : isAutomationNote(reply)
+            ? Bot
+            : ReplyIcon;
         const replyAction = isReplyDeleted
           ? getDeletedItemAction(reply)
           : `${getTimelineItemAction(reply.type || 'note')} ${getTimelineItemLabel(reply.type || 'note')}`;
         
-        const replyUsername = isReplyDeleted ? reply.deleted_by || 'System' : reply.created_by || 'System';
+        const replyUsername = isReplyDeleted ? reply.deleted_by || 'System' : getTimelineActorLabel(reply);
         const isLastReply = replyIndex === flattenedReplies.length - 1;
 
         const replyContents = renderReplyContents(reply);
@@ -1360,7 +1431,7 @@ export function TimelineItemRenderer({
       id={`timeline-item-${item.id}`}
       itemId={item.id || ''}
       username={username}
-      icon={<Icon />}
+      icon={<ActivityIcon />}
       flagged={item.flagged}
       highlighted={item.highlighted}
       action={action}

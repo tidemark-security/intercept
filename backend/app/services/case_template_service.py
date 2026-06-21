@@ -301,12 +301,12 @@ class CaseTemplateService:
                 "description": plan.audit_note,
                 "created_at": now,
                 "timestamp": now,
-                "created_by": user,
-                "tags": ["case-template"],
+                "created_by": "system",
+                "tags": ["case-template", "system"],
                 "flagged": False,
                 "highlighted": False,
             },
-            created_by=user,
+            created_by="system",
         )
 
         await get_audit_service(db).log_event(

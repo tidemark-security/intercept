@@ -29,7 +29,7 @@ function renderToolbar(
   },
   onFilterChange = vi.fn(),
 ) {
-  renderWithProviders(
+  const renderResult = renderWithProviders(
     <EntityFilterToolbar
       filters={filters}
       onFilterChange={onFilterChange}
@@ -43,7 +43,7 @@ function renderToolbar(
     />,
   );
 
-  return { onFilterChange };
+  return { onFilterChange, ...renderResult };
 }
 
 function getModifiedIndicator(button: HTMLElement) {
@@ -52,7 +52,7 @@ function getModifiedIndicator(button: HTMLElement) {
 
 describe("EntityFilterToolbar", () => {
   it("renders compact two-line toolbar values", () => {
-    renderToolbar({
+    const { container } = renderToolbar({
       search: "",
       assignee: ["analyst"],
       status: ["NEW", "IN_PROGRESS"],
@@ -70,6 +70,9 @@ describe("EntityFilterToolbar", () => {
     expect(screen.getByRole("button", { name: /time last 30 days/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /tags \+2 -1/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /reset clear all/i })).toBeInTheDocument();
+    expect(container.querySelector("[style*='--toolbar-min-item-width']")).toHaveStyle({
+      "--toolbar-min-item-width": "112px",
+    });
   });
 
   it("renders generic actions below the filter controls", () => {

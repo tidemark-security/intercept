@@ -241,7 +241,14 @@ async def test_apply_published_template_creates_real_tasks_tags_and_audit_note(
             for item in (refreshed_case.timeline_items or {}).values()
             if item.get("type") == "note"
         ]
-        assert any("Applied Case Template" in note.get("description", "") for note in notes)
+        template_notes = [
+            note
+            for note in notes
+            if "Applied Case Template" in note.get("description", "")
+        ]
+        assert len(template_notes) == 1
+        assert template_notes[0]["created_by"] == "system"
+        assert "system" in template_notes[0]["tags"]
 
         audit_events = (
             await session.execute(

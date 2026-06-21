@@ -94,9 +94,10 @@ describe('TimelineItemRenderer enrichments', () => {
     expect(screen.getByText('ALT-0000123')).toBeInTheDocument();
     expect(screen.getByText('Suspicious inbox rule')).toBeInTheDocument();
     expect(screen.getByText('alice')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Open Alert' })).toBeInTheDocument();
+    const openAlertLink = screen.getByRole('link', { name: 'Open Alert' });
+    expect(openAlertLink).toHaveAttribute('href', '/alerts/ALT-0000123');
     expect(screen.getByRole('button', { name: 'Expand Alert Card' })).toBeInTheDocument();
-    expect(screen.getByText('Long investigation narrative that should be hidden')).toBeInTheDocument();
+    expect(screen.queryByText('Long investigation narrative that should be hidden')).not.toBeInTheDocument();
     expect(screen.queryByText('mailbox')).not.toBeInTheDocument();
     expect(screen.queryByText('Microsoft Defender')).not.toBeInTheDocument();
     expect(screen.queryByText('MaxMind Enrichment')).not.toBeInTheDocument();
@@ -301,7 +302,7 @@ describe('TimelineItemRenderer enrichments', () => {
     );
 
     expect(screen.getByText('Analyst note')).toBeInTheDocument();
-    expect(screen.getByText('Human')).toBeInTheDocument();
+    expect(screen.getByText('analyst')).toBeInTheDocument();
     expect(screen.getByText('Human triage note', { selector: 'p' })).toBeInTheDocument();
   });
 
@@ -324,7 +325,8 @@ describe('TimelineItemRenderer enrichments', () => {
     );
 
     expect(screen.getByText('Automation note')).toBeInTheDocument();
-    expect(screen.getByText('Automation')).toBeInTheDocument();
+    expect(screen.getByText('system')).toBeInTheDocument();
+    expect(screen.queryByText('analyst')).not.toBeInTheDocument();
     expect(screen.getByText('status-change')).toBeInTheDocument();
     expect(screen.getByText('Status changed from NEW to TRIAGED', { selector: 'p' })).toBeInTheDocument();
   });
@@ -348,7 +350,8 @@ describe('TimelineItemRenderer enrichments', () => {
     );
 
     expect(screen.getByText('Automation note')).toBeInTheDocument();
-    expect(screen.getByText('Automation')).toBeInTheDocument();
+    expect(screen.getByText('system')).toBeInTheDocument();
+    expect(screen.queryByText('custom-langflow-agent')).not.toBeInTheDocument();
     expect(screen.getByText('automation-completed')).toBeInTheDocument();
     expect(screen.getByText('Autonomous task completed', { selector: 'p' })).toBeInTheDocument();
   });
@@ -829,6 +832,32 @@ describe('TimelineItemRenderer enrichments', () => {
     expect(screen.getByText('phishing')).toBeInTheDocument();
   });
 
+  it('renders TTP descriptions and tags once', () => {
+    const item = {
+      id: 'ttp-duplicate-footer-1',
+      type: 'ttp',
+      created_by: 'tidemark_ai',
+      created_at: '2026-06-07T19:40:32+10:00',
+      timestamp: '2026-06-07T19:40:32+10:00',
+      tags: ['authentication', 'ransomware'],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      title: 'TTP',
+      tactic: 'Alert timeline item: ttp',
+      description: 'Alert timeline item: ttp',
+    } as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="alert" />
+    );
+
+    expect(screen.getAllByText('Alert timeline item: ttp')).toHaveLength(2);
+    expect(screen.getByText('Alert timeline item: ttp', { selector: 'p' })).toBeInTheDocument();
+    expect(screen.getAllByText('authentication')).toHaveLength(1);
+    expect(screen.getAllByText('ransomware')).toHaveLength(1);
+  });
+
   it('renders linked entity tags in the footer without duplicating metadata tags', () => {
     const item = {
       id: 'linked-alert-tags-1',
@@ -913,6 +942,66 @@ describe('TimelineItemRenderer enrichments', () => {
     expect(screen.getByText('Timeline link note', { selector: 'p' })).toBeInTheDocument();
   });
 
+  it('does not duplicate linked task descriptions when the timeline and entity descriptions match', () => {
+    const item = {
+      id: 'linked-task-description-duplicate',
+      type: 'task',
+      created_by: 'admin',
+      created_at: '2026-06-08T15:34:23+10:00',
+      updated_at: '2026-06-08T15:34:23+10:00',
+      timestamp: '2026-06-08T15:34:23+10:00',
+      description: 'Task created for case investigation',
+      entity_description: 'Task created for case investigation',
+      tags: ['linked-task'],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      task_id: 13,
+      task_human_id: 'TSK-0000013',
+      title: 'Implement containment measures',
+      status: 'DONE',
+      priority: 'CRITICAL',
+      assignee: 'admin',
+    } as unknown as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="case" />
+    );
+
+    expect(screen.getAllByText('Task created for case investigation', { selector: 'p' })).toHaveLength(1);
+    expect(screen.getByText('linked-task')).toBeInTheDocument();
+  });
+
+  it('does not duplicate linked task descriptions when only a timeline description is present', () => {
+    const item = {
+      id: 'linked-task-description-fallback-duplicate',
+      type: 'task',
+      created_by: 'admin',
+      created_at: '2026-06-21T14:12:48+10:00',
+      updated_at: '2026-06-21T14:12:48+10:00',
+      timestamp: '2026-06-21T14:12:48+10:00',
+      description: 'PW Template Task 1782015159977',
+      tags: ['linked-task'],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      task_id: 20,
+      task_human_id: 'TSK-0000020',
+      title: 'PW Template Task 1782015159977',
+      status: 'TODO',
+      priority: 'CRITICAL',
+      assignee: null,
+      created_by_task: 'admin',
+    } as unknown as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="case" />
+    );
+
+    expect(screen.getAllByText('PW Template Task 1782015159977', { selector: 'p' })).toHaveLength(1);
+    expect(screen.getByText('linked-task')).toBeInTheDocument();
+  });
+
   it('renders linked source timelines when the linked entity card is expanded', () => {
     const item = {
       id: 'linked-alert-source-1',
@@ -952,6 +1041,78 @@ describe('TimelineItemRenderer enrichments', () => {
     expect(screen.getByText('Source note')).toBeInTheDocument();
     expect(screen.queryByText('Show alert timeline (1)')).not.toBeInTheDocument();
     expect(screen.queryByText('Hide alert timeline (1)')).not.toBeInTheDocument();
+  });
+
+  it('omits the current ACT entity from expanded linked source timelines', () => {
+    const item = {
+      id: 'linked-alert-source-recursion',
+      type: 'alert',
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      updated_at: '2026-03-14T12:50:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: [],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      alert_id: 42,
+      title: 'Suspicious login',
+      status: 'NEW',
+      priority: 'MEDIUM',
+      source_timeline_items: {
+        'source-parent-case': {
+          id: 'source-parent-case',
+          type: 'case',
+          created_by: 'System',
+          created_at: '2026-03-14T12:42:11.293811Z',
+          timestamp: '2026-03-14T12:42:11.284000Z',
+          tags: [],
+          flagged: false,
+          highlighted: false,
+          case_id: 38,
+          title: 'Parent case should be hidden',
+          status: 'OPEN',
+          priority: 'HIGH',
+          replies: null,
+        },
+        'source-note-visible': {
+          id: 'source-note-visible',
+          type: 'note',
+          created_by: 'analyst',
+          created_at: '2026-03-14T12:45:11.293811Z',
+          timestamp: '2026-03-14T12:45:11.284000Z',
+          tags: [],
+          flagged: false,
+          highlighted: false,
+          description: 'Source note remains visible',
+          replies: {
+            'nested-parent-case': {
+              id: 'nested-parent-case',
+              type: 'case',
+              created_by: 'System',
+              created_at: '2026-03-14T12:46:11.293811Z',
+              timestamp: '2026-03-14T12:46:11.284000Z',
+              tags: [],
+              flagged: false,
+              highlighted: false,
+              case_id: 38,
+              title: 'Nested parent case should be hidden',
+              status: 'OPEN',
+              priority: 'HIGH',
+              replies: null,
+            },
+          },
+        },
+      },
+    } as unknown as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="case" />
+    );
+
+    expect(screen.getByText('Source note remains visible')).toBeInTheDocument();
+    expect(screen.queryByText('Parent case should be hidden')).not.toBeInTheDocument();
+    expect(screen.queryByText('Nested parent case should be hidden')).not.toBeInTheDocument();
   });
 
   it('hides linked source timelines when the linked entity card is collapsed', () => {

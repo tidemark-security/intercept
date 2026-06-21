@@ -188,13 +188,7 @@ function Alerts() {
   useEffect(() => {
     // If no alert is selected
     if (!selectedAlertId) {
-      // On ultrawide, show left+center to display the empty state
-      if (breakpoint === 'ultrawide') {
-        setVisibleColumns('left+center');
-      } else {
-        // On other breakpoints, show only left
-        setVisibleColumns('left');
-      }
+      setVisibleColumns(breakpoint === 'mobile' ? 'left' : 'left+center');
       return;
     }
 
@@ -768,7 +762,7 @@ function Alerts() {
   };
 
   const bulkActionsPanel = !isAuditor && bulkSelectedIds.length > 1 ? (
-    <div className="flex w-full flex-wrap items-center gap-2 rounded-md border border-solid border-neutral-border bg-default-background px-3 py-2 shadow-sm">
+    <div className="flex w-full flex-wrap items-center gap-2 rounded-md border border-solid border-neutral-border bg-default-background px-3 py-2">
       <span className="mr-auto text-body-bold font-body-bold text-default-font">
         {bulkSelectedIds.length} selected
       </span>
@@ -815,6 +809,7 @@ function Alerts() {
       <AssigneeSelector
         mode="assign"
         size="small"
+        className="!h-6 w-auto px-2 py-0"
         currentAssignee={null}
         currentUser={currentUser}
         users={users}
@@ -958,9 +953,9 @@ function Alerts() {
         }
         visibleColumns={visibleColumns}
         onVisibleColumnsChange={setVisibleColumns}
-        columnConfig={getColumnConfig(selectedAlertId, selectedAlertId ? alertListWidth : undefined)}
+        columnConfig={getColumnConfig(selectedAlertId, alertListWidth)}
         dimLeftColumn={!!selectedAlertId}
-        showLeftRail={!!selectedAlertId}
+        showLeftRail
         onLeftRailToggle={handleAlertListRailToggle}
         leftColumnWidth={alertListWidth}
         onLeftColumnWidthChange={setAlertListWidth}

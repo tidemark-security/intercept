@@ -12,7 +12,7 @@ export interface ToolbarProps extends React.HTMLAttributes<HTMLDivElement> {
 
 export const Toolbar = React.forwardRef<HTMLDivElement, ToolbarProps>(
   function Toolbar(
-    { children, minItemWidth = "136px", className, style, ...otherProps },
+    { children, minItemWidth = "112px", className, style, ...otherProps },
     ref,
   ) {
     return (
