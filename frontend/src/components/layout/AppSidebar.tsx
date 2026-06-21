@@ -21,6 +21,7 @@ import {
   BarChart2,
   Bell,
   BrainCircuit,
+  BookTemplate,
   Clock,
   Globe,
   Home,
@@ -71,6 +72,13 @@ const navigationItems: NavigationItem[] = [
     to: "/cases",
     match: (path: string) => path.startsWith("/cases"),
     badgeKey: "cases",
+  },
+  {
+    key: "case-templates",
+    label: "Templates",
+    icon: BookTemplate,
+    to: "/case-templates",
+    match: (path: string) => path.startsWith("/case-templates"),
   },
   {
     key: "tasks",

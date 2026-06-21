@@ -65,6 +65,12 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: "Add a Task",
   },
   {
+    command: "tpl",
+    type: "case_template",
+    label: "/tpl",
+    description: "Apply a Case Template",
+  },
+  {
     command: "att",
     type: "attachment",
     label: "/att",

@@ -71,7 +71,7 @@ import type { TimelineItemType } from "@/types/drafts";
 import { CommandInput } from "@/components/forms/CommandInput";
 import { SLASH_COMMANDS } from "@/utils/slashCommands";
 
-import { Menu, Sparkles, Terminal } from 'lucide-react';
+import { BookTemplate, Menu, Sparkles, Terminal } from 'lucide-react';
 /**
  * Entity type for generic timeline item creation
  */
@@ -227,6 +227,15 @@ export function QuickTerminal({
                       showHint={true}
                       label="Task"
                       onClick={() => onMenuItemSelect("task")}
+                    />
+                  )}
+                  {isItemTypeAvailable("case_template") && (
+                    <DropdownMenu.DropdownItem
+                      icon={<BookTemplate />}
+                      hint={SLASH_COMMANDS.find(c => c.type === "case_template")?.label}
+                      showHint={true}
+                      label="Case Template"
+                      onClick={() => onMenuItemSelect("case_template")}
                     />
                   )}
                   {(isItemTypeAvailable("actor") || isItemTypeAvailable("system")) && (

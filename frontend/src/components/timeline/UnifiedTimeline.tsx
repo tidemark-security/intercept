@@ -35,14 +35,180 @@ import { compareTimelineItems, getTimelineItems } from "@/utils/timelineHelpers"
 import { useTheme } from '@/contexts/ThemeContext';
 import { cn } from '@/utils/cn';
 import { formatPresenceText } from '@/utils/presenceText';
+import { PICERL_STAGES, type PICERLStage } from '@/types/caseTemplates';
+import { Badge } from '@/components/data-display/Badge';
 
 
-import { ArrowRight } from 'lucide-react';
+import { AlertTriangle, ArrowRight } from 'lucide-react';
 
 const TIMELINE_VIEW_STORAGE_KEY = 'intercept.timeline-view';
+const PICERL_STAGE_LABELS: Record<PICERLStage, string> = {
+  Preparation: 'Preparation',
+  Identification: 'Identification',
+  Containment: 'Containment',
+  Eradication: 'Eradication',
+  Recovery: 'Recovery',
+  'Lessons Learned': 'Lessons Learned',
+};
 
 function getTimelineViewStorageKey(entityType: 'case' | 'task', entityId: number): string {
   return `${TIMELINE_VIEW_STORAGE_KEY}.${entityType}.${entityId}`;
+}
+
+function isPICERLStage(value: unknown): value is PICERLStage {
+  return typeof value === 'string' && (PICERL_STAGES as readonly string[]).includes(value);
+}
+
+function getPICERLStage(item: TimelineItem): PICERLStage | null {
+  const stage = (item as any).picerl_stage;
+  return isPICERLStage(stage) ? stage : null;
+}
+
+function isDoneTask(item: TimelineItem): boolean {
+  return String((item as any).status ?? '').toUpperCase() === 'DONE';
+}
+
+function isAttentionTask(item: TimelineItem): boolean {
+  if ((item as any).highlighted || (item as any).flagged) {
+    return true;
+  }
+  const dueDate = (item as any).due_date;
+  if (!dueDate || isDoneTask(item)) {
+    return false;
+  }
+  const dueTime = new Date(dueDate).getTime();
+  return Number.isFinite(dueTime) && dueTime < Date.now();
+}
+
+function PICERLStageBands({
+  stagedItems,
+  selectedStage,
+  onSelectStage,
+}: {
+  stagedItems: TimelineItem[];
+  selectedStage?: PICERLStage;
+  onSelectStage: (stage: PICERLStage | undefined) => void;
+}) {
+  return (
+    <div className="flex w-full flex-col gap-2 border-b border-solid border-neutral-border bg-default-background px-6 py-3 mobile:px-2">
+      <div className="grid w-full grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))] gap-2">
+        {PICERL_STAGES.map((stage) => {
+          const stageItems = stagedItems.filter((item) => getPICERLStage(item) === stage);
+          const doneCount = stageItems.filter(isDoneTask).length;
+          const hasAttention = stageItems.some(isAttentionTask);
+          const isActive = selectedStage === stage;
+          return (
+            <button
+              key={stage}
+              type="button"
+              className={cn(
+                "flex min-h-16 min-w-0 flex-col items-start gap-2 border border-solid p-3 text-left transition-colors",
+                isActive
+                  ? "border-brand-primary bg-brand-1100 text-default-font"
+                  : "border-neutral-border bg-neutral-50 hover:border-brand-primary hover:bg-neutral-100",
+                hasAttention && !isActive && "border-warning-700 bg-warning-50/40"
+              )}
+              onClick={() => onSelectStage(isActive ? undefined : stage)}
+            >
+              <span className="flex w-full min-w-0 items-center justify-between gap-2">
+                <span className="min-w-0 truncate text-caption-bold font-caption-bold text-default-font">
+                  {PICERL_STAGE_LABELS[stage]}
+                </span>
+                {hasAttention ? <AlertTriangle className="h-3.5 w-3.5 flex-none text-warning-700" /> : null}
+              </span>
+              <span className="text-heading-3 font-heading-3 text-default-font">
+                {doneCount}/{stageItems.length}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PICERLSwimlaneView({
+  stagedItems,
+  selectedStage,
+  onSelectStage,
+}: {
+  stagedItems: TimelineItem[];
+  selectedStage?: PICERLStage;
+  onSelectStage: (stage: PICERLStage | undefined) => void;
+}) {
+  return (
+    <div className="flex w-full grow overflow-auto p-6 mobile:p-2">
+      <div className="grid min-w-[960px] grow grid-cols-6 gap-3">
+        {PICERL_STAGES.map((stage) => {
+          const stageItems = stagedItems.filter((item) => getPICERLStage(item) === stage);
+          const muted = Boolean(selectedStage && selectedStage !== stage);
+          return (
+            <section
+              key={stage}
+              className={cn(
+                "flex min-h-0 flex-col gap-2 border border-solid border-neutral-border bg-neutral-50 p-3",
+                muted && "opacity-45"
+              )}
+            >
+              <button
+                type="button"
+                className="flex min-h-8 min-w-0 items-center justify-between gap-2 text-left"
+                onClick={() => onSelectStage(selectedStage === stage ? undefined : stage)}
+              >
+                <span className="min-w-0 truncate text-caption-bold font-caption-bold text-default-font">
+                  {PICERL_STAGE_LABELS[stage]}
+                </span>
+                <Badge variant="neutral">{stageItems.length}</Badge>
+              </button>
+              <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto">
+                {stageItems.map((item) => (
+                  <article
+                    key={item.id}
+                    className={cn(
+                      "flex min-w-0 flex-col gap-2 border border-solid border-neutral-border bg-default-background p-3",
+                      isAttentionTask(item) && "border-warning-700 bg-warning-50/40"
+                    )}
+                  >
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <span className="line-clamp-2 text-body-bold font-body-bold text-default-font">
+                        {(item as any).title || item.description || item.id}
+                      </span>
+                      <div className="flex flex-wrap gap-1">
+                        {(item as any).status ? <Badge variant="neutral">{(item as any).status}</Badge> : null}
+                        {(item as any).priority ? <Badge>{(item as any).priority}</Badge> : null}
+                      </div>
+                    </div>
+                    {(item as any).due_date ? (
+                      <span className={cn("text-caption font-caption text-subtext-color", isAttentionTask(item) && "text-warning-1000")}>
+                        Due {new Date((item as any).due_date).toLocaleString()}
+                      </span>
+                    ) : null}
+                    {(item as any).assignee ? (
+                      <span className="truncate text-caption font-caption text-subtext-color">
+                        {(item as any).assignee}
+                      </span>
+                    ) : null}
+                    {Array.isArray((item as any).tags) && (item as any).tags.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {(item as any).tags.slice(0, 3).map((tag: string) => (
+                          <Badge key={tag} variant="neutral">{tag}</Badge>
+                        ))}
+                      </div>
+                    ) : null}
+                  </article>
+                ))}
+                {stageItems.length === 0 ? (
+                  <div className="flex min-h-24 items-center justify-center border border-dashed border-neutral-border px-2 text-center text-caption font-caption text-subtext-color">
+                    No staged tasks
+                  </div>
+                ) : null}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 /**
  * UnifiedTimeline - Displays entity details, timeline items, and quick terminal
@@ -249,6 +415,7 @@ function UnifiedTimelineInner({
 
   // Timeline filter and sort state - defaults: Timestamp / Ascending / All / Grouped
   const [selectedType, setSelectedType] = useState<string | undefined>(undefined);
+  const [selectedPICERLStage, setSelectedPICERLStage] = useState<PICERLStage | undefined>(undefined);
   const [sortBy, setSortBy] = useState<SortOption>('timestamp');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [groupSimilar, setGroupSimilar] = useState<boolean>(true);
@@ -307,7 +474,7 @@ function UnifiedTimelineInner({
       getTimelineViewStorageKey(entityType, selectedEntityId),
     );
 
-    setTimelineViewMode(persistedMode === 'graph' ? 'graph' : 'timeline');
+    setTimelineViewMode(persistedMode === 'graph' || persistedMode === 'swimlane' ? persistedMode : 'timeline');
   }, [entityType, selectedEntityId, supportsGraphView]);
 
   const handleSortChange = (newSortBy: SortOption, newDirection: SortDirection) => {
@@ -341,14 +508,33 @@ function UnifiedTimelineInner({
     return sorted;
   }, [entityDetail, sortBy, sortDirection]);
 
+  const stagedTaskItems = useMemo(() => (
+    sortedTimelineItems.filter((item) => item.type === 'task' && getPICERLStage(item))
+  ), [sortedTimelineItems]);
+
+  const hasPICERLStages = entityType === 'case' && stagedTaskItems.length > 0;
+
+  React.useEffect(() => {
+    if (!hasPICERLStages && selectedPICERLStage) {
+      setSelectedPICERLStage(undefined);
+    }
+    if (!hasPICERLStages && timelineViewMode === 'swimlane') {
+      setTimelineViewMode('timeline');
+    }
+  }, [hasPICERLStages, selectedPICERLStage, timelineViewMode]);
+
   // Filter and sort timeline items
   const filteredAndSortedItems = useMemo(() => {
-    if (!selectedType) {
-      return sortedTimelineItems;
-    }
-
-    return sortedTimelineItems.filter((item) => item.type === selectedType);
-  }, [selectedType, sortedTimelineItems]);
+    return sortedTimelineItems.filter((item) => {
+      if (selectedType && item.type !== selectedType) {
+        return false;
+      }
+      if (selectedPICERLStage) {
+        return item.type === 'task' && getPICERLStage(item) === selectedPICERLStage;
+      }
+      return true;
+    });
+  }, [selectedPICERLStage, selectedType, sortedTimelineItems]);
 
   const visibleLinkedEntityCollapseKeys = useMemo(() => {
     const keys = new Set<string>();
@@ -621,6 +807,7 @@ function UnifiedTimelineInner({
         'note',
         'attachment',
         'link',
+        'case_template',
         'task',
         'observable',
         'system',
@@ -672,6 +859,7 @@ function UnifiedTimelineInner({
           timelineViewMode={timelineViewMode}
           onTimelineViewModeChange={updateTimelineViewMode}
           graphViewDisabled={getTimelineItems(entityDetail).length === 0}
+          swimlaneViewDisabled={!hasPICERLStages}
           linkedCaseAlerts={linkedCaseAlerts}
           linkedTaskCount={linkedTaskCount}
           caseTags={caseTags}
@@ -718,6 +906,7 @@ function UnifiedTimelineInner({
             <TimelineGraphView
               items={sortedTimelineItems}
               selectedType={selectedType}
+              selectedPICERLStage={selectedPICERLStage}
               entityId={selectedEntityId}
               entityType={entityType as 'case' | 'task'}
               sortBy={sortBy}
@@ -776,9 +965,23 @@ function UnifiedTimelineInner({
                     />
                   </div>
 
+                  {hasPICERLStages ? (
+                    <PICERLStageBands
+                      stagedItems={stagedTaskItems}
+                      selectedStage={selectedPICERLStage}
+                      onSelectStage={setSelectedPICERLStage}
+                    />
+                  ) : null}
+
                   {/* Timeline Items */}
                   <div className="flex w-full flex-col items-start p-6 mobile:p-2">
-                    {hasTimelineItems && filteredAndSortedItems.length > 0 ? (
+                    {timelineViewMode === 'swimlane' && hasPICERLStages ? (
+                      <PICERLSwimlaneView
+                        stagedItems={stagedTaskItems}
+                        selectedStage={selectedPICERLStage}
+                        onSelectStage={setSelectedPICERLStage}
+                      />
+                    ) : hasTimelineItems && filteredAndSortedItems.length > 0 ? (
                     (() => {
                       // Conditionally group timeline items based on groupSimilar toggle
                       if (groupSimilar) {

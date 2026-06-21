@@ -50,6 +50,7 @@ import {
 } from '@/utils/timelineMapping';
 import type { LinkTemplate } from '@/utils/linkTemplates';
 import { isDeletedItem, type TimelineItem } from '@/types/timeline';
+import type { PICERLStage } from '@/types/caseTemplates';
 import type { TimelineGraphOperation } from '@/types/generated/models/TimelineGraphOperation';
 import type { TimelineGraphRead } from '@/types/generated/models/TimelineGraphRead';
 import { ArrowLeft, ArrowLeftRight, ArrowRight, Check, Clock, ClockAlert, ClockPlus, Copy, Flag, GitBranch, Group, Highlighter, IdCard, Magnet, Minus, Pencil, Search, Trash, Trash2, X } from 'lucide-react';
@@ -57,6 +58,7 @@ import { ArrowLeft, ArrowLeftRight, ArrowRight, Check, Clock, ClockAlert, ClockP
 interface TimelineGraphViewProps {
   items: TimelineItem[];
   selectedType?: string;
+  selectedPICERLStage?: PICERLStage;
   entityId: number | null;
   entityType: 'case' | 'task';
   sortBy?: 'created_at' | 'timestamp';
@@ -388,8 +390,9 @@ function getFilteredGraphState(
   nodes: TimelineFlowNode[],
   edges: TimelineGraphEdge[],
   selectedType?: string,
+  selectedPICERLStage?: PICERLStage,
 ): { nodes: TimelineFlowNode[]; edges: TimelineGraphEdge[] } {
-  if (!selectedType) {
+  if (!selectedType && !selectedPICERLStage) {
     return {
       nodes: nodes.map((node) => (
         node.type === 'timelineItem'
@@ -404,9 +407,18 @@ function getFilteredGraphState(
   }
 
   const hiddenNodeIds = new Set(
-    nodes.flatMap((node) => (
-      node.type === 'timelineItem' && node.data.itemType !== selectedType ? [node.id] : []
-    )),
+    nodes.flatMap((node) => {
+      if (node.type !== 'timelineItem') {
+        return [];
+      }
+      if (selectedType && node.data.itemType !== selectedType) {
+        return [node.id];
+      }
+      if (selectedPICERLStage && (node.data.item as any).picerl_stage !== selectedPICERLStage) {
+        return [node.id];
+      }
+      return [];
+    }),
   );
 
   return {
@@ -1864,6 +1876,7 @@ const edgeTypes: EdgeTypes = {
 function TimelineGraphViewInner({
   items,
   selectedType,
+  selectedPICERLStage,
   entityId,
   entityType,
   sortBy = 'timestamp',
@@ -1922,8 +1935,8 @@ function TimelineGraphViewInner({
   const selectedNode = selectedNodeId ? nodes.find((node) => node.id === selectedNodeId) : null;
   const selectedEdge = selectedEdgeId ? edges.find((edge) => edge.id === selectedEdgeId) : null;
   const filteredGraphState = useMemo(
-    () => getFilteredGraphState(nodes, edges, selectedType),
-    [edges, nodes, selectedType],
+    () => getFilteredGraphState(nodes, edges, selectedType, selectedPICERLStage),
+    [edges, nodes, selectedPICERLStage, selectedType],
   );
   const flowEdges = useMemo(
     () => filteredGraphState.edges.map((edge) => withFloatingEdgeData(edge, graphSettings.floatingEdges)),

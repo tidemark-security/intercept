@@ -53,6 +53,10 @@ TimelineGraphOperationType = Literal[
 ]
 
 
+def enum_values(enum_cls):
+    return [member.value for member in enum_cls]
+
+
 class TimelineGraphDocument(SQLModel):
     nodes: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     edges: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
@@ -1363,7 +1367,7 @@ class TaskBase(SQLModel):
     )
     picerl_stage: Optional[PICERLStage] = Field(
         default=None,
-        sa_column=Column(SAEnum(PICERLStage, name="picerlstage"), nullable=True),
+        sa_column=Column(SAEnum(PICERLStage, name="picerlstage", values_callable=enum_values), nullable=True),
     )
 
 

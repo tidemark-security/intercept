@@ -10,6 +10,7 @@ export type TimelineItemType =
   | "email"
   | "link"
   | "task"
+  | "case_template"
   | "attachment"
   | "network_traffic"
   | "process"

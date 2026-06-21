@@ -24,9 +24,23 @@ import type { TaskStatus } from "@/types/generated/models/TaskStatus";
 import { cn } from "@/utils/cn";
 import { convertNumericToHumanId } from "@/utils/caseHelpers";
 
-import { ArrowRight, CalendarClock, ClockAlert, ClockPlus, RadioTower, User } from "lucide-react";
+import { ArrowRight, CalendarClock, ClockAlert, ClockPlus, Columns3, RadioTower, User } from "lucide-react";
 
 export type EntityMetadataCardVariant = "detail" | "timeline" | "compact";
+const PICERL_STAGE_LABELS: Record<string, string> = {
+  PREPARATION: "Preparation",
+  IDENTIFICATION: "Identification",
+  CONTAINMENT: "Containment",
+  ERADICATION: "Eradication",
+  RECOVERY: "Recovery",
+  LESSONS_LEARNED: "Lessons Learned",
+  Preparation: "Preparation",
+  Identification: "Identification",
+  Containment: "Containment",
+  Eradication: "Eradication",
+  Recovery: "Recovery",
+  "Lessons Learned": "Lessons Learned",
+};
 
 interface EntityContextCriterion {
   type?: string | null;
@@ -324,6 +338,7 @@ export function EntityMetadataCard({
   const createdByValue = caseEntity?.created_by || taskEntity?.created_by || (alertEntity as (AlertRead & { created_by?: string | null }) | null)?.created_by;
   const sourceValue = alertEntity?.source;
   const taskDueStatus = getTaskDueStatus(taskEntity?.due_date, taskEntity?.status);
+  const taskPICERLStage = isTask ? (entity as TaskRead & { picerl_stage?: string | null }).picerl_stage : null;
   const taskDueLabel = taskDueStatus === 'overdue'
     ? 'Overdue'
     : taskDueStatus === 'due_soon'
@@ -412,6 +427,14 @@ export function EntityMetadataCard({
       <div className={detailGridClassName}>
         {isTask && taskEntity?.due_date ? (
           <TimestampField label={taskDueLabel} value={taskEntity.due_date} icon={<CalendarClock className="h-3.5 w-3.5" />} dueStatus={taskDueStatus} />
+        ) : null}
+
+        {isTask && taskPICERLStage ? (
+          <MetaField icon={<Columns3 className="h-3.5 w-3.5" />} label="PICERL Stage" className={detailFieldClassName}>
+            <span className="min-w-0 truncate text-caption-bold font-caption-bold text-default-font">
+              {PICERL_STAGE_LABELS[taskPICERLStage] ?? taskPICERLStage}
+            </span>
+          </MetaField>
         ) : null}
 
         <TimestampField label="Created" value={entity.created_at} icon={<ClockPlus className="h-3.5 w-3.5" />} />

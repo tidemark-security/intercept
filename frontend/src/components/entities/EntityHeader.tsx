@@ -27,13 +27,13 @@ import type { UIState } from "@/utils/statusHelpers";
 import { ALERT_STATUS_LABELS } from "@/utils/statusLabels";
 import type { ClosedAlertStatus } from "@/utils/statusLabels";
 
-import { ArrowRight, ArrowUp, Check, CheckCircle, ChevronLeft, Copy, Edit2, HelpCircle, Link, Link2Off, List, Network, Users, X, XCircle } from 'lucide-react';
+import { ArrowRight, ArrowUp, Check, CheckCircle, ChevronLeft, Columns3, Copy, Edit2, HelpCircle, Link, Link2Off, List, Network, Users, X, XCircle } from 'lucide-react';
 // Unified status type that works for alerts, cases, and tasks (API format: UPPERCASE)
 export type EntityStatus = AlertStatus | CaseStatus | TaskStatus;
 
 // Entity type to determine UI behavior
 export type EntityType = 'alert' | 'case' | 'task';
-export type TimelineViewMode = 'timeline' | 'graph';
+export type TimelineViewMode = 'timeline' | 'graph' | 'swimlane';
 
 // Timeline filter types
 export type SortOption = 'created_at' | 'timestamp';
@@ -95,6 +95,7 @@ interface EntityHeaderRootProps
   timelineViewMode?: TimelineViewMode;
   onTimelineViewModeChange?: (viewMode: TimelineViewMode) => void;
   graphViewDisabled?: boolean;
+  swimlaneViewDisabled?: boolean;
   // Timeline filter props
   showTimelineFilter?: boolean;
   timelineItems?: TimelineItem[];
@@ -159,6 +160,7 @@ const EntityHeaderRoot = React.forwardRef<
     timelineViewMode = 'timeline',
     onTimelineViewModeChange,
     graphViewDisabled = false,
+    swimlaneViewDisabled = false,
     showTimelineFilter = false,
     timelineItems = [],
     selectedType,
@@ -360,6 +362,21 @@ const EntityHeaderRoot = React.forwardRef<
               >
                 <Network className="h-4 w-4 flex-none" />
                 Graph
+              </button>
+              <button
+                type="button"
+                className={cn(
+                  'flex h-full cursor-pointer items-center gap-2 rounded-md border border-solid px-2 text-caption-bold font-caption-bold disabled:cursor-default disabled:opacity-50',
+                  viewToggleItemClassName,
+                  timelineViewMode === 'swimlane'
+                    ? 'border-brand-700 bg-brand-primary text-black'
+                    : 'border-transparent bg-transparent text-subtext-color hover:bg-neutral-100 hover:text-default-font'
+                )}
+                disabled={swimlaneViewDisabled}
+                onClick={() => onTimelineViewModeChange?.('swimlane')}
+              >
+                <Columns3 className="h-4 w-4 flex-none" />
+                Swimlane
               </button>
             </div>
           )}

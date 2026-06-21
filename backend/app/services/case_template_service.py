@@ -156,6 +156,7 @@ class CaseTemplateService:
 
         before = CaseTemplateRead.model_validate(template).model_dump(mode="json")
         data = payload.model_dump(exclude_unset=True)
+        old_status = template.status
         next_status = data.get("status", template.status)
         next_title = data.get("title", template.title)
         next_description = data.get("description", template.description)
@@ -183,10 +184,15 @@ class CaseTemplateService:
         template.updated_by = user
         template.updated_at = datetime.now(timezone.utc)
 
-        event_type = {
-            CaseTemplateStatus.PUBLISHED: "case_template.published",
-            CaseTemplateStatus.DISABLED: "case_template.disabled",
-        }.get(template.status, "case_template.updated")
+        status_changed = "status" in data and template.status != old_status
+        event_type = (
+            {
+                CaseTemplateStatus.PUBLISHED: "case_template.published",
+                CaseTemplateStatus.DISABLED: "case_template.disabled",
+            }.get(template.status, "case_template.updated")
+            if status_changed
+            else "case_template.updated"
+        )
         await get_audit_service(db).log_event(
             event_type=event_type,
             entity_type="case_template",

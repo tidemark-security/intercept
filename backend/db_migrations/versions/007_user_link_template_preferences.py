@@ -20,6 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    op.execute("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(128)")
     inspector = sa.inspect(op.get_bind())
     if "user_link_template_preferences" in inspector.get_table_names():
         existing_indexes = {index["name"] for index in inspector.get_indexes("user_link_template_preferences")}

@@ -20,6 +20,7 @@ const Login = lazy(() => import("./pages/Login"))
 const SetPasswordPage = lazy(() => import("./pages/SetPasswordPage"))
 const CasesListPage = lazy(() => import("./pages/CaseList"))
 const CaseDetailPage = lazy(() => import("./pages/CaseDetail"))
+const CaseTemplatesPage = lazy(() => import("./pages/CaseTemplates"))
 const Logout = lazy(() => import("./pages/Logout"))
 const SelfPasswordChange = lazy(() => import("./pages/SelfPasswordChange"))
 const ProfileManagement = lazy(() => import("./pages/ProfileManagement"))
@@ -77,6 +78,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <CaseDetailPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/case-templates"
+            element={
+              <ProtectedRoute>
+                <CaseTemplatesPage />
               </ProtectedRoute>
             }
           />

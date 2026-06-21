@@ -81,6 +81,14 @@ async def test_case_template_management_defaults_filters_and_admin_writes(
     assert publish_response.status_code == 200
     assert publish_response.json()["status"] == "PUBLISHED"
 
+    edit_response = await client.put(
+        f"/api/v1/case-templates/{template['id']}",
+        cookies={"intercept_session": admin_cookie},
+        json={"description": "Updated published response steps"},
+    )
+    assert edit_response.status_code == 200
+    assert edit_response.json()["status"] == "PUBLISHED"
+
     published_list = await client.get(
         "/api/v1/case-templates",
         cookies={"intercept_session": analyst_cookie},
@@ -102,6 +110,20 @@ async def test_case_template_management_defaults_filters_and_admin_writes(
         json={"title": "Analyst draft"},
     )
     assert analyst_write.status_code == 403
+
+    async with session_maker() as session:
+        audit_events = (
+            await session.execute(
+                select(AuditLog.event_type)
+                .where(AuditLog.entity_type == "case_template")
+                .order_by(AuditLog.id.asc())
+            )
+        ).scalars().all()
+        assert audit_events == [
+            "case_template.created",
+            "case_template.published",
+            "case_template.updated",
+        ]
 
 
 @pytest.mark.asyncio
