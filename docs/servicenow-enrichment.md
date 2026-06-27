@@ -22,13 +22,22 @@ The API user needs read access to the configured table and fields. For the defau
 Mapping settings:
 
 - `enrichment.servicenow.table`: defaults to `sys_user`.
-- `enrichment.servicenow.user_query_field`: simplified setup field used to build `lookup_query_template`.
+- `enrichment.servicenow.user_table_enabled`: enables user table lookups. Defaults to `true`.
+- `enrichment.servicenow.user_query_field`: comma-separated simplified setup fields used to build `lookup_query_template`. Blank skips user lookups.
 - `enrichment.servicenow.active_only`: simplified setup toggle that appends `active=true` when the configure API saves the lookup template.
 - `enrichment.servicenow.fields`: comma-separated fields returned by the Table API.
 - `enrichment.servicenow.lookup_query_template`: encoded query template for single-item lookups. Use `{value}` for the escaped actor identifier.
 - `enrichment.servicenow.bulk_sync_query`: encoded query for scheduled sync/backfill. Defaults to `active=true`.
+- `enrichment.servicenow.user_vip_field`: comma-separated user fields that mark VIP users. Blank skips VIP mapping.
+- `enrichment.servicenow.user_privileged_field`: comma-separated user fields that mark privileged users. Blank skips privileged-user mapping.
+- `enrichment.servicenow.cmdb_table_enabled`: enables CMDB table lookups. Defaults to `true`.
+- `enrichment.servicenow.cmdb_table`: defaults to `cmdb_ci`. Blank skips CMDB lookups.
+- `enrichment.servicenow.cmdb_query_field`: comma-separated CMDB fields matched against timeline system identifiers. Blank skips CMDB lookups.
+- `enrichment.servicenow.cmdb_criticality_field`: comma-separated CMDB fields that mark critical systems. Blank skips criticality mapping.
+- `enrichment.servicenow.cmdb_privileged_field`: comma-separated CMDB fields that mark privileged systems. Blank skips privileged-system mapping.
 
 Bulk sync is bounded by `enrichment.servicenow.max_records` and `enrichment.servicenow.page_size`. The backend clamps page size to 1-1000 and max records to 1-50000, so a scheduled run cannot walk an unbounded table.
+Bulk sync only runs when the user table path is enabled and has a table plus lookup fields.
 
 Recommended preview workflow:
 

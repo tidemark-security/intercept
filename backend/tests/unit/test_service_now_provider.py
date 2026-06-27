@@ -133,6 +133,20 @@ def _cmdb_record(**overrides: object) -> dict[str, object]:
     return record
 
 
+class FailingAsyncClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, url: str, params: dict[str, object] | None = None):
+        raise AssertionError("HTTP should not be called")
+
+
 def test_can_enrich_and_build_cache_key() -> None:
     provider = servicenow_provider.__class__()
 
@@ -226,6 +240,38 @@ async def test_cmdb_lookup_uses_deterministic_identifier_precedence(monkeypatch:
     assert result.enrichment_data["privilege_fields"] == {"u_privileged_system": "true"}
 
 
+def test_build_system_result_supports_multiple_criticality_and_privileged_fields() -> None:
+    provider = servicenow_provider.__class__()
+
+    result = provider._build_system_result(  # type: ignore[attr-defined]
+        _cmdb_record(
+            criticality={"display_value": "low"},
+            u_criticality_alt={"display_value": "critical"},
+            u_privileged_system={"value": "false"},
+            u_root_access={"value": "true"},
+        ),
+        cache_key="system:dc01",
+        cfg={
+            "instance_url": "https://example.service-now.com",
+            "cmdb_table": "cmdb_ci",
+            "cmdb_criticality_field": "criticality,u_criticality_alt",
+            "cmdb_privileged_field": "u_privileged_system,u_root_access",
+        },
+        matched_identifier={"source": "hostname", "field": "name", "value": "dc01"},
+    )
+
+    assert result.enrichment_data["is_critical"] is True
+    assert result.enrichment_data["is_privileged"] is True
+    assert result.enrichment_data["criticality_fields"] == {
+        "criticality": "low",
+        "u_criticality_alt": "critical",
+    }
+    assert result.enrichment_data["privilege_fields"] == {
+        "u_privileged_system": "false",
+        "u_root_access": "true",
+    }
+
+
 @pytest.mark.asyncio
 async def test_cmdb_lookup_uses_configured_identifier_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = servicenow_provider.__class__()
@@ -273,6 +319,44 @@ async def test_cmdb_lookup_returns_non_terminal_missing_payload(monkeypatch: pyt
     assert result.enrichment_data["status"] == "not_found"
     assert result.enrichment_data["error"] == "CMDB item not found"
     assert result.aliases == []
+
+
+@pytest.mark.asyncio
+async def test_cmdb_lookup_skips_without_http_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = servicenow_provider.__class__()
+    monkeypatch.setattr("app.services.enrichment.providers.servicenow.httpx.AsyncClient", FailingAsyncClient)
+
+    result = await provider.enrich(
+        db=None,  # type: ignore[arg-type]
+        settings=_settings(**{"enrichment.servicenow.cmdb_table_enabled": "false"}),  # type: ignore[arg-type]
+        item={"type": "system", "hostname": "dc01"},
+        entity_type="alert",
+        entity_id=1,
+    )
+
+    assert result.enrichment_data == {
+        "status": "skipped",
+        "reason": "ServiceNow CMDB table is disabled",
+    }
+
+
+@pytest.mark.asyncio
+async def test_cmdb_lookup_skips_without_http_when_lookup_fields_blank(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = servicenow_provider.__class__()
+    monkeypatch.setattr("app.services.enrichment.providers.servicenow.httpx.AsyncClient", FailingAsyncClient)
+
+    result = await provider.enrich(
+        db=None,  # type: ignore[arg-type]
+        settings=_settings(**{"enrichment.servicenow.cmdb_query_field": ""}),  # type: ignore[arg-type]
+        item={"type": "system", "hostname": "dc01"},
+        entity_type="alert",
+        entity_id=1,
+    )
+
+    assert result.enrichment_data == {
+        "status": "skipped",
+        "reason": "ServiceNow CMDB lookup fields are blank",
+    }
 
 
 @pytest.mark.asyncio

@@ -7,8 +7,8 @@ import { ModalShell } from "@/components/overlays";
 import { Table } from "@/components/data-display/Table";
 import { TextField } from "@/components/forms/TextField";
 import { Toast } from "@/components/feedback/Toast";
-import { Switch } from "@/components/forms/Switch";
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
+import { Switch } from "@tidemark-security/ux";
 import { AdminPageLayout } from "../components/layout/AdminPageLayout";
 import { LinkTemplatesService } from "../types/generated/services/LinkTemplatesService";
 import type { LinkTemplateRead, LinkTemplateCreate, LinkTemplateUpdate } from "../types/generated";
@@ -267,7 +267,7 @@ function AdminLinkTemplates() {
   if (!isAdmin) {
     return (
       <DefaultPageLayout>
-        <div className="container max-w-none flex h-full w-full flex-col items-center justify-center gap-4 bg-default-background">
+        <div className="mx-auto flex h-full w-full max-w-[1536px] flex-col items-center justify-center gap-4 bg-default-background px-6 mobile:px-4">
           <AlertCircle className="text-[48px] text-error text-error-500" />
           <span className="text-heading-2 font-heading-2 text-default-font">
             Access Denied

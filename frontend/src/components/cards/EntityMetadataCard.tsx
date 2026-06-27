@@ -87,13 +87,17 @@ export function EntityMetadataCard({
   const isDarkTheme = resolvedTheme === "dark";
   const resolvedVariant = variant ?? (showTags ? "detail" : "timeline");
   const isTimelineVariant = resolvedVariant === "timeline";
+  const isDetailVariant = resolvedVariant === "detail";
   const isCompactVariant = resolvedVariant === "compact";
+  const useTimelineDensity = isTimelineVariant || isDetailVariant;
   const rootClassName = cn(
     "flex w-full min-w-0 flex-col",
-    isTimelineVariant ? "gap-3" : "gap-4",
+    useTimelineDensity ? "gap-3" : "gap-4",
     isCompactVariant && "gap-2",
-    showTags && "border-b border-solid p-6 mobile:p-4",
-    showTags && (isDarkTheme ? "border-brand-primary" : "border-neutral-1000"),
+    isDetailVariant && cn(
+      "rounded-md border border-solid border-neutral-border px-4 py-3",
+      isDarkTheme ? "bg-neutral-0" : "bg-neutral-50",
+    ),
   );
 
   const currentTags = React.useMemo(() => {
@@ -223,14 +227,14 @@ export function EntityMetadataCard({
 
   const summaryGridClassName = cn(
     "grid w-full min-w-0 gap-x-3 gap-y-4",
-    isTimelineVariant
+    useTimelineDensity
       ? "grid-cols-[repeat(auto-fit,minmax(min(100%,11rem),1fr))]"
       : "grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))]",
     isCompactVariant && "gap-y-2",
   );
   const detailGridClassName = cn(
     "grid w-full min-w-0 border-t border-solid border-neutral-border/70 pt-3",
-    isTimelineVariant
+    useTimelineDensity
       ? "grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-x-3 gap-y-3"
       : "grid-cols-[repeat(auto-fit,minmax(min(100%,16rem),1fr))] gap-x-4 gap-y-3",
     isCompactVariant && "pt-2",
@@ -361,7 +365,7 @@ export function EntityMetadataCard({
         onClick={() => navigate(relatedCaseHref)}
         iconRight={<ArrowRight className="h-3.5 w-3.5" />}
       >
-        Open Parent Case
+        {isAlert ? "Open Linked Case" : "Open Parent Case"}
       </Button>
     </div>
   ) : null;
@@ -412,7 +416,7 @@ export function EntityMetadataCard({
         <MetaField label="Status" icon={null}>
           <State
             state={statusValue}
-            className={cn("w-full", isTimelineVariant && "min-h-6")}
+            className={cn("w-full", useTimelineDensity && "min-h-6")}
           />
         </MetaField>
 
@@ -464,7 +468,7 @@ export function EntityMetadataCard({
 
       {shouldRenderStandaloneFooter ? (
         <TimelineDescriptionBlock
-          variant={showTags ? "metadata" : "timeline"}
+          variant="timeline"
           actionButtons={parentCaseAction}
           tagContent={shouldRenderStandaloneTagRow ? (
             <TagsManager

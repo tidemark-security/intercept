@@ -102,6 +102,7 @@ def _settings(**overrides: object) -> StubSettings:
         "enrichment.servicenow.password": "svc_pass",
         "enrichment.servicenow.table": "sys_user",
         "enrichment.servicenow.fields": "sys_id,user_name,email,name,title,department,company,active",
+        "enrichment.servicenow.user_query_field": "email,user_name",
         "enrichment.servicenow.lookup_query_template": "email={value}^ORuser_name={value}",
         "enrichment.servicenow.bulk_sync_query": "active=true",
         "enrichment.servicenow.page_size": 2,
@@ -142,12 +143,20 @@ async def test_enrich_fetches_servicenow_user(monkeypatch: pytest.MonkeyPatch) -
     assert result.enrichment_data["is_vip"] is True
     assert result.enrichment_data["is_privileged"] is True
     assert result.enrichment_data["mapped_fields"] == {
-        "vip": {"field": "vip", "value": "true", "mapped": True},
-        "privileged": {"field": "u_privileged_user", "value": "1", "mapped": True},
+        "vip": {"field": "vip", "value": "true", "values": {"vip": "true"}, "mapped": True},
+        "privileged": {
+            "field": "u_privileged_user",
+            "value": "1",
+            "values": {"u_privileged_user": "1"},
+            "mapped": True,
+        },
     }
     alias_values = {alias.alias_value for alias in result.aliases}
     assert {"sn-user-1", "alice", "alice@example.com", "alice analyst"} <= alias_values
-    assert FakeAsyncClient.requests[0]["sysparm_query"] == "email=alice@example.com^ORuser_name=alice@example.com"
+    assert (
+        FakeAsyncClient.requests[0]["sysparm_query"]
+        == "email=alice@example.com^ORuser_name=alice@example.com^active=true"
+    )
     assert FakeAsyncClient.requests[0]["sysparm_limit"] == 2
 
 
@@ -262,6 +271,88 @@ def test_build_result_preserves_false_vip_and_privileged_values() -> None:
     assert result.enrichment_data["mapped_fields"]["privileged"]["mapped"] is False
 
 
+def test_build_result_supports_multiple_vip_and_privileged_fields() -> None:
+    provider = servicenow_provider.__class__()
+
+    result = provider._build_result(  # type: ignore[attr-defined]
+        {
+            "sys_id": "sn-user-5",
+            "user_name": "erin",
+            "email": "erin@example.com",
+            "name": "Erin Escalation",
+            "vip": "false",
+            "u_vip_alt": "true",
+            "u_privileged_user": "0",
+            "u_admin": "yes",
+        },
+        cache_key="user:erin@example.com",
+        cfg={
+            "instance_url": "https://example.service-now.com",
+            "table": "sys_user",
+            "user_vip_field": "vip,u_vip_alt",
+            "user_privileged_field": "u_privileged_user,u_admin",
+        },
+        matched_identifier="erin@example.com",
+    )
+
+    assert result.enrichment_data["is_vip"] is True
+    assert result.enrichment_data["is_privileged"] is True
+    assert result.enrichment_data["mapped_fields"]["vip"]["values"] == {
+        "vip": "false",
+        "u_vip_alt": "true",
+    }
+    assert result.enrichment_data["mapped_fields"]["privileged"]["values"] == {
+        "u_privileged_user": "0",
+        "u_admin": "yes",
+    }
+
+
+@pytest.mark.asyncio
+async def test_user_lookup_skips_without_http_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FailingAsyncClient(FakeAsyncClient):
+        async def get(self, url: str, params: dict[str, object] | None = None):
+            raise AssertionError("HTTP should not be called")
+
+    monkeypatch.setattr("app.services.enrichment.providers.servicenow.httpx.AsyncClient", FailingAsyncClient)
+    provider = servicenow_provider.__class__()
+
+    result = await provider.enrich(
+        db=None,  # type: ignore[arg-type]
+        settings=_settings(**{"enrichment.servicenow.user_table_enabled": "false"}),  # type: ignore[arg-type]
+        item={"type": "internal_actor", "user_id": "alice@example.com"},
+        entity_type="alert",
+        entity_id=1,
+    )
+
+    assert result.enrichment_data == {
+        "status": "skipped",
+        "reason": "ServiceNow user table is disabled",
+    }
+
+
+@pytest.mark.asyncio
+async def test_user_lookup_skips_without_http_when_lookup_fields_blank(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FailingAsyncClient(FakeAsyncClient):
+        async def get(self, url: str, params: dict[str, object] | None = None):
+            raise AssertionError("HTTP should not be called")
+
+    monkeypatch.setattr("app.services.enrichment.providers.servicenow.httpx.AsyncClient", FailingAsyncClient)
+    provider = servicenow_provider.__class__()
+
+    result = await provider.enrich(
+        db=None,  # type: ignore[arg-type]
+        settings=_settings(**{"enrichment.servicenow.user_query_field": ""}),  # type: ignore[arg-type]
+        item={"type": "internal_actor", "user_id": "alice@example.com"},
+        entity_type="alert",
+        entity_id=1,
+    )
+
+    assert result.enrichment_data == {
+        "status": "skipped",
+        "reason": "ServiceNow user lookup fields are blank",
+    }
+
+
 @pytest.mark.asyncio
 async def test_bulk_sync_is_bounded_by_configured_max_records(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeAsyncClient.requests = []
@@ -281,6 +372,18 @@ async def test_bulk_sync_is_bounded_by_configured_max_records(monkeypatch: pytes
     assert [request["sysparm_limit"] for request in FakeAsyncClient.requests] == [2, 1]
     assert [request["sysparm_offset"] for request in FakeAsyncClient.requests] == [0, 2]
     assert all(request["sysparm_query"] == "active=true" for request in FakeAsyncClient.requests)
+
+
+@pytest.mark.asyncio
+async def test_bulk_sync_skips_when_user_table_disabled() -> None:
+    provider = servicenow_provider.__class__()
+
+    results = await provider.bulk_sync(
+        db=None,  # type: ignore[arg-type]
+        settings=_settings(**{"enrichment.servicenow.user_table_enabled": False}),  # type: ignore[arg-type]
+    )
+
+    assert results == []
 
 
 @pytest.mark.asyncio

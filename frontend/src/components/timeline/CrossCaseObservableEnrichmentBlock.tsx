@@ -17,7 +17,7 @@ import type { AlertStatus } from '@/types/generated/models/AlertStatus';
 import type { CaseStatus } from '@/types/generated/models/CaseStatus';
 import type { Priority as PriorityType } from '@/types/generated/models/Priority';
 import type { TaskStatus } from '@/types/generated/models/TaskStatus';
-import { Bell, GitBranch, List, NotebookPen, Search } from 'lucide-react';
+import { Bell, CheckSquare, GitBranch, NotebookPen, Search } from 'lucide-react';
 
 type CrossCasePayload = {
   observable_type?: string;
@@ -43,7 +43,7 @@ function getEntityIcon(entityType?: string) {
     case 'case':
       return <NotebookPen className="h-3.5 w-3.5 text-subtext-color" />;
     case 'task':
-      return <List className="h-3.5 w-3.5 text-subtext-color" />;
+      return <CheckSquare className="h-3.5 w-3.5 text-subtext-color" />;
     default:
       return null;
   }

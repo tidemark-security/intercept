@@ -128,7 +128,7 @@ export default function CaseTemplatesPage() {
 
   return (
     <DefaultPageLayout withContainer>
-      <div className="container max-w-none flex h-full w-full flex-col items-start gap-6 py-8">
+      <div className="mx-auto flex h-full w-full max-w-[1536px] flex-col items-start gap-6 px-6 py-8 mobile:px-4">
         <div className="flex w-full flex-wrap items-center justify-between gap-3">
           <div className="flex flex-col gap-1">
             <span className="text-heading-1 font-heading-1 text-default-font">Case Templates</span>

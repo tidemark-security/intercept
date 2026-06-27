@@ -9,10 +9,12 @@ export interface ServiceNowConfigureRequest {
   auth_type: "basic" | "oauth_password";
   oauth_client_id: string;
   oauth_client_secret: string;
+  user_table_enabled: boolean;
   user_table: string;
   user_query_field: string;
   user_vip_field: string;
   user_privileged_field: string;
+  cmdb_table_enabled: boolean;
   cmdb_table: string;
   cmdb_query_field: string;
   cmdb_criticality_field: string;

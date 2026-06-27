@@ -129,7 +129,7 @@ export default function AdminQueueStatus() {
   if (!isAdmin) {
     return (
       <DefaultPageLayout>
-        <div className="container max-w-none flex h-full w-full flex-col items-center justify-center gap-4 bg-default-background">
+        <div className="mx-auto flex h-full w-full max-w-[1536px] flex-col items-center justify-center gap-4 bg-default-background px-6 mobile:px-4">
           <AlertCircle className="text-[48px] text-error text-error-500" />
           <span className="text-heading-2 font-heading-2 text-default-font">
             Access Denied

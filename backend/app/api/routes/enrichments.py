@@ -295,6 +295,7 @@ async def configure_service_now(
             "username": normalized["username"],
             "auth_type": normalized["auth_type"],
             "oauth_client_id": normalized["oauth_client_id"],
+            "user_table_enabled": "true" if normalized["user_table_enabled"] else "false",
             "table": normalized["table"],
             "user_query_field": request.user_query_field.strip(),
             "active_only": "true" if request.active_only else "false",
@@ -303,6 +304,7 @@ async def configure_service_now(
             "bulk_sync_query": normalized["bulk_sync_query"],
             "user_vip_field": normalized["user_vip_field"],
             "user_privileged_field": normalized["user_privileged_field"],
+            "cmdb_table_enabled": "true" if normalized["cmdb_table_enabled"] else "false",
             "cmdb_table": normalized["cmdb_table"],
             "cmdb_query_field": normalized["cmdb_query_field"],
             "cmdb_fields": normalized["cmdb_fields"],
@@ -315,7 +317,7 @@ async def configure_service_now(
             setting_values["password"] = normalized["password"]
         if request.oauth_client_secret:
             setting_values["oauth_client_secret"] = normalized["oauth_client_secret"]
-        boolean_keys = {"enabled", "active_only"}
+        boolean_keys = {"enabled", "active_only", "user_table_enabled", "cmdb_table_enabled"}
         number_keys = {"ttl_seconds"}
         secret_keys = {"password", "oauth_client_secret"}
 
@@ -346,10 +348,25 @@ async def configure_service_now(
 
 
 @admin_router.post("/service-now/preview", response_model=ServiceNowPreviewResponse)
-async def preview_service_now(request: ServiceNowPreviewRequest):
+async def preview_service_now(
+    request: ServiceNowPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+):
     try:
+        settings_service = SettingsService(db)  # type: ignore[arg-type]
+        request_data = request.model_dump(exclude={"item"})
+        for key_suffix in ("password", "oauth_client_secret"):
+            if request_data.get(key_suffix):
+                continue
+            existing = await settings_service.get_setting(
+                f"enrichment.servicenow.{key_suffix}",
+                include_secret=True,
+            )
+            if existing and existing.value:
+                request_data[key_suffix] = existing.value
+
         result = await servicenow_provider.preview(
-            config=request.model_dump(exclude={"item"}),
+            config=request_data,
             item=request.item,
         )
         return ServiceNowPreviewResponse(

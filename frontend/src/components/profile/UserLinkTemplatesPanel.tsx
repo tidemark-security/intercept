@@ -5,10 +5,10 @@ import { DropdownMenu } from "@/components/overlays/DropdownMenu";
 import { IconButton } from "@/components/buttons/IconButton";
 import { IconWithBackground } from "@/components/misc/IconWithBackground";
 import { ModalShell } from "@/components/overlays";
-import { Switch } from "@/components/forms/Switch";
 import { Table } from "@/components/data-display/Table";
 import { TextField } from "@/components/forms/TextField";
 import { useToast } from "@/contexts/ToastContext";
+import { Switch } from "@tidemark-security/ux";
 import {
   resolvedLinkTemplateQueryKey,
   userLinkTemplatePreferenceQueryKey,

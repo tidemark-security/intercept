@@ -2411,10 +2411,12 @@ class ServiceNowConfigureRequest(SQLModel):
     auth_type: str = "basic"
     oauth_client_id: str = ""
     oauth_client_secret: str = ""
+    user_table_enabled: bool = True
     user_table: str = "sys_user"
     user_query_field: str = "user_name"
     user_vip_field: str = "vip"
     user_privileged_field: str = "u_privileged_user"
+    cmdb_table_enabled: bool = True
     cmdb_table: str = "cmdb_ci"
     cmdb_query_field: str = "name"
     cmdb_criticality_field: str = "criticality"

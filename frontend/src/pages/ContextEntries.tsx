@@ -8,12 +8,12 @@ import { Badge } from '@/components/data-display/Badge';
 import { RelativeTime } from '@/components/data-display/RelativeTime';
 import { DateTimeManager } from '@/components/forms/DateTimeManager';
 import { MarkdownInput } from '@/components/forms/MarkdownInput';
-import { Switch } from '@/components/forms/Switch';
 import { TextField } from '@/components/forms/TextField';
 import { DefaultPageLayout } from '@/components/layout/DefaultPageLayout';
 import { Drawer } from '@/components/overlays/Drawer';
 import { useSession } from '@/contexts/sessionContext';
 import { useToast } from '@/contexts/ToastContext';
+import { Switch } from '@tidemark-security/ux';
 import {
   ContextCriterion,
   ContextCriterionType,
@@ -192,7 +192,7 @@ export default function ContextEntries() {
 
   return (
     <DefaultPageLayout withContainer>
-      <div className="container max-w-none flex h-full w-full flex-col items-start gap-6 py-8">
+      <div className="mx-auto flex h-full w-full max-w-[1536px] flex-col items-start gap-6 px-6 py-8 mobile:px-4">
         <div className="flex w-full flex-wrap items-start justify-between gap-4">
           <div className="flex min-w-0 flex-col gap-1">
             <span className="text-heading-1 font-heading-1 text-default-font">Context Entries</span>

@@ -21,7 +21,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { useTimezonePreference } from '@/contexts/TimezoneContext';
 import { useReportsURLState, ReportTabType } from '@/hooks/useReportsURLState';
 import { formatAbsoluteTime, getHourOfDayForPreference } from '@/utils/dateFormatters';
-import { Activity, AlertTriangle, Bot, CheckCircle, ChevronLeft, ChevronRight, Clock, ExternalLink, MessageSquare, ThumbsDown, ThumbsUp, TrendingUp, Users } from 'lucide-react';
+import { Activity, AlertTriangle, Bell, Bot, CheckCircle, ChevronLeft, ChevronRight, Clock, ExternalLink, MessageSquare, NotebookPen, ThumbsDown, ThumbsUp, TrendingUp, Users } from 'lucide-react';
 import type { ChatFeedbackMessageDetail, MessageFeedback } from '@/types/generated';
 
 type TabType = ReportTabType;
@@ -268,7 +268,7 @@ function Reports() {
   const tabs = [
     { id: 'soc' as TabType, label: 'SOC Summary', icon: <Activity /> },
     { id: 'analyst' as TabType, label: 'Analyst Performance', icon: <Users />, adminOnly: true },
-    { id: 'alert' as TabType, label: 'Alert Performance', icon: <AlertTriangle /> },
+    { id: 'alert' as TabType, label: 'Alert Performance', icon: <Bell /> },
     { id: 'ai-triage' as TabType, label: 'AI Triage Accuracy', icon: <Bot /> },
     { id: 'ai-chat' as TabType, label: 'AI Chat Feedback', icon: <MessageSquare /> },
   ];
@@ -323,7 +323,7 @@ function Reports() {
             } : undefined}
           />
           <StatCard
-            icon={<AlertTriangle />}
+            icon={<NotebookPen />}
             label="Open Cases"
             value={summary.open_cases ?? 0}
             subtext={`${summary.open_tasks ?? 0} open tasks`}
@@ -1129,7 +1129,7 @@ function Reports() {
 
   return (
     <DefaultPageLayout withContainer>
-      <div className="container max-w-none flex h-full w-full flex-col items-start gap-6 py-8">
+      <div className="mx-auto flex h-full w-full max-w-[1536px] flex-col items-start gap-6 px-6 py-8 mobile:px-4">
         {/* Header */}
         <div className="flex w-full items-center justify-between">
           <div className="flex flex-col gap-1">

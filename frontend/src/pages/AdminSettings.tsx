@@ -5,13 +5,14 @@ import { AdminPageLayout } from "../components/layout/AdminPageLayout";
 import { ModalShell } from "@/components/overlays";
 import { TextField } from "@/components/forms/TextField";
 import { TextArea } from "@/components/forms/TextArea";
+import { Select } from "@/components/forms/Select";
 import { Button } from "@/components/buttons/Button";
-import { Switch } from "@/components/forms/Switch";
 import { TagsManager } from "@/components/forms/TagsManager";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
 import { cn } from "@/utils/cn";
+import { Switch } from "@tidemark-security/ux";
 import { LangflowConnectionStatus } from "@/components/admin/LangflowConnectionStatus";
 import { LangflowSetupStatus } from "@/components/admin/LangflowSetupStatus";
 import {
@@ -88,10 +89,12 @@ const SERVICE_NOW_DEFAULT_CONFIG: ServiceNowConfigureRequest = {
   auth_type: "basic",
   oauth_client_id: "",
   oauth_client_secret: "",
+  user_table_enabled: true,
   user_table: "sys_user",
   user_query_field: "user_name",
   user_vip_field: "vip",
   user_privileged_field: "u_privileged_user",
+  cmdb_table_enabled: true,
   cmdb_table: "cmdb_ci",
   cmdb_query_field: "name",
   cmdb_criticality_field: "criticality",
@@ -168,10 +171,12 @@ const CUSTOM_KEYS = new Set([
   "enrichment.servicenow.auth_type",
   "enrichment.servicenow.oauth_client_id",
   "enrichment.servicenow.oauth_client_secret",
+  "enrichment.servicenow.user_table_enabled",
   "enrichment.servicenow.table",
   "enrichment.servicenow.user_query_field",
   "enrichment.servicenow.user_vip_field",
   "enrichment.servicenow.user_privileged_field",
+  "enrichment.servicenow.cmdb_table_enabled",
   "enrichment.servicenow.cmdb_table",
   "enrichment.servicenow.cmdb_query_field",
   "enrichment.servicenow.cmdb_criticality_field",
@@ -400,8 +405,6 @@ function AdminSettings() {
   const [serviceNowPreviewItemType, setServiceNowPreviewItemType] =
     useState<ServiceNowPreviewItemType>("internal_actor");
   const [serviceNowPreviewLookup, setServiceNowPreviewLookup] = useState("");
-  const [serviceNowPreviewPassword, setServiceNowPreviewPassword] =
-    useState("");
   const [serviceNowPreviewResult, setServiceNowPreviewResult] =
     useState<ServiceNowPreviewResponse | null>(null);
   const [serviceNowPreviewStatus, setServiceNowPreviewStatus] = useState<{
@@ -815,30 +818,26 @@ function AdminSettings() {
       getSetting("enrichment.servicenow.oauth_client_id") ||
       SERVICE_NOW_DEFAULT_CONFIG.oauth_client_id,
     oauth_client_secret: "",
-    user_table:
-      getSetting("enrichment.servicenow.table") ||
-      SERVICE_NOW_DEFAULT_CONFIG.user_table,
-    user_query_field:
-      getSetting("enrichment.servicenow.user_query_field") ||
-      SERVICE_NOW_DEFAULT_CONFIG.user_query_field,
-    user_vip_field:
-      getSetting("enrichment.servicenow.user_vip_field") ||
-      SERVICE_NOW_DEFAULT_CONFIG.user_vip_field,
-    user_privileged_field:
-      getSetting("enrichment.servicenow.user_privileged_field") ||
-      SERVICE_NOW_DEFAULT_CONFIG.user_privileged_field,
-    cmdb_table:
-      getSetting("enrichment.servicenow.cmdb_table") ||
-      SERVICE_NOW_DEFAULT_CONFIG.cmdb_table,
-    cmdb_query_field:
-      getSetting("enrichment.servicenow.cmdb_query_field") ||
-      SERVICE_NOW_DEFAULT_CONFIG.cmdb_query_field,
-    cmdb_criticality_field:
-      getSetting("enrichment.servicenow.cmdb_criticality_field") ||
-      SERVICE_NOW_DEFAULT_CONFIG.cmdb_criticality_field,
-    cmdb_privileged_field:
-      getSetting("enrichment.servicenow.cmdb_privileged_field") ||
-      SERVICE_NOW_DEFAULT_CONFIG.cmdb_privileged_field,
+    user_table_enabled: parseBooleanValue(
+      getSetting("enrichment.servicenow.user_table_enabled") || "true",
+    ),
+    user_table: getSetting("enrichment.servicenow.table"),
+    user_query_field: getSetting("enrichment.servicenow.user_query_field"),
+    user_vip_field: getSetting("enrichment.servicenow.user_vip_field"),
+    user_privileged_field: getSetting(
+      "enrichment.servicenow.user_privileged_field",
+    ),
+    cmdb_table_enabled: parseBooleanValue(
+      getSetting("enrichment.servicenow.cmdb_table_enabled") || "true",
+    ),
+    cmdb_table: getSetting("enrichment.servicenow.cmdb_table"),
+    cmdb_query_field: getSetting("enrichment.servicenow.cmdb_query_field"),
+    cmdb_criticality_field: getSetting(
+      "enrichment.servicenow.cmdb_criticality_field",
+    ),
+    cmdb_privileged_field: getSetting(
+      "enrichment.servicenow.cmdb_privileged_field",
+    ),
     active_only: parseBooleanValue(
       getSetting("enrichment.servicenow.active_only") || "true",
     ),
@@ -883,10 +882,12 @@ function AdminSettings() {
       auth_type: serviceNowDraft.auth_type,
       oauth_client_id: serviceNowDraft.oauth_client_id.trim(),
       oauth_client_secret: serviceNowDraft.oauth_client_secret,
+      user_table_enabled: serviceNowDraft.user_table_enabled,
       user_table: serviceNowDraft.user_table.trim(),
       user_query_field: serviceNowDraft.user_query_field.trim(),
       user_vip_field: serviceNowDraft.user_vip_field.trim(),
       user_privileged_field: serviceNowDraft.user_privileged_field.trim(),
+      cmdb_table_enabled: serviceNowDraft.cmdb_table_enabled,
       cmdb_table: serviceNowDraft.cmdb_table.trim(),
       cmdb_query_field: serviceNowDraft.cmdb_query_field.trim(),
       cmdb_criticality_field: serviceNowDraft.cmdb_criticality_field.trim(),
@@ -926,7 +927,6 @@ function AdminSettings() {
   const openServiceNowPreviewModal = () => {
     setServiceNowPreviewItemType("internal_actor");
     setServiceNowPreviewLookup("");
-    setServiceNowPreviewPassword("");
     setServiceNowPreviewResult(null);
     setServiceNowPreviewStatus(null);
     setShowServiceNowPreviewModal(true);
@@ -937,11 +937,10 @@ function AdminSettings() {
       return;
     }
     setShowServiceNowPreviewModal(false);
-    setServiceNowPreviewPassword("");
   };
 
   const runServiceNowPreview = () => {
-    const config = getServiceNowConfigFromSettings(serviceNowPreviewPassword);
+    const config = getServiceNowConfigFromSettings("");
     if (!serviceNowPreviewLookup.trim()) {
       setServiceNowPreviewStatus({
         variant: "warning",
@@ -951,12 +950,31 @@ function AdminSettings() {
       });
       return;
     }
-    if (!config.password.trim()) {
+    if (
+      serviceNowPreviewItemType === "internal_actor" &&
+      (!config.user_table_enabled ||
+        !config.user_table.trim() ||
+        !config.user_query_field.trim())
+    ) {
       setServiceNowPreviewStatus({
         variant: "warning",
-        title: "ServiceNow password required",
+        title: "User table preview skipped",
         description:
-          "Enter the ServiceNow API password for this live preview request.",
+          "Enable the user table and save a user table plus lookup fields before previewing a user lookup.",
+      });
+      return;
+    }
+    if (
+      serviceNowPreviewItemType === "system" &&
+      (!config.cmdb_table_enabled ||
+        !config.cmdb_table.trim() ||
+        !config.cmdb_query_field.trim())
+    ) {
+      setServiceNowPreviewStatus({
+        variant: "warning",
+        title: "CMDB table preview skipped",
+        description:
+          "Enable the CMDB table and save a CMDB table plus lookup fields before previewing a system lookup.",
       });
       return;
     }
@@ -1328,6 +1346,18 @@ function AdminSettings() {
     (getSetting("enrichment.servicenow.auth_type") !== "oauth_password" ||
       (Boolean(getSetting("enrichment.servicenow.oauth_client_id")) &&
         Boolean(getSetting("enrichment.servicenow.oauth_client_secret"))));
+  const serviceNowUserTableEnabled = parseBooleanValue(
+    getSetting("enrichment.servicenow.user_table_enabled") || "true",
+  );
+  const serviceNowCmdbTableEnabled = parseBooleanValue(
+    getSetting("enrichment.servicenow.cmdb_table_enabled") || "true",
+  );
+  const formatServiceNowPathSummary = (
+    enabled: boolean,
+    table: string,
+    lookupFields: string,
+  ) =>
+    `${enabled ? "Enabled" : "Disabled"}: ${table || "Blank"}.${lookupFields || "Blank"}`;
   const anyEnabledDirectoryConfigured =
     (entraEnabled && entraConfigured) ||
     (googleWorkspaceEnabled && googleWorkspaceConfigured) ||
@@ -1486,7 +1516,7 @@ function AdminSettings() {
   if (!isAdmin) {
     return (
       <DefaultPageLayout withContainer>
-        <div className="container max-w-none flex h-full w-full flex-col items-center justify-center gap-4">
+        <div className="mx-auto flex h-full w-full max-w-[1536px] flex-col items-center justify-center gap-4 px-6 mobile:px-4">
           <AlertCircle className="text-[48px] text-error-500" />
           <span className="text-heading-2 font-heading-2 text-default-font">
             Access Denied
@@ -2852,11 +2882,19 @@ function AdminSettings() {
                         />
                         <ServiceNowSummaryField
                           label="User lookup"
-                          value={`${getSetting("enrichment.servicenow.table") || SERVICE_NOW_DEFAULT_CONFIG.user_table}.${getSetting("enrichment.servicenow.user_query_field") || SERVICE_NOW_DEFAULT_CONFIG.user_query_field}`}
+                          value={formatServiceNowPathSummary(
+                            serviceNowUserTableEnabled,
+                            getSetting("enrichment.servicenow.table"),
+                            getSetting("enrichment.servicenow.user_query_field"),
+                          )}
                         />
                         <ServiceNowSummaryField
                           label="CMDB lookup"
-                          value={`${getSetting("enrichment.servicenow.cmdb_table") || SERVICE_NOW_DEFAULT_CONFIG.cmdb_table}.${getSetting("enrichment.servicenow.cmdb_query_field") || SERVICE_NOW_DEFAULT_CONFIG.cmdb_query_field}`}
+                          value={formatServiceNowPathSummary(
+                            serviceNowCmdbTableEnabled,
+                            getSetting("enrichment.servicenow.cmdb_table"),
+                            getSetting("enrichment.servicenow.cmdb_query_field"),
+                          )}
                         />
                       </div>
                     </div>
@@ -3375,24 +3413,24 @@ function AdminSettings() {
                   }
                   type="password"
                 />
-                <label className="flex flex-col gap-2">
-                  <span className="text-caption-bold font-caption-bold text-subtext-color">
-                    Authentication
-                  </span>
-                  <select
-                    className="h-10 rounded-md border border-neutral-border bg-default-background px-3 text-body font-body text-default-font"
-                    value={serviceNowDraft.auth_type}
-                    onChange={(event) =>
-                      updateServiceNowDraft(
-                        "auth_type",
-                        event.target.value as "basic" | "oauth_password",
-                      )
-                    }
-                  >
-                    <option value="basic">Basic username/password</option>
-                    <option value="oauth_password">OAuth password grant</option>
-                  </select>
-                </label>
+                <Select
+                  className="w-full"
+                  label="Authentication"
+                  value={serviceNowDraft.auth_type}
+                  onValueChange={(value) =>
+                    updateServiceNowDraft(
+                      "auth_type",
+                      value as "basic" | "oauth_password",
+                    )
+                  }
+                >
+                  <Select.Item value="basic">
+                    Basic username/password
+                  </Select.Item>
+                  <Select.Item value="oauth_password">
+                    OAuth password grant
+                  </Select.Item>
+                </Select>
                 {serviceNowDraft.auth_type === "oauth_password" && (
                   <>
                     <ServiceNowDraftField
@@ -3432,40 +3470,44 @@ function AdminSettings() {
 
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-neutral-50 p-4">
-                  <span className="text-body-bold font-body-bold text-default-font">
-                    User Table
-                  </span>
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="text-body-bold font-body-bold text-default-font">
+                      User Table
+                    </span>
+                    <ServiceNowTableToggle
+                      checked={serviceNowDraft.user_table_enabled}
+                      onCheckedChange={(checked) =>
+                        updateServiceNowDraft("user_table_enabled", checked)
+                      }
+                    />
+                  </div>
                   <ServiceNowDraftField
                     label="Table"
                     value={serviceNowDraft.user_table}
                     onChange={(value) =>
                       updateServiceNowDraft("user_table", value)
                     }
-                    placeholder="sys_user"
                   />
                   <ServiceNowDraftField
-                    label="Lookup Field"
+                    label="Lookup Fields"
                     value={serviceNowDraft.user_query_field}
                     onChange={(value) =>
                       updateServiceNowDraft("user_query_field", value)
                     }
-                    placeholder="user_name"
                   />
                   <ServiceNowDraftField
-                    label="VIP Field"
+                    label="VIP Fields"
                     value={serviceNowDraft.user_vip_field}
                     onChange={(value) =>
                       updateServiceNowDraft("user_vip_field", value)
                     }
-                    placeholder="vip"
                   />
                   <ServiceNowDraftField
-                    label="Privileged User Field"
+                    label="Privileged User Fields"
                     value={serviceNowDraft.user_privileged_field}
                     onChange={(value) =>
                       updateServiceNowDraft("user_privileged_field", value)
                     }
-                    placeholder="u_privileged_user"
                   />
                   <BooleanSettingField
                     label="Active Users Only"
@@ -3478,40 +3520,44 @@ function AdminSettings() {
                 </div>
 
                 <div className="flex flex-col gap-4 rounded-md border border-neutral-border bg-neutral-50 p-4">
-                  <span className="text-body-bold font-body-bold text-default-font">
-                    CMDB Table
-                  </span>
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="text-body-bold font-body-bold text-default-font">
+                      CMDB Table
+                    </span>
+                    <ServiceNowTableToggle
+                      checked={serviceNowDraft.cmdb_table_enabled}
+                      onCheckedChange={(checked) =>
+                        updateServiceNowDraft("cmdb_table_enabled", checked)
+                      }
+                    />
+                  </div>
                   <ServiceNowDraftField
                     label="Table"
                     value={serviceNowDraft.cmdb_table}
                     onChange={(value) =>
                       updateServiceNowDraft("cmdb_table", value)
                     }
-                    placeholder="cmdb_ci"
                   />
                   <ServiceNowDraftField
-                    label="Lookup Field"
+                    label="Lookup Fields"
                     value={serviceNowDraft.cmdb_query_field}
                     onChange={(value) =>
                       updateServiceNowDraft("cmdb_query_field", value)
                     }
-                    placeholder="name"
                   />
                   <ServiceNowDraftField
-                    label="Criticality Field"
+                    label="Criticality Fields"
                     value={serviceNowDraft.cmdb_criticality_field}
                     onChange={(value) =>
                       updateServiceNowDraft("cmdb_criticality_field", value)
                     }
-                    placeholder="criticality"
                   />
                   <ServiceNowDraftField
-                    label="Privileged System Field"
+                    label="Privileged System Fields"
                     value={serviceNowDraft.cmdb_privileged_field}
                     onChange={(value) =>
                       updateServiceNowDraft("cmdb_privileged_field", value)
                     }
-                    placeholder="u_privileged_system"
                   />
                 </div>
               </div>
@@ -3542,7 +3588,8 @@ function AdminSettings() {
               disabled={
                 !serviceNowDraft.instance_url.trim() ||
                 !serviceNowDraft.username.trim() ||
-                !serviceNowDraft.password.trim()
+                (!serviceNowDraft.password.trim() &&
+                  !getSetting("enrichment.servicenow.password"))
               }
               icon={<Save className="text-[16px]" />}
             >
@@ -3575,7 +3622,7 @@ function AdminSettings() {
 
           <div className="min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-neutral-border bg-default-background p-4">
             <div className="flex flex-col gap-5">
-              <div className="grid gap-4 md:grid-cols-[180px_1fr_1fr]">
+              <div className="grid gap-4 md:grid-cols-[180px_1fr]">
                 <div className="flex flex-col gap-2">
                   <span className="text-body-bold font-body-bold text-default-font">
                     Item Type
@@ -3621,13 +3668,6 @@ function AdminSettings() {
                       : "workstation-42 or 10.0.0.42"
                   }
                 />
-                <ServiceNowDraftField
-                  label="Password for Preview"
-                  value={serviceNowPreviewPassword}
-                  onChange={setServiceNowPreviewPassword}
-                  placeholder="ServiceNow API password"
-                  type="password"
-                />
               </div>
 
               <div className="flex justify-end">
@@ -3637,8 +3677,7 @@ function AdminSettings() {
                   loading={serviceNowPreviewMutation.isPending}
                   disabled={
                     serviceNowPreviewMutation.isPending ||
-                    !serviceNowPreviewLookup.trim() ||
-                    !serviceNowPreviewPassword.trim()
+                    !serviceNowPreviewLookup.trim()
                   }
                   icon={<Search className="text-[16px]" />}
                 >
@@ -3940,6 +3979,25 @@ function ServiceNowDraftField({
         type={type}
       />
     </TextField>
+  );
+}
+
+function ServiceNowTableToggle({
+  checked,
+  onCheckedChange,
+}: {
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex items-center gap-2 text-caption-bold font-caption-bold text-subtext-color">
+      <Switch
+        className="shrink-0"
+        checked={checked}
+        label
+        onCheckedChange={onCheckedChange}
+      />
+    </label>
   );
 }
 
@@ -4722,6 +4780,7 @@ interface BooleanSettingFieldProps {
   localOnly?: boolean;
   envOverride?: boolean;
   readOnly?: boolean;
+  showSwitchLabel?: boolean;
 }
 
 interface BulkSyncScheduleFieldsProps {
@@ -4823,6 +4882,7 @@ function BooleanSettingField({
   localOnly = false,
   envOverride = false,
   readOnly = false,
+  showSwitchLabel = true,
 }: BooleanSettingFieldProps) {
   const isDisabled = disabled || readOnly;
 
@@ -4854,6 +4914,7 @@ function BooleanSettingField({
       <Switch
         className="shrink-0"
         checked={value}
+        label={showSwitchLabel}
         onCheckedChange={handleChange}
         disabled={isDisabled}
       />

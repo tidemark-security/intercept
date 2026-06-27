@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bell, List, NotebookPen } from 'lucide-react';
+import { Bell, CheckSquare, NotebookPen } from 'lucide-react';
 import { ToggleGroup } from '@/components/buttons/ToggleGroup';
 import { DateRangePicker, type DateRangeValue } from '@/components/forms/DateRangePicker';
 import { TagsManager } from '@/components/forms/TagsManager';
@@ -48,7 +48,7 @@ export function SearchFiltersBar({
           <ToggleGroup.Item icon={<NotebookPen />} value="case" className="w-auto">
             Cases
           </ToggleGroup.Item>
-          <ToggleGroup.Item icon={<List />} value="task" className="w-auto">
+          <ToggleGroup.Item icon={<CheckSquare />} value="task" className="w-auto">
             Tasks
           </ToggleGroup.Item>
         </ToggleGroup>

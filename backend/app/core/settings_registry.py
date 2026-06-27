@@ -910,9 +910,16 @@ _register(
         default="sys_user",
     ),
     _def(
+        "enrichment.servicenow.user_table_enabled",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Enable ServiceNow user table enrichment lookups",
+        default=True,
+    ),
+    _def(
         "enrichment.servicenow.user_query_field",
         category="enrichment",
-        description="ServiceNow user table field matched by the simplified setup form",
+        description="Comma-separated ServiceNow user table fields matched by the simplified setup form",
         default="user_name",
     ),
     _def(
@@ -986,9 +993,16 @@ _register(
         default="cmdb_ci",
     ),
     _def(
+        "enrichment.servicenow.cmdb_table_enabled",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Enable ServiceNow CMDB table enrichment lookups",
+        default=True,
+    ),
+    _def(
         "enrichment.servicenow.cmdb_query_field",
         category="enrichment",
-        description="ServiceNow CMDB field matched against timeline system identifiers",
+        description="Comma-separated ServiceNow CMDB fields matched against timeline system identifiers",
         default="name",
     ),
     _def(

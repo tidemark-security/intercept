@@ -70,13 +70,57 @@ class ServiceNowProvider(EnrichmentProvider):
                 return value.strip().lower()
         return ""
 
-    def _split_fields(self, value: Any, default: str) -> List[str]:
+    def _parse_bool(self, value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "y", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "n", "off", ""}:
+                return False
+        return bool(value)
+
+    def _config_string(self, config: Dict[str, Any], *keys: str, default: str = "") -> str:
+        for key in keys:
+            if key in config and config[key] is not None:
+                return str(config[key]).strip()
+        return default
+
+    def _split_fields(self, value: Any, default: str = "") -> List[str]:
         fields = [
             field.strip()
-            for field in str(value or default).split(",")
+            for field in str(value if value is not None else default).split(",")
             if field.strip()
         ]
-        return list(dict.fromkeys(fields)) or [default]
+        return list(dict.fromkeys(fields))
+
+    def _join_fields(self, fields: List[str]) -> str:
+        return ",".join(fields)
+
+    def _build_or_lookup_query(self, fields: List[str], identifier: str, *, active_only: bool = False) -> str:
+        escaped = self._escape_query_value(identifier)
+        query = "^OR".join(f"{field}={escaped}" for field in fields)
+        if active_only:
+            query = f"{query}^active=true"
+        return query
+
+    def _build_skip_result(self, item: Dict[str, Any], reason: str) -> EnrichmentResult:
+        return EnrichmentResult(
+            provider_id=self.provider_id,
+            cache_key=self.build_cache_key(item),
+            enrichment_data={"status": "skipped", "reason": reason},
+        )
+
+    def _bool_any_field(self, record: Dict[str, Any], fields: List[str]) -> bool:
+        return any(self._bool_field(record, field) for field in fields)
+
+    def _field_values(self, record: Dict[str, Any], fields: List[str]) -> Dict[str, str]:
+        return {field: self._str_field(record, field) for field in fields}
 
     def _get_system_lookup_candidates(self, item: Dict[str, Any], cfg: Dict[str, Any]) -> List[Tuple[str, str, str]]:
         candidates: List[Tuple[str, str, str]] = []
@@ -90,7 +134,9 @@ class ServiceNowProvider(EnrichmentProvider):
                 if candidate not in candidates:
                     candidates.append(candidate)
 
-        configured_fields = self._split_fields(cfg.get("cmdb_query_field"), "name")
+        configured_fields = self._split_fields(cfg.get("cmdb_query_field"))
+        if not configured_fields:
+            return candidates
         _add("hostname", list(dict.fromkeys(["name", "fqdn", *configured_fields])), item.get("hostname"))
         _add("ip_address", list(dict.fromkeys(["ip_address", *configured_fields])), item.get("ip_address"))
         _add("cmdb_id", configured_fields, item.get("cmdb_id"))
@@ -103,8 +149,11 @@ class ServiceNowProvider(EnrichmentProvider):
         auth_type = str(await settings.get(f"{self.settings_prefix}.auth_type", "basic") or "basic").strip()
         oauth_client_id = str(await settings.get(f"{self.settings_prefix}.oauth_client_id", "") or "").strip()
         oauth_client_secret = str(await settings.get(f"{self.settings_prefix}.oauth_client_secret", "") or "")
-        table = str(await settings.get(f"{self.settings_prefix}.table", _DEFAULT_TABLE) or _DEFAULT_TABLE).strip()
+        user_table_enabled = self._parse_bool(await settings.get(f"{self.settings_prefix}.user_table_enabled", True), True)
+        table = str(await settings.get(f"{self.settings_prefix}.table", _DEFAULT_TABLE)).strip()
         fields = str(await settings.get(f"{self.settings_prefix}.fields", _DEFAULT_FIELDS) or _DEFAULT_FIELDS).strip()
+        user_query_field = str(await settings.get(f"{self.settings_prefix}.user_query_field", "user_name")).strip()
+        active_only = self._parse_bool(await settings.get(f"{self.settings_prefix}.active_only", True), True)
         lookup_query_template = str(
             await settings.get(
                 f"{self.settings_prefix}.lookup_query_template",
@@ -126,7 +175,7 @@ class ServiceNowProvider(EnrichmentProvider):
             maximum=50000,
         )
 
-        if not (instance_url and username and password and table):
+        if not (instance_url and username and password):
             return None
         if auth_type == "oauth_password" and not (oauth_client_id and oauth_client_secret):
             return None
@@ -138,27 +187,28 @@ class ServiceNowProvider(EnrichmentProvider):
             "auth_type": auth_type,
             "oauth_client_id": oauth_client_id,
             "oauth_client_secret": oauth_client_secret,
+            "user_table_enabled": user_table_enabled,
             "table": table,
+            "user_query_field": user_query_field,
             "fields": fields,
             "lookup_query_template": lookup_query_template,
             "bulk_sync_query": bulk_sync_query,
+            "active_only": active_only,
             "page_size": page_size,
             "max_records": max_records,
-            "user_vip_field": str(await settings.get(f"{self.settings_prefix}.user_vip_field", "vip") or "vip").strip(),
+            "user_vip_field": str(await settings.get(f"{self.settings_prefix}.user_vip_field", "vip")).strip(),
             "user_privileged_field": str(
                 await settings.get(f"{self.settings_prefix}.user_privileged_field", "u_privileged_user")
-                or "u_privileged_user"
             ).strip(),
-            "cmdb_table": str(await settings.get(f"{self.settings_prefix}.cmdb_table", "cmdb_ci") or "cmdb_ci").strip(),
-            "cmdb_query_field": str(await settings.get(f"{self.settings_prefix}.cmdb_query_field", "name") or "name").strip(),
+            "cmdb_table_enabled": self._parse_bool(await settings.get(f"{self.settings_prefix}.cmdb_table_enabled", True), True),
+            "cmdb_table": str(await settings.get(f"{self.settings_prefix}.cmdb_table", "cmdb_ci")).strip(),
+            "cmdb_query_field": str(await settings.get(f"{self.settings_prefix}.cmdb_query_field", "name")).strip(),
             "cmdb_fields": str(await settings.get(f"{self.settings_prefix}.cmdb_fields", _DEFAULT_CMDB_FIELDS) or _DEFAULT_CMDB_FIELDS).strip(),
             "cmdb_criticality_field": str(
                 await settings.get(f"{self.settings_prefix}.cmdb_criticality_field", "criticality")
-                or "criticality"
             ).strip(),
             "cmdb_privileged_field": str(
                 await settings.get(f"{self.settings_prefix}.cmdb_privileged_field", "u_privileged_system")
-                or "u_privileged_system"
             ).strip(),
         }
 
@@ -259,10 +309,28 @@ class ServiceNowProvider(EnrichmentProvider):
         department = self._str_field(record, "department.name") or self._str_field(record, "department")
         company = self._str_field(record, "company.name") or self._str_field(record, "company")
 
-        vip_field = str(cfg.get("user_vip_field") or "vip")
-        privileged_field = str(cfg.get("user_privileged_field") or "u_privileged_user")
-        is_vip = self._bool_field(record, vip_field)
-        is_privileged = self._bool_field(record, privileged_field)
+        vip_fields = self._split_fields(cfg.get("user_vip_field"))
+        privileged_fields = self._split_fields(cfg.get("user_privileged_field"))
+        is_vip = self._bool_any_field(record, vip_fields)
+        is_privileged = self._bool_any_field(record, privileged_fields)
+        vip_values = self._field_values(record, vip_fields)
+        privileged_values = self._field_values(record, privileged_fields)
+
+        mapped_fields: Dict[str, Dict[str, Any]] = {}
+        if vip_fields:
+            mapped_fields["vip"] = {
+                "field": self._join_fields(vip_fields),
+                "value": ", ".join(value for value in vip_values.values() if value),
+                "values": vip_values,
+                "mapped": is_vip,
+            }
+        if privileged_fields:
+            mapped_fields["privileged"] = {
+                "field": self._join_fields(privileged_fields),
+                "value": ", ".join(value for value in privileged_values.values() if value),
+                "values": privileged_values,
+                "mapped": is_privileged,
+            }
 
         enrichment_data = {
             "source_table": str(cfg.get("table") or _DEFAULT_TABLE),
@@ -283,14 +351,7 @@ class ServiceNowProvider(EnrichmentProvider):
             "active": self._str_field(record, "active"),
             "is_vip": is_vip,
             "is_privileged": is_privileged,
-            "mapped_fields": {
-                "vip": {"field": vip_field, "value": self._str_field(record, vip_field), "mapped": is_vip},
-                "privileged": {
-                    "field": privileged_field,
-                    "value": self._str_field(record, privileged_field),
-                    "mapped": is_privileged,
-                },
-            },
+            "mapped_fields": mapped_fields,
         }
 
         canonical_value = email.lower() or user_name.lower() or sys_id or cache_key
@@ -341,11 +402,13 @@ class ServiceNowProvider(EnrichmentProvider):
         name = self._str_field(record, "name")
         fqdn = self._str_field(record, "fqdn")
         ip_address = self._str_field(record, "ip_address")
-        criticality = self._str_field(record, str(cfg["cmdb_criticality_field"]))
-        privileged_field = str(cfg["cmdb_privileged_field"])
-        privilege_value = self._str_field(record, privileged_field)
-        is_critical = self._boolish_criticality(criticality)
-        is_privileged = self._bool_field(record, privileged_field)
+        criticality_fields = self._split_fields(cfg.get("cmdb_criticality_field"))
+        privileged_fields = self._split_fields(cfg.get("cmdb_privileged_field"))
+        criticality_values = self._field_values(record, criticality_fields)
+        privilege_values = self._field_values(record, privileged_fields)
+        criticality = next((value for value in criticality_values.values() if value), "")
+        is_critical = any(self._boolish_criticality(value) for value in criticality_values.values())
+        is_privileged = self._bool_any_field(record, privileged_fields)
 
         enrichment_data = {
             "status": "matched",
@@ -363,7 +426,8 @@ class ServiceNowProvider(EnrichmentProvider):
             "classification": self._str_field(record, "classification"),
             "criticality": criticality,
             "install_status": self._str_field(record, "install_status"),
-            "privilege_fields": {privileged_field: privilege_value},
+            "criticality_fields": criticality_values,
+            "privilege_fields": privilege_values,
             "is_critical": is_critical,
             "is_privileged": is_privileged,
         }
@@ -405,11 +469,25 @@ class ServiceNowProvider(EnrichmentProvider):
         if parsed.scheme not in {"https", "http"} or not parsed.netloc:
             raise ValueError("ServiceNow instance URL must be an absolute http(s) URL")
 
-        user_query_field = str(config.get("user_query_field") or "user_name").strip()
-        active_only = bool(config.get("active_only", True))
-        lookup_query_template = f"{user_query_field}={{value}}"
-        if active_only:
+        user_query_field = self._config_string(config, "user_query_field", default="user_name")
+        user_query_fields = self._split_fields(user_query_field)
+        active_only = self._parse_bool(config.get("active_only", True), True)
+        lookup_query_template = "^OR".join(f"{field}={{value}}" for field in user_query_fields)
+        if lookup_query_template and active_only:
             lookup_query_template += "^active=true"
+
+        user_vip_field = self._config_string(config, "user_vip_field", default="vip")
+        user_privileged_field = self._config_string(
+            config,
+            "user_privileged_field",
+            default="u_privileged_user",
+        )
+        cmdb_criticality_field = self._config_string(config, "cmdb_criticality_field", default="criticality")
+        cmdb_privileged_field = self._config_string(
+            config,
+            "cmdb_privileged_field",
+            default="u_privileged_system",
+        )
 
         fields = ",".join(
             dict.fromkeys(
@@ -418,9 +496,9 @@ class ServiceNowProvider(EnrichmentProvider):
                     for field in (
                         _DEFAULT_FIELDS
                         + ","
-                        + str(config.get("user_vip_field") or "vip")
+                        + user_vip_field
                         + ","
-                        + str(config.get("user_privileged_field") or "u_privileged_user")
+                        + user_privileged_field
                     ).split(",")
                     if field.strip()
                 ]
@@ -438,19 +516,37 @@ class ServiceNowProvider(EnrichmentProvider):
             "auth_type": auth_type,
             "oauth_client_id": str(config.get("oauth_client_id") or "").strip(),
             "oauth_client_secret": str(config.get("oauth_client_secret") or ""),
-            "table": str(config.get("user_table") or config.get("table") or _DEFAULT_TABLE).strip(),
+            "user_table_enabled": self._parse_bool(config.get("user_table_enabled", True), True),
+            "table": self._config_string(config, "user_table", "table", default=_DEFAULT_TABLE),
+            "user_query_field": user_query_field,
             "fields": fields,
             "lookup_query_template": lookup_query_template,
             "bulk_sync_query": "active=true" if active_only else "",
+            "active_only": active_only,
             "page_size": 500,
             "max_records": 5000,
-            "user_vip_field": str(config.get("user_vip_field") or "vip").strip(),
-            "user_privileged_field": str(config.get("user_privileged_field") or "u_privileged_user").strip(),
-            "cmdb_table": str(config.get("cmdb_table") or "cmdb_ci").strip(),
-            "cmdb_query_field": str(config.get("cmdb_query_field") or "name").strip(),
-            "cmdb_fields": _DEFAULT_CMDB_FIELDS,
-            "cmdb_criticality_field": str(config.get("cmdb_criticality_field") or "criticality").strip(),
-            "cmdb_privileged_field": str(config.get("cmdb_privileged_field") or "u_privileged_system").strip(),
+            "user_vip_field": user_vip_field,
+            "user_privileged_field": user_privileged_field,
+            "cmdb_table_enabled": self._parse_bool(config.get("cmdb_table_enabled", True), True),
+            "cmdb_table": self._config_string(config, "cmdb_table", default="cmdb_ci"),
+            "cmdb_query_field": self._config_string(config, "cmdb_query_field", default="name"),
+            "cmdb_fields": ",".join(
+                dict.fromkeys(
+                    [
+                        field.strip()
+                        for field in (
+                            _DEFAULT_CMDB_FIELDS
+                            + ","
+                            + cmdb_criticality_field
+                            + ","
+                            + cmdb_privileged_field
+                        ).split(",")
+                        if field.strip()
+                    ]
+                )
+            ),
+            "cmdb_criticality_field": cmdb_criticality_field,
+            "cmdb_privileged_field": cmdb_privileged_field,
         }
         if not normalized["username"] or not normalized["password"]:
             raise ValueError("ServiceNow username and password are required")
@@ -483,9 +579,15 @@ class ServiceNowProvider(EnrichmentProvider):
 
     async def _lookup(self, cfg: Dict[str, Any], item: Dict[str, Any]) -> EnrichmentResult:
         if item.get("type") == "system":
+            if not self._parse_bool(cfg.get("cmdb_table_enabled"), True):
+                return self._build_skip_result(item, "ServiceNow CMDB table is disabled")
+            if not str(cfg.get("cmdb_table") or "").strip():
+                return self._build_skip_result(item, "ServiceNow CMDB table is blank")
+            if not self._split_fields(cfg.get("cmdb_query_field")):
+                return self._build_skip_result(item, "ServiceNow CMDB lookup fields are blank")
             candidates = self._get_system_lookup_candidates(item, cfg)
             if not candidates:
-                raise ValueError("Cannot determine identifier for ServiceNow CMDB lookup")
+                return self._build_skip_result(item, "ServiceNow CMDB lookup fields are blank")
             cache_key = self.build_cache_key(item)
             async with self._http_client(cfg, timeout=20) as client:
                 for source, field, identifier in candidates:
@@ -546,8 +648,19 @@ class ServiceNowProvider(EnrichmentProvider):
         identifier = self._get_identifier(item)
         if not identifier:
             raise ValueError("Cannot determine identifier for ServiceNow lookup")
+        if not self._parse_bool(cfg.get("user_table_enabled"), True):
+            return self._build_skip_result(item, "ServiceNow user table is disabled")
+        if not str(cfg.get("table") or "").strip():
+            return self._build_skip_result(item, "ServiceNow user table is blank")
+        user_query_fields = self._split_fields(cfg.get("user_query_field"))
+        if not user_query_fields:
+            return self._build_skip_result(item, "ServiceNow user lookup fields are blank")
         params = {
-            "sysparm_query": self._build_lookup_query(cfg["lookup_query_template"], identifier),
+            "sysparm_query": self._build_or_lookup_query(
+                user_query_fields,
+                identifier,
+                active_only=self._parse_bool(cfg.get("active_only"), False),
+            ),
             "sysparm_fields": cfg["fields"],
             "sysparm_display_value": "all",
             "sysparm_limit": 2,
@@ -580,6 +693,12 @@ class ServiceNowProvider(EnrichmentProvider):
         cfg = await self._get_settings(settings)
         if not cfg:
             raise ValueError("ServiceNow provider is not fully configured")
+        if (
+            not self._parse_bool(cfg.get("user_table_enabled"), True)
+            or not str(cfg.get("table") or "").strip()
+            or not self._split_fields(cfg.get("user_query_field"))
+        ):
+            return []
 
         results: List[EnrichmentResult] = []
         remaining = int(cfg["max_records"])

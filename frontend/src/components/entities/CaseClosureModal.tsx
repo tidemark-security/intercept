@@ -15,7 +15,7 @@ import { CLOSED_ALERT_STATUS_OPTIONS } from "@/utils/statusLabels";
 import type { AlertStatus } from "@/types/generated/models/AlertStatus";
 import type { ClosedAlertStatus } from "@/utils/statusLabels";
 
-import { Bell, Check, CheckCircle, Copy, HelpCircle, List, X, XCircle } from "lucide-react";
+import { Bell, Check, CheckCircle, CheckSquare, Copy, HelpCircle, X, XCircle } from "lucide-react";
 
 const CLOSURE_STATUS_OPTIONS: Array<{ value: ClosedAlertStatus; label: string; icon: React.ReactNode }> = [
   { ...CLOSED_ALERT_STATUS_OPTIONS[0], icon: <Check className="h-4 w-4" /> },
@@ -124,7 +124,7 @@ export function CaseClosureModal({
             <Badge variant="neutral" icon={<Bell />}>
               {linkedAlerts.length} Alerts
             </Badge>
-            <Badge variant="neutral" icon={<List />}>
+            <Badge variant="neutral" icon={<CheckSquare />}>
               {linkedTaskCount} Tasks
             </Badge>
             <span className="text-caption font-caption text-subtext-color">will be closed with this case</span>

@@ -946,7 +946,7 @@ function UnifiedTimelineInner({
                   )}
                   
                   {/* Entity Metadata Card */}
-                  <div className="flex w-full">
+                  <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
                     <EntityMetadataCard
                       entity={entityDetail}
                       entityType={entityType}

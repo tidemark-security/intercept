@@ -75,9 +75,12 @@ services:
       context: ../frontend
       dockerfile: Dockerfile.dev
       additional_contexts:
-        ux: ${UX_CONTEXT:-../ux}
+        ux: ${UX_CONTEXT:-../../ux}
     environment:
       VITE_API_URL: http://localhost:8000
+      # Use polling so Vite notices rebuilds in bind-mounted sibling repos,
+      # especially on Docker Desktop where native file events can be missed.
+      VITE_USE_POLLING: "true"
     ports:
       - "5173:5173"
     volumes:
@@ -88,9 +91,11 @@ services:
       - ../frontend/postcss.config.js:/app/postcss.config.js
       - ../frontend/tsconfig.json:/app/tsconfig.json
       - ../frontend/tsconfig.node.json:/app/tsconfig.node.json
-      # Uncomment the following line to mount a local UX checkout.
-      # This requires ../ux to contain the UX repository, or set UX_CONTEXT.
-      # - ${UX_CONTEXT:-../ux}:/app/node_modules/@tidemark-security/ux
+      # Mount the sibling UX checkout live. The frontend dev image installs
+      # @tidemark-security/ux as file:/ux, so this keeps UX rebuilds visible
+      # without rebuilding the frontend image. Set UX_CONTEXT if your UX repo
+      # is not at ../../ux as resolved from the Intercept project root.
+      - ${UX_CONTEXT:-../../ux}:/ux
     depends_on:
       - backend
 
