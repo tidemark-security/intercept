@@ -4,6 +4,9 @@
 /* eslint-disable */
 import type { AlertStatus } from './AlertStatus';
 import type { TriageDisposition } from './TriageDisposition';
+/**
+ * Schema for supported bulk alert actions.
+ */
 export type AlertBulkActionRequest = {
     alert_ids: Array<number>;
     action: 'update_status' | 'link_case' | 'create_case' | 'close_duplicate' | 'add_tags' | 'assign';
@@ -18,3 +21,4 @@ export type AlertBulkActionRequest = {
     duplicate_target_alert_id?: (number | null);
     note?: (string | null);
 };
+

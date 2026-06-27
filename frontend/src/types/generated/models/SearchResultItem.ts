@@ -60,3 +60,4 @@ export type SearchResultItem = {
      */
     tags?: Array<string>;
 };
+

@@ -12,6 +12,7 @@ import type { LinkItem } from './LinkItem';
 import type { NetworkTrafficItem } from './NetworkTrafficItem';
 import type { NoteItem } from './NoteItem';
 import type { ObservableItem } from './ObservableItem';
+import type { PICERLStage } from './PICERLStage';
 import type { Priority } from './Priority';
 import type { ProcessItem } from './ProcessItem';
 import type { RegistryChangeItem } from './RegistryChangeItem';
@@ -27,7 +28,7 @@ export type TaskRead = {
     description?: (string | null);
     priority?: Priority;
     due_date?: (string | null);
-    picerl_stage?: (string | null);
+    picerl_stage?: (PICERLStage | null);
     id: number;
     status: TaskStatus;
     assignee?: (string | null);
@@ -41,3 +42,4 @@ export type TaskRead = {
     tags?: (Array<string> | null);
     readonly human_id: string;
 };
+

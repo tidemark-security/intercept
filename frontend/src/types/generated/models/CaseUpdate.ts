@@ -37,3 +37,4 @@ export type CaseUpdate = {
     alert_closure_updates?: (Array<CaseAlertClosureUpdate> | null);
     closure_summary?: (string | null);
 };
+

@@ -8,7 +8,6 @@ import { Priority } from "@/components/misc/Priority";
 import { State } from "@/components/misc/State";
 import { TagsManager } from "@/components/forms/TagsManager";
 import { Button } from "@/components/buttons/Button";
-import { Badge } from "@/components/data-display/Badge";
 import { CopyableTimestamp } from "@/components/data-display/CopyableTimestamp";
 import MarkdownContent from "@/components/data-display/MarkdownContent";
 import { TimelineDescriptionBlock } from "@/components/timeline/TimelineDescriptionBlock";
@@ -25,32 +24,9 @@ import type { TaskStatus } from "@/types/generated/models/TaskStatus";
 import { cn } from "@/utils/cn";
 import { convertNumericToHumanId } from "@/utils/caseHelpers";
 
-import { ArrowRight, CalendarClock, ClockAlert, ClockPlus, ExternalLink, RadioTower, User } from "lucide-react";
+import { ArrowRight, CalendarClock, ClockAlert, ClockPlus, RadioTower, User } from "lucide-react";
 
 export type EntityMetadataCardVariant = "detail" | "timeline" | "compact";
-
-interface EntityContextCriterion {
-  type?: string | null;
-  value?: string | null;
-}
-
-interface EntityContextItem {
-  id?: number | string | null;
-  criteria?: EntityContextCriterion[] | null;
-  body?: string | null;
-  author?: string | null;
-  expires_at?: string | null;
-}
-
-interface EntityContextSection {
-  items?: EntityContextItem[] | null;
-  total_count?: number | null;
-  omitted_count?: number | null;
-}
-
-type EntityWithContext = (AlertRead | CaseRead | TaskRead) & {
-  context?: EntityContextSection | null;
-};
 
 interface EntityMetadataCardProps {
   entity: AlertRead | CaseRead | TaskRead | null;
@@ -238,166 +214,6 @@ export function EntityMetadataCard({
     </MetaField>
   );
 
-  const contextSection = (entity as EntityWithContext).context;
-  const contextItems = Array.isArray(contextSection?.items) ? contextSection.items : [];
-  const shouldRenderContextSection = contextItems.length > 0;
-  const contextTotalCount = contextSection?.total_count ?? contextItems.length;
-  const contextOmittedCount = contextSection?.omitted_count ?? 0;
-  const visibleContextItems = contextItems.slice(0, 3);
-  const formatCriterionType = (value: string | null | undefined) => {
-    if (!value) return "Scope";
-    return value
-      .toLowerCase()
-      .split("_")
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(" ");
-  };
-  const formatContextScope = (criteria: EntityContextCriterion[] | null | undefined) => {
-    if (!criteria || criteria.length === 0) return ["Global"];
-    return criteria.map((criterion) => {
-      const type = formatCriterionType(criterion.type);
-      return criterion.value ? `${type}: ${criterion.value}` : type;
-    });
-  };
-  const contextEntriesHref = (() => {
-    if (!shouldRenderContextSection) return "/context-entries";
-
-    const ids = contextItems
-      .map((item) => item.id)
-      .filter((id): id is number | string => id !== null && id !== undefined)
-      .map((id) => String(id).trim())
-      .filter(Boolean);
-    const params = new URLSearchParams();
-    params.set("include_expired", "true");
-
-    if (ids.length > 0) {
-      params.set("ids", ids.join(","));
-    } else {
-      const fallbackTerms = contextItems.flatMap((item) => {
-        const criteria = item.criteria ?? [];
-        const criteriaTerms = criteria.flatMap((criterion) => [
-          criterion.type ?? "",
-          criterion.value ?? "",
-        ]);
-        return [...criteriaTerms, item.body ?? ""];
-      }).map((term) => term.trim()).filter(Boolean);
-
-      if (fallbackTerms.length > 0) {
-        params.set("q", fallbackTerms[0]);
-      }
-    }
-
-    const query = params.toString();
-    return query ? `/context-entries?${query}` : "/context-entries";
-  })();
-
-  const ContextSection = () => {
-    if (!shouldRenderContextSection) {
-      return null;
-    }
-
-    return (
-      <section className="flex w-full min-w-0 flex-col gap-3 border-t border-solid border-neutral-border/70 pt-3">
-        <div
-          className={cn(
-            "flex w-full min-w-0 flex-col gap-3 rounded-md border border-solid border-neutral-border bg-default-background p-3",
-            isDarkTheme ? "shadow-accent-1-shadow-sm" : "shadow-sm",
-          )}
-        >
-          <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 border-l-2 border-solid border-brand-primary pl-3">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <span className="text-heading-3 font-heading-3 uppercase text-default-font">
-                Analyst Context
-              </span>
-              <Badge variant="brand">{contextTotalCount} active</Badge>
-              {contextOmittedCount > 0 ? (
-                <Badge variant="neutral">{contextOmittedCount} omitted</Badge>
-              ) : null}
-            </div>
-            <a
-              href={contextEntriesHref}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex min-h-7 flex-none items-center gap-1 rounded-md border border-solid border-neutral-border px-2 text-caption-bold font-caption-bold text-default-font transition-colors hover:border-brand-primary hover:text-brand-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus-border"
-            >
-              <span>View all context</span>
-              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-            </a>
-          </div>
-
-          <div className="grid w-full min-w-0 gap-2">
-            {visibleContextItems.map((item, index) => {
-              const scopes = formatContextScope(item.criteria);
-              const key = item.id ?? `${item.body ?? "context"}-${index}`;
-              const isPrimary = index === 0;
-
-              return (
-                <article
-                  key={key}
-                  className={cn(
-                    "flex min-w-0 flex-col gap-2 border-l-2 border-solid py-2 pl-3 pr-2",
-                    isPrimary
-                      ? cn(
-                          "border-brand-primary",
-                          isDarkTheme ? "bg-brand-1100" : "bg-brand-50",
-                        )
-                      : "border-neutral-border bg-default-background",
-                  )}
-                >
-                  {item.body ? (
-                    <MarkdownContent
-                      content={item.body}
-                      className={cn(
-                        "[overflow-wrap:anywhere] [&_*]:text-inherit [&_p]:!my-0",
-                        isPrimary
-                          ? "text-body-bold font-body-bold text-default-font"
-                          : "text-body font-body text-default-font",
-                      )}
-                    />
-                  ) : null}
-
-                  <div className="flex min-w-0 flex-wrap gap-1.5">
-                    {scopes.map((scope, scopeIndex) => (
-                      <Badge key={`${scope}-${scopeIndex}`} variant="neutral">
-                        {scope}
-                      </Badge>
-                    ))}
-                  </div>
-
-                  <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-caption font-caption text-subtext-color">
-                    {item.author ? (
-                      <span className="min-w-0 truncate">
-                        Author: <span className="text-default-font">{item.author}</span>
-                      </span>
-                    ) : null}
-                    {item.expires_at ? (
-                      <div className="flex min-w-0 items-center gap-1">
-                        <span>Expires:</span>
-                        <CopyableTimestamp
-                          value={item.expires_at}
-                          showFull
-                          variant="default-right"
-                          className="min-w-0 max-w-full flex-wrap"
-                          textClassName="text-default-font"
-                        />
-                      </div>
-                    ) : null}
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-
-          {contextItems.length > visibleContextItems.length ? (
-            <span className="text-caption font-caption text-subtext-color">
-              Showing first {visibleContextItems.length} of {contextTotalCount} matched context entries
-            </span>
-          ) : null}
-        </div>
-      </section>
-    );
-  };
-
   const createdByValue = caseEntity?.created_by || taskEntity?.created_by || (alertEntity as (AlertRead & { created_by?: string | null }) | null)?.created_by;
   const sourceValue = alertEntity?.source;
   const taskDueStatus = getTaskDueStatus(taskEntity?.due_date, taskEntity?.status);
@@ -515,11 +331,10 @@ export function EntityMetadataCard({
 
       </div>
 
-      <ContextSection />
-
       {shouldRenderStandaloneFooter ? (
         <TimelineDescriptionBlock
           variant="timeline"
+          className="border-t"
           actionButtons={parentCaseAction}
           tagContent={shouldRenderStandaloneTagRow ? (
             <TagsManager

@@ -46,7 +46,16 @@ export function CaseTaskEditForm({ initialData, type }: CaseTaskEditFormProps) {
   
   const updateMutation = type === "case" ? updateCaseMutation : updateTaskMutation;
 
-  const [formData, setFormData] = React.useState({
+  const [formData, setFormData] = React.useState<{
+    title: string;
+    description: string;
+    status: TaskStatus | "TODO";
+    priority: Priority | "MEDIUM";
+    picerlStage: NonNullable<TaskRead["picerl_stage"]> | "";
+    assignee: string | null;
+    dueDate: string;
+    tags: string[];
+  }>({
     title: initialData.title || "",
     description: initialData.description || "",
     status: taskInitialData?.status || "TODO",
@@ -140,7 +149,9 @@ export function CaseTaskEditForm({ initialData, type }: CaseTaskEditFormProps) {
             onValueChange={(picerlStage) =>
               setFormData(prev => ({
                 ...prev,
-                picerlStage: picerlStage === PICERL_UNSET_VALUE ? "" : picerlStage,
+                picerlStage: picerlStage === PICERL_UNSET_VALUE
+                  ? ""
+                  : picerlStage as NonNullable<TaskRead["picerl_stage"]>,
               }))
             }
           >

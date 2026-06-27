@@ -19,3 +19,4 @@ export type PresignedUploadRequest = {
      */
     mime_type: string;
 };
+

@@ -2,9 +2,11 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { AlertBulkActionResponse } from '../models/AlertBulkActionResponse';
 import type { AttachmentStatusUpdate } from '../models/AttachmentStatusUpdate';
 import type { Body_bulk_update_cases_api_v1_cases_bulk_update_post } from '../models/Body_bulk_update_cases_api_v1_cases_bulk_update_post';
 import type { CaseCreate } from '../models/CaseCreate';
+import type { CaseLinkedAlertResolutionRequest } from '../models/CaseLinkedAlertResolutionRequest';
 import type { CaseRead } from '../models/CaseRead';
 import type { CaseReadWithAlerts } from '../models/CaseReadWithAlerts';
 import type { CaseStatus } from '../models/CaseStatus';
@@ -194,7 +196,7 @@ export class CasesService {
     }
     /**
      * Delete Case
-     * Delete a case.
+     * Permanently delete a case. Restricted to admins.
      * @returns any Successful Response
      * @throws ApiError
      */
@@ -252,6 +254,32 @@ export class CasesService {
         return __request(OpenAPI, {
             method: 'PATCH',
             url: '/api/v1/cases/{case_id}/timeline-graph',
+            path: {
+                'case_id': caseId,
+            },
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Resolve Linked Alerts
+     * Apply selected resolutions to open alerts linked to a case.
+     * @returns AlertBulkActionResponse Successful Response
+     * @throws ApiError
+     */
+    public static resolveLinkedAlertsApiV1CasesCaseIdResolveLinkedAlertsPost({
+        caseId,
+        requestBody,
+    }: {
+        caseId: number,
+        requestBody: CaseLinkedAlertResolutionRequest,
+    }): CancelablePromise<AlertBulkActionResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/cases/{case_id}/resolve-linked-alerts',
             path: {
                 'case_id': caseId,
             },

@@ -41,3 +41,4 @@ export type app__api__routes__admin_auth__UserSummary = {
      */
     oidcSubject?: (string | null);
 };
+

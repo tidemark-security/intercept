@@ -1,4 +1,5 @@
 export { BaseCard } from './BaseCard';
+export { ContextCard } from './ContextCard';
 export { DashboardCard } from './DashboardCard';
 export { EntityMetadataCard } from './EntityMetadataCard';
 export { MenuCard } from './MenuCard';

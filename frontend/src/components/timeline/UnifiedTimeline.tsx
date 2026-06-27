@@ -29,6 +29,7 @@ import type { AlertRead } from '@/types/generated/models/AlertRead';
 import type { AlertStatus } from '@/types/generated/models/AlertStatus';
 import InterceptLogo from '@/assets/Intercept-Green.svg';
 import InterceptLogoBlack from '@/assets/Intercept-Black.svg';
+import { ContextCard } from '@/components/cards/ContextCard';
 import { EntityMetadataCard } from '@/components/cards/EntityMetadataCard';
 import { Button } from '@/components/buttons/Button';
 import { Dialog } from "@/components/overlays/Dialog";
@@ -81,7 +82,7 @@ function timelineTaskItemToTaskRead(item: TimelineItem): TaskRead | null {
     priority?: TaskRead['priority'] | null;
     assignee?: string | null;
     due_date?: string | null;
-    picerl_stage?: string | null;
+    picerl_stage?: TaskRead['picerl_stage'];
     source_tpl?: number | null;
     case_id?: number | null;
     updated_at?: string | null;
@@ -1150,6 +1151,12 @@ function UnifiedTimelineInner({
                           />
                         </div>
                       )}
+
+                    {entityType === 'alert' && Array.isArray((entityDetail as AlertRead).context?.items) && (entityDetail as AlertRead).context!.items!.length > 0 ? (
+                      <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
+                        <ContextCard context={(entityDetail as AlertRead).context} />
+                      </div>
+                    ) : null}
 
                     {/* Entity Metadata Card */}
                     <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">

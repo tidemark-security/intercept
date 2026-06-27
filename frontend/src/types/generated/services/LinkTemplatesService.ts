@@ -4,7 +4,11 @@
 /* eslint-disable */
 import type { LinkTemplateCreate } from '../models/LinkTemplateCreate';
 import type { LinkTemplateRead } from '../models/LinkTemplateRead';
+import type { LinkTemplateResolveRequest } from '../models/LinkTemplateResolveRequest';
 import type { LinkTemplateUpdate } from '../models/LinkTemplateUpdate';
+import type { ResolvedLinkTemplateRead } from '../models/ResolvedLinkTemplateRead';
+import type { UserLinkTemplatePreferenceRead } from '../models/UserLinkTemplatePreferenceRead';
+import type { UserLinkTemplatePreferenceUpdate } from '../models/UserLinkTemplatePreferenceUpdate';
 import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
 import { request as __request } from '../core/request';
@@ -59,6 +63,87 @@ export class LinkTemplatesService {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/link-templates',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Get User Link Template Preferences
+     * Get the authenticated user's link template preferences.
+     * @returns UserLinkTemplatePreferenceRead Successful Response
+     * @throws ApiError
+     */
+    public static getUserLinkTemplatePreferencesApiV1LinkTemplatesUserPreferencesGet(): CancelablePromise<Array<UserLinkTemplatePreferenceRead>> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/link-templates/user-preferences',
+        });
+    }
+    /**
+     * Upsert User Link Template Preference
+     * Create or update the authenticated user's preference for a link template.
+     * @returns UserLinkTemplatePreferenceRead Successful Response
+     * @throws ApiError
+     */
+    public static upsertUserLinkTemplatePreferenceApiV1LinkTemplatesUserPreferencesTemplateIdPut({
+        templateId,
+        requestBody,
+    }: {
+        templateId: number,
+        requestBody: UserLinkTemplatePreferenceUpdate,
+    }): CancelablePromise<UserLinkTemplatePreferenceRead> {
+        return __request(OpenAPI, {
+            method: 'PUT',
+            url: '/api/v1/link-templates/user-preferences/{template_id}',
+            path: {
+                'template_id': templateId,
+            },
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Delete User Link Template Preference
+     * Delete the authenticated user's preference for a link template.
+     * @returns void
+     * @throws ApiError
+     */
+    public static deleteUserLinkTemplatePreferenceApiV1LinkTemplatesUserPreferencesTemplateIdDelete({
+        templateId,
+    }: {
+        templateId: number,
+    }): CancelablePromise<void> {
+        return __request(OpenAPI, {
+            method: 'DELETE',
+            url: '/api/v1/link-templates/user-preferences/{template_id}',
+            path: {
+                'template_id': templateId,
+            },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Resolve Link Templates
+     * Resolve enabled global templates using item context and current-user values.
+     * @returns ResolvedLinkTemplateRead Successful Response
+     * @throws ApiError
+     */
+    public static resolveLinkTemplatesApiV1LinkTemplatesResolvePost({
+        requestBody,
+    }: {
+        requestBody: LinkTemplateResolveRequest,
+    }): CancelablePromise<Array<ResolvedLinkTemplateRead>> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/link-templates/resolve',
             body: requestBody,
             mediaType: 'application/json',
             errors: {

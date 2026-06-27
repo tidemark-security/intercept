@@ -69,6 +69,10 @@ export type AlertItem = {
     priority?: (Priority | null);
     assignee?: (string | null);
     /**
+     * Description from the linked alert entity; distinct from the timeline link description
+     */
+    entity_description?: (string | null);
+    /**
      * Timeline items from the linked alert (populated on read with include_linked_timelines=true)
      */
     source_timeline_items?: (Record<string, Record<string, any>> | null);

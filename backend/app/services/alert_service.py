@@ -185,7 +185,7 @@ class AlertService:
         if not db_alert:
             return None
 
-        return await timeline_service.prepare_entity_detail_timeline(
+        prepared_alert = await timeline_service.prepare_entity_detail_timeline(
             db,
             entity_type="alert",
             entity_id=alert_id,
@@ -193,6 +193,20 @@ class AlertService:
             human_prefix="ALT",
             include_linked_timelines=include_linked_timelines,
         )
+
+        from app.services.context_service import ContextService
+
+        context_items = await ContextService(db).get_matching_context_for_alert(alert_id)
+        object.__setattr__(
+            prepared_alert,
+            "context",
+            {
+                "items": context_items,
+                "total_count": len(context_items),
+                "omitted_count": 0,
+            },
+        )
+        return prepared_alert
     
     async def get_alert_by_human_id(self, db: AsyncSession, human_id: str) -> Optional[Alert]:
         """Get alert by human_id."""

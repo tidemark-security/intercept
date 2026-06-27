@@ -96,6 +96,46 @@ describe("UnifiedTimeline", () => {
     expect(screen.getByRole("button", { name: /request ai triage/i })).toBeInTheDocument();
   });
 
+  it("renders alert context between AI triage and metadata", () => {
+    renderWithProviders(
+      <UnifiedTimeline
+        entityDetail={{
+          ...baseAlert,
+          context: {
+            total_count: 1,
+            omitted_count: 0,
+            items: [
+              {
+                id: 101,
+                criteria: [],
+                body: "Global alert context.",
+                author: "admin",
+                expires_at: "2026-07-01T00:00:00Z",
+              },
+            ],
+          },
+        }}
+        entityType="alert"
+        selectedEntityId={baseAlert.id}
+        currentUser="admin"
+        isLoading={false}
+        error={null}
+        users={[]}
+        usersLoading={false}
+        mode="editable"
+        onRequestTriage={vi.fn()}
+        isTriageEnabled
+      />,
+    );
+
+    const triageCard = screen.getByText("AI Triage Available");
+    const contextCard = screen.getByText("Analyst Context");
+    const metadataSource = screen.getByText("Threat Intelligence");
+
+    expect(triageCard.compareDocumentPosition(contextCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(contextCard.compareDocumentPosition(metadataSource) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("does not show the AI triage request card for closed alerts without a recommendation", () => {
     renderAlertTimeline("CLOSED_TP");
 

@@ -27,3 +27,4 @@ export type PresignedUploadResponse = {
      */
     max_file_size: number;
 };
+

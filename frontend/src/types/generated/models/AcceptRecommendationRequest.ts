@@ -31,3 +31,4 @@ export type AcceptRecommendationRequest = {
      */
     skip_case_template?: boolean;
 };
+

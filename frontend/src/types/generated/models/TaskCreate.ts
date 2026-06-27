@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { PICERLStage } from './PICERLStage';
 import type { Priority } from './Priority';
 import type { TaskStatus } from './TaskStatus';
 /**
@@ -12,9 +13,10 @@ export type TaskCreate = {
     description?: (string | null);
     priority?: Priority;
     due_date?: (string | null);
-    picerl_stage?: (string | null);
+    picerl_stage?: (PICERLStage | null);
     assignee?: (string | null);
     case_id?: (number | null);
     status?: (TaskStatus | null);
     tags?: (Array<string> | null);
 };
+

@@ -61,7 +61,7 @@ import {
 const TIMELINE_ITEM_MAX_WIDTH_CLASS = 'max-w-[1024px]';
 
 type TaskTimelineItemWithTemplateMetadata = TimelineItem & {
-  picerl_stage?: string | null;
+  picerl_stage?: TaskRead['picerl_stage'];
   source_tpl?: number | null;
   case_id?: number | null;
   updated_at?: string;

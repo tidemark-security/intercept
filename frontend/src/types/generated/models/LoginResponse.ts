@@ -10,3 +10,4 @@ export type LoginResponse = {
     mustChangePassword?: boolean;
     localCredentialManagementAllowed?: boolean;
 };
+
