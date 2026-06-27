@@ -3,6 +3,7 @@ import { Button } from '@/components/buttons/Button';
 import { TextField } from '@/components/forms/TextField';
 import { AssigneeSelector } from '@/components/forms/AssigneeSelector';
 import { Badge } from '@/components/data-display/Badge';
+import { PicerlStage } from '@/components/misc/PicerlStage';
 import { Tag } from '@/components/data-display/Tag';
 import { useTimelineFormContext } from '@/contexts/TimelineFormContext';
 import { useCaseDetail } from '@/hooks/useCaseDetail';
@@ -12,21 +13,6 @@ import { useSession } from '@/contexts/sessionContext';
 import { getTimelineItems } from '@/utils/timelineHelpers';
 import type { CaseTemplateRead, TemplateTaskOverride } from '@/types/caseTemplates';
 import { AlertTriangle, CheckSquare, Square } from 'lucide-react';
-
-const PICERL_STAGE_LABELS: Record<string, string> = {
-  PREPARATION: 'Preparation',
-  IDENTIFICATION: 'Identification',
-  CONTAINMENT: 'Containment',
-  ERADICATION: 'Eradication',
-  RECOVERY: 'Recovery',
-  LESSONS_LEARNED: 'Lessons Learned',
-  Preparation: 'Preparation',
-  Identification: 'Identification',
-  Containment: 'Containment',
-  Eradication: 'Eradication',
-  Recovery: 'Recovery',
-  'Lessons Learned': 'Lessons Learned',
-};
 
 function toDatetimeLocal(value: Date): string {
   const pad = (part: number) => String(part).padStart(2, '0');
@@ -168,7 +154,7 @@ export function CaseTemplateApplyForm() {
                   <div className="flex min-w-0 flex-1 flex-col gap-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-body-bold font-body-bold text-default-font">{task.title}</span>
-                      <Badge>{PICERL_STAGE_LABELS[task.picerl_stage] ?? task.picerl_stage}</Badge>
+                      <PicerlStage stage={task.picerl_stage} />
                       {task.priority ? <Badge>{task.priority}</Badge> : null}
                     </div>
                     {task.description ? <span className="text-caption font-caption text-subtext-color">{task.description}</span> : null}

@@ -6,7 +6,7 @@ import type { RejectionCategory } from '@/types/generated/models/RejectionCatego
 import type { app__api__routes__admin_auth__UserSummary } from '@/types/generated/models/app__api__routes__admin_auth__UserSummary';
 import type { TimelineItemType } from '@/types/drafts';
 import type { UIState } from '@/utils/statusHelpers';
-import type { ClosedAlertStatus } from '@/utils/statusLabels';
+import type { LinkedAlertResolutionUpdate } from '@/hooks/useResolveLinkedAlerts';
 
 // Define a compatible user type since UserAccountRead might be missing or different
 export type UnifiedUser = app__api__routes__admin_auth__UserSummary | any;
@@ -89,7 +89,7 @@ export interface UnifiedTimelineProps {
 
   /** Handler for closing a case with linked alert closure updates and closure tags */
   onCloseCaseWithDetails?: (payload: {
-    status: ClosedAlertStatus;
+    alert_updates: LinkedAlertResolutionUpdate[];
     tags: string[];
     note?: string;
   }) => void;

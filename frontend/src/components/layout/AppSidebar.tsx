@@ -6,7 +6,6 @@ import { useViewTransitionNavigate } from "@/hooks/useViewTransitionNavigate";
 import Logo from "@/assets/TMS-logo-green.svg?react";
 
 import { DropdownMenu } from "@/components/overlays/DropdownMenu";
-import { Tooltip } from "@/components/overlays/Tooltip";
 import { ToggleGroup } from "@/components/buttons/ToggleGroup";
 import { SidebarRailWithLabels } from "@/components/navigation/SidebarRailWithLabels";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
@@ -118,28 +117,21 @@ const navigationItems: NavigationItem[] = [
   },
 ];
 
-type SidebarNavTooltipProps = React.ComponentProps<
+type SidebarNavItemProps = React.ComponentProps<
   typeof SidebarRailWithLabels.NavItem
 > & {
-  tooltip: string;
+  label: string;
 };
 
-function SidebarNavTooltip({
-  tooltip,
+function SidebarNavItem({
+  label,
   children,
   ...navItemProps
-}: SidebarNavTooltipProps) {
+}: SidebarNavItemProps) {
   return (
-    <Tooltip.Root>
-      <Tooltip.Trigger asChild>
-        <SidebarRailWithLabels.NavItem aria-label={tooltip} {...navItemProps}>
-          {children}
-        </SidebarRailWithLabels.NavItem>
-      </Tooltip.Trigger>
-      <Tooltip.Content side="right" align="center" sideOffset={8}>
-        {tooltip}
-      </Tooltip.Content>
-    </Tooltip.Root>
+    <SidebarRailWithLabels.NavItem aria-label={label} {...navItemProps}>
+      {children}
+    </SidebarRailWithLabels.NavItem>
   );
 }
 
@@ -160,7 +152,6 @@ function SidebarNotificationBadge({ counts }: SidebarBadgeGroupProps) {
     <span
       className="absolute right-0 top-0 inline-flex h-4 min-w-4 items-center justify-center border border-black bg-accent-2-primary px-1 text-[10px] font-monospace-body leading-none text-white"
       aria-hidden="true"
-      title={`Open: ${counts.open}`}
     >
       {formatBadgeCount(counts.open)}
     </span>
@@ -268,8 +259,7 @@ export function DesktopSidebar() {
   const timezoneLabel = `Timezone (${timezonePreference === "utc" ? "UTC" : "Local"})`;
 
   return (
-    <Tooltip.Provider>
-      <SidebarRailWithLabels
+    <SidebarRailWithLabels
         className="mobile:hidden"
         header={
           <>
@@ -279,8 +269,8 @@ export function DesktopSidebar() {
               height="64"
               aria-label="TMS Logo"
             />
-            <SidebarNavTooltip
-              tooltip="Search"
+            <SidebarNavItem
+              label="Search"
               icon={<Search />}
               role="button"
               tabIndex={0}
@@ -294,29 +284,22 @@ export function DesktopSidebar() {
               }
             >
               Search
-            </SidebarNavTooltip>
+            </SidebarNavItem>
           </>
         }
         footer={
           <>
             <DropdownMenu.Root>
-              <Tooltip.Root>
-                <Tooltip.Trigger asChild>
-                  <DropdownMenu.Trigger asChild>
-                    <SidebarRailWithLabels.NavItem
-                      aria-label={timezoneLabel}
-                      icon={<Clock />}
-                      role="button"
-                      tabIndex={0}
-                    >
-                      {timezoneLabel}
-                    </SidebarRailWithLabels.NavItem>
-                  </DropdownMenu.Trigger>
-                </Tooltip.Trigger>
-                <Tooltip.Content side="right" align="center" sideOffset={8}>
+              <DropdownMenu.Trigger asChild>
+                <SidebarRailWithLabels.NavItem
+                  aria-label={timezoneLabel}
+                  icon={<Clock />}
+                  role="button"
+                  tabIndex={0}
+                >
                   {timezoneLabel}
-                </Tooltip.Content>
-              </Tooltip.Root>
+                </SidebarRailWithLabels.NavItem>
+              </DropdownMenu.Trigger>
               <DropdownMenu.Content side="right" align="end" sideOffset={8}>
                 <div className="flex max-w-[256px] flex-col gap-3 px-2 py-2">
                   <span className="text-caption-bold font-caption-bold text-default-font">
@@ -382,8 +365,8 @@ export function DesktopSidebar() {
                 </div>
               </DropdownMenu.Content>
             </DropdownMenu.Root>
-            <SidebarNavTooltip
-              tooltip="Profile"
+            <SidebarNavItem
+              label="Profile"
               icon={<User />}
               role="button"
               tabIndex={0}
@@ -393,9 +376,9 @@ export function DesktopSidebar() {
               }
             >
               Profile
-            </SidebarNavTooltip>
-            <SidebarNavTooltip
-              tooltip="Logout"
+            </SidebarNavItem>
+            <SidebarNavItem
+              label="Logout"
               icon={<Lock />}
               role="button"
               tabIndex={0}
@@ -405,7 +388,7 @@ export function DesktopSidebar() {
               }
             >
               Logout
-            </SidebarNavTooltip>
+            </SidebarNavItem>
           </>
         }
       >
@@ -414,9 +397,9 @@ export function DesktopSidebar() {
           const selected = isItemSelected(item);
           const counts = item.badgeKey ? sidebarBadgeCounts?.[item.badgeKey] : undefined;
           return (
-            <SidebarNavTooltip
+            <SidebarNavItem
               key={item.key}
-              tooltip={item.label}
+              label={item.label}
               className="relative"
               icon={<SidebarIconWithBadge icon={<Icon />} counts={counts} />}
               selected={selected}
@@ -432,11 +415,10 @@ export function DesktopSidebar() {
               }
             >
               <SidebarNavLabel label={item.label} counts={counts} />
-            </SidebarNavTooltip>
+            </SidebarNavItem>
           );
         })}
       </SidebarRailWithLabels>
-    </Tooltip.Provider>
   );
 }
 

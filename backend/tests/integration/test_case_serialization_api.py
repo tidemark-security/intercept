@@ -466,7 +466,12 @@ async def test_resolve_linked_alerts_bulk_updates_open_case_alerts(
 
     response = await client.post(
         f"/api/v1/cases/{case_id}/resolve-linked-alerts",
-        json={"status": AlertStatus.CLOSED_FP.value, "note": "Case closure resolution"},
+        json={
+            "alert_updates": [
+                {"alert_id": open_alert_id, "status": AlertStatus.CLOSED_FP.value},
+            ],
+            "note": "Case closure resolution",
+        },
         cookies={"intercept_session": session_cookie},
     )
 
@@ -505,6 +510,76 @@ async def test_resolve_linked_alerts_bulk_updates_open_case_alerts(
 
 
 @pytest.mark.asyncio
+async def test_resolve_linked_alerts_applies_per_alert_statuses(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        case = Case(
+            title="Mixed resolution case",
+            description="Resolve linked alerts differently",
+            created_by="seed-user",
+        )
+        session.add(case)
+        await session.flush()
+        assert case.id is not None
+
+        true_positive = Alert(
+            title="Credential compromise",
+            description="Should close TP",
+            source="SIEM",
+            case_id=case.id,
+            status=AlertStatus.ESCALATED,
+        )
+        benign_positive = Alert(
+            title="Expected admin tool",
+            description="Should close BP",
+            source="EDR",
+            case_id=case.id,
+            status=AlertStatus.IN_PROGRESS,
+        )
+        session.add_all([true_positive, benign_positive])
+        await session.flush()
+        true_positive_id = true_positive.id
+        benign_positive_id = benign_positive.id
+        assert true_positive_id is not None
+        assert benign_positive_id is not None
+        await session.commit()
+        case_id = case.id
+
+    response = await client.post(
+        f"/api/v1/cases/{case_id}/resolve-linked-alerts",
+        json={
+            "alert_updates": [
+                {"alert_id": true_positive_id, "status": AlertStatus.CLOSED_TP.value},
+                {"alert_id": benign_positive_id, "status": AlertStatus.CLOSED_BP.value},
+            ],
+            "note": "Mixed case closure resolution",
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["updated_count"] == 2
+    assert {alert["id"] for alert in payload["updated_alerts"]} == {
+        true_positive_id,
+        benign_positive_id,
+    }
+
+    async with session_maker() as session:
+        true_positive = await session.get(Alert, true_positive_id)
+        benign_positive = await session.get(Alert, benign_positive_id)
+        assert true_positive is not None
+        assert benign_positive is not None
+        assert true_positive.status == AlertStatus.CLOSED_TP
+        assert benign_positive.status == AlertStatus.CLOSED_BP
+
+
+@pytest.mark.asyncio
 async def test_resolve_linked_alerts_rejects_non_closed_status(
     client: AsyncClient,
     session_maker: Any,
@@ -519,15 +594,139 @@ async def test_resolve_linked_alerts_rejects_non_closed_status(
             created_by="seed-user",
         )
         session.add(case)
-        await session.commit()
+        await session.flush()
         case_id = case.id
         assert case_id is not None
+        alert = Alert(
+            title="Open linked alert",
+            description="Should reject invalid resolution",
+            source="SIEM",
+            case_id=case_id,
+            status=AlertStatus.ESCALATED,
+        )
+        session.add(alert)
+        await session.flush()
+        alert_id = alert.id
+        assert alert_id is not None
+        await session.commit()
 
     response = await client.post(
         f"/api/v1/cases/{case_id}/resolve-linked-alerts",
-        json={"status": AlertStatus.IN_PROGRESS.value},
+        json={
+            "alert_updates": [
+                {"alert_id": alert_id, "status": AlertStatus.IN_PROGRESS.value},
+            ],
+        },
         cookies={"intercept_session": session_cookie},
     )
 
     assert response.status_code == 400
     assert response.json()["detail"] == "status must be a closed alert resolution"
+
+
+@pytest.mark.asyncio
+async def test_resolve_linked_alerts_rejects_alerts_from_other_cases(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        case = Case(
+            title="Owning case",
+            description="Should reject foreign alerts",
+            created_by="seed-user",
+        )
+        other_case = Case(
+            title="Foreign case",
+            description="Owns the rejected alert",
+            created_by="seed-user",
+        )
+        session.add_all([case, other_case])
+        await session.flush()
+        assert case.id is not None
+        assert other_case.id is not None
+
+        foreign_alert = Alert(
+            title="Foreign alert",
+            description="Must not close",
+            source="SIEM",
+            case_id=other_case.id,
+            status=AlertStatus.ESCALATED,
+        )
+        session.add(foreign_alert)
+        await session.flush()
+        foreign_alert_id = foreign_alert.id
+        assert foreign_alert_id is not None
+        await session.commit()
+        case_id = case.id
+
+    response = await client.post(
+        f"/api/v1/cases/{case_id}/resolve-linked-alerts",
+        json={
+            "alert_updates": [
+                {"alert_id": foreign_alert_id, "status": AlertStatus.CLOSED_FP.value},
+            ],
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "alert_updates contains alerts not linked to this case"
+
+    async with session_maker() as session:
+        foreign_alert = await session.get(Alert, foreign_alert_id)
+        assert foreign_alert is not None
+        assert foreign_alert.status == AlertStatus.ESCALATED
+
+
+@pytest.mark.asyncio
+async def test_resolve_linked_alerts_rejects_already_closed_alerts(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        case = Case(
+            title="Closed alert case",
+            description="Should reject closed alert overwrite",
+            created_by="seed-user",
+        )
+        session.add(case)
+        await session.flush()
+        assert case.id is not None
+
+        closed_alert = Alert(
+            title="Closed linked alert",
+            description="Must not be overwritten",
+            source="SIEM",
+            case_id=case.id,
+            status=AlertStatus.CLOSED_TP,
+        )
+        session.add(closed_alert)
+        await session.flush()
+        closed_alert_id = closed_alert.id
+        assert closed_alert_id is not None
+        await session.commit()
+        case_id = case.id
+
+    response = await client.post(
+        f"/api/v1/cases/{case_id}/resolve-linked-alerts",
+        json={
+            "alert_updates": [
+                {"alert_id": closed_alert_id, "status": AlertStatus.CLOSED_FP.value},
+            ],
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "alert_updates contains already closed alerts"
+
+    async with session_maker() as session:
+        closed_alert = await session.get(Alert, closed_alert_id)
+        assert closed_alert is not None
+        assert closed_alert.status == AlertStatus.CLOSED_TP

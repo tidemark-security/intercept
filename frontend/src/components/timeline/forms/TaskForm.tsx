@@ -9,6 +9,7 @@ import React from "react";
 import type { TaskItem } from '@/types/generated/models/TaskItem';
 import type { TaskStatus } from '@/types/generated/models/TaskStatus';
 import type { Priority } from '@/types/generated/models/Priority';
+import { PICERL_STAGES, PICERL_STAGE_LABELS } from '@/types/caseTemplates';
 
 import { Select } from "@/components/forms/Select";
 import { TextArea } from "@/components/forms/TextArea";
@@ -24,6 +25,9 @@ import { useUsers } from "@/hooks/useUsers";
 import { useSession } from "@/contexts/sessionContext";
 
 import { CheckSquare } from 'lucide-react';
+
+const PICERL_UNSET_VALUE = "__none__";
+
 export interface AddTaskFormProps {
   initialData?: TaskItem;
 }
@@ -46,6 +50,7 @@ export function AddTaskForm({ initialData }: AddTaskFormProps) {
     description: string;
     status: string;
     priority: string;
+    picerlStage: string;
     assignee: string;
     dueDate: string;
     timestamp: string;
@@ -57,6 +62,7 @@ export function AddTaskForm({ initialData }: AddTaskFormProps) {
       description: '',
       status: 'TODO',
       priority: 'MEDIUM',
+      picerlStage: '',
       assignee: '',
       dueDate: '',
       timestamp: '',
@@ -67,6 +73,7 @@ export function AddTaskForm({ initialData }: AddTaskFormProps) {
       description: data.description || '',
       status: data.status || 'TODO',
       priority: data.priority || 'MEDIUM',
+      picerlStage: data.picerl_stage || '',
       assignee: data.assignee || '',
       dueDate: data.due_date || '',
       timestamp: data.timestamp || '',
@@ -81,6 +88,7 @@ export function AddTaskForm({ initialData }: AddTaskFormProps) {
         description: description ? state.description : null,
         status: state.status as TaskStatus,
         priority: state.priority as Priority,
+        picerl_stage: state.picerlStage || null,
         assignee: state.assignee ? state.assignee : null,
         due_date: state.dueDate ? state.dueDate : null,
         timestamp: state.timestamp || undefined,
@@ -161,6 +169,26 @@ export function AddTaskForm({ initialData }: AddTaskFormProps) {
         <Select.Item value="DONE">Done</Select.Item>
       </Select>
 
+      <Select
+        className="h-auto w-full flex-none"
+        label="PICERL Stage"
+        helpText="Incident response phase for this task"
+        value={formState.picerlStage || PICERL_UNSET_VALUE}
+        onValueChange={(picerlStage) =>
+          setFormState({
+            ...formState,
+            picerlStage: picerlStage === PICERL_UNSET_VALUE ? "" : picerlStage,
+          })
+        }
+      >
+        <Select.Item value={PICERL_UNSET_VALUE}>N/A</Select.Item>
+        {PICERL_STAGES.map((stage) => (
+          <Select.Item key={stage} value={stage}>
+            {PICERL_STAGE_LABELS[stage]}
+          </Select.Item>
+        ))}
+      </Select>
+
       <PrioritySelector
         className="h-auto w-full flex-none"
         label="Priority"
@@ -181,7 +209,7 @@ export function AddTaskForm({ initialData }: AddTaskFormProps) {
           onAssignToMe={() => setFormState({ ...formState, assignee: user?.username || "" })}
           onAssignToUser={(username) => setFormState({ ...formState, assignee: username })}
           className="w-full"
-          dropdownClassName="shadow-none bg-black w-[var(--radix-dropdown-menu-trigger-width)]"
+          dropdownClassName="shadow-none w-[var(--radix-dropdown-menu-trigger-width)]"
         />
       </div>
 

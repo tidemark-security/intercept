@@ -6,6 +6,7 @@ import { PaginationFooter } from '@/components/navigation/PaginationFooter';
 import type { EntityListProps } from './EntityList.types';
 import type { FilterState } from '@/types/filters';
 import { useTheme } from '@/contexts/ThemeContext';
+import { Checkbox } from '@tidemark-security/ux';
 
 /**
  * EntityList - Generic component for displaying paginated list of entities with filtering
@@ -92,15 +93,12 @@ export function EntityList<T, F = FilterState>({
       <div className="flex w-full grow shrink-0 basis-0 flex-col items-start gap-3 p-6 mobile:p-2 overflow-auto">
         {selectable && hasItems && (
           <div className="flex w-full items-center gap-3 border-b border-solid border-neutral-border pb-3">
-            <input
-              type="checkbox"
+            <Checkbox
               aria-label="Select visible alerts"
               checked={allVisibleSelected}
-              ref={(input) => {
-                if (input) input.indeterminate = someVisibleSelected;
-              }}
-              onChange={(event) => onSelectVisible?.(event.target.checked, visibleIds)}
-              className="h-4 w-4 shrink-0"
+              indeterminate={someVisibleSelected}
+              onCheckedChange={(checked) => onSelectVisible?.(checked, visibleIds)}
+              size="small"
             />
             <span className="text-caption font-caption text-subtext-color">
               {selectedIds?.size ? `${selectedIds.size} selected` : 'Select visible alerts'}
@@ -172,13 +170,13 @@ export function EntityList<T, F = FilterState>({
             return (
               <div key={id} className="flex w-full items-start gap-3">
                 {selectable && (
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     aria-label={`Select ${humanId}`}
                     checked={isRowSelected}
-                    onChange={(event) => onSelectionChange?.(id, event.target.checked)}
+                    onCheckedChange={(checked) => onSelectionChange?.(id, checked)}
                     onClick={(event) => event.stopPropagation()}
-                    className="mt-4 h-4 w-4 shrink-0"
+                    className="mt-4"
+                    size="small"
                   />
                 )}
                 <div className="min-w-0 flex-1">

@@ -228,7 +228,7 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
               interactive
             ) : null}
             {lineValue ? (
-              <span className={textClassName}>
+              <span className={cn("min-w-0 flex-1", textClassName)}>
                 {lineValue}
               </span>
             ) : null}
@@ -263,11 +263,11 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
         <div className={cn("flex w-full items-center gap-2", {
           "gap-1": size === "small"
         })}>
-          <div className="flex grow shrink-0 basis-0 items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
             {title ? (
               <span
                 className={cn(
-                  "line-clamp-1 grow shrink-0 basis-0 break-words text-heading-3 font-heading-3 text-default-font",
+                  "min-w-0 flex-1 truncate text-heading-3 font-heading-3 text-default-font",
                   { "text-default-font": system === "warning" }
                 )}
                 onMouseEnter={isCopyEnabled("title", titleText) ? () => setHoveredTarget("title") : undefined}
@@ -337,9 +337,10 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
               "flex w-full items-center gap-2 overflow-hidden",
               cn("text-body font-body text-subtext-color", { hidden: size === "small" }),
               cn(
-                "line-clamp-2 break-words text-body-bold font-body-bold text-default-font",
+                "text-body-bold font-body-bold text-default-font",
                 {
-                  "text-caption-bold font-caption-bold": size === "small",
+                  "line-clamp-2 break-words": size !== "small",
+                  "truncate text-caption-bold font-caption-bold": size === "small",
                   "text-default-font": system === "warning",
                 }
               ),

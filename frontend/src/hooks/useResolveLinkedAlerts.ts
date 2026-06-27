@@ -5,8 +5,13 @@ import type { AlertBulkActionResponse } from '@/types/generated/models/AlertBulk
 import type { ClosedAlertStatus } from '@/utils/statusLabels';
 import { queryKeys } from './queryKeys';
 
-export interface ResolveLinkedAlertsRequest {
+export interface LinkedAlertResolutionUpdate {
+  alert_id: number;
   status: ClosedAlertStatus;
+}
+
+export interface ResolveLinkedAlertsRequest {
+  alert_updates: LinkedAlertResolutionUpdate[];
   note?: string;
 }
 

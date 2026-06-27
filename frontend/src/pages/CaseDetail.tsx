@@ -13,6 +13,7 @@ import { convertHumanIdToNumeric } from "@/utils/caseHelpers";
 import { useUsers } from "@/hooks/useUsers";
 import { useUpdateCase } from "@/hooks/useUpdateCase";
 import { useResolveLinkedAlerts } from "@/hooks/useResolveLinkedAlerts";
+import type { LinkedAlertResolutionUpdate } from "@/hooks/useResolveLinkedAlerts";
 import { useUpdateTimelineItem } from "@/hooks/useUpdateTimelineItem";
 import { useDeleteTimelineItem } from "@/hooks/useDeleteTimelineItem";
 import { useQuickTerminalSubmit } from "@/hooks/useQuickTerminalSubmit";
@@ -31,7 +32,6 @@ import type { TaskRead } from '@/types/generated/models/TaskRead';
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { NotFoundError } from "@/pages/NotFoundError";
 import { AiChat } from "@/components/ai";
-import type { ClosedAlertStatus } from "@/utils/statusLabels";
 
 /**
  * Case Detail Page - View and edit a specific case
@@ -237,20 +237,29 @@ function CaseDetailPage() {
   }, [openDockForEdit, switchToColumnOnMobile]);
 
   const handleCloseCaseWithDetails = useCallback((payload: {
-    status: ClosedAlertStatus;
+    alert_updates: LinkedAlertResolutionUpdate[];
     tags: string[];
     note?: string;
   }) => {
     if (!selectedCaseId) return;
 
-    resolveLinkedAlertsMutation.mutateAsync({
-      status: payload.status,
-      note: payload.note,
-    }).then(() => {
+    const closeCase = () => {
       updateCaseMutation.mutate({
         status: 'CLOSED',
         tags: payload.tags,
       });
+    };
+
+    if (payload.alert_updates.length === 0) {
+      closeCase();
+      return;
+    }
+
+    resolveLinkedAlertsMutation.mutateAsync({
+      alert_updates: payload.alert_updates,
+      note: payload.note,
+    }).then(() => {
+      closeCase();
     }).catch(() => {
       // Error handling is centralized in the mutation's onError callback.
     });

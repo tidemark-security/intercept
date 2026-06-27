@@ -1,18 +1,19 @@
 "use client";
 
-import React, { useMemo, RefObject } from "react";
-import { useScrollHide } from "@/hooks/useScrollHide";
+import React, { RefObject } from "react";
+import { useBreakpointContext } from "@/contexts/BreakpointContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { cn } from "@/utils/cn";
 import { Button } from "@/components/buttons/Button";
 import { IconButton } from "@/components/buttons/IconButton";
 import { LinkButton } from "@/components/timeline/LinkButton";
 import { DropdownMenu, DropdownMenuRoot, DropdownMenuTrigger, DropdownMenuContent } from "@/components/overlays/DropdownMenu";
-import { Priority } from "@/components/misc/Priority";
 import { AssigneeSelector } from "@/components/forms/AssigneeSelector";
 import { TimelineFilter } from "@/components/timeline/TimelineFilter";
+import { AdaptiveToggleLabel } from "@/components/timeline/AdaptiveToggleLabel";
 import { CaseClosureModal } from "@/components/entities/CaseClosureModal";
 import { TriageRejectionDialog } from "@/components/triage/TriageRejectionDialog";
+import { ToggleGroup } from "@/components/buttons/ToggleGroup";
 
 import type { AlertStatus } from "@/types/generated/models/AlertStatus";
 import type { AcceptRecommendationRequest } from "@/types/generated/models/AcceptRecommendationRequest";
@@ -26,15 +27,21 @@ import type { PICERLStage } from "@/types/caseTemplates";
 import type { GeneratedLink } from "@/utils/linkTemplates";
 import type { UIState } from "@/utils/statusHelpers";
 import { ALERT_STATUS_LABELS } from "@/utils/statusLabels";
-import type { ClosedAlertStatus } from "@/utils/statusLabels";
+import type { LinkedAlertResolutionUpdate } from "@/hooks/useResolveLinkedAlerts";
 
-import { ArrowRight, ArrowUp, Check, CheckCircle, ChevronLeft, Columns3, Copy, Edit2, HelpCircle, Link, Link2Off, List, Network, Users, X, XCircle } from 'lucide-react';
+import { ArrowRight, Check, CheckCircle, ChevronLeft, Columns3, Copy, Edit2, HelpCircle, Link, Link2Off, List, Network, SlidersHorizontal, Users, X, XCircle } from 'lucide-react';
 // Unified status type that works for alerts, cases, and tasks (API format: UPPERCASE)
 export type EntityStatus = AlertStatus | CaseStatus | TaskStatus;
 
 // Entity type to determine UI behavior
 export type EntityType = 'alert' | 'case' | 'task';
 export type TimelineViewMode = 'timeline' | 'graph' | 'swimlane';
+
+const TIMELINE_MODE_ITEM_CLASS_NAME = "min-w-0 flex-1 justify-center [&>span]:min-w-0 [&>span]:text-left";
+
+function getSharedLabelIndex(keys: readonly string[], labelIndexes: Record<string, number>): number {
+  return keys.reduce((sharedIndex, key) => Math.max(sharedIndex, labelIndexes[key] ?? 0), 0);
+}
 
 // Timeline filter types
 export type SortOption = 'created_at' | 'timestamp';
@@ -77,7 +84,7 @@ interface EntityHeaderRootProps
   // onCloseAlert receives UIState (lowercase) values - caller should convert to API format
   onCloseAlert?: (status: UIState) => void;
   onCloseCaseWithDetails?: (payload: {
-    status: ClosedAlertStatus;
+    alert_updates: LinkedAlertResolutionUpdate[];
     tags: string[];
     note?: string;
   }) => void;
@@ -130,14 +137,14 @@ const EntityHeaderRoot = React.forwardRef<
   EntityHeaderRootProps
 >(function EntityHeaderRoot(
   {
-    createdDate,
-    updatedDate,
+    createdDate: _createdDate,
+    updatedDate: _updatedDate,
     id,
     description,
     entityType = 'alert',
     status,
     assignee,
-    priority,
+    priority: _priority,
     caseId,
     currentUser,
     users = [],
@@ -182,7 +189,7 @@ const EntityHeaderRoot = React.forwardRef<
     onExpandLinkedEntityCards,
     showBackButton = false,
     onBackClick,
-    scrollContainerRef,
+    scrollContainerRef: _scrollContainerRef,
     linkedCaseAlerts = [],
     linkedTaskCount = 0,
     caseTags = [],
@@ -193,6 +200,7 @@ const EntityHeaderRoot = React.forwardRef<
   ref
 ) {
   const { resolvedTheme } = useTheme();
+  const { isMobile, isTablet } = useBreakpointContext();
   const isDarkTheme = resolvedTheme === "dark";
 
   const isAlert = entityType === 'alert';
@@ -200,13 +208,7 @@ const EntityHeaderRoot = React.forwardRef<
   const isTask = entityType === 'task';
   const isReadOnly = mode === 'readonly';
   const isEditable = mode === 'editable';
-
-  // Hook for hiding header elements on scroll (mobile only)
-  const { isVisible } = useScrollHide({
-    scrollContainerRef: scrollContainerRef || { current: null },
-    threshold: 10,
-    mobileOnly: true,
-  });
+  const isCompactHeader = isMobile || isTablet;
 
   // Determine if entity is closed (works for alerts, cases, and tasks)
   // Status prop comes from API in UPPERCASE format
@@ -227,36 +229,35 @@ const EntityHeaderRoot = React.forwardRef<
   const [isTriageRejectDialogOpen, setIsTriageRejectDialogOpen] = React.useState(false);
   const showAssignmentControls = Boolean(onAssignToMe || onAssignToUser || onUnassign);
 
-  // Detect mobile screen size
-  const [isMobile, setIsMobile] = React.useState(false);
-
-  React.useEffect(() => {
-    const checkMobile = () => {
-      setIsMobile(window.innerWidth < 768);
-    };
-    
-    checkMobile();
-    window.addEventListener('resize', checkMobile);
-    
-    return () => window.removeEventListener('resize', checkMobile);
+  const buttonSize = isCompactHeader ? "small" : "medium";
+  const shouldShowTimelineViewToggle = showTimelineViewToggle && Boolean(onTimelineViewModeChange);
+  const timelineModeLabelKeys = React.useMemo(() => ['timeline', 'graph', 'swimlane'], []);
+  const [timelineModeLabelIndexes, setTimelineModeLabelIndexes] = React.useState<Record<string, number>>({});
+  const timelineModeLabelIndex = getSharedLabelIndex(timelineModeLabelKeys, timelineModeLabelIndexes);
+  const updateTimelineModeLabelIndex = React.useCallback((key: string, labelIndex: number) => {
+    setTimelineModeLabelIndexes((current) => (
+      current[key] === labelIndex ? current : { ...current, [key]: labelIndex }
+    ));
   }, []);
 
-  const buttonSize = isMobile ? "small" : "medium";
-  const assigneeSize = isMobile ? "small" : "medium";
-  const shouldShowTimelineViewToggle = showTimelineViewToggle && Boolean(onTimelineViewModeChange);
-  const viewToggleItemClassName = buttonSize === "medium"
-    ? "min-w-[112px] flex-1 justify-center self-stretch"
-    : "flex-1 justify-center self-stretch";
+  React.useEffect(() => {
+    const resetAdaptiveLabelIndexes = () => {
+      setTimelineModeLabelIndexes({});
+    };
+
+    window.addEventListener('resize', resetAdaptiveLabelIndexes);
+    return () => window.removeEventListener('resize', resetAdaptiveLabelIndexes);
+  }, []);
 
   // Determine button labels based on entity type
-  const closeButtonLabel = isTask 
-    ? "Close Task" 
-    : isCase 
-      ? "Close Case" 
-      : "Close Alert";
+  const closeButtonLabel = isTask
+    ? "Close Task"
+    : isCase
+      ? "Close Case..."
+      : "Close Alert...";
   const reopenButtonLabel = isTask
     ? (buttonSize === "medium" ? "Re-Open Task" : "Re-Open")
-    : isCase 
+    : isCase
       ? (buttonSize === "medium" ? "Re-Open Case" : "Re-Open")
       : (buttonSize === "medium" ? "Re-Open Alert" : "Re-Open");
 
@@ -295,16 +296,334 @@ const EntityHeaderRoot = React.forwardRef<
     onPrimaryAction?.();
   };
 
+  const renderPresence = () => presenceText ? (
+    <div className="flex max-w-[38rem] items-center gap-1.5 text-right text-caption-bold font-caption-bold text-subtext-color" aria-live="polite">
+      <Users className="h-3.5 w-3.5 flex-none" />
+      <span className="min-w-0 truncate">{presenceText}</span>
+    </div>
+  ) : null;
+
+  const renderTimelineViewToggle = (variant: "desktop" | "compact") => {
+    if (!shouldShowTimelineViewToggle) {
+      return null;
+    }
+
+    return (
+      <ToggleGroup
+        value={timelineViewMode}
+        variant="compact-button"
+        className={cn(
+          "max-w-full border border-neutral-border",
+          variant === "compact" ? "w-full" : "w-80",
+        )}
+        onValueChange={(value: string) => {
+          if (value === 'timeline' || value === 'graph' || value === 'swimlane') {
+            onTimelineViewModeChange?.(value);
+          }
+        }}
+      >
+        <ToggleGroup.Item
+          icon={<List />}
+          value="timeline"
+          aria-label="Timeline"
+          tooltip={timelineModeLabelIndex > 0 ? "Timeline" : undefined}
+          className={cn(TIMELINE_MODE_ITEM_CLASS_NAME, timelineModeLabelIndex >= 1 && "gap-0")}
+        >
+          <AdaptiveToggleLabel
+            labels={['Timeline']}
+            labelIndex={timelineModeLabelIndex}
+            onLabelIndexChange={(labelIndex) => updateTimelineModeLabelIndex('timeline', labelIndex)}
+            srLabel="Timeline"
+          />
+        </ToggleGroup.Item>
+        <ToggleGroup.Item
+          disabled={graphViewDisabled}
+          icon={<Network />}
+          value="graph"
+          aria-label="Graph"
+          tooltip={timelineModeLabelIndex > 0 ? "Graph" : undefined}
+          className={cn(TIMELINE_MODE_ITEM_CLASS_NAME, timelineModeLabelIndex >= 1 && "gap-0")}
+        >
+          <AdaptiveToggleLabel
+            labels={['Graph']}
+            labelIndex={timelineModeLabelIndex}
+            onLabelIndexChange={(labelIndex) => updateTimelineModeLabelIndex('graph', labelIndex)}
+            srLabel="Graph"
+          />
+        </ToggleGroup.Item>
+        <ToggleGroup.Item
+          disabled={swimlaneViewDisabled}
+          icon={<Columns3 />}
+          value="swimlane"
+          aria-label="Swimlane"
+          tooltip={timelineModeLabelIndex > 0 ? "Swimlane" : undefined}
+          className={cn(TIMELINE_MODE_ITEM_CLASS_NAME, timelineModeLabelIndex >= 1 && "gap-0")}
+        >
+          <AdaptiveToggleLabel
+            labels={['Swimlane']}
+            labelIndex={timelineModeLabelIndex}
+            onLabelIndexChange={(labelIndex) => updateTimelineModeLabelIndex('swimlane', labelIndex)}
+            srLabel="Swimlane"
+          />
+        </ToggleGroup.Item>
+      </ToggleGroup>
+    );
+  };
+
+  const renderTimelineFilter = (variant: "desktop" | "compact") => (
+    showTimelineFilter && onSortChange && onTypeChange ? (
+      <TimelineFilter
+        items={timelineItems}
+        selectedType={selectedType}
+        onTypeChange={onTypeChange}
+        sortBy={sortBy}
+        sortDirection={sortDirection}
+        onSortChange={onSortChange}
+        groupSimilar={groupSimilar}
+        onGroupSimilarChange={onGroupSimilarChange}
+        picerlStages={picerlStages}
+        selectedPICERLStage={selectedPICERLStage}
+        onPICERLStageChange={onPICERLStageChange}
+        hasLinkedEntityCards={hasLinkedEntityCards}
+        onCollapseLinkedEntityCards={onCollapseLinkedEntityCards}
+        onExpandLinkedEntityCards={onExpandLinkedEntityCards}
+        buttonSize={variant === "desktop" ? "medium" : "small"}
+        className={variant === "compact" ? "border-t-0 pt-0" : undefined}
+        disabled={timelineItems.length === 0}
+        rightContent={renderPresence()}
+        leadingContent={renderTimelineViewToggle(variant)}
+      />
+    ) : null
+  );
+
+  const renderHeaderActions = (variant: "desktop" | "compact") => {
+    const compact = variant === "compact";
+    const controlButtonClassName = compact ? "h-8 w-full" : "h-auto w-auto flex-none self-stretch";
+    const linkButtonClassName = compact ? "h-8 flex-1" : "h-auto w-auto flex-none self-stretch";
+    const controlGroupClassName = compact
+      ? "flex w-full min-w-0 items-center justify-stretch gap-2"
+      : "flex flex-none items-center justify-end gap-2 self-stretch";
+    const customLinksClassName = compact
+      ? "flex w-full min-w-0 items-center justify-stretch gap-1"
+      : "flex flex-none items-center justify-end gap-1 self-stretch";
+    const actionsButtonSize = compact ? "small" : "medium";
+    const actionsAssigneeSize = compact ? "small" : "medium";
+
+    return (
+      <div
+        className={cn(
+          "flex min-h-9 flex-wrap items-stretch justify-end gap-2",
+          compact ? "w-full justify-stretch" : "flex",
+        )}
+      >
+        {isAlert && isEscalated && onUnlinkFromCase && (
+          <Button
+            className={controlButtonClassName}
+            variant="neutral-secondary"
+            size={actionsButtonSize}
+            icon={<Link2Off />}
+            onClick={onUnlinkFromCase}
+            disabled={isUpdating}
+          >
+            {compact ? "Unlink" : "Unlink from Case"}
+          </Button>
+        )}
+        {customLinks.length > 0 ? (
+          <div className={customLinksClassName}>
+            {customLinks.map((link) => (
+              <LinkButton
+                key={link.id}
+                href={link.url}
+                icon={link.icon}
+                tooltip={link.tooltip || link.name}
+                size={actionsButtonSize}
+                variant="brand-tertiary"
+                className={linkButtonClassName}
+              />
+            ))}
+          </div>
+        ) : null}
+        {showAssignmentControls && (
+          <div className={controlGroupClassName}>
+            <AssigneeSelector
+              mode="assign"
+              size={actionsAssigneeSize}
+              className={actionsAssigneeSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
+              currentAssignee={assignee || null}
+              currentUser={currentUser || null}
+              users={users}
+              isLoadingUsers={isLoadingUsers}
+              disabled={isUpdating}
+              onUnassign={onUnassign}
+              onAssignToMe={onAssignToMe}
+              onAssignToUser={onAssignToUser}
+            />
+          </div>
+        )}
+        {(showCloseReopenButtons || showPrimaryAction) && (
+          <div className={controlGroupClassName}>
+            {onEdit && (
+              <Button
+                className={controlButtonClassName}
+                variant="neutral-secondary"
+                size={actionsButtonSize}
+                icon={<Edit2 />}
+                onClick={onEdit}
+                disabled={isUpdating}
+              >
+                Edit
+              </Button>
+            )}
+            {showCloseReopenButtons && (
+              <>
+                {isClosed ? (
+                  <Button
+                    className={controlButtonClassName}
+                    variant="brand-primary"
+                    size={actionsButtonSize}
+                    icon={<Check />}
+                    onClick={onReopenAlert}
+                    disabled={isUpdating}
+                  >
+                    {reopenButtonLabel}
+                  </Button>
+                ) : isCase ? (
+                  <Button
+                    className={controlButtonClassName}
+                    variant="neutral-secondary"
+                    size={actionsButtonSize}
+                    icon={<X />}
+                    disabled={isUpdating}
+                    onClick={() => {
+                      if (onCloseCaseWithDetails) {
+                        setIsCaseClosureModalOpen(true);
+                        return;
+                      }
+                      onCloseAlert?.("closed");
+                    }}
+                  >
+                    {compact ? "Close" : closeButtonLabel}
+                  </Button>
+                ) : (
+                  <DropdownMenuRoot modal={false}>
+                    <DropdownMenuTrigger asChild={true}>
+                      <Button
+                        className={controlButtonClassName}
+                        variant="neutral-secondary"
+                        size={actionsButtonSize}
+                        icon={<X />}
+                        disabled={isUpdating}
+                      >
+                        {compact ? "Close" : closeButtonLabel}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent side="bottom" align="start" sideOffset={4}>
+                      {isAlert ? (
+                        <>
+                          <DropdownMenu.DropdownItem
+                            icon={<Check />}
+                            label={ALERT_STATUS_LABELS.CLOSED_TP}
+                            onClick={() => onCloseAlert?.("closed_true_positive")}
+                          />
+                          <DropdownMenu.DropdownItem
+                            icon={<CheckCircle />}
+                            label={ALERT_STATUS_LABELS.CLOSED_BP}
+                            onClick={() => onCloseAlert?.("closed_benign_positive")}
+                          />
+                          <DropdownMenu.DropdownItem
+                            icon={<XCircle />}
+                            label={ALERT_STATUS_LABELS.CLOSED_FP}
+                            onClick={() => onCloseAlert?.("closed_false_positive")}
+                          />
+                          <DropdownMenu.DropdownItem
+                            icon={<HelpCircle />}
+                            label={ALERT_STATUS_LABELS.CLOSED_UNRESOLVED}
+                            onClick={() => onCloseAlert?.("closed_unresolved")}
+                          />
+                          <DropdownMenu.DropdownItem
+                            icon={<Copy />}
+                            label={ALERT_STATUS_LABELS.CLOSED_DUPLICATE}
+                            onClick={() => onCloseAlert?.("closed_duplicate")}
+                          />
+                        </>
+                      ) : (
+                        <DropdownMenu.DropdownItem
+                          icon={<Check />}
+                          label="Mark as Done"
+                          onClick={() => onCloseAlert?.("tsk_done" as UIState)}
+                        />
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenuRoot>
+                )}
+              </>
+            )}
+            {isAlert && !isEscalated && !isClosed && onLinkToCase && (
+              <Button
+                className={controlButtonClassName}
+                variant="neutral-secondary"
+                size={actionsButtonSize}
+                icon={<Link />}
+                onClick={onLinkToCase}
+                disabled={isUpdating}
+              >
+                {compact ? "Link" : "Link to Case"}
+              </Button>
+            )}
+            {showAiEscalationDecision ? (
+              <>
+                <Button
+                  className={controlButtonClassName}
+                  variant="destructive-secondary"
+                  size={actionsButtonSize}
+                  icon={<X />}
+                  onClick={() => setIsTriageRejectDialogOpen(true)}
+                  disabled={isUpdating || isAcceptingRecommendation || isRejectingRecommendation}
+                  loading={isRejectingRecommendation}
+                >
+                  {compact ? "Reject AI" : "Escalate to Case (Reject AI)"}
+                </Button>
+                <Button
+                  className={controlButtonClassName}
+                  size={actionsButtonSize}
+                  iconRight={<ArrowRight />}
+                  onClick={handleAcceptAiEscalation}
+                  disabled={isUpdating || isAcceptingRecommendation || isRejectingRecommendation}
+                  loading={isAcceptingRecommendation}
+                >
+                  {compact ? "Accept AI" : "Escalate to Case (Accept AI)"}
+                </Button>
+              </>
+            ) : showPrimaryAction && onPrimaryAction && (
+              <Button
+                className={controlButtonClassName}
+                size={actionsButtonSize}
+                iconRight={<ArrowRight />}
+                onClick={onPrimaryAction}
+                disabled={isUpdating}
+              >
+                {primaryActionLabel}
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div
-      className={"flex w-full flex-col flex-wrap items-center gap-2 mobile:gap-0"}
+      className={cn("flex w-full flex-col flex-wrap items-center gap-2 mobile:gap-0", className)}
       ref={ref}
       {...otherProps}
     >
       <div className="flex w-full flex-wrap items-center gap-4 mobile:gap-2 ">
-        <div className="flex min-w-[288px] grow shrink-0 basis-0 flex-col items-start gap-1 ">
+        <div className={cn(
+          "flex grow shrink-0 basis-0 flex-col items-start gap-1",
+          isCompactHeader ? "min-w-0" : "min-w-[288px]",
+        )}>
           {/* Row with back button and ID/description block */}
-          <div className={`flex w-full items-start gap-2 mobile:border-b mobile:border-solid mobile:border-neutral-border mobile:pb-2 mobile:transition-all mobile:duration-300 ${!isVisible ? 'mobile:border-transparent mobile:pb-0' : ''}`}>
+          <div className="flex w-full items-start gap-2">
             {/* Mobile back button */}
             {showBackButton && onBackClick && (
               <div className="hidden mobile:flex">
@@ -316,7 +635,7 @@ const EntityHeaderRoot = React.forwardRef<
                 />
               </div>
             )}
-            
+
             {/* ID and Description block */}
             <div className="flex flex-col gap-1 flex-1 mobile:gap-0">
               {id ? (
@@ -326,7 +645,7 @@ const EntityHeaderRoot = React.forwardRef<
                   </span>
                 </div>
               ) : null}
-              
+
               {/* Description */}
               {description ? (
                 <div className={isDarkTheme ? "w-full text-body font-body text-brand-primary" : "w-full text-body font-body text-black"}>
@@ -337,300 +656,37 @@ const EntityHeaderRoot = React.forwardRef<
           </div>
 
         </div>
-        {/* Action Buttons */}
-        <div className={`flex min-h-9 flex-wrap items-stretch justify-end gap-2 mobile:w-full mobile:justify-stretch mobile:transition-all mobile:duration-300 ${!isVisible ? 'mobile:opacity-0 mobile:pointer-events-none mobile:h-0 mobile:overflow-hidden' : 'mobile:opacity-100'}`}>
-          {shouldShowTimelineViewToggle && (
-            <div className="flex h-9 w-fit max-w-full flex-none self-stretch rounded-md border border-solid border-neutral-border bg-default-background p-0.5 mobile:h-8 mobile:w-full">
-              <button
-                type="button"
-                className={cn(
-                  'flex h-full cursor-pointer items-center gap-2 rounded-md border border-solid px-2 text-caption-bold font-caption-bold disabled:cursor-default disabled:opacity-50',
-                  viewToggleItemClassName,
-                  timelineViewMode === 'timeline'
-                    ? 'border-brand-700 bg-brand-primary text-black'
-                    : 'border-transparent bg-transparent text-subtext-color hover:bg-neutral-100 hover:text-default-font'
-                )}
-                onClick={() => onTimelineViewModeChange?.('timeline')}
-              >
-                <List className="h-4 w-4 flex-none" />
-                Timeline
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  'flex h-full cursor-pointer items-center gap-2 rounded-md border border-solid px-2 text-caption-bold font-caption-bold disabled:cursor-default disabled:opacity-50',
-                  viewToggleItemClassName,
-                  timelineViewMode === 'graph'
-                    ? 'border-brand-700 bg-brand-primary text-black'
-                    : 'border-transparent bg-transparent text-subtext-color hover:bg-neutral-100 hover:text-default-font'
-                )}
-                disabled={graphViewDisabled}
-                onClick={() => onTimelineViewModeChange?.('graph')}
-              >
-                <Network className="h-4 w-4 flex-none" />
-                Graph
-              </button>
-              <button
-                type="button"
-                className={cn(
-                  'flex h-full cursor-pointer items-center gap-2 rounded-md border border-solid px-2 text-caption-bold font-caption-bold disabled:cursor-default disabled:opacity-50',
-                  viewToggleItemClassName,
-                  timelineViewMode === 'swimlane'
-                    ? 'border-brand-700 bg-brand-primary text-black'
-                    : 'border-transparent bg-transparent text-subtext-color hover:bg-neutral-100 hover:text-default-font'
-                )}
-                disabled={swimlaneViewDisabled}
-                onClick={() => onTimelineViewModeChange?.('swimlane')}
-              >
-                <Columns3 className="h-4 w-4 flex-none" />
-                Swimlane
-              </button>
-            </div>
-          )}
-          {/* Unlink from Case button - shown for escalated alerts */}
-          {isAlert && isEscalated && onUnlinkFromCase && (
-            <Button
-              className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
-              variant="neutral-secondary"
-              size={buttonSize}
-              icon={<Link2Off />}
-              onClick={onUnlinkFromCase}
-              disabled={isUpdating}
-            >
-              {buttonSize === "medium" ? "Unlink from Case" : "Unlink"}
-            </Button>
-          )}
-          {customLinks.length > 0 ? (
-            <div className="flex flex-none items-center justify-end gap-1 self-stretch mobile:min-w-[min(100%,10rem)] mobile:flex-1 mobile:basis-40">
-              {customLinks.map((link) => (
-                <LinkButton
-                  key={link.id}
-                  href={link.url}
-                  icon={link.icon}
-                  tooltip={link.tooltip || link.name}
-                  size={buttonSize}
-                  variant="brand-tertiary"
-                  className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 flex-1"}
-                />
-              ))}
-            </div>
-          ) : null}
-          {/* Assignee Selector - Always shown and functional */}
-          {showAssignmentControls && (
-            <div className="flex flex-none items-center justify-end gap-2 self-stretch mobile:min-w-[min(100%,10rem)] mobile:flex-1 mobile:basis-40">
-              <AssigneeSelector
-                mode="assign"
-                size={assigneeSize}
-                className={assigneeSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
-                currentAssignee={assignee || null}
-                currentUser={currentUser || null}
-                users={users}
-                isLoadingUsers={isLoadingUsers}
-                disabled={isUpdating}
-                onUnassign={onUnassign}
-                onAssignToMe={onAssignToMe}
-                onAssignToUser={onAssignToUser}
+        {!isCompactHeader ? renderHeaderActions("desktop") : null}
+        {isCompactHeader ? (
+          <DropdownMenuRoot modal={false}>
+            <DropdownMenuTrigger asChild={true}>
+              <IconButton
+                className="ml-auto h-9 w-9 flex-none"
+                icon={<SlidersHorizontal />}
+                aria-label="Timeline controls"
+                title="Timeline controls"
+                variant="neutral-secondary"
               />
-            </div>
-          )}
-          {/* Close/Reopen and Primary Action Buttons - Only in editable mode or for primary action in preview */}
-          {(showCloseReopenButtons || showPrimaryAction) && (
-            <div className="flex flex-none items-center justify-end gap-2 self-stretch mobile:min-w-[min(100%,10rem)] mobile:flex-1 mobile:basis-40">
-              {onEdit && (
-                <Button
-                  className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
-                  variant="neutral-secondary"
-                  size={buttonSize}
-                  icon={<Edit2 />}
-                  onClick={onEdit}
-                  disabled={isUpdating}
-                >
-                  Edit
-                </Button>
-              )}
-              {showCloseReopenButtons && (
-                <>
-                  {isClosed ? (
-                    <Button
-                      className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
-                      variant="brand-primary"
-                      size={buttonSize}
-                      icon={<Check />}
-                      onClick={onReopenAlert}
-                      disabled={isUpdating}
-                    >
-                      {reopenButtonLabel}
-                    </Button>
-                  ) : isCase ? (
-                    <Button
-                      className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
-                      variant="neutral-secondary"
-                      size={buttonSize}
-                      icon={<X />}
-                      disabled={isUpdating}
-                      onClick={() => {
-                        if (onCloseCaseWithDetails) {
-                          setIsCaseClosureModalOpen(true);
-                          return;
-                        }
-                        onCloseAlert?.("closed");
-                      }}
-                    >
-                      {buttonSize === "medium" ? closeButtonLabel : "Close"}
-                    </Button>
-                  ) : (
-                    <DropdownMenuRoot modal={false}>
-                      <DropdownMenuTrigger asChild={true}>
-                        <Button
-                          className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
-                          variant="neutral-secondary"
-                          size={buttonSize}
-                          icon={<X />}
-                          disabled={isUpdating}
-                        >
-                          {buttonSize === "medium" ? closeButtonLabel : "Close"}
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent
-                          side="bottom"
-                          align="start"
-                          sideOffset={4}
-                        >
-                            {isAlert ? (
-                              <>
-                                <DropdownMenu.DropdownItem
-                                  icon={<Check />}
-                                  label={ALERT_STATUS_LABELS.CLOSED_TP}
-                                  onClick={() => onCloseAlert?.("closed_true_positive")}
-                                />
-                                <DropdownMenu.DropdownItem
-                                  icon={<CheckCircle />}
-                                  label={ALERT_STATUS_LABELS.CLOSED_BP}
-                                  onClick={() => onCloseAlert?.("closed_benign_positive")}
-                                />
-                                <DropdownMenu.DropdownItem
-                                  icon={<XCircle />}
-                                  label={ALERT_STATUS_LABELS.CLOSED_FP}
-                                  onClick={() => onCloseAlert?.("closed_false_positive")}
-                                />
-                                <DropdownMenu.DropdownItem
-                                  icon={<HelpCircle />}
-                                  label={ALERT_STATUS_LABELS.CLOSED_UNRESOLVED}
-                                  onClick={() => onCloseAlert?.("closed_unresolved")}
-                                />
-                                <DropdownMenu.DropdownItem
-                                  icon={<Copy />}
-                                  label={ALERT_STATUS_LABELS.CLOSED_DUPLICATE}
-                                  onClick={() => onCloseAlert?.("closed_duplicate")}
-                                />
-                              </>
-                            ) : (
-                              <DropdownMenu.DropdownItem
-                                icon={<Check />}
-                                label="Mark as Done"
-                                onClick={() => onCloseAlert?.("tsk_done" as UIState)}
-                              />
-                            )}
-                        </DropdownMenuContent>
-                    </DropdownMenuRoot>
-                  )}
-                </>
-              )}
-              {isAlert && !isEscalated && !isClosed && onLinkToCase && (
-                <Button
-                  className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
-                  variant="neutral-secondary"
-                  size={buttonSize}
-                  icon={<Link />}
-                  onClick={onLinkToCase}
-                  disabled={isUpdating}
-                >
-                  {buttonSize === "medium" ? "Link to Case" : "Link"}
-                </Button>
-              )}
-              {showAiEscalationDecision ? (
-                <>
-                  <Button
-                    className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
-                    variant="destructive-secondary"
-                    size={buttonSize}
-                    icon={<X />}
-                    onClick={() => setIsTriageRejectDialogOpen(true)}
-                    disabled={isUpdating || isAcceptingRecommendation || isRejectingRecommendation}
-                    loading={isRejectingRecommendation}
-                  >
-                    {buttonSize === "medium" ? "Escalate to Case (Reject AI)" : "Reject AI"}
-                  </Button>
-                  <Button
-                    className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
-                    size={buttonSize}
-                    iconRight={<ArrowRight />}
-                    onClick={handleAcceptAiEscalation}
-                    disabled={isUpdating || isAcceptingRecommendation || isRejectingRecommendation}
-                    loading={isAcceptingRecommendation}
-                  >
-                    {buttonSize === "medium" ? "Escalate to Case (Accept AI)" : "Accept AI"}
-                  </Button>
-                </>
-              ) : showPrimaryAction && onPrimaryAction && (
-                <Button
-                  className={buttonSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
-                  size={buttonSize}
-                  iconRight={<ArrowRight />}
-                  onClick={onPrimaryAction}
-                  disabled={isUpdating}
-                >
-                  {primaryActionLabel}
-                </Button>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-      <div className="hidden desktop:flex w-full items-start justify-between gap-4">
-        <div className="flex min-w-0 flex-wrap items-start gap-4">
-          {createdDate ? (
-            <span className="text-caption-bold font-caption-bold text-subtext-color">
-              {createdDate}
-            </span>
-          ) : null}
-          {updatedDate ? (
-            <span className="text-caption-bold font-caption-bold text-subtext-color">
-              {updatedDate}
-            </span>
-          ) : null}
-        </div>
-      </div>
-      
-      {/* Timeline Filter - Only shown when showTimelineFilter is true */}
-      {showTimelineFilter && onSortChange && onTypeChange && (
-        <div className={`w-full mobile:transition-all mobile:duration-300 ${!isVisible ? 'mobile:opacity-0 mobile:pointer-events-none mobile:h-0 mobile:overflow-hidden' : 'mobile:opacity-100'}`}>
-          <TimelineFilter
-            items={timelineItems}
-            selectedType={selectedType}
-            onTypeChange={onTypeChange}
-            sortBy={sortBy}
-            sortDirection={sortDirection}
-            onSortChange={onSortChange}
-            groupSimilar={groupSimilar}
-            onGroupSimilarChange={onGroupSimilarChange}
-            picerlStages={picerlStages}
-            selectedPICERLStage={selectedPICERLStage}
-            onPICERLStageChange={onPICERLStageChange}
-            hasLinkedEntityCards={hasLinkedEntityCards}
-            onCollapseLinkedEntityCards={onCollapseLinkedEntityCards}
-            onExpandLinkedEntityCards={onExpandLinkedEntityCards}
-            buttonSize={buttonSize === "medium" ? "medium" : "small"}
-            disabled={timelineItems.length === 0}
-            rightContent={presenceText ? (
-              <div className="flex max-w-[38rem] items-center gap-1.5 text-right text-caption-bold font-caption-bold text-subtext-color" aria-live="polite">
-                <Users className="h-3.5 w-3.5 flex-none" />
-                <span className="min-w-0 truncate">{presenceText}</span>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              side="bottom"
+              sideOffset={8}
+              className="max-h-[min(36rem,calc(100vh-7rem))] w-[min(42rem,calc(100vw-2rem))] overflow-y-auto border border-neutral-border bg-default-background p-3 shadow-accent-1-shadow-sm"
+            >
+              <div className="flex min-w-0 flex-col gap-3">
+                {renderHeaderActions("compact")}
+                {renderTimelineFilter("compact")}
               </div>
-            ) : null}
-          />
+            </DropdownMenuContent>
+          </DropdownMenuRoot>
+        ) : null}
+      </div>
+      {!isCompactHeader ? (
+        <div className="w-full">
+          {renderTimelineFilter("desktop")}
         </div>
-      )}
+      ) : null}
 
       {isCase && onCloseCaseWithDetails && (
         <CaseClosureModal

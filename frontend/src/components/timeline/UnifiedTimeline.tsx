@@ -14,10 +14,12 @@ import {
 import { ReplyProvider } from '@/contexts/ReplyProvider';
 import { useReplyMode } from '@/contexts/ReplyContext';
 import { usePresence } from '@/contexts/WebSocketContext';
+import { useBreakpointContext } from '@/contexts/BreakpointContext';
 import { useAutoScrollToTimelineItem, groupTimelineItems } from '@/components/timeline/timelineUtils';
 import { useResolvedLinkTemplates } from '@/hooks/useUserLinkTemplates';
 import { TriageRecommendationCard } from '@/components/triage/TriageRecommendationCard';
 import { TriageRequestCard } from '@/components/triage/TriageRequestCard';
+import { PicerlStage } from '@/components/misc/PicerlStage';
 // Import handlers to ensure they're registered
 import '@/components/timeline/eventHandlers';
 import type { UnifiedTimelineProps, UnifiedEntity } from './UnifiedTimeline.types';
@@ -30,6 +32,7 @@ import InterceptLogoBlack from '@/assets/Intercept-Black.svg';
 import { EntityMetadataCard } from '@/components/cards/EntityMetadataCard';
 import { Button } from '@/components/buttons/Button';
 import { Dialog } from "@/components/overlays/Dialog";
+import { CarouselControl } from "@tidemark-security/ux";
 import { findTimelineItem } from "@/utils/timelineUtils";
 import { compareTimelineItems, getTimelineItems } from "@/utils/timelineHelpers";
 import { useTheme } from '@/contexts/ThemeContext';
@@ -37,20 +40,15 @@ import { cn } from '@/utils/cn';
 import { formatPresenceText } from '@/utils/presenceText';
 import { PICERL_STAGES, type PICERLStage } from '@/types/caseTemplates';
 import { Badge } from '@/components/data-display/Badge';
+import type { TaskRead } from '@/types/generated/models/TaskRead';
+import type { TaskStatus } from '@/types/generated/models/TaskStatus';
 
 
 import { ArrowRight } from 'lucide-react';
 
 const TIMELINE_VIEW_STORAGE_KEY = 'intercept.timeline-view';
-const PICERL_STAGE_LABELS: Record<PICERLStage, string> = {
-  Preparation: 'Preparation',
-  Identification: 'Identification',
-  Containment: 'Containment',
-  Eradication: 'Eradication',
-  Recovery: 'Recovery',
-  'Lessons Learned': 'Lessons Learned',
-};
-
+const SWIMLANE_GRID_MIN_WIDTH = 1120;
+type TimelineRendererLinkTemplates = React.ComponentProps<typeof TimelineItemRenderer>['linkTemplates'];
 function getTimelineViewStorageKey(entityType: 'case' | 'task', entityId: number): string {
   return `${TIMELINE_VIEW_STORAGE_KEY}.${entityType}.${entityId}`;
 }
@@ -64,110 +62,302 @@ function getPICERLStage(item: TimelineItem): PICERLStage | null {
   return isPICERLStage(stage) ? stage : null;
 }
 
-function isAttentionTask(item: TimelineItem): boolean {
-  if ((item as any).highlighted || (item as any).flagged) {
-    return true;
+function normalizeTaskStatusForEdit(status: unknown): TaskStatus {
+  return status === 'IN_PROGRESS' || status === 'DONE' || status === 'TODO'
+    ? status
+    : 'TODO';
+}
+
+function timelineTaskItemToTaskRead(item: TimelineItem): TaskRead | null {
+  if (item.type !== 'task') {
+    return null;
   }
-  const dueDate = (item as any).due_date;
-  if (!dueDate || String((item as any).status ?? '').toUpperCase() === 'DONE') {
-    return false;
+
+  const taskItem = item as TimelineItem & {
+    task_id?: number | null;
+    task_human_id?: string | null;
+    title?: string | null;
+    status?: string | null;
+    priority?: TaskRead['priority'] | null;
+    assignee?: string | null;
+    due_date?: string | null;
+    picerl_stage?: string | null;
+    source_tpl?: number | null;
+    case_id?: number | null;
+    updated_at?: string | null;
+    tags?: string[] | null;
+    source_timeline_items?: TaskRead['timeline_items'];
+  };
+
+  if (!taskItem.task_id) {
+    return null;
   }
-  const dueTime = new Date(dueDate).getTime();
-  return Number.isFinite(dueTime) && dueTime < Date.now();
+
+  return {
+    id: taskItem.task_id,
+    human_id: taskItem.task_human_id || '',
+    title: taskItem.title || taskItem.task_human_id || 'Task',
+    description: taskItem.description ?? null,
+    priority: taskItem.priority ?? undefined,
+    status: normalizeTaskStatusForEdit(taskItem.status),
+    assignee: taskItem.assignee ?? null,
+    due_date: taskItem.due_date ?? null,
+    picerl_stage: taskItem.picerl_stage ?? null,
+    source_tpl: taskItem.source_tpl ?? null,
+    case_id: taskItem.case_id ?? null,
+    linked_at: null,
+    created_by: taskItem.created_by || 'System',
+    created_at: taskItem.created_at || taskItem.timestamp || '',
+    updated_at: taskItem.updated_at || taskItem.created_at || taskItem.timestamp || '',
+    timeline_items: taskItem.source_timeline_items ?? null,
+    tags: Array.isArray(taskItem.tags) ? taskItem.tags : [],
+  };
+}
+
+function SwimlaneTaskButton({
+  item,
+  entityId,
+  entityType,
+  sortBy,
+  linkTemplates,
+  onOpenTask,
+}: {
+  item: TimelineItem;
+  entityId: number;
+  entityType: 'case' | 'task';
+  sortBy: SortOption;
+  linkTemplates: TimelineRendererLinkTemplates;
+  onOpenTask?: (task: TaskRead) => void;
+}) {
+  const task = timelineTaskItemToTaskRead(item);
+
+  return (
+    <button
+      type="button"
+      className="flex min-w-0 cursor-pointer flex-col gap-2 rounded-md border border-solid border-neutral-border bg-neutral-0 px-3 py-3 text-left transition-colors hover:border-brand-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+      onClick={() => {
+        if (task) {
+          onOpenTask?.(task);
+        }
+      }}
+      disabled={!task || !onOpenTask}
+    >
+      <TimelineItemRenderer
+        item={item}
+        index={0}
+        total={1}
+        entityId={entityId}
+        entityType={entityType}
+        sortBy={sortBy}
+        linkTemplates={linkTemplates}
+        variant="super-compact"
+        hideReplies
+      />
+    </button>
+  );
+}
+
+function SwimlaneLane({
+  stage,
+  stageItems,
+  selectedStage,
+  onSelectStage,
+  entityId,
+  entityType,
+  sortBy,
+  linkTemplates,
+  onOpenTask,
+  className,
+  itemsScrollable = true,
+}: {
+  stage: PICERLStage;
+  stageItems: TimelineItem[];
+  selectedStage?: PICERLStage;
+  onSelectStage: (stage: PICERLStage | undefined) => void;
+  entityId: number;
+  entityType: 'case' | 'task';
+  sortBy: SortOption;
+  linkTemplates: TimelineRendererLinkTemplates;
+  onOpenTask?: (task: TaskRead) => void;
+  className?: string;
+  itemsScrollable?: boolean;
+}) {
+  const muted = Boolean(selectedStage && selectedStage !== stage);
+
+  return (
+    <section
+      className={cn(
+        "flex min-h-0 flex-col gap-2 border border-solid border-neutral-border bg-neutral-50 p-3",
+        muted && "opacity-45",
+        className,
+      )}
+    >
+      <button
+        type="button"
+        className="flex min-h-8 min-w-0 items-center justify-between gap-2 text-left"
+        onClick={() => onSelectStage(selectedStage === stage ? undefined : stage)}
+      >
+        <PicerlStage stage={stage} className="min-w-0 flex-1" />
+        <Badge variant="neutral">{String(stageItems.length)}</Badge>
+      </button>
+      <div
+        className={cn(
+          "flex min-h-0 flex-col gap-2",
+          itemsScrollable ? "flex-1 overflow-auto" : "flex-none overflow-visible",
+        )}
+      >
+        {stageItems.map((item) => (
+          <SwimlaneTaskButton
+            key={item.id}
+            item={item}
+            entityId={entityId}
+            entityType={entityType}
+            sortBy={sortBy}
+            linkTemplates={linkTemplates}
+            onOpenTask={onOpenTask}
+          />
+        ))}
+        {stageItems.length === 0 ? (
+          <div className="flex min-h-24 flex-1 items-center justify-center border border-dashed border-neutral-border px-2 text-center text-caption font-caption text-subtext-color">
+            No staged tasks
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
 }
 
 function PICERLSwimlaneView({
   stagedItems,
   selectedStage,
   onSelectStage,
+  entityId,
+  entityType,
+  sortBy,
+  linkTemplates,
+  onOpenTask,
 }: {
   stagedItems: TimelineItem[];
   selectedStage?: PICERLStage;
   onSelectStage: (stage: PICERLStage | undefined) => void;
+  entityId: number;
+  entityType: 'case' | 'task';
+  sortBy: SortOption;
+  linkTemplates: TimelineRendererLinkTemplates;
+  onOpenTask?: (task: TaskRead) => void;
 }) {
-  const { resolvedTheme } = useTheme();
-  const isDarkTheme = resolvedTheme === 'dark';
+  const containerRef = React.useRef<HTMLDivElement | null>(null);
+  const [availableWidth, setAvailableWidth] = React.useState<number | null>(null);
+  const [mobileStageIndex, setMobileStageIndex] = React.useState(() => (
+    selectedStage ? Math.max(PICERL_STAGES.indexOf(selectedStage), 0) : 0
+  ));
+  const useCarouselLayout = availableWidth === null || availableWidth < SWIMLANE_GRID_MIN_WIDTH;
+
+  React.useEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const updateAvailableWidth = () => {
+      setAvailableWidth(container.getBoundingClientRect().width);
+    };
+
+    updateAvailableWidth();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateAvailableWidth);
+      return () => window.removeEventListener('resize', updateAvailableWidth);
+    }
+
+    const resizeObserver = new ResizeObserver(updateAvailableWidth);
+    resizeObserver.observe(container);
+
+    return () => resizeObserver.disconnect();
+  }, []);
+
+  React.useEffect(() => {
+    if (!selectedStage) {
+      return;
+    }
+
+    const nextIndex = PICERL_STAGES.indexOf(selectedStage);
+    if (nextIndex >= 0) {
+      setMobileStageIndex(nextIndex);
+    }
+  }, [selectedStage]);
+
+  const selectMobileStageIndex = React.useCallback((index: number) => {
+    const nextIndex = (index + PICERL_STAGES.length) % PICERL_STAGES.length;
+    setMobileStageIndex(nextIndex);
+    onSelectStage(PICERL_STAGES[nextIndex]);
+  }, [onSelectStage]);
+
+  const moveMobileStage = React.useCallback((delta: number) => {
+    setMobileStageIndex((current) => {
+      const nextIndex = (current + delta + PICERL_STAGES.length) % PICERL_STAGES.length;
+      onSelectStage(PICERL_STAGES[nextIndex]);
+      return nextIndex;
+    });
+  }, [onSelectStage]);
 
   return (
-    <div className="flex w-full grow overflow-auto p-6 mobile:p-2">
-      <div className="grid min-w-[960px] grow grid-cols-6 gap-3">
-        {PICERL_STAGES.map((stage) => {
-          const stageItems = stagedItems.filter((item) => getPICERLStage(item) === stage);
-          const muted = Boolean(selectedStage && selectedStage !== stage);
-          return (
-            <section
-              key={stage}
-              className={cn(
-                "flex min-h-0 flex-col gap-2 border border-solid border-neutral-border bg-neutral-50 p-3",
-                muted && "opacity-45"
-              )}
-            >
-              <button
-                type="button"
-                className="flex min-h-8 min-w-0 items-center justify-between gap-2 text-left"
-                onClick={() => onSelectStage(selectedStage === stage ? undefined : stage)}
-              >
-                <span className="min-w-0 truncate text-caption-bold font-caption-bold text-default-font">
-                  {PICERL_STAGE_LABELS[stage]}
-                </span>
-                <Badge variant="neutral">{stageItems.length}</Badge>
-              </button>
-              <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto">
-                {stageItems.map((item) => (
-                  <article
-                    key={item.id}
-                    className={cn(
-                      "flex min-w-0 flex-col gap-2 border border-solid border-neutral-border bg-default-background p-3",
-                      isAttentionTask(item) && (
-                        isDarkTheme
-                          ? "border-warning-600 bg-warning-1100"
-                          : "border-warning-700 bg-warning-50/40"
-                      )
-                    )}
-                  >
-                    <div className="flex min-w-0 flex-col gap-1">
-                      <span className="line-clamp-2 text-body-bold font-body-bold text-default-font">
-                        {(item as any).title || item.description || item.id}
-                      </span>
-                      <div className="flex flex-wrap gap-1">
-                        {(item as any).status ? <Badge variant="neutral">{(item as any).status}</Badge> : null}
-                        {(item as any).priority ? <Badge>{(item as any).priority}</Badge> : null}
-                      </div>
-                    </div>
-                    {(item as any).due_date ? (
-                      <span
-                        className={cn(
-                          "text-caption font-caption text-subtext-color",
-                          isAttentionTask(item) && (isDarkTheme ? "text-warning-300" : "text-warning-1000")
-                        )}
-                      >
-                        Due {new Date((item as any).due_date).toLocaleString()}
-                      </span>
-                    ) : null}
-                    {(item as any).assignee ? (
-                      <span className="truncate text-caption font-caption text-subtext-color">
-                        {(item as any).assignee}
-                      </span>
-                    ) : null}
-                    {Array.isArray((item as any).tags) && (item as any).tags.length > 0 ? (
-                      <div className="flex flex-wrap gap-1">
-                        {(item as any).tags.slice(0, 3).map((tag: string) => (
-                          <Badge key={tag} variant="neutral">{tag}</Badge>
-                        ))}
-                      </div>
-                    ) : null}
-                  </article>
-                ))}
-                {stageItems.length === 0 ? (
-                  <div className="flex min-h-24 items-center justify-center border border-dashed border-neutral-border px-2 text-center text-caption font-caption text-subtext-color">
-                    No staged tasks
-                  </div>
-                ) : null}
-              </div>
-            </section>
-          );
-        })}
-      </div>
+    <div
+      ref={containerRef}
+      aria-label="PICERL swimlane"
+      className={cn(
+        "flex h-full min-h-0 w-full grow flex-col",
+        useCarouselLayout
+          ? "overflow-hidden p-6 mobile:p-0"
+          : "overflow-hidden p-6",
+      )}
+    >
+      {useCarouselLayout ? (
+        <div className="flex h-full min-h-0 w-full flex-col gap-2">
+          <SwimlaneLane
+            stage={PICERL_STAGES[mobileStageIndex]}
+            stageItems={stagedItems.filter((item) => getPICERLStage(item) === PICERL_STAGES[mobileStageIndex])}
+            selectedStage={selectedStage}
+            onSelectStage={onSelectStage}
+            entityId={entityId}
+            entityType={entityType}
+            sortBy={sortBy}
+            linkTemplates={linkTemplates}
+            onOpenTask={onOpenTask}
+            className="min-h-0 w-full flex-1"
+          />
+          <CarouselControl
+            count={PICERL_STAGES.length}
+            index={mobileStageIndex}
+            onPrevious={() => moveMobileStage(-1)}
+            onNext={() => moveMobileStage(1)}
+            onSelect={selectMobileStageIndex}
+            itemLabel="PICERL lane"
+            size="medium"
+            className="flex-none"
+          />
+        </div>
+      ) : (
+        <div className="grid min-h-0 grow grid-cols-6 gap-3">
+          {PICERL_STAGES.map((stage) => {
+            const stageItems = stagedItems.filter((item) => getPICERLStage(item) === stage);
+            return (
+              <SwimlaneLane
+                key={stage}
+                stage={stage}
+                stageItems={stageItems}
+                selectedStage={selectedStage}
+                onSelectStage={onSelectStage}
+                entityId={entityId}
+                entityType={entityType}
+                sortBy={sortBy}
+                linkTemplates={linkTemplates}
+                onOpenTask={onOpenTask}
+              />
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -282,7 +472,9 @@ function UnifiedTimelineInner({
   isTriageEnabled,
 }: UnifiedTimelineProps) {
   const { resolvedTheme } = useTheme();
+  const { isMobile, isTablet } = useBreakpointContext();
   const isDarkTheme = resolvedTheme === 'dark';
+  const isCompactHeader = isMobile || isTablet;
   const presenceViewers = usePresence(entityType, selectedEntityId);
   const resolvedPresenceText = useMemo(
     () => presenceText ?? formatPresenceText(presenceViewers, entityType, currentUser),
@@ -809,7 +1001,14 @@ function UnifiedTimelineInner({
   return (
     <div className="flex h-full w-full flex-col items-start">
       {/* Entity Header */}
-      <div className={`flex min-h-[150px] mobile:min-h-0 w-full flex-col items-start p-6 mobile:p-4 border-b border-solid  ${isDarkTheme ? 'border-brand-primary' : 'border-neutral-1000'}`}>
+      <div
+        className={cn(
+          "flex w-full flex-col items-start border-b border-solid",
+          isCompactHeader ? "p-4" : "p-6",
+          !isCompactHeader && "min-h-[150px]",
+          isDarkTheme ? "border-brand-primary" : "border-neutral-1000",
+        )}
+      >
         <EntityHeader
           entityType={entityType}
           mode={mode}
@@ -875,10 +1074,13 @@ function UnifiedTimelineInner({
       {/* Timeline Items */}
       <div
         ref={timelineScrollRef}
+        aria-label={`${entityType} timeline content`}
         className={cn(
           'flex w-full grow shrink-0 basis-0 flex-col items-start',
           timelineViewMode === 'graph'
             ? 'min-h-0 overflow-hidden p-0'
+            : timelineViewMode === 'swimlane'
+              ? 'min-h-0 overflow-auto p-0'
             : 'overflow-auto p-0'
         )}
       >
@@ -913,7 +1115,10 @@ function UnifiedTimelineInner({
                 const hasTimelineItems = timelineItems.length > 0;
 
                 return (
-                  <div className="flex w-full flex-col items-start">
+                  <div className={cn(
+                    "flex w-full flex-col items-start",
+                    timelineViewMode === 'swimlane' && "h-full min-h-0",
+                  )}>
                     {/* Triage Recommendation Card (Alerts only) */}
                     {entityType === 'alert' && (entityDetail as AlertRead).triage_recommendation && (
                       <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
@@ -936,6 +1141,7 @@ function UnifiedTimelineInner({
                     {entityType === 'alert' &&
                       !(entityDetail as AlertRead).triage_recommendation &&
                       isTriageEnabled &&
+                      !isEntityClosed &&
                       canRequestTriage && (
                         <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
                           <TriageRequestCard
@@ -956,12 +1162,20 @@ function UnifiedTimelineInner({
                     </div>
 
                     {/* Timeline Items */}
-                    <div className="flex w-full flex-col items-start p-6 mobile:p-2">
+                    <div className={cn(
+                      "flex w-full flex-col items-start p-6 mobile:p-2",
+                      timelineViewMode === 'swimlane' && "h-full min-h-0 flex-none overflow-hidden p-0",
+                    )}>
                       {timelineViewMode === 'swimlane' && hasPICERLStages ? (
                         <PICERLSwimlaneView
                           stagedItems={stagedTaskItems}
                           selectedStage={selectedPICERLStage}
                           onSelectStage={setSelectedPICERLStage}
+                          entityId={selectedEntityId}
+                          entityType={entityType as 'case' | 'task'}
+                          sortBy={sortBy}
+                          linkTemplates={linkTemplates}
+                          onOpenTask={isEditable ? onEditLinkedTask : undefined}
                         />
                       ) : hasTimelineItems && filteredAndSortedItems.length > 0 ? (
                         (() => {
@@ -1074,6 +1288,7 @@ function UnifiedTimelineInner({
             enableGlobalSlashFocus={true}
             suppressGlobalSlashFocus={suppressGlobalSlashFocus}
             onPasteFiles={onPasteFiles}
+            variant={timelineViewMode === 'swimlane' && entityType === 'case' ? 'task-create' : 'default'}
           />
         </div>
       )}

@@ -17,6 +17,15 @@ export const PICERL_STAGES: PICERLStage[] = [
   'Lessons Learned',
 ];
 
+export const PICERL_STAGE_LABELS: Record<PICERLStage, string> = {
+  Preparation: 'Preparation',
+  Identification: 'Identification',
+  Containment: 'Containment',
+  Eradication: 'Eradication',
+  Recovery: 'Recovery',
+  'Lessons Learned': 'Lessons Learned',
+};
+
 export interface TemplateTaskDefinition {
   title: string;
   description?: string | null;

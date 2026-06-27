@@ -3,6 +3,7 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 
+import { PicerlStage } from "@/components/misc/PicerlStage";
 import { Priority } from "@/components/misc/Priority";
 import { State } from "@/components/misc/State";
 import { TagsManager } from "@/components/forms/TagsManager";
@@ -24,23 +25,9 @@ import type { TaskStatus } from "@/types/generated/models/TaskStatus";
 import { cn } from "@/utils/cn";
 import { convertNumericToHumanId } from "@/utils/caseHelpers";
 
-import { ArrowRight, CalendarClock, ClockAlert, ClockPlus, Columns3, RadioTower, User } from "lucide-react";
+import { ArrowRight, CalendarClock, ClockAlert, ClockPlus, ExternalLink, RadioTower, User } from "lucide-react";
 
 export type EntityMetadataCardVariant = "detail" | "timeline" | "compact";
-const PICERL_STAGE_LABELS: Record<string, string> = {
-  PREPARATION: "Preparation",
-  IDENTIFICATION: "Identification",
-  CONTAINMENT: "Containment",
-  ERADICATION: "Eradication",
-  RECOVERY: "Recovery",
-  LESSONS_LEARNED: "Lessons Learned",
-  Preparation: "Preparation",
-  Identification: "Identification",
-  Containment: "Containment",
-  Eradication: "Eradication",
-  Recovery: "Recovery",
-  "Lessons Learned": "Lessons Learned",
-};
 
 interface EntityContextCriterion {
   type?: string | null;
@@ -256,6 +243,7 @@ export function EntityMetadataCard({
   const shouldRenderContextSection = contextItems.length > 0;
   const contextTotalCount = contextSection?.total_count ?? contextItems.length;
   const contextOmittedCount = contextSection?.omitted_count ?? 0;
+  const visibleContextItems = contextItems.slice(0, 3);
   const formatCriterionType = (value: string | null | undefined) => {
     if (!value) return "Scope";
     return value
@@ -271,6 +259,37 @@ export function EntityMetadataCard({
       return criterion.value ? `${type}: ${criterion.value}` : type;
     });
   };
+  const contextEntriesHref = (() => {
+    if (!shouldRenderContextSection) return "/context-entries";
+
+    const ids = contextItems
+      .map((item) => item.id)
+      .filter((id): id is number | string => id !== null && id !== undefined)
+      .map((id) => String(id).trim())
+      .filter(Boolean);
+    const params = new URLSearchParams();
+    params.set("include_expired", "true");
+
+    if (ids.length > 0) {
+      params.set("ids", ids.join(","));
+    } else {
+      const fallbackTerms = contextItems.flatMap((item) => {
+        const criteria = item.criteria ?? [];
+        const criteriaTerms = criteria.flatMap((criterion) => [
+          criterion.type ?? "",
+          criterion.value ?? "",
+        ]);
+        return [...criteriaTerms, item.body ?? ""];
+      }).map((term) => term.trim()).filter(Boolean);
+
+      if (fallbackTerms.length > 0) {
+        params.set("q", fallbackTerms[0]);
+      }
+    }
+
+    const query = params.toString();
+    return query ? `/context-entries?${query}` : "/context-entries";
+  })();
 
   const ContextSection = () => {
     if (!shouldRenderContextSection) {
@@ -279,67 +298,101 @@ export function EntityMetadataCard({
 
     return (
       <section className="flex w-full min-w-0 flex-col gap-3 border-t border-solid border-neutral-border/70 pt-3">
-        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="text-heading-3 font-heading-3 text-default-font">
-              Context
-            </span>
-            <Badge variant="neutral">{contextTotalCount}</Badge>
+        <div
+          className={cn(
+            "flex w-full min-w-0 flex-col gap-3 rounded-md border border-solid border-neutral-border bg-default-background p-3",
+            isDarkTheme ? "shadow-accent-1-shadow-sm" : "shadow-sm",
+          )}
+        >
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-3 border-l-2 border-solid border-brand-primary pl-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="text-heading-3 font-heading-3 uppercase text-default-font">
+                Analyst Context
+              </span>
+              <Badge variant="brand">{contextTotalCount} active</Badge>
+              {contextOmittedCount > 0 ? (
+                <Badge variant="neutral">{contextOmittedCount} omitted</Badge>
+              ) : null}
+            </div>
+            <a
+              href={contextEntriesHref}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex min-h-7 flex-none items-center gap-1 rounded-md border border-solid border-neutral-border px-2 text-caption-bold font-caption-bold text-default-font transition-colors hover:border-brand-primary hover:text-brand-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus-border"
+            >
+              <span>View all context</span>
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+            </a>
           </div>
-          {contextOmittedCount > 0 ? (
+
+          <div className="grid w-full min-w-0 gap-2">
+            {visibleContextItems.map((item, index) => {
+              const scopes = formatContextScope(item.criteria);
+              const key = item.id ?? `${item.body ?? "context"}-${index}`;
+              const isPrimary = index === 0;
+
+              return (
+                <article
+                  key={key}
+                  className={cn(
+                    "flex min-w-0 flex-col gap-2 border-l-2 border-solid py-2 pl-3 pr-2",
+                    isPrimary
+                      ? cn(
+                          "border-brand-primary",
+                          isDarkTheme ? "bg-brand-1100" : "bg-brand-50",
+                        )
+                      : "border-neutral-border bg-default-background",
+                  )}
+                >
+                  {item.body ? (
+                    <MarkdownContent
+                      content={item.body}
+                      className={cn(
+                        "[overflow-wrap:anywhere] [&_*]:text-inherit [&_p]:!my-0",
+                        isPrimary
+                          ? "text-body-bold font-body-bold text-default-font"
+                          : "text-body font-body text-default-font",
+                      )}
+                    />
+                  ) : null}
+
+                  <div className="flex min-w-0 flex-wrap gap-1.5">
+                    {scopes.map((scope, scopeIndex) => (
+                      <Badge key={`${scope}-${scopeIndex}`} variant="neutral">
+                        {scope}
+                      </Badge>
+                    ))}
+                  </div>
+
+                  <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-caption font-caption text-subtext-color">
+                    {item.author ? (
+                      <span className="min-w-0 truncate">
+                        Author: <span className="text-default-font">{item.author}</span>
+                      </span>
+                    ) : null}
+                    {item.expires_at ? (
+                      <div className="flex min-w-0 items-center gap-1">
+                        <span>Expires:</span>
+                        <CopyableTimestamp
+                          value={item.expires_at}
+                          showFull
+                          variant="default-right"
+                          className="min-w-0 max-w-full flex-wrap"
+                          textClassName="text-default-font"
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+
+          {contextItems.length > visibleContextItems.length ? (
             <span className="text-caption font-caption text-subtext-color">
-              {contextOmittedCount} omitted
+              Showing first {visibleContextItems.length} of {contextTotalCount} matched context entries
             </span>
           ) : null}
-        </div>
-
-        <div className="grid w-full min-w-0 gap-3">
-          {contextItems.map((item, index) => {
-            const scopes = formatContextScope(item.criteria);
-            const key = item.id ?? `${item.body ?? "context"}-${index}`;
-
-            return (
-              <article
-                key={key}
-                className="flex min-w-0 flex-col gap-2 border-l border-solid border-brand-primary bg-default-background/70 py-2 pl-3 pr-2"
-              >
-                {item.body ? (
-                  <MarkdownContent
-                    content={item.body}
-                    className="text-body font-body text-default-font [overflow-wrap:anywhere] [&_*]:text-inherit [&_p]:!my-0"
-                  />
-                ) : null}
-
-                <div className="flex min-w-0 flex-wrap gap-1.5">
-                  {scopes.map((scope, scopeIndex) => (
-                    <Badge key={`${scope}-${scopeIndex}`} variant="neutral">
-                      {scope}
-                    </Badge>
-                  ))}
-                </div>
-
-                <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-caption font-caption text-subtext-color">
-                  {item.author ? (
-                    <span className="min-w-0 truncate">
-                      Author: <span className="text-default-font">{item.author}</span>
-                    </span>
-                  ) : null}
-                  {item.expires_at ? (
-                    <div className="flex min-w-0 items-center gap-1">
-                      <span>Expires:</span>
-                      <CopyableTimestamp
-                        value={item.expires_at}
-                        showFull
-                        variant="default-right"
-                        className="min-w-0 max-w-full flex-wrap"
-                        textClassName="text-default-font"
-                      />
-                    </div>
-                  ) : null}
-                </div>
-              </article>
-            );
-          })}
         </div>
       </section>
     );
@@ -430,6 +483,12 @@ export function EntityMetadataCard({
           )}
         </MetaField>
 
+        {isTask && taskPICERLStage ? (
+          <MetaField label="PICERL Stage" icon={null}>
+            <PicerlStage stage={taskPICERLStage} className="w-full" />
+          </MetaField>
+        ) : null}
+
         <PersonField label="Assignee" value={entity.assignee} />
         <PersonField label="Created By" value={createdByValue} />
       </div>
@@ -437,14 +496,6 @@ export function EntityMetadataCard({
       <div className={detailGridClassName}>
         {isTask && taskEntity?.due_date ? (
           <TimestampField label={taskDueLabel} value={taskEntity.due_date} icon={<CalendarClock className="h-3.5 w-3.5" />} dueStatus={taskDueStatus} />
-        ) : null}
-
-        {isTask && taskPICERLStage ? (
-          <MetaField icon={<Columns3 className="h-3.5 w-3.5" />} label="PICERL Stage" className={detailFieldClassName}>
-            <span className="min-w-0 truncate text-caption-bold font-caption-bold text-default-font">
-              {PICERL_STAGE_LABELS[taskPICERLStage] ?? taskPICERLStage}
-            </span>
-          </MetaField>
         ) : null}
 
         <TimestampField label="Created" value={entity.created_at} icon={<ClockPlus className="h-3.5 w-3.5" />} />

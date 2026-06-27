@@ -233,7 +233,7 @@ async def resolve_linked_alerts(
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user),
 ):
-    """Apply one resolution to all open alerts linked to a case."""
+    """Apply selected resolutions to open alerts linked to a case."""
     try:
         response = await case_service.resolve_linked_alerts(
             db, case_id, resolution, current_user.username

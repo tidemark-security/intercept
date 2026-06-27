@@ -64,6 +64,7 @@
 
 import React, { useState, useCallback } from "react";
 
+import { Button } from "@/components/buttons/Button";
 import { IconButton } from "@/components/buttons/IconButton";
 import { DropdownMenu, DropdownMenuRoot, DropdownMenuTrigger, DropdownMenuContent } from "@/components/overlays/DropdownMenu";
 import { TIMELINE_ICONS } from "@/utils/timelineMapping";
@@ -71,7 +72,7 @@ import type { TimelineItemType } from "@/types/drafts";
 import { CommandInput } from "@/components/forms/CommandInput";
 import { SLASH_COMMANDS } from "@/utils/slashCommands";
 
-import { BookTemplate, Menu, Sparkles, Terminal } from 'lucide-react';
+import { BookTemplate, CheckSquare, Menu, Sparkles, Terminal } from 'lucide-react';
 /**
  * Entity type for generic timeline item creation
  */
@@ -108,6 +109,8 @@ export interface QuickTerminalProps {
   suppressGlobalSlashFocus?: boolean;
   /** Callback when files are pasted from clipboard (e.g. screenshots) */
   onPasteFiles?: (files: File[]) => void;
+  /** Optional: Compact task creation treatment for task-focused views. */
+  variant?: "default" | "task-create";
 }
 
 export function QuickTerminal({
@@ -126,6 +129,7 @@ export function QuickTerminal({
   enableGlobalSlashFocus = false,
   suppressGlobalSlashFocus = false,
   onPasteFiles,
+  variant = "default",
 }: QuickTerminalProps) {
   const [inputValue, setInputValue] = useState("");
 
@@ -150,6 +154,34 @@ export function QuickTerminal({
     },
     [onSubmitNote, parentItemId]
   );
+
+  if (variant === "task-create") {
+    return (
+      <div className="flex w-full items-center gap-2">
+        <Button
+          className="min-w-0 flex-1"
+          variant="brand-primary"
+          size="large"
+          icon={<CheckSquare />}
+          onClick={() => onMenuItemSelect("task")}
+          disabled={disabled || isSubmitting || !isItemTypeAvailable("task")}
+        >
+          Create Task
+        </Button>
+
+        {showAiChatButton && onAiChatClick ? (
+          <IconButton
+            size="large"
+            variant="brand-tertiary"
+            icon={<Sparkles />}
+            onClick={onAiChatClick}
+            disabled={disabled || isSubmitting}
+            aria-label="Open AI Chat"
+          />
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <CommandInput

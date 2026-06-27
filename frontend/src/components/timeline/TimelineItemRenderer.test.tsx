@@ -232,7 +232,7 @@ describe('TimelineItemRenderer enrichments', () => {
     );
 
     expect(screen.getByText('PICERL Stage')).toBeInTheDocument();
-    expect(screen.getByText('Identification')).toBeInTheDocument();
+    expect(screen.getAllByText('1. Identification').length).toBeGreaterThan(0);
   });
 
   it('renders nested replies without duplicating descendant replies', () => {

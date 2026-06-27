@@ -742,9 +742,9 @@ class CaseAlertClosureUpdate(SQLModel):
 
 
 class CaseLinkedAlertResolutionRequest(SQLModel):
-    """Bulk resolution to apply to open alerts linked to a case."""
+    """Closure resolutions to apply to selected open alerts linked to a case."""
 
-    status: AlertStatus
+    alert_updates: List[CaseAlertClosureUpdate]
     note: Optional[str] = None
 
 
@@ -896,6 +896,24 @@ class AlertUpdate(SQLModel):
     tags: Optional[List[str]] = None
 
 
+class MatchedContextEntry(SQLModel):
+    """Analyst-authored context entry matched to an entity."""
+
+    id: int
+    criteria: List[Dict[str, str]] = Field(default_factory=list)
+    body: str
+    author: str
+    expires_at: datetime
+
+
+class MatchedContextSection(SQLModel):
+    """Matched analyst context returned with entity detail payloads."""
+
+    items: List[MatchedContextEntry] = Field(default_factory=list)
+    total_count: int = 0
+    omitted_count: int = 0
+
+
 class AlertTriageRequest(SQLModel):
     """Schema for triaging an alert."""
 
@@ -988,6 +1006,7 @@ class AlertRead(AlertBase):
     timeline_items: Optional[Dict[str, AlertTimelineItem]] = None
     tags: Optional[List[str]] = None
     triage_recommendation: Optional["TriageRecommendationRead"] = None
+    context: Optional[MatchedContextSection] = None
 
     @field_validator("timeline_items", mode="before")
     @classmethod

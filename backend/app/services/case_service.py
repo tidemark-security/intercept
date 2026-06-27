@@ -641,9 +641,10 @@ class CaseService:
         resolution: CaseLinkedAlertResolutionRequest,
         resolved_by: str,
     ) -> Optional[AlertBulkActionResponse]:
-        """Apply one closure status to every non-closed alert linked to a case."""
-        if resolution.status not in VALID_ALERT_CLOSED_STATUSES:
-            raise ValueError("status must be a closed alert resolution")
+        """Apply selected closure statuses to selected open alerts linked to a case."""
+        for alert_update in resolution.alert_updates:
+            if alert_update.status not in VALID_ALERT_CLOSED_STATUSES:
+                raise ValueError("status must be a closed alert resolution")
 
         try:
             db_case = await db.get(Case, case_id)
@@ -656,24 +657,40 @@ class CaseService:
                 .with_for_update()
             )
             linked_alerts = list(result.scalars().all())
+            linked_alerts_by_id = {
+                alert.id: alert for alert in linked_alerts if alert.id is not None
+            }
+            requested_alert_ids = [update.alert_id for update in resolution.alert_updates]
+            if len(set(requested_alert_ids)) != len(requested_alert_ids):
+                raise ValueError("alert_updates contains duplicate alerts")
+
+            unknown_alert_ids = [
+                alert_id
+                for alert_id in requested_alert_ids
+                if alert_id not in linked_alerts_by_id
+            ]
+            if unknown_alert_ids:
+                raise ValueError("alert_updates contains alerts not linked to this case")
+
             changed_alert_ids: list[int] = []
             case_human_id = f"CAS-{case_id:07d}"
 
-            for alert in linked_alerts:
+            for alert_update in resolution.alert_updates:
+                alert = linked_alerts_by_id[alert_update.alert_id]
                 if alert.status in VALID_ALERT_CLOSED_STATUSES:
-                    continue
+                    raise ValueError("alert_updates contains already closed alerts")
 
                 before = self._alert_resolution_audit_snapshot(alert)
                 apply_triage_state(
                     alert,
                     triaged_by=resolved_by,
-                    status=resolution.status,
+                    status=alert_update.status,
                     triage_notes=resolution.note,
                     set_assignee=True,
                 )
                 alert.updated_at = datetime.now(timezone.utc)
                 self._add_linked_alert_resolution_note(
-                    alert, case_human_id, resolution, resolved_by
+                    alert, case_human_id, alert_update.status, resolution.note, resolved_by
                 )
 
                 await triage_recommendation_service.auto_reject_if_pending(
@@ -738,14 +755,15 @@ class CaseService:
     def _add_linked_alert_resolution_note(
         alert: Alert,
         case_human_id: str,
-        resolution: CaseLinkedAlertResolutionRequest,
+        status: AlertStatus,
+        note: Optional[str],
         resolved_by: str,
     ) -> None:
         status_desc = ALERT_STATUS_DESCRIPTIONS.get(
-            resolution.status, resolution.status.value
+            status, status.value
         )
         description = (
-            resolution.note
+            note
             or f"Alert resolved as {status_desc} during case {case_human_id} closure"
         )
         now = datetime.now(timezone.utc)

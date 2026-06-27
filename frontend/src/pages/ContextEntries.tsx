@@ -1,5 +1,6 @@
 import { FormEvent, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import { Pencil, Plus, RefreshCw, Save, Search, Trash2, X } from 'lucide-react';
 
 import { Button } from '@/components/buttons/Button';
@@ -89,15 +90,30 @@ function entryMatchesSearch(entry: ContextEntry, searchQuery: string): boolean {
     .some((value) => value.toLowerCase().includes(query));
 }
 
+function parseIdFilter(value: string | null): Set<number> {
+  if (!value) return new Set();
+
+  return new Set(
+    value
+      .split(',')
+      .map((item) => Number.parseInt(item.trim(), 10))
+      .filter((item) => Number.isFinite(item)),
+  );
+}
+
 export default function ContextEntries() {
   const { isAuditor } = useSession();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
+  const initialSearchQuery = searchParams.get('q') ?? '';
+  const initialShowExpired = searchParams.get('include_expired') === 'true';
+  const idFilter = useMemo(() => parseIdFilter(searchParams.get('ids')), [searchParams]);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [drawerMode, setDrawerMode] = useState<DrawerMode>(null);
-  const [showExpired, setShowExpired] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
+  const [showExpired, setShowExpired] = useState(initialShowExpired);
+  const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
 
   const contextQuery = useQuery({
     queryKey: [...QUERY_KEY, showExpired],
@@ -132,10 +148,11 @@ export default function ContextEntries() {
     onError: (error: Error) => showToast('Unable to expire context', error.message, 'error'),
   });
 
-  const entries = contextQuery.data ?? [];
+  const entries = useMemo(() => contextQuery.data ?? [], [contextQuery.data]);
   const filteredEntries = useMemo(() => entries.filter((entry) => {
-    return entryMatchesSearch(entry, searchQuery);
-  }), [entries, searchQuery]);
+    const matchesIdFilter = idFilter.size === 0 || idFilter.has(entry.id);
+    return matchesIdFilter && entryMatchesSearch(entry, searchQuery);
+  }), [entries, idFilter, searchQuery]);
 
   const canSave = useMemo(() => {
     const criteriaValid = form.criteria.every((criterion) => criterion.value.trim().length > 0);
@@ -233,6 +250,16 @@ export default function ContextEntries() {
           >
             Refresh
           </Button>
+          {idFilter.size > 0 ? (
+            <div className="flex w-full flex-wrap items-center gap-2 border-t border-neutral-border pt-3">
+              <span className="text-caption-bold font-caption-bold text-default-font">
+                Filtered context ids
+              </span>
+              {[...idFilter].map((id) => (
+                <Badge key={id} variant="neutral">{id}</Badge>
+              ))}
+            </div>
+          ) : null}
         </div>
 
         <div className="w-full overflow-hidden rounded-md border border-neutral-border bg-default-background">

@@ -17,8 +17,12 @@ import type { CaseRead } from "@/types/generated/models/CaseRead";
 import type { TaskRead } from "@/types/generated/models/TaskRead";
 import type { Priority } from "@/types/generated/models/Priority";
 import type { TaskStatus } from "@/types/generated/models/TaskStatus";
+import { PICERL_STAGES, PICERL_STAGE_LABELS } from "@/types/caseTemplates";
 
 import { Check, Edit3 } from 'lucide-react';
+
+const PICERL_UNSET_VALUE = "__none__";
+
 export interface CaseTaskEditFormProps {
   initialData: CaseRead | TaskRead;
   type: "case" | "task";
@@ -47,6 +51,7 @@ export function CaseTaskEditForm({ initialData, type }: CaseTaskEditFormProps) {
     description: initialData.description || "",
     status: taskInitialData?.status || "TODO",
     priority: initialData.priority || "MEDIUM",
+    picerlStage: taskInitialData?.picerl_stage || "",
     assignee: initialData.assignee || null,
     dueDate: taskInitialData?.due_date || "",
     tags: initialData.tags || [],
@@ -59,6 +64,7 @@ export function CaseTaskEditForm({ initialData, type }: CaseTaskEditFormProps) {
         description: formData.description,
         status: formData.status as TaskStatus,
         priority: formData.priority as Priority,
+        picerl_stage: formData.picerlStage || null,
         assignee: formData.assignee,
         due_date: formData.dueDate || null,
         tags: formData.tags,
@@ -126,6 +132,26 @@ export function CaseTaskEditForm({ initialData, type }: CaseTaskEditFormProps) {
             <Select.Item value="DONE">Done</Select.Item>
           </Select>
 
+          <Select
+            className="h-auto w-full flex-none"
+            label="PICERL Stage"
+            helpText="Incident response phase for this task"
+            value={formData.picerlStage || PICERL_UNSET_VALUE}
+            onValueChange={(picerlStage) =>
+              setFormData(prev => ({
+                ...prev,
+                picerlStage: picerlStage === PICERL_UNSET_VALUE ? "" : picerlStage,
+              }))
+            }
+          >
+            <Select.Item value={PICERL_UNSET_VALUE}>N/A</Select.Item>
+            {PICERL_STAGES.map((stage) => (
+              <Select.Item key={stage} value={stage}>
+                {PICERL_STAGE_LABELS[stage]}
+              </Select.Item>
+            ))}
+          </Select>
+
           <PrioritySelector
             className="h-auto w-full flex-none"
             label="Priority"
@@ -146,7 +172,7 @@ export function CaseTaskEditForm({ initialData, type }: CaseTaskEditFormProps) {
               onAssignToMe={() => setFormData(prev => ({ ...prev, assignee: user?.username || null }))}
               onAssignToUser={(username) => setFormData(prev => ({ ...prev, assignee: username }))}
               className="w-full"
-              dropdownClassName="shadow-none bg-black w-[var(--radix-dropdown-menu-trigger-width)]"
+              dropdownClassName="shadow-none w-[var(--radix-dropdown-menu-trigger-width)]"
             />
           </div>
 
