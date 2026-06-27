@@ -56,7 +56,7 @@ function TipBanner() {
     [kbdClass]
   );
 
-  const [tipIndex, setTipIndex] = useState(() => 
+  const [tipIndex, setTipIndex] = useState(() =>
     Math.floor(Math.random() * tips.length)
   );
 
@@ -201,9 +201,8 @@ function HomeDashboard() {
         type="button"
         onClick={() => requestSort(key)}
         className="inline-flex items-center gap-1 text-left text-caption-bold font-caption-bold text-subtext-color hover:text-default-font"
-        aria-label={`${label}: ${
-          isActive ? `sorted ${sort.direction === "asc" ? "ascending" : "descending"}` : "not sorted"
-        }`}
+        aria-label={`${label}: ${isActive ? `sorted ${sort.direction === "asc" ? "ascending" : "descending"}` : "not sorted"
+          }`}
       >
         <span>{label}</span>
         <SortIcon className="h-3.5 w-3.5" aria-hidden="true" />
@@ -280,258 +279,258 @@ function HomeDashboard() {
         <div className="grid w-full grid-cols-1 gap-4 xl:grid-cols-2">
           {/* Live Activity Feed */}
           <div className="flex w-full flex-col items-start gap-5 rounded-md border border-solid border-neutral-border bg-default-background px-6 py-6">
-          <div className="flex w-full flex-col gap-1 sm:flex-row sm:items-end">
-            <span className="grow shrink-0 basis-0 text-heading-3 font-heading-3 text-default-font">
-              Live Activity Feed
-            </span>
-          </div>
-          {recentLoading ? (
-            <div className="flex w-full items-center justify-center py-8">
-              <Loader />
-            </div>
-          ) : recentError ? (
-            <div className="flex w-full items-center justify-center py-8">
-              <span className="text-body font-body text-error-600">
-                Failed to load recent activity
+            <div className="flex w-full flex-col gap-1 sm:flex-row sm:items-end">
+              <span className="grow shrink-0 basis-0 text-heading-3 font-heading-3 text-default-font">
+                Live Activity Feed
               </span>
             </div>
-          ) : recentData?.items && recentData.items.length > 0 ? (
-            <>
-              {/* Mobile: card list */}
-              <div className="flex w-full flex-col divide-y divide-neutral-border md:hidden">
-                {recentData.items.map((item) => {
-                  const typeInfo = formatItemType(item.item_type);
-                  const path = getItemPath(item.item_type, item.human_id);
-                  const content = (
-                    <>
-                      <div className="flex min-w-0 grow flex-col gap-2">
-                        <div className="flex min-w-0 flex-wrap items-center gap-2">
-                          <Badge variant={typeInfo.variant} icon={typeInfo.icon}>
-                            {typeInfo.label}
-                          </Badge>
-                          <span className="text-caption font-caption text-subtext-color">
-                            {item.human_id}
-                          </span>
-                          <span className="text-caption font-caption text-subtext-color">
-                            <RelativeTime value={item.updated_at} />
-                          </span>
-                        </div>
-                        <span className="line-clamp-2 text-body-bold font-body-bold text-default-font">
-                          {item.title}
-                        </span>
-                      </div>
-                      <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
-                        <State state={mapStatus(item.status, item.item_type)} variant="small" />
-                        <Priority priority={mapPriority(item.priority)} size="mini" />
-                      </div>
-                    </>
-                  );
-
-                  return path ? (
-                    <Link
-                      key={`activity-${item.item_type}-${item.id}`}
-                      to={path}
-                      className="flex w-full items-start gap-4 px-0 py-4 transition-colors hover:bg-neutral-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary sm:items-center"
-                    >
-                      {content}
-                    </Link>
-                  ) : (
-                    <div
-                      key={`activity-${item.item_type}-${item.id}`}
-                      className="flex w-full items-start gap-4 px-0 py-4 sm:items-center"
-                    >
-                      {content}
-                    </div>
-                  );
-                })}
+            {recentLoading ? (
+              <div className="flex w-full items-center justify-center py-8">
+                <Loader />
               </div>
-
-              {/* Tablet/Desktop: table */}
-              <div className="hidden w-full md:block">
-                <Table
-                  header={
-                    <Table.HeaderRow>
-                      <Table.HeaderCell>Title</Table.HeaderCell>
-                      <Table.HeaderCell>Type</Table.HeaderCell>
-                      <Table.HeaderCell>Status</Table.HeaderCell>
-                      <Table.HeaderCell>Priority</Table.HeaderCell>
-                      <Table.HeaderCell>Updated</Table.HeaderCell>
-                    </Table.HeaderRow>
-                  }
-                >
+            ) : recentError ? (
+              <div className="flex w-full items-center justify-center py-8">
+                <span className="text-body font-body text-error-600">
+                  Failed to load recent activity
+                </span>
+              </div>
+            ) : recentData?.items && recentData.items.length > 0 ? (
+              <>
+                {/* Mobile: card list */}
+                <div className="flex w-full flex-col divide-y divide-neutral-border md:hidden">
                   {recentData.items.map((item) => {
                     const typeInfo = formatItemType(item.item_type);
                     const path = getItemPath(item.item_type, item.human_id);
-                    return (
-                      <Table.Row
-                        key={`activity-${item.item_type}-${item.id}`}
-                        onClick={() => navigateToItem(item.item_type, item.human_id)}
-                        className={path ? "cursor-pointer hover:bg-neutral-50" : undefined}
-                      >
-                        <Table.Cell>
-                          <div className="flex flex-col gap-0.5">
+                    const content = (
+                      <>
+                        <div className="flex min-w-0 grow flex-col gap-2">
+                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <Badge variant={typeInfo.variant} icon={typeInfo.icon}>
+                              {typeInfo.label}
+                            </Badge>
                             <span className="text-caption font-caption text-subtext-color">
                               {item.human_id}
                             </span>
-                            <span className="text-body-bold font-body-bold text-neutral-700 line-clamp-1">
-                              {item.title}
+                            <span className="text-caption font-caption text-subtext-color">
+                              <RelativeTime value={item.updated_at} />
                             </span>
                           </div>
-                        </Table.Cell>
-                        <Table.Cell>
-                          <Badge variant={typeInfo.variant} icon={typeInfo.icon}>
-                            {typeInfo.label}
-                          </Badge>
-                        </Table.Cell>
-                        <Table.Cell>
-                          <State state={mapStatus(item.status, item.item_type)} variant="mini" />
-                        </Table.Cell>
-                        <Table.Cell>
-                          <Priority priority={mapPriority(item.priority)} size="mini" />
-                        </Table.Cell>
-                        <Table.Cell>
-                          <span className="text-caption font-caption text-subtext-color whitespace-nowrap">
-                            <RelativeTime value={item.updated_at} />
-                          </span>
-                        </Table.Cell>
-                      </Table.Row>
-                    );
-                  })}
-                </Table>
-              </div>
-            </>
-          ) : (
-            <div className="flex w-full items-center justify-center py-8">
-              <span className="text-body font-body text-subtext-color">
-                No recent activity
-              </span>
-            </div>
-          )}
-        </div>
-
-        {/* My Open Items */}
-        <div className="flex w-full flex-col items-start gap-6 rounded-md border border-solid border-neutral-border bg-default-background px-6 py-6">
-          <div className="flex w-full items-center gap-2">
-            <span className="grow shrink-0 basis-0 text-heading-3 font-heading-3 text-default-font">
-              My Open Items
-            </span>
-          </div>
-          {priorityLoading ? (
-            <div className="flex w-full items-center justify-center py-8">
-              <Loader />
-            </div>
-          ) : priorityData?.items && priorityData.items.length > 0 ? (
-            <>
-              {/* Mobile: card list */}
-              <div className="flex w-full flex-col divide-y divide-neutral-border md:hidden">
-                {sortedItems.map((item) => {
-                  const typeInfo = formatItemType(item.item_type);
-                  return (
-                    <button
-                      key={`priority-card-${item.item_type}-${item.id}`}
-                      type="button"
-                      onClick={() => navigateToItem(item.item_type, item.human_id)}
-                      className="flex w-full items-start gap-4 px-0 py-4 text-left transition-colors hover:bg-neutral-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary sm:items-center"
-                    >
-                      <div className="flex min-w-0 grow flex-col gap-2">
-                        <div className="flex min-w-0 flex-wrap items-center gap-2">
-                          <Badge variant={typeInfo.variant} icon={typeInfo.icon}>
-                            {typeInfo.label}
-                          </Badge>
-                          <span className="text-caption font-caption text-subtext-color">
-                            {item.human_id}
-                          </span>
-                          <span
-                            className="text-caption font-caption text-subtext-color"
-                            title={item.created_at ? `Created ${new Date(item.created_at).toLocaleString()}` : undefined}
-                          >
-                            {formatOpenItemAge(item.created_at)}
+                          <span className="line-clamp-2 text-body-bold font-body-bold text-default-font">
+                            {item.title}
                           </span>
                         </div>
-                        <span className="line-clamp-2 text-body-bold font-body-bold text-default-font">
-                          {item.title}
-                        </span>
-                      </div>
-                      <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
-                        <State state={mapStatus(item.status, item.item_type)} variant="small" />
-                        <Priority priority={mapPriority(item.priority)} size="mini" />
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
+                        <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
+                          <State state={mapStatus(item.status, item.item_type)} variant="small" />
+                          <Priority priority={mapPriority(item.priority)} size="mini" />
+                        </div>
+                      </>
+                    );
 
-              {/* Tablet/Desktop: table */}
-              <div className="hidden w-full md:block">
-                <Table
-                  header={
-                    <Table.HeaderRow>
-                      <Table.HeaderCell>{renderSortableHeader("title", "Title")}</Table.HeaderCell>
-                      <Table.HeaderCell>{renderSortableHeader("item_type", "Type")}</Table.HeaderCell>
-                      <Table.HeaderCell>{renderSortableHeader("status", "Status")}</Table.HeaderCell>
-                      <Table.HeaderCell>{renderSortableHeader("priority", "Priority")}</Table.HeaderCell>
-                      <Table.HeaderCell>{renderSortableHeader("age", "Age")}</Table.HeaderCell>
-                    </Table.HeaderRow>
-                  }
-                >
+                    return path ? (
+                      <Link
+                        key={`activity-${item.item_type}-${item.id}`}
+                        to={path}
+                        className="flex w-full items-start gap-4 px-0 py-4 transition-colors hover:bg-neutral-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary sm:items-center"
+                      >
+                        {content}
+                      </Link>
+                    ) : (
+                      <div
+                        key={`activity-${item.item_type}-${item.id}`}
+                        className="flex w-full items-start gap-4 px-0 py-4 sm:items-center"
+                      >
+                        {content}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Tablet/Desktop: table */}
+                <div className="hidden w-full md:block">
+                  <Table
+                    header={
+                      <Table.HeaderRow>
+                        <Table.HeaderCell>Title</Table.HeaderCell>
+                        <Table.HeaderCell>Type</Table.HeaderCell>
+                        <Table.HeaderCell>Status</Table.HeaderCell>
+                        <Table.HeaderCell>Priority</Table.HeaderCell>
+                        <Table.HeaderCell>Updated</Table.HeaderCell>
+                      </Table.HeaderRow>
+                    }
+                  >
+                    {recentData.items.map((item) => {
+                      const typeInfo = formatItemType(item.item_type);
+                      const path = getItemPath(item.item_type, item.human_id);
+                      return (
+                        <Table.Row
+                          key={`activity-${item.item_type}-${item.id}`}
+                          onClick={() => navigateToItem(item.item_type, item.human_id)}
+                          className={path ? "cursor-pointer hover:bg-neutral-50" : undefined}
+                        >
+                          <Table.Cell>
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-caption font-caption text-subtext-color">
+                                {item.human_id}
+                              </span>
+                              <span className="text-body-bold font-body-bold text-neutral-700 line-clamp-1">
+                                {item.title}
+                              </span>
+                            </div>
+                          </Table.Cell>
+                          <Table.Cell>
+                            <Badge variant={typeInfo.variant} icon={typeInfo.icon}>
+                              {typeInfo.label}
+                            </Badge>
+                          </Table.Cell>
+                          <Table.Cell>
+                            <State state={mapStatus(item.status, item.item_type)} variant="mini" />
+                          </Table.Cell>
+                          <Table.Cell>
+                            <Priority priority={mapPriority(item.priority)} size="mini" />
+                          </Table.Cell>
+                          <Table.Cell>
+                            <span className="text-caption font-caption text-subtext-color whitespace-nowrap">
+                              <RelativeTime value={item.updated_at} />
+                            </span>
+                          </Table.Cell>
+                        </Table.Row>
+                      );
+                    })}
+                  </Table>
+                </div>
+              </>
+            ) : (
+              <div className="flex w-full items-center justify-center py-8">
+                <span className="text-body font-body text-subtext-color">
+                  No recent activity
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* My Open Items */}
+          <div className="flex w-full flex-col items-start gap-6 rounded-md border border-solid border-neutral-border bg-default-background px-6 py-6">
+            <div className="flex w-full items-center gap-2">
+              <span className="grow shrink-0 basis-0 text-heading-3 font-heading-3 text-default-font">
+                My Open Items
+              </span>
+            </div>
+            {priorityLoading ? (
+              <div className="flex w-full items-center justify-center py-8">
+                <Loader />
+              </div>
+            ) : priorityData?.items && priorityData.items.length > 0 ? (
+              <>
+                {/* Mobile: card list */}
+                <div className="flex w-full flex-col divide-y divide-neutral-border md:hidden">
                   {sortedItems.map((item) => {
                     const typeInfo = formatItemType(item.item_type);
                     return (
-                      <Table.Row 
-                        key={`priority-${item.item_type}-${item.id}`}
+                      <button
+                        key={`priority-card-${item.item_type}-${item.id}`}
+                        type="button"
                         onClick={() => navigateToItem(item.item_type, item.human_id)}
-                        className="cursor-pointer hover:bg-neutral-50"
+                        className="flex w-full items-start gap-4 px-0 py-4 text-left transition-colors hover:bg-neutral-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary sm:items-center"
                       >
-                        <Table.Cell>
-                          <div className="flex flex-col gap-0.5">
+                        <div className="flex min-w-0 grow flex-col gap-2">
+                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <Badge variant={typeInfo.variant} icon={typeInfo.icon}>
+                              {typeInfo.label}
+                            </Badge>
                             <span className="text-caption font-caption text-subtext-color">
                               {item.human_id}
                             </span>
-                            <span className="text-body-bold font-body-bold text-neutral-700 line-clamp-1">
-                              {item.title}
+                            <span
+                              className="text-caption font-caption text-subtext-color"
+                              title={item.created_at ? `Created ${new Date(item.created_at).toLocaleString()}` : undefined}
+                            >
+                              {formatOpenItemAge(item.created_at)}
                             </span>
                           </div>
-                        </Table.Cell>
-                        <Table.Cell>
-                          <Badge variant={typeInfo.variant} icon={typeInfo.icon}>
-                            {typeInfo.label}
-                          </Badge>
-                        </Table.Cell>
-                        <Table.Cell>
-                          <State state={mapStatus(item.status, item.item_type)} variant="mini" />
-                        </Table.Cell>
-                        <Table.Cell>
-                          <Priority priority={mapPriority(item.priority)} size="mini" />
-                        </Table.Cell>
-                        <Table.Cell>
-                          <span
-                            className="text-caption font-caption text-subtext-color"
-                            title={item.created_at ? `Created ${new Date(item.created_at).toLocaleString()}` : undefined}
-                          >
-                            {formatOpenItemAge(item.created_at)}
+                          <span className="line-clamp-2 text-body-bold font-body-bold text-default-font">
+                            {item.title}
                           </span>
-                        </Table.Cell>
-                      </Table.Row>
+                        </div>
+                        <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row sm:items-center">
+                          <State state={mapStatus(item.status, item.item_type)} variant="small" />
+                          <Priority priority={mapPriority(item.priority)} size="mini" />
+                        </div>
+                      </button>
                     );
                   })}
-                </Table>
-              </div>
-              {priorityData.truncated && (
-                <div className="flex w-full items-center justify-center py-2">
-                  <span className="text-caption font-caption text-subtext-color">
-                    Showing first 100 items. Use filters on each page to see more.
-                  </span>
                 </div>
-              )}
-            </>
-          ) : (
-            <div className="flex w-full items-center justify-center py-8">
-              <span className="text-body font-body text-subtext-color">
-                No open items assigned to you
-              </span>
-            </div>
-          )}
-        </div>
+
+                {/* Tablet/Desktop: table */}
+                <div className="hidden w-full md:block">
+                  <Table
+                    header={
+                      <Table.HeaderRow>
+                        <Table.HeaderCell>{renderSortableHeader("title", "Title")}</Table.HeaderCell>
+                        <Table.HeaderCell>{renderSortableHeader("item_type", "Type")}</Table.HeaderCell>
+                        <Table.HeaderCell>{renderSortableHeader("status", "Status")}</Table.HeaderCell>
+                        <Table.HeaderCell>{renderSortableHeader("priority", "Priority")}</Table.HeaderCell>
+                        <Table.HeaderCell>{renderSortableHeader("age", "Age")}</Table.HeaderCell>
+                      </Table.HeaderRow>
+                    }
+                  >
+                    {sortedItems.map((item) => {
+                      const typeInfo = formatItemType(item.item_type);
+                      return (
+                        <Table.Row
+                          key={`priority-${item.item_type}-${item.id}`}
+                          onClick={() => navigateToItem(item.item_type, item.human_id)}
+                          className="cursor-pointer hover:bg-neutral-50"
+                        >
+                          <Table.Cell>
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-caption font-caption text-subtext-color">
+                                {item.human_id}
+                              </span>
+                              <span className="text-body-bold font-body-bold text-neutral-700 line-clamp-1">
+                                {item.title}
+                              </span>
+                            </div>
+                          </Table.Cell>
+                          <Table.Cell>
+                            <Badge variant={typeInfo.variant} icon={typeInfo.icon}>
+                              {typeInfo.label}
+                            </Badge>
+                          </Table.Cell>
+                          <Table.Cell>
+                            <State state={mapStatus(item.status, item.item_type)} variant="mini" />
+                          </Table.Cell>
+                          <Table.Cell>
+                            <Priority priority={mapPriority(item.priority)} size="mini" />
+                          </Table.Cell>
+                          <Table.Cell>
+                            <span
+                              className="text-caption font-caption text-subtext-color"
+                              title={item.created_at ? `Created ${new Date(item.created_at).toLocaleString()}` : undefined}
+                            >
+                              {formatOpenItemAge(item.created_at)}
+                            </span>
+                          </Table.Cell>
+                        </Table.Row>
+                      );
+                    })}
+                  </Table>
+                </div>
+                {priorityData.truncated && (
+                  <div className="flex w-full items-center justify-center py-2">
+                    <span className="text-caption font-caption text-subtext-color">
+                      Showing first 100 items. Use filters on each page to see more.
+                    </span>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="flex w-full items-center justify-center py-8">
+                <span className="text-body font-body text-subtext-color">
+                  No open items assigned to you
+                </span>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </DefaultPageLayout>

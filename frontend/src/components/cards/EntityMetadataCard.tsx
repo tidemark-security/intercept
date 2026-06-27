@@ -164,14 +164,14 @@ export function EntityMetadataCard({
         "group flex min-w-0 items-start gap-2 border-l border-solid border-neutral-border pl-3",
         dueStatus === 'overdue'
           ? cn(
-              "border-l-error-600 pr-2 py-1.5",
-              isDarkTheme ? "bg-error-1000" : "bg-error-50/40",
-            )
+            "border-l-error-600 pr-2 py-1.5",
+            isDarkTheme ? "bg-error-1000" : "bg-error-50/40",
+          )
           : dueStatus === 'due_soon'
             ? cn(
-                "border-l-warning-600 pr-2 py-1.5",
-                isDarkTheme ? "bg-warning-1100" : "bg-warning-50/40",
-              )
+              "border-l-warning-600 pr-2 py-1.5",
+              isDarkTheme ? "bg-warning-1100" : "bg-warning-50/40",
+            )
             : null,
         isCompactVariant ? "gap-1.5 pl-2" : "py-1",
         className,
@@ -473,7 +473,7 @@ export function EntityMetadataCard({
           tagContent={shouldRenderStandaloneTagRow ? (
             <TagsManager
               tags={currentTags}
-              onTagsChange={onUpdateTags || (() => {})}
+              onTagsChange={onUpdateTags || (() => { })}
               label="Tags"
               inline={true}
               readonly={!onUpdateTags}
