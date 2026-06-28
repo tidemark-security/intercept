@@ -252,7 +252,7 @@ export function GlobalSearch({ open, onOpenChange, initialTags = EMPTY_INITIAL_T
         />
 
         {/* Results */}
-        <div className="flex min-h-0 grow w-full flex-col items-start gap-2 py-4 overflow-auto" role="listbox">
+        <div className="flex min-h-0 grow w-full flex-col items-start gap-3 overflow-auto p-6 mobile:p-2" role="listbox">
           {!canSearch ? (
             <SearchPrompt variant="modal" />
           ) : queryResult.isError ? (
@@ -270,7 +270,7 @@ export function GlobalSearch({ open, onOpenChange, initialTags = EMPTY_INITIAL_T
           ) : (
             <>
               {/* Flat list of results ranked by score */}
-              <div className="flex w-full flex-col items-start">
+              <div className="flex w-full flex-col items-start gap-3">
                 {allResults.map((item, i) => (
                   <div
                     key={`${item.entity_type}-${item.entity_id}`}
@@ -285,6 +285,7 @@ export function GlobalSearch({ open, onOpenChange, initialTags = EMPTY_INITIAL_T
                       onClick={() => navigateToResult(item)}
                       onMouseEnter={() => setSelectedIndex(i)}
                       searchQuery={debouncedQuery}
+                      selectedTags={selectedTags}
                       role="option"
                     />
                   </div>

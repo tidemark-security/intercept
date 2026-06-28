@@ -26,6 +26,8 @@ interface SearchResultRowProps {
   onClick: () => void;
   /** Search query for highlighting matches */
   searchQuery?: string;
+  /** Active tag filters used for tag chip highlighting */
+  selectedTags?: string[];
   /** Whether this row is currently selected (for keyboard navigation) */
   isSelected?: boolean;
   /** Mouse enter handler (for keyboard navigation) */
@@ -34,6 +36,67 @@ interface SearchResultRowProps {
   icon?: React.ReactNode;
   /** ARIA role for accessibility */
   role?: 'button' | 'option';
+}
+
+function getTimelineTagMatches(item: ExtendedSearchResultItem) {
+  const seen = new Set<string>();
+  return (item.tag_matches || []).filter((match) => {
+    if (match.source !== 'timeline') return false;
+    const key = `${String(match.tag || '').toLowerCase()}|${String(match.filter || '').toLowerCase()}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function getTimelineSnippetTags(item: ExtendedSearchResultItem) {
+  const timelineItem = tryParseTimelineItemJson(item.snippet || '');
+  const tags = timelineItem?.tags;
+  if (!Array.isArray(tags)) return [];
+
+  return tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0);
+}
+
+function getSearchResultTags(item: ExtendedSearchResultItem) {
+  const timelineTags = new Set<string>();
+  const childTags = [
+    ...getTimelineTagMatches(item).map((match) => match.tag),
+    ...getTimelineSnippetTags(item),
+  ].filter((tag) => {
+    const key = tag.toLowerCase();
+    if (timelineTags.has(key)) return false;
+    timelineTags.add(key);
+    return true;
+  });
+
+  return [
+    ...(item.tags || []),
+    ...childTags.map((tag) => ({
+      tag,
+      source: 'timeline' as const,
+    })),
+  ];
+}
+
+function getTagHighlightTerms(searchQuery?: string, selectedTags: string[] = []) {
+  const terms = new Set<string>();
+
+  selectedTags.forEach((tag) => {
+    const value = tag.trim();
+    if (value) terms.add(value);
+  });
+
+  const query = searchQuery?.trim();
+  if (!query || query === "*") return Array.from(terms);
+
+  terms.add(query);
+  query
+    .split(/\s+/)
+    .map((term) => term.replace(/^[`"'([{<]+|[`"')\]}>.,:;!?]+$/g, "").trim())
+    .filter((term) => term && term !== "*")
+    .forEach((term) => terms.add(term));
+
+  return Array.from(terms);
 }
 
 /**
@@ -86,12 +149,15 @@ export function SearchResultRow({
   item,
   onClick,
   searchQuery,
+  selectedTags = [],
   isSelected = false,
   onMouseEnter,
   icon,
   role = 'button',
 }: SearchResultRowProps) {
   const variant = isSelected ? 'selected' : 'default';
+  const tags = getSearchResultTags(item);
+  const highlightedTags = getTagHighlightTerms(searchQuery, selectedTags);
   
   return (
     <MenuCard
@@ -104,7 +170,8 @@ export function SearchResultRow({
         />
       }
       assignee={item.assignee || 'Unassigned'}
-      tags={item.tags || []}
+      tags={tags}
+      highlightedTags={highlightedTags}
       state={item.status ? mapState(item.status, item.entity_type) : undefined}
       priority={item.priority ? mapPriority(item.priority) : undefined}
       variant={variant}

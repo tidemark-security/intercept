@@ -274,6 +274,70 @@ class TestSearchServiceQueryConstruction:
         sql_text = executed_sql[0]
         assert "similarity" in sql_text.lower()
 
+    @pytest.mark.asyncio
+    async def test_text_search_sql_does_not_duplicate_timeline_items_projection(self):
+        """Full-text UNION branches must project the same number of columns."""
+        service = SearchService()
+        mock_db = AsyncMock()
+
+        empty_result = MagicMock()
+        empty_result.fetchall.return_value = []
+
+        executed_sql = []
+        async def mock_execute(sql, params=None):
+            executed_sql.append(str(sql))
+            return empty_result
+
+        mock_db.execute = mock_execute
+
+        await service._search_entity(
+            db=mock_db,
+            table_name="cases",
+            entity_type=EntityType.CASE,
+            query="credentials",
+            start_date=datetime.now(timezone.utc) - timedelta(days=1),
+            end_date=datetime.now(timezone.utc),
+            limit=20,
+            tags=["credentials"],
+        )
+
+        sql_text = executed_sql[0]
+        fulltext_branch = sql_text.split("UNION", 1)[0]
+        assert "tags,\n                    timeline_items,\n                    created_at" not in fulltext_branch
+        assert "assignee,\n                    timeline_items,\n                    ts_rank" in fulltext_branch
+
+    @pytest.mark.asyncio
+    async def test_fuzzy_search_sql_projects_timeline_items_before_selecting_it(self):
+        """Fuzzy fallback must include timeline_items in its CTE when tag metadata is requested."""
+        service = SearchService()
+        mock_db = AsyncMock()
+
+        empty_result = MagicMock()
+        empty_result.fetchall.return_value = []
+
+        executed_sql = []
+        async def mock_execute(sql, params=None):
+            executed_sql.append(str(sql))
+            return empty_result
+
+        mock_db.execute = mock_execute
+
+        await service._fuzzy_search_entity_paginated(
+            db=mock_db,
+            table_name="cases",
+            entity_type=EntityType.CASE,
+            query="credentialz",
+            start_date=datetime.now(timezone.utc) - timedelta(days=1),
+            end_date=datetime.now(timezone.utc),
+            skip=0,
+            limit=20,
+            tags=["credentials"],
+        )
+
+        sql_text = executed_sql[0]
+        assert "assignee,\n                    timeline_items,\n                    GREATEST" in sql_text
+        assert ", tags, timeline_items" in sql_text
+
 
 class TestSearchServiceEntityTypes:
     """Tests for entity type filtering."""
@@ -398,3 +462,72 @@ class TestSearchServiceTagFilters:
         assert "timeline_tag ILIKE :tag_pattern_1" in sql
         assert params["tag_pattern_0"] == "%SOCI%"
         assert params["tag_pattern_1"] == "%VIP%"
+
+    def test_build_tag_matches_includes_entity_tag_matches(self):
+        service = SearchService()
+
+        matches = service._build_tag_matches(
+            entity_tags=["customer-data", "credentials"],
+            timeline_items={},
+            filters=["cred"],
+        )
+
+        assert len(matches) == 1
+        assert matches[0].source == "entity"
+        assert matches[0].tag == "credentials"
+        assert matches[0].filter == "cred"
+        assert matches[0].timeline_item_id is None
+
+    def test_build_tag_matches_includes_timeline_tag_context(self):
+        service = SearchService()
+
+        matches = service._build_tag_matches(
+            entity_tags=["malware"],
+            timeline_items={
+                "note-1": {
+                    "id": "note-1",
+                    "type": "note",
+                    "description": "Credential harvesting observed",
+                    "tags": ["credentials"],
+                }
+            },
+            filters=["credentials"],
+        )
+
+        assert len(matches) == 1
+        assert matches[0].source == "timeline"
+        assert matches[0].tag == "credentials"
+        assert matches[0].filter == "credentials"
+        assert matches[0].timeline_item_id == "note-1"
+        assert matches[0].timeline_item_type == "note"
+        assert matches[0].timeline_item_label == "Credential harvesting observed"
+
+    def test_build_tag_matches_deduplicates_by_source_tag_filter_and_timeline_item(self):
+        service = SearchService()
+
+        matches = service._build_tag_matches(
+            entity_tags=["credentials", "Credentials"],
+            timeline_items=[
+                {"id": "note-1", "type": "note", "description": "First", "tags": ["credentials", "Credentials"]},
+                {"id": "note-2", "type": "note", "description": "Second", "tags": ["credentials"]},
+            ],
+            filters=["credentials", "Credentials"],
+        )
+
+        assert [(match.source, match.tag, match.filter, match.timeline_item_id) for match in matches] == [
+            ("entity", "credentials", "credentials", None),
+            ("timeline", "credentials", "credentials", "note-1"),
+            ("timeline", "credentials", "credentials", "note-2"),
+        ]
+
+    def test_build_tag_matches_uses_case_insensitive_substring_semantics(self):
+        service = SearchService()
+
+        matches = service._build_tag_matches(
+            entity_tags=["stolen-CREDENTIALS"],
+            timeline_items={},
+            filters=["cred"],
+        )
+
+        assert len(matches) == 1
+        assert matches[0].tag == "stolen-CREDENTIALS"

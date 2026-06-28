@@ -159,6 +159,7 @@ export type { RejectRecommendationRequest } from './models/RejectRecommendationR
 export type { ResolvedLinkTemplateRead } from './models/ResolvedLinkTemplateRead';
 export type { SearchErrorResponse } from './models/SearchErrorResponse';
 export type { SearchResultItem } from './models/SearchResultItem';
+export type { SearchTagMatch } from './models/SearchTagMatch';
 export type { ServiceNowConfigureRequest } from './models/ServiceNowConfigureRequest';
 export type { ServiceNowConfigureResponse } from './models/ServiceNowConfigureResponse';
 export type { ServiceNowPreviewRequest } from './models/ServiceNowPreviewRequest';

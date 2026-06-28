@@ -15,13 +15,14 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from enum import Enum
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
 from app.models.search_schemas import (
     EntityType,
     SearchResultItem,
+    SearchTagMatch,
     DateRangeApplied,
     PaginatedSearchResponse,
 )
@@ -401,6 +402,111 @@ class SearchService:
             "status": as_optional_str(optional_attr("status")),
             "assignee": as_optional_str(optional_attr("assignee")),
         }
+
+    def _iter_timeline_items(self, timeline_items: Any) -> List[dict]:
+        """Return timeline item dicts from object-backed or array-backed storage."""
+        if isinstance(timeline_items, dict):
+            candidates = timeline_items.values()
+        elif isinstance(timeline_items, list):
+            candidates = timeline_items
+        else:
+            return []
+
+        return [item for item in candidates if isinstance(item, dict)]
+
+    def _timeline_item_label(self, item: dict) -> str:
+        """Build a compact label for timeline tag match context."""
+        for field in (
+            "title",
+            "description",
+            "subject",
+            "file_name",
+            "process_name",
+            "observable_value",
+            "hostname",
+            "mitre_id",
+            "url",
+            "name",
+            "id",
+        ):
+            value = item.get(field)
+            if isinstance(value, str) and value.strip():
+                label = value.strip()
+                return label[:77] + "..." if len(label) > 80 else label
+
+        item_type = item.get("type")
+        return str(item_type) if item_type else "Timeline item"
+
+    def _build_tag_matches(
+        self,
+        entity_tags: Optional[List[str]],
+        timeline_items: Any,
+        filters: Optional[List[str]],
+    ) -> List[SearchTagMatch]:
+        """Explain tag-filter matches using the same case-insensitive substring semantics as SQL."""
+        normalized_filters = self._normalize_tag_filters(filters)
+        if not normalized_filters:
+            return []
+
+        matches: List[SearchTagMatch] = []
+        seen: set[tuple[str, str, str, Optional[str]]] = set()
+
+        def add_match(
+            *,
+            source: str,
+            tag: str,
+            filter_value: str,
+            timeline_item: Optional[dict] = None,
+        ) -> None:
+            item_id = None
+            item_type = None
+            item_label = None
+            if timeline_item is not None:
+                raw_item_id = timeline_item.get("id")
+                raw_item_type = timeline_item.get("type")
+                item_id = str(raw_item_id) if raw_item_id is not None else None
+                item_type = str(raw_item_type) if raw_item_type is not None else None
+                item_label = self._timeline_item_label(timeline_item)
+
+            key = (source, tag.lower(), filter_value.lower(), item_id)
+            if key in seen:
+                return
+            seen.add(key)
+            matches.append(SearchTagMatch(
+                source=source,
+                tag=tag,
+                filter=filter_value,
+                timeline_item_id=item_id,
+                timeline_item_type=item_type,
+                timeline_item_label=item_label,
+            ))
+
+        for tag in entity_tags or []:
+            if not isinstance(tag, str):
+                continue
+            tag_lower = tag.lower()
+            for filter_value in normalized_filters:
+                if filter_value.lower() in tag_lower:
+                    add_match(source="entity", tag=tag, filter_value=filter_value)
+
+        for item in self._iter_timeline_items(timeline_items):
+            tags = item.get("tags")
+            if not isinstance(tags, list):
+                continue
+            for tag in tags:
+                if not isinstance(tag, str):
+                    continue
+                tag_lower = tag.lower()
+                for filter_value in normalized_filters:
+                    if filter_value.lower() in tag_lower:
+                        add_match(
+                            source="timeline",
+                            tag=tag,
+                            filter_value=filter_value,
+                            timeline_item=item,
+                        )
+
+        return matches
     
     async def _lookup_by_human_id(
         self,
@@ -458,6 +564,7 @@ class SearchService:
                 title,
                 description,
                 tags,
+                timeline_items,
                 created_at,
                 updated_at,
                 priority,
@@ -492,6 +599,7 @@ class SearchService:
             created_at=row.created_at,
             **self._search_metadata(row),
             tags=row.tags or [],
+            tag_matches=[],
         )
     
     async def _lookup_by_numeric_id(
@@ -576,6 +684,7 @@ class SearchService:
                     created_at=row.created_at,
                     **self._search_metadata(row),
                     tags=row.tags or [],
+                    tag_matches=[],
                 ))
         
         return results
@@ -861,6 +970,7 @@ class SearchService:
                         title,
                         description,
                         tags,
+                        timeline_items,
                         created_at,
                         updated_at,
                         priority,
@@ -912,6 +1022,7 @@ class SearchService:
                     created_at=row.created_at,
                     **self._search_metadata(row),
                     tags=row.tags or [],
+                    tag_matches=self._build_tag_matches(row.tags or [], getattr(row, "timeline_items", None), normalized_tags),
                 )
                 for row in rows
             ]
@@ -1021,6 +1132,7 @@ class SearchService:
                 title, 
                 description, 
                 tags,
+                timeline_items,
                 created_at, 
                 updated_at,
                 priority,
@@ -1107,6 +1219,7 @@ class SearchService:
                 created_at=row.created_at,
                 **self._search_metadata(row),
                 tags=row.tags or [],
+                tag_matches=self._build_tag_matches(row.tags or [], getattr(row, "timeline_items", None), normalized_tags),
             ))
         
         return items, total_count
@@ -1448,6 +1561,7 @@ class SearchService:
                         title,
                         description,
                         tags,
+                        timeline_items,
                         created_at,
                         updated_at,
                         priority,
@@ -1467,6 +1581,7 @@ class SearchService:
                     title,
                     description,
                     tags,
+                    timeline_items,
                     created_at,
                     updated_at,
                     priority,
@@ -1510,6 +1625,7 @@ class SearchService:
                     created_at=row.created_at,
                     **self._search_metadata(row),
                     tags=row.tags or [],
+                    tag_matches=self._build_tag_matches(row.tags or [], getattr(row, "timeline_items", None), normalized_tags),
                 ))
 
             return items, total_count
@@ -1599,6 +1715,7 @@ class SearchService:
                 title, 
                 description, 
                 tags,
+                timeline_items,
                 created_at, 
                 updated_at,
                 priority,
@@ -1680,6 +1797,7 @@ class SearchService:
                 created_at=row.created_at,
                 **self._search_metadata(row),
                 tags=row.tags or [],
+                tag_matches=self._build_tag_matches(row.tags or [], getattr(row, "timeline_items", None), normalized_tags),
             ))
         
         return items, total_count
@@ -1714,6 +1832,7 @@ class SearchService:
                     priority,
                     status,
                     assignee,
+                    timeline_items,
                     GREATEST(
                         similarity(COALESCE(title, ''), :query),
                         similarity(COALESCE(description, ''), :query) * 0.8
@@ -1732,7 +1851,7 @@ class SearchService:
                 FROM fuzzy_results
             )
             SELECT id, title, description, created_at, updated_at, priority, status, assignee, score, total_count
-                     , tags
+                     , tags, timeline_items
             FROM counted
             ORDER BY score DESC
             OFFSET :skip
@@ -1766,6 +1885,7 @@ class SearchService:
                 created_at=row.created_at,
                 **self._search_metadata(row),
                 tags=row.tags or [],
+                tag_matches=self._build_tag_matches(row.tags or [], getattr(row, "timeline_items", None), normalized_tags),
             ))
         
         return items, total_count

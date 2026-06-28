@@ -186,6 +186,46 @@ async def test_get_alerts_serializes_legacy_list_backed_timeline_items(
 
 
 @pytest.mark.asyncio
+async def test_get_alerts_normalizes_legacy_duplicate_tags(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        alert = Alert(
+            title="Legacy duplicate tag alert",
+            description="Stored before read response normalization",
+            source="seed",
+            tags=cast(Any, ["Null", "Null", "codex-test", "Codex-Test", " review "]),
+        )
+        session.add(alert)
+        await session.commit()
+        assert alert.id is not None
+        alert_id = alert.id
+
+    detail_response = await client.get(
+        f"/api/v1/alerts/{alert_id}",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert detail_response.status_code == 200
+    assert detail_response.json()["tags"] == ["codex-test", "review"]
+
+    list_response = await client.get(
+        "/api/v1/alerts",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert list_response.status_code == 200
+    matching_alert = next(
+        item for item in list_response.json()["items"] if item["title"] == "Legacy duplicate tag alert"
+    )
+    assert matching_alert["tags"] == ["codex-test", "review"]
+
+
+@pytest.mark.asyncio
 async def test_get_alerts_filters_unassigned_sentinel(
     client: AsyncClient,
     session_maker: Any,

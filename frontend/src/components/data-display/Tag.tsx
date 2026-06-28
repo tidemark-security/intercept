@@ -80,14 +80,14 @@ const TagRoot = React.forwardRef<HTMLSpanElement, TagProps>(function TagRoot(
       : undefined;
   const searchableTagText = searchable && typeof tagText === 'string' ? tagText.trim() : '';
   const textClassName = cn(
-    'line-clamp-1 flex h-full grow shrink-0 basis-0 items-center justify-center overflow-hidden text-ellipsis text-center text-caption font-caption',
-    {
-      'cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary': Boolean(tagSearchHref),
-      'text-[#0A0A0A]': p === '5',
-      'text-[#0A0F0D]': p === '4',
-      'text-black': p === 'default' || p === '3' || p === '2',
-      'text-white': p === '1' || p === '0',
-    },
+      'line-clamp-1 flex h-full grow shrink-0 basis-0 items-center justify-center overflow-hidden text-ellipsis text-center text-caption font-caption',
+      {
+        'cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary': Boolean(tagSearchHref),
+        'text-[#0A0A0A]': p === '5',
+        'text-[#0A0F0D]': p === '4',
+        'text-black': p === 'default' || p === '3' || p === '2',
+        'text-white': p === '1' || p === '0',
+      },
   );
   const hasCustomClick = typeof onClick === 'function';
   const actionButtonMode = p === '5' || p === '4' || p === '3' || p === '2' ? 'dark' : 'light';

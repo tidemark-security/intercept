@@ -692,13 +692,13 @@ export function TriageRecommendationCard({
       {isPending && canReview && (
         <div className="flex w-full flex-wrap items-center justify-end gap-3">
           <Button
-            variant={recommendation.request_escalate_to_case ? "destructive-secondary" : "neutral-secondary"}
+            variant="neutral-secondary"
             icon={<X className="h-4 w-4" />}
             onClick={() => setShowRejectDialog(true)}
             disabled={isRejecting || isAccepting}
             loading={isRejecting}
           >
-            {recommendation.request_escalate_to_case ? "Escalate to Case (Reject AI)" : "Reject"}
+            Reject
           </Button>
           <Button
             variant="brand-primary"
@@ -707,7 +707,7 @@ export function TriageRecommendationCard({
             disabled={isAccepting || isRejecting}
             loading={isAccepting}
           >
-            {recommendation.request_escalate_to_case ? "Escalate to Case (Accept AI)" : "Accept Recommendation"}
+            Accept Recommendation
           </Button>
         </div>
       )}

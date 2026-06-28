@@ -1,4 +1,5 @@
 import { screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { renderWithProviders } from "../../../tests/test-utils";
@@ -71,6 +72,23 @@ describe("ContextCard", () => {
     expect(link).toHaveAttribute("href", "/context-entries?include_expired=true&ids=11%2C12%2C13%2C14");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noreferrer");
+  });
+
+  it("collapses and expands analyst context", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<ContextCard context={contextFixture()} />);
+
+    await user.click(screen.getByRole("button", { name: /collapse analyst context/i }));
+
+    expect(screen.getByText("Analyst Context")).toBeInTheDocument();
+    expect(screen.getByText("5 active")).toBeInTheDocument();
+    expect(screen.queryByText("Prod resolver maintenance is active for this customer environment.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Matched Context")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /expand analyst context/i }));
+
+    expect(screen.getByText("Matched Context")).toBeInTheDocument();
+    expect(screen.getByText("Prod resolver maintenance is active for this customer environment.")).toBeInTheDocument();
   });
 
   it("omits the card when there are no matched context entries", () => {

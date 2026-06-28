@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from httpx import AsyncClient
@@ -113,6 +113,35 @@ async def test_update_task_serializes_response_after_reload(
     assert payload["title"] == "Updated task title"
     assert payload["tags"] == ["Review", "escalated"]
     assert payload["human_id"].startswith("TSK-")
+
+
+@pytest.mark.asyncio
+async def test_get_task_normalizes_legacy_duplicate_tags(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        task = Task(
+            title="Legacy duplicate tag task",
+            description="Stored before read response normalization",
+            created_by="seed-user",
+            tags=cast(Any, ["Null", "Null", "task-tag", "Task-Tag", " review "]),
+        )
+        session.add(task)
+        await session.commit()
+        assert task.id is not None
+        task_id = task.id
+
+    response = await client.get(
+        f"/api/v1/tasks/{task_id}",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["tags"] == ["task-tag", "review"]
 
 
 @pytest.mark.asyncio

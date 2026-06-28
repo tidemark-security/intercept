@@ -3,6 +3,7 @@
 import React from "react";
 
 import { cn } from "@/utils/cn";
+import { IconWrapper } from "@/utils/IconWrapper";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useTimezonePreference } from "@/contexts/TimezoneContext";
 import { Badge } from "@/components/data-display/Badge";
@@ -17,14 +18,19 @@ import {
   MenuCardBase,
 } from "@/components/cards/MenuCardBase";
 
-import { User2 } from 'lucide-react';
+import { ListTree, User2 } from 'lucide-react';
+type MenuCardTag = string | {
+  tag: string;
+  source?: "entity" | "timeline";
+};
+
 interface MenuCardRootProps
   extends Omit<React.HTMLAttributes<HTMLDivElement>, "id" | "title"> {
   id?: React.ReactNode;
   title?: React.ReactNode;
   timestamp?: React.ReactNode;
   assignee?: React.ReactNode;
-  tags?: string | string[] | null;
+  tags?: string | MenuCardTag[] | null;
   state?:
   | "closed"
   | "new"
@@ -52,7 +58,37 @@ interface MenuCardRootProps
   showDescription?: boolean;
   description?: React.ReactNode;
   onTagClick?: (tag: string, mode: "include" | "exclude") => void;
+  highlightedTags?: string[];
   className?: string;
+}
+
+function tagMatchesFilter(tag: string, filters: string[]) {
+  const normalizedTag = tag.toLowerCase();
+  return filters.some((filter) => filter.trim() && normalizedTag.includes(filter.trim().toLowerCase()));
+}
+
+function getTagValue(tag: MenuCardTag) {
+  return typeof tag === "string" ? tag : tag.tag;
+}
+
+function getTagSource(tag: MenuCardTag) {
+  return typeof tag === "string" ? "entity" : tag.source ?? "entity";
+}
+
+function getTagContent(tag: MenuCardTag) {
+  const value = getTagValue(tag);
+  if (getTagSource(tag) !== "timeline") {
+    return value;
+  }
+
+  return (
+    <span className="flex min-w-0 items-center gap-1">
+      <IconWrapper className="h-3 w-3 flex-none text-current">
+        <ListTree />
+      </IconWrapper>
+      <span className="truncate">{value}</span>
+    </span>
+  );
 }
 
 const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
@@ -71,6 +107,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
       showDescription = false,
       description,
       onTagClick,
+      highlightedTags = [],
       className,
       ...otherProps
     }: MenuCardRootProps,
@@ -238,21 +275,28 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
         {tagList.length > 0 && (
           <div className="-mx-4 -mb-3 mt-2 w-[calc(100%+2rem)] border-t border-solid border-neutral-border bg-neutral-500/10 px-4 py-2">
             <div className="flex w-full items-center gap-1 overflow-hidden flex-nowrap">
-              {tagList.map((tag, index) => (
-                <Tag
-                  key={`${tag}-${index}`}
-                  tagText={tag}
-                  action={onTagClick ? (isExcludeModifierActive ? "minus" : "plus") : undefined}
-                  actionLabel={onTagClick ? `${isExcludeModifierActive ? "Exclude" : "Include"} ${tag}` : undefined}
-                  showAction={Boolean(onTagClick)}
-                  onAction={(event) => handleTagClick(event, tag)}
-                  onClick={(event) => handleTagClick(event, tag)}
-                  onMouseEnter={(event) => setIsExcludeModifierActive(event.metaKey || event.ctrlKey)}
-                  onMouseMove={(event) => setIsExcludeModifierActive(event.metaKey || event.ctrlKey)}
-                  p="0"
-                  className="shrink-0"
-                />
-              ))}
+              {tagList.map((tag, index) => {
+                const tagValue = getTagValue(tag);
+                const isTimelineTag = getTagSource(tag) === "timeline";
+                const isHighlighted = tagMatchesFilter(tagValue, highlightedTags);
+
+                return (
+                  <Tag
+                    key={`${getTagSource(tag)}-${tagValue}-${index}`}
+                    tagText={getTagContent(tag)}
+                    action={!isTimelineTag && onTagClick ? (isExcludeModifierActive ? "minus" : "plus") : undefined}
+                    actionLabel={!isTimelineTag && onTagClick ? `${isExcludeModifierActive ? "Exclude" : "Include"} ${tagValue}` : undefined}
+                    showAction={!isTimelineTag && Boolean(onTagClick)}
+                    onAction={(event) => handleTagClick(event, tagValue)}
+                    onClick={!isTimelineTag ? (event) => handleTagClick(event, tagValue) : undefined}
+                    onMouseEnter={(event) => setIsExcludeModifierActive(event.metaKey || event.ctrlKey)}
+                    onMouseMove={(event) => setIsExcludeModifierActive(event.metaKey || event.ctrlKey)}
+                    p={isHighlighted ? "4" : "0"}
+                    searchable={!isTimelineTag}
+                    className="shrink-0"
+                  />
+                );
+              })}
             </div>
           </div>
         )}

@@ -57,6 +57,12 @@ def enum_values(enum_cls):
     return [member.value for member in enum_cls]
 
 
+def _normalize_response_tags(value: Any) -> List[str]:
+    from app.services.tag_filter_utils import normalize_persisted_tags
+
+    return normalize_persisted_tags(value if isinstance(value, list) else [])
+
+
 class TimelineGraphDocument(SQLModel):
     nodes: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     edges: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
@@ -791,6 +797,11 @@ class CaseRead(CaseBase):
     def coerce_timeline_items(cls, value: Any) -> TimelineItemStorage:
         return _coerce_timeline_item_storage(value)
 
+    @field_validator("tags", mode="before")
+    @classmethod
+    def normalize_tags_for_response(cls, value: Any) -> List[str]:
+        return _normalize_response_tags(value)
+
     @computed_field
     @property
     def human_id(self) -> str:
@@ -1013,6 +1024,11 @@ class AlertRead(AlertBase):
     def coerce_timeline_items(cls, value: Any) -> TimelineItemStorage:
         return _coerce_timeline_item_storage(value)
 
+    @field_validator("tags", mode="before")
+    @classmethod
+    def normalize_tags_for_response(cls, value: Any) -> List[str]:
+        return _normalize_response_tags(value)
+
     @computed_field
     @property
     def human_id(self) -> str:
@@ -1177,6 +1193,20 @@ class CaseRunbookRead(CaseRunbookBase):
     updated_at: datetime
     created_by: str
     updated_by: str
+
+    @field_validator("case_tags", mode="before")
+    @classmethod
+    def normalize_case_tags_for_response(cls, value: Any) -> List[str]:
+        return _normalize_response_tags(value)
+
+    @field_validator("runbook_tasks", mode="after")
+    @classmethod
+    def normalize_runbook_task_tags_for_response(
+        cls, value: List[RunbookTaskDefinition]
+    ) -> List[RunbookTaskDefinition]:
+        for task in value:
+            task.tags = _normalize_response_tags(task.tags)
+        return value
 
     @computed_field
     @property
@@ -1483,6 +1513,11 @@ class TaskRead(TaskBase):
     updated_at: datetime
     timeline_items: Optional[Dict[str, TaskTimelineItem]] = None
     tags: Optional[List[str]] = None
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def normalize_tags_for_response(cls, value: Any) -> List[str]:
+        return _normalize_response_tags(value)
 
     @computed_field
     @property

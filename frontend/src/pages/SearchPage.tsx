@@ -167,6 +167,7 @@ export function SearchPage() {
                   item={item as ExtendedSearchResultItem}
                   onClick={() => navigateToResult(item)}
                   searchQuery={debouncedQuery}
+                  selectedTags={selectedTags}
                   icon={<EntityIcon type={item.entity_type} />}
                 />
               ))}

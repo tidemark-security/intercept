@@ -3,6 +3,7 @@
 /* tslint:disable */
 /* eslint-disable */
 import type { EntityType } from './EntityType';
+import type { SearchTagMatch } from './SearchTagMatch';
 /**
  * Single search result item.
  */
@@ -59,5 +60,8 @@ export type SearchResultItem = {
      * Top-level entity tags
      */
     tags?: Array<string>;
+    /**
+     * Tag filter match metadata
+     */
+    tag_matches?: Array<SearchTagMatch>;
 };
-

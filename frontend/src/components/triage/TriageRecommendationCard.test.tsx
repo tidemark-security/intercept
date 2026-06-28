@@ -40,6 +40,21 @@ function pendingEscalationRecommendation(): TriageRecommendationRead {
 }
 
 describe('TriageRecommendationCard', () => {
+  it('keeps pending escalation recommendation actions as card-level accept and reject buttons', () => {
+    renderWithProviders(
+      <TriageRecommendationCard
+        recommendation={pendingEscalationRecommendation()}
+        onAccept={vi.fn()}
+        onReject={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText('Reject').closest('button')).toBeInTheDocument();
+    expect(screen.getByText('Accept Recommendation').closest('button')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Escalate to Case \(Reject AI\)/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Escalate to Case \(Accept AI\)/ })).not.toBeInTheDocument();
+  });
+
   it('offers stale Case Runbook recovery actions after an accept error', async () => {
     const onAccept = vi.fn();
 

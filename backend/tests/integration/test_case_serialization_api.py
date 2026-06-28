@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from httpx import AsyncClient
@@ -100,6 +100,35 @@ async def test_update_case_normalizes_tags(
 
     assert response.status_code == 200
     assert response.json()["tags"] == ["existing", "triage"]
+
+
+@pytest.mark.asyncio
+async def test_get_case_normalizes_legacy_duplicate_tags(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        case = Case(
+            title="Legacy duplicate tag case",
+            description="Stored before read response normalization",
+            created_by="seed-user",
+            tags=cast(Any, ["Null", "Null", "case-tag", "Case-Tag", " review "]),
+        )
+        session.add(case)
+        await session.commit()
+        assert case.id is not None
+        case_id = case.id
+
+    response = await client.get(
+        f"/api/v1/cases/{case_id}",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["tags"] == ["case-tag", "review"]
 
 
 @pytest.mark.asyncio
