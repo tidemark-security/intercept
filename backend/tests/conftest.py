@@ -130,16 +130,32 @@ def _truncate_sqlmodel_tables(sync_connection) -> None:
 
 def _download_maxmind_test_data(target_dir: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
-    with httpx.Client(timeout=60, follow_redirects=True) as client:
+    headers = {"User-Agent": "intercept-tests"}
+    with httpx.Client(timeout=60, follow_redirects=True, headers=headers) as client:
         for file_name in MAXMIND_TEST_DB_FILES:
             target_path = target_dir / file_name
             if target_path.exists():
                 continue
-            response = client.get(
-                f"https://raw.githubusercontent.com/maxmind/MaxMind-DB/main/test-data/{file_name}"
-            )
-            response.raise_for_status()
-            target_path.write_bytes(response.content)
+
+            urls = [
+                f"https://raw.githubusercontent.com/maxmind/MaxMind-DB/main/test-data/{file_name}",
+                f"https://api.github.com/repos/maxmind/MaxMind-DB/contents/test-data/{file_name}?ref=main",
+            ]
+            last_response: httpx.Response | None = None
+            for url in urls:
+                request_headers = (
+                    {"Accept": "application/vnd.github.raw"}
+                    if url.startswith("https://api.github.com/")
+                    else None
+                )
+                response = client.get(url, headers=request_headers)
+                if response.is_success:
+                    target_path.write_bytes(response.content)
+                    break
+                last_response = response
+            else:
+                assert last_response is not None
+                last_response.raise_for_status()
 
 
 @pytest.fixture(scope="session")
