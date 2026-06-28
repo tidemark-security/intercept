@@ -152,7 +152,7 @@ export default function AdminAuditTrail() {
   return (
     <AdminPageLayout
       title="Audit Trail"
-      subtitle="Review security-sensitive activity with filtering and pagination"
+      subtitle="Review system activity, security events, and admin actions"
       actionButton={
         <Button
           variant="neutral-secondary"
@@ -286,8 +286,8 @@ export default function AdminAuditTrail() {
                               setExpandedRows((current) =>
                                 current.includes(entry.id)
                                   ? current.filter(
-                                      (value) => value !== entry.id,
-                                    )
+                                    (value) => value !== entry.id,
+                                  )
                                   : [...current, entry.id],
                               );
                             }}
