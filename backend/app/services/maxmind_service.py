@@ -397,6 +397,9 @@ class MaxMindService:
 
     async def get_database_status(self, db: AsyncSession) -> list[dict[str, Any]]:
         settings, cfg = await self._get_settings(db, strict_editions=False)
+        if not cfg["edition_ids"]:
+            return []
+
         storage_available = True
         try:
             await self._ensure_bucket()

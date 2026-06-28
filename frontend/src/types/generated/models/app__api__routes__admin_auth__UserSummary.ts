@@ -33,6 +33,10 @@ export type app__api__routes__admin_auth__UserSummary = {
      */
     assignable?: boolean;
     /**
+     * Whether this account can override timestamps
+     */
+    overrideTimestamps?: boolean;
+    /**
      * OIDC issuer for linked SSO identities
      */
     oidcIssuer?: (string | null);

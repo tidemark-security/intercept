@@ -28,12 +28,20 @@ export class TasksService {
      */
     public static createTaskApiV1TasksPost({
         requestBody,
+        migration = false,
     }: {
         requestBody: TaskCreate,
+        /**
+         * Allow authorized NHI migration clients to provide created_at
+         */
+        migration?: boolean,
     }): CancelablePromise<TaskRead> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/tasks',
+            query: {
+                'migration': migration,
+            },
             body: requestBody,
             mediaType: 'application/json',
             errors: {
@@ -280,15 +288,23 @@ export class TasksService {
     public static addTimelineItemApiV1TasksTaskIdTimelinePost({
         taskId,
         requestBody,
+        migration = false,
     }: {
         taskId: number,
         requestBody: Record<string, any>,
+        /**
+         * Allow authorized NHI migration clients to provide created_at
+         */
+        migration?: boolean,
     }): CancelablePromise<TaskRead> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/tasks/{task_id}/timeline',
             path: {
                 'task_id': taskId,
+            },
+            query: {
+                'migration': migration,
             },
             body: requestBody,
             mediaType: 'application/json',

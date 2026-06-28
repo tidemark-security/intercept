@@ -32,6 +32,7 @@ from app.api.route_utils import (
     handle_update_attachment_status,
     handle_generate_download_url,
 )
+from app.api.timestamp_overrides import normalize_created_at_override, reject_created_at_update
 from app.api.routes.admin_auth import (
     require_authenticated_user,
     require_admin_user,
@@ -60,13 +61,26 @@ handle_human_id = create_human_id_decorator(ID_PREFIX, "case_id")
 @router.post("", response_model=CaseRead)
 async def create_case(
     case_data: CaseCreate,
+    migration: bool = Query(False, description="Allow authorized NHI migration clients to provide created_at"),
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     """Create a new case."""
     try:
-        db_case = await case_service.create_case(db, case_data, current_user.username)
+        created_at_override = normalize_created_at_override(
+            current_user=current_user,
+            migration=migration,
+            created_at=case_data.created_at,
+        )
+        db_case = await case_service.create_case(
+            db,
+            case_data,
+            current_user.username,
+            created_at_override=created_at_override,
+        )
         return db_case
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating case: {str(e)}")
 
@@ -278,14 +292,27 @@ async def add_timeline_item(
     case_id: int,
     request: Request,  # pylint: disable=unused-argument
     timeline_item: Dict[str, Any],
+    migration: bool = Query(False, description="Allow authorized NHI migration clients to provide created_at"),
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     """Add a timeline item to a case."""
     try:
+        has_created_at = "created_at" in timeline_item
         typed_item = convert_timeline_item(timeline_item)
+        created_at_override = normalize_created_at_override(
+            current_user=current_user,
+            migration=migration,
+            created_at=typed_item.created_at if has_created_at else None,
+        )
+        if created_at_override is not None:
+            typed_item.created_at = created_at_override
         db_case = await case_service.add_timeline_item(
-            db, case_id, typed_item, current_user.username
+            db,
+            case_id,
+            typed_item,
+            current_user.username,
+            created_at_override=created_at_override,
         )
         if not db_case:
             raise HTTPException(status_code=404, detail="Case not found")
@@ -312,6 +339,7 @@ async def update_timeline_item(
 ):
     """Update a timeline item in a case."""
     try:
+        reject_created_at_update(timeline_item)
         typed_item = convert_timeline_item(timeline_item)
         db_case = await case_service.update_timeline_item(
             db, case_id, item_id, typed_item, current_user.username

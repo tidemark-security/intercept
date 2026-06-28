@@ -20,6 +20,10 @@ export type AdminCreateNHIRequest = {
      */
     assignable?: boolean;
     /**
+     * Whether this NHI can override created_at timestamps during migration imports
+     */
+    override_timestamps?: boolean;
+    /**
      * Purpose or description of this NHI account
      */
     description?: (string | null);

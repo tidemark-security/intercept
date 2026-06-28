@@ -689,7 +689,7 @@ async def accept_recommendation(
                 )
                 
                 db_task = Task(
-                    **task_data.model_dump(exclude_unset=False),
+                    **task_data.model_dump(exclude_unset=False, exclude={"created_at"}),
                     linked_at=datetime.now(timezone.utc),
                     created_by=reviewed_by,
                     created_at=datetime.now(timezone.utc),

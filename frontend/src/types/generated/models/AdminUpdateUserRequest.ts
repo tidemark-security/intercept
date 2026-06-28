@@ -24,6 +24,10 @@ export type AdminUpdateUserRequest = {
      */
     assignable?: boolean;
     /**
+     * Whether an NHI account can override created_at timestamps during migration imports
+     */
+    override_timestamps?: boolean;
+    /**
      * Updated user title or service account description
      */
     description?: (string | null);

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime
 from typing import Any, Callable, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +12,13 @@ from app.models.models import Alert, Case, Task
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
 from app.services.timeline_service import timeline_service
+
+
+def _dump_timeline_item(timeline_item: Any) -> dict[str, Any]:
+    item_dict = timeline_item.model_dump(mode="json")
+    if item_dict.get("created_at") is None:
+        item_dict.pop("created_at", None)
+    return item_dict
 
 
 async def _load_entity_for_timeline_update(
@@ -42,6 +50,7 @@ async def add_timeline_item_and_commit(
     timeline_item: Any,
     performed_by: str,
     validate_item: Optional[Callable[[dict[str, Any]], None]] = None,
+    created_at_override: Optional[datetime] = None,
 ) -> dict[str, Any]:
     entity = await _load_entity_for_timeline_update(
         db,
@@ -51,7 +60,9 @@ async def add_timeline_item_and_commit(
     if entity is None:
         raise ValueError(f"{entity_type} {entity_id} not found")
 
-    item_dict = timeline_item.model_dump(mode="json")
+    item_dict = _dump_timeline_item(timeline_item)
+    if created_at_override is not None:
+        item_dict["created_at"] = created_at_override.isoformat()
 
     if validate_item is not None:
         validate_item(item_dict)
@@ -121,7 +132,7 @@ async def update_timeline_item_and_commit(
         return None
 
     previous_item = deepcopy(existing_item)
-    item_dict = timeline_item.model_dump(mode="json")
+    item_dict = _dump_timeline_item(timeline_item)
 
     result = await timeline_service.update_timeline_item_with_sync(
         db,

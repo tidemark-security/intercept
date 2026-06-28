@@ -262,6 +262,7 @@ class AdminAuthService:
         email_provided: bool = False,
         role: Optional[UserRole] = None,
         assignable: Optional[bool] = None,
+        override_timestamps: Optional[bool] = None,
         description: Optional[str] = None,
         request_metadata: RequestMetadata,
         db: AsyncSession,
@@ -283,6 +284,7 @@ class AdminAuthService:
             "email": user.email,
             "role": user.role.value,
             "assignable": user.assignable,
+            "override_timestamps": user.override_timestamps,
             "description": user.description,
         }
 
@@ -323,6 +325,11 @@ class AdminAuthService:
                 raise ValueError("Only NHI accounts can be made assignable")
             user.assignable = assignable
 
+        if override_timestamps is not None:
+            if user.account_type != AccountType.NHI and override_timestamps:
+                raise ValueError("Only NHI accounts can override timestamps")
+            user.override_timestamps = override_timestamps
+
         if description is not None:
             normalized_description = description.strip()
             user.description = normalized_description or None
@@ -341,6 +348,7 @@ class AdminAuthService:
                 "email": user.email,
                 "role": user.role.value,
                 "assignable": user.assignable,
+                "override_timestamps": user.override_timestamps,
                 "description": user.description,
             },
             context=request_metadata.to_audit_context(),

@@ -253,6 +253,7 @@ async def add_timeline_item(
     body: str,
     commit: bool = False,
     created_at: str | None = None,
+    migration: bool = False,
 ) -> dict:
     """Add timeline note to alert, case, or task.
     
@@ -270,9 +271,10 @@ async def add_timeline_item(
         item_id: Client-provided unique ID (for idempotency)
         body: Note content (max 16,000 chars)
         commit: If false, returns dry-run preview only (default: false)
-        created_at: ISO-8601 timestamp. Defaults to current time if not specified.
+        created_at: Migration-only ISO-8601 creation timestamp.
+        migration: Required when an authorized NHI supplies created_at.
     """
-    return await add_timeline_item_tool(target_kind, target_id, item_id, body, commit, created_at)
+    return await add_timeline_item_tool(target_kind, target_id, item_id, body, commit, created_at, migration)
 
 
 @mcp.tool(annotations={"readOnlyHint": True})

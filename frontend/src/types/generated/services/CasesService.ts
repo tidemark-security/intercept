@@ -29,12 +29,20 @@ export class CasesService {
      */
     public static createCaseApiV1CasesPost({
         requestBody,
+        migration = false,
     }: {
         requestBody: CaseCreate,
+        /**
+         * Allow authorized NHI migration clients to provide created_at
+         */
+        migration?: boolean,
     }): CancelablePromise<CaseRead> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/cases',
+            query: {
+                'migration': migration,
+            },
             body: requestBody,
             mediaType: 'application/json',
             errors: {
@@ -299,15 +307,23 @@ export class CasesService {
     public static addTimelineItemApiV1CasesCaseIdTimelinePost({
         caseId,
         requestBody,
+        migration = false,
     }: {
         caseId: number,
         requestBody: Record<string, any>,
+        /**
+         * Allow authorized NHI migration clients to provide created_at
+         */
+        migration?: boolean,
     }): CancelablePromise<CaseRead> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/cases/{case_id}/timeline',
             path: {
                 'case_id': caseId,
+            },
+            query: {
+                'migration': migration,
             },
             body: requestBody,
             mediaType: 'application/json',

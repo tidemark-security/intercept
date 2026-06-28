@@ -389,7 +389,12 @@ This is an append-only operation. Idempotent via client-provided `item_id`.
 | `item_id` | string | Yes | - | Client-provided unique ID (for idempotency) |
 | `body` | string | Yes | - | Note content (max 16,000 chars) |
 | `commit` | boolean | No | false | If false, returns dry-run preview only |
-| `created_at` | string | No | now | ISO-8601 timestamp |
+| `created_at` | string | No | server time | Migration-only ISO-8601 creation timestamp. Requires `migration=true`, an authenticated NHI, and `override_timestamps=true`. |
+| `migration` | boolean | No | false | Enables the NHI-only migration timestamp override gate. |
+
+`created_at` is rejected unless `migration=true` is supplied by an authorized
+NHI account. Accepted values must include timezone information and are
+normalized to UTC. Timeline event `timestamp` remains server time.
 
 ### Returns
 
@@ -438,6 +443,23 @@ When item already exists (idempotent):
     "item_id": "agent-analysis-20260112-001",
     "body": "## Automated Analysis\n\nReviewed 15 related alerts. Key findings:\n- Common IOC: 10.0.0.1\n- Pattern suggests lateral movement\n- Recommend immediate containment",
     "commit": true
+  }
+}
+```
+
+Migration import example:
+
+```json
+{
+  "name": "add_timeline_item",
+  "arguments": {
+    "target_kind": "case",
+    "target_id": "CAS-0000123",
+    "item_id": "legacy-note-4815162342",
+    "body": "Imported analyst note from legacy system.",
+    "commit": true,
+    "migration": true,
+    "created_at": "2024-01-02T04:15:00+10:00"
   }
 }
 ```

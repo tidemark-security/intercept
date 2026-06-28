@@ -319,7 +319,11 @@ async def test_add_task_timeline_item_serializes_response_after_reload(
 
     response = await client.post(
         f"/api/v1/tasks/{task_id}/timeline",
-        json=_note_item("analyst-user", item_id="task-note-1", description="Timeline note"),
+        json={
+            key: value
+            for key, value in _note_item("analyst-user", item_id="task-note-1", description="Timeline note").items()
+            if key != "created_at"
+        },
         cookies={"intercept_session": session_cookie},
     )
 

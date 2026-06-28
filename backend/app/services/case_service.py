@@ -56,20 +56,25 @@ class CaseService:
         self, 
         db: AsyncSession, 
         case_data: CaseCreate, 
-        created_by: str
+        created_by: str,
+        created_at_override: Optional[datetime] = None,
     ) -> Case:
         """Create a new case."""
         try:
             # Create case
-            db_case = Case(
-                title=case_data.title,
-                description=case_data.description,
-                priority=case_data.priority,
-                assignee=case_data.assignee,
-                tags=normalize_persisted_tags(case_data.tags),
-                timeline_items={},  # Initialize empty timeline as object-backed storage
-                created_by=created_by
-            )
+            case_kwargs = {
+                "title": case_data.title,
+                "description": case_data.description,
+                "priority": case_data.priority,
+                "assignee": case_data.assignee,
+                "tags": normalize_persisted_tags(case_data.tags),
+                "timeline_items": {},  # Initialize empty timeline as object-backed storage
+                "created_by": created_by,
+            }
+            if created_at_override is not None:
+                case_kwargs["created_at"] = created_at_override
+
+            db_case = Case(**case_kwargs)
             
             db.add(db_case)
             await db.flush()  # Get the ID without committing
@@ -872,7 +877,8 @@ class CaseService:
         db: AsyncSession, 
         case_id: int, 
         timeline_item: CaseTimelineItem, 
-        created_by: str
+        created_by: str,
+        created_at_override: Optional[datetime] = None,
     ) -> Optional[Case]:
         """Add a timeline item to a case."""
         try:
@@ -887,6 +893,7 @@ class CaseService:
                 entity_type="case",
                 timeline_item=timeline_item,
                 performed_by=created_by,
+                created_at_override=created_at_override,
             )
             
             await db.refresh(db_case)

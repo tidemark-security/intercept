@@ -301,8 +301,9 @@ class AddTimelineItemInput(BaseModel):
     body: str = Field(max_length=16000)
     created_at: Optional[datetime] = Field(
         default=None, 
-        description="Timestamp when item was created. Defaults to current time if not specified."
+        description="Migration-only timestamp when item was created. Requires migration=true and an authorized NHI."
     )
+    migration: bool = False
     commit: bool = False  # Dry-run if false
 
 

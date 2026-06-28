@@ -32,12 +32,20 @@ export class AlertsService {
      */
     public static createAlertApiV1AlertsPost({
         requestBody,
+        migration = false,
     }: {
         requestBody: AlertCreate,
+        /**
+         * Allow authorized NHI migration clients to provide created_at
+         */
+        migration?: boolean,
     }): CancelablePromise<AlertRead> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/alerts',
+            query: {
+                'migration': migration,
+            },
             body: requestBody,
             mediaType: 'application/json',
             errors: {
@@ -313,15 +321,23 @@ export class AlertsService {
     public static addTimelineItemApiV1AlertsAlertIdTimelinePost({
         alertId,
         requestBody,
+        migration = false,
     }: {
         alertId: number,
         requestBody: Record<string, any>,
+        /**
+         * Allow authorized NHI migration clients to provide created_at
+         */
+        migration?: boolean,
     }): CancelablePromise<AlertRead> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/alerts/{alert_id}/timeline',
             path: {
                 'alert_id': alertId,
+            },
+            query: {
+                'migration': migration,
             },
             body: requestBody,
             mediaType: 'application/json',

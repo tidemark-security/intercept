@@ -18,5 +18,9 @@ export type TaskCreate = {
     case_id?: (number | null);
     status?: (TaskStatus | null);
     tags?: (Array<string> | null);
+    /**
+     * Migration-only override for the task creation timestamp
+     */
+    created_at?: (string | null);
 };
 

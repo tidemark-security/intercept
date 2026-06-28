@@ -1058,7 +1058,7 @@ async def add_timeline_item(
         body: Note content (max 16,000 chars)
         commit: If false, returns dry-run preview only
         created_by: Username from API key
-        created_at: Timestamp when item was created. Defaults to current time if not specified.
+        created_at: Authorized migration-only timestamp when item was created.
         
     Returns:
         Dictionary with mode, item_id, created_at, author, message
@@ -1114,7 +1114,7 @@ async def add_timeline_item(
     existing_item = timeline_service._find_item_by_id(timeline_items, item_id)
     if existing_item:
         existing_created_at = None
-        existing_timestamp = existing_item.get("timestamp") or existing_item.get("created_at")
+        existing_timestamp = existing_item.get("created_at") or existing_item.get("timestamp")
         if existing_timestamp:
             try:
                 existing_created_at = datetime.fromisoformat(str(existing_timestamp).replace("Z", "+00:00"))
@@ -1139,20 +1139,39 @@ async def add_timeline_item(
             message="Dry-run preview - no changes made",
         )
     
-    # Build typed timeline item and delegate to the service layer
-    timestamp = created_at if created_at else datetime.now(timezone.utc)
+    # Build typed timeline item and delegate to the service layer.
+    created_at_value = created_at if created_at else datetime.now(timezone.utc)
+    timestamp = datetime.now(timezone.utc)
     note_item = NoteItem(
         id=item_id,
         description=body,
-        created_at=timestamp,
+        created_at=created_at_value,
         timestamp=timestamp,
         created_by=created_by,
     )
     
     service_map = {
-        "alert": lambda: alert_service.add_timeline_item(db, numeric_id, note_item, created_by),
-        "case": lambda: case_service.add_timeline_item(db, numeric_id, note_item, created_by),
-        "task": lambda: task_service.add_timeline_item(db, numeric_id, note_item, created_by),
+        "alert": lambda: alert_service.add_timeline_item(
+            db,
+            numeric_id,
+            note_item,
+            created_by,
+            created_at_override=created_at,
+        ),
+        "case": lambda: case_service.add_timeline_item(
+            db,
+            numeric_id,
+            note_item,
+            created_by,
+            created_at_override=created_at,
+        ),
+        "task": lambda: task_service.add_timeline_item(
+            db,
+            numeric_id,
+            note_item,
+            created_by,
+            created_at_override=created_at,
+        ),
     }
     
     result = await service_map[target_kind]()
@@ -1165,7 +1184,7 @@ async def add_timeline_item(
     return AddTimelineItemOutput(
         mode="committed",
         item_id=item_id,
-        created_at=timestamp,
+        created_at=created_at_value,
         author=created_by,
         message=f"Timeline item added successfully to {target_kind} {format_entity_id(numeric_id, canonical_prefix)}",
     )

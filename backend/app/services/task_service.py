@@ -46,7 +46,8 @@ class TaskService:
         self, 
         db: AsyncSession, 
         task_data: TaskCreate, 
-        created_by: str
+        created_by: str,
+        created_at_override: Optional[datetime] = None,
     ) -> Task:
         """Create a new task.
         
@@ -76,21 +77,25 @@ class TaskService:
             elif not isinstance(status, TaskStatus):
                 status = TaskStatus.TODO
             
+            task_kwargs = {
+                "title": task_data.title,
+                "description": task_data.description,
+                "priority": priority,
+                "due_date": task_data.due_date,
+                "picerl_stage": task_data.picerl_stage,
+                "status": status,
+                "assignee": assignee,
+                "case_id": task_data.case_id,
+                "source_runbook": getattr(task_data, "source_runbook", None),
+                "linked_at": datetime.now(timezone.utc) if task_data.case_id else None,
+                "created_by": created_by,
+                "tags": normalize_persisted_tags(task_data.tags),
+            }
+            if created_at_override is not None:
+                task_kwargs["created_at"] = created_at_override
+
             # Create task
-            db_task = Task(
-                title=task_data.title,
-                description=task_data.description,
-                priority=priority,
-                due_date=task_data.due_date,
-                picerl_stage=task_data.picerl_stage,
-                status=status,
-                assignee=assignee,
-                case_id=task_data.case_id,
-                source_runbook=getattr(task_data, "source_runbook", None),
-                linked_at=datetime.now(timezone.utc) if task_data.case_id else None,
-                created_by=created_by,
-                tags=normalize_persisted_tags(task_data.tags),
-            )
+            db_task = Task(**task_kwargs)
             
             db.add(db_task)
             await db.commit()
@@ -505,7 +510,8 @@ class TaskService:
         db: AsyncSession,
         task_id: int,
         timeline_item: TaskTimelineItem,
-        added_by: str
+        added_by: str,
+        created_at_override: Optional[datetime] = None,
     ) -> Optional[Task]:
         """Add a single timeline item to a task's timeline.
         
@@ -525,6 +531,7 @@ class TaskService:
                 timeline_item=timeline_item,
                 performed_by=added_by,
                 validate_item=self._validate_task_timeline_item,
+                created_at_override=created_at_override,
             )
 
             await db.refresh(db_task)

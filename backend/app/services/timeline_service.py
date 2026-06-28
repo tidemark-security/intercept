@@ -1142,7 +1142,7 @@ class TimelineService:
         return False
     
     def _build_updated_item(self, item: Dict[str, Any], item_id: str, updated: Dict[str, Any]) -> Dict[str, Any]:
-        created_at = item.get("created_at")
+        created_at = item.get("created_at") or item.get("timestamp") or datetime.now(timezone.utc).isoformat()
         created_by = item.get("created_by")
         existing_replies = item.get("replies")
 

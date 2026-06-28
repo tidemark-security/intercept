@@ -802,6 +802,10 @@ class Case(CaseBase, table=True):
 class CaseCreate(CaseBase):
     """Schema for creating a case."""
     assignee: Optional[str] = None
+    created_at: Optional[datetime] = Field(
+        default=None,
+        description="Migration-only override for the case creation timestamp",
+    )
 
 
 class CaseAlertClosureUpdate(SQLModel):
@@ -957,6 +961,10 @@ class Alert(AlertBase, table=True):
 
 class AlertCreate(AlertBase):
     """Schema for creating an alert."""
+    created_at: Optional[datetime] = Field(
+        default=None,
+        description="Migration-only override for the alert creation timestamp",
+    )
 
 
 class AlertUpdate(SQLModel):
@@ -1540,6 +1548,10 @@ class TaskCreate(TaskBase):
     case_id: Optional[int] = None
     status: Optional[TaskStatus] = None
     tags: Optional[List[str]] = None
+    created_at: Optional[datetime] = Field(
+        default=None,
+        description="Migration-only override for the task creation timestamp",
+    )
 
 
 class TaskUpdate(SQLModel):
@@ -1738,6 +1750,10 @@ class UserAccount(UserAccountBase, table=True):
         default=False,
         description="Whether this account can be assigned entity work. Applies to NHI automation accounts.",
     )
+    override_timestamps: bool = Field(
+        default=False,
+        description="Whether this NHI account can override created_at timestamps during migration imports.",
+    )
     must_change_password: bool = Field(default=False)
     failed_login_attempts: int = Field(default=0, ge=0)
     lockout_expires_at: Optional[datetime] = Field(
@@ -1819,6 +1835,7 @@ class UserAccountRead(UserAccountBase):
     oidc_issuer: Optional[str] = None
     status: UserStatus
     assignable: bool = False
+    override_timestamps: bool = False
     must_change_password: bool
     failed_login_attempts: int
     lockout_expires_at: Optional[datetime]
@@ -1845,6 +1862,7 @@ class UserAccountCreate(HumanUserAccountBase):
 class NHIAccountCreate(UserAccountBase):
     """Schema for creating a Non-Human Identity (NHI) account."""
     assignable: bool = Field(default=False, description="Whether this NHI can be assigned tasks")
+    override_timestamps: bool = Field(default=False, description="Whether this NHI can override created_at during migration imports")
     initial_api_key_name: str = Field(
         min_length=1,
         max_length=100,

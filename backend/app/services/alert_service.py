@@ -50,7 +50,8 @@ class AlertService:
     async def create_alert(
         self, 
         db: AsyncSession, 
-        alert_data: AlertCreate
+        alert_data: AlertCreate,
+        created_at_override: Optional[datetime] = None,
     ) -> Alert:
         """Create a new alert.
         
@@ -59,12 +60,16 @@ class AlertService:
         automatically enqueues the alert for AI triage.
         """
         try:
-            db_alert = Alert(
-                title=alert_data.title,
-                description=alert_data.description,
-                priority=alert_data.priority,
-                source=alert_data.source,
-            )
+            alert_kwargs = {
+                "title": alert_data.title,
+                "description": alert_data.description,
+                "priority": alert_data.priority,
+                "source": alert_data.source,
+            }
+            if created_at_override is not None:
+                alert_kwargs["created_at"] = created_at_override
+
+            db_alert = Alert(**alert_kwargs)
             
             db.add(db_alert)
             await db.commit()
@@ -1116,7 +1121,8 @@ class AlertService:
         db: AsyncSession,
         alert_id: int,
         timeline_item: AlertTimelineItem,
-        added_by: str
+        added_by: str,
+        created_at_override: Optional[datetime] = None,
     ) -> Optional[Alert]:
         """Add a single timeline item to an alert's timeline."""
         try:
@@ -1131,6 +1137,7 @@ class AlertService:
                 entity_type="alert",
                 timeline_item=timeline_item,
                 performed_by=added_by,
+                created_at_override=created_at_override,
             )
             
             logger.info(f"Timeline item added to alert by {added_by}")

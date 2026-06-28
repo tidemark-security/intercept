@@ -70,6 +70,7 @@ interface User {
   description: string;
   accountType: AccountType;
   assignable: boolean;
+  overrideTimestamps: boolean;
   role: UserRole;
   status: UserStatus;
   mustChangePassword: boolean;
@@ -83,6 +84,7 @@ interface CreateUserFormData {
   email: string;
   role: UserRole;
   assignable: boolean;
+  overrideTimestamps: boolean;
   // NHI-specific fields
   description: string;
   initialApiKeyName: string;
@@ -117,6 +119,7 @@ const INITIAL_CREATE_FORM_DATA: CreateUserFormData = {
   email: "",
   role: "ANALYST",
   assignable: false,
+  overrideTimestamps: false,
   description: "",
   initialApiKeyName: "",
   initialApiKeyExpiresAt: "",
@@ -169,6 +172,7 @@ function mapApiUser(raw: Record<string, unknown>): User {
     description: typeof raw.description === "string" ? raw.description : "",
     accountType: normalizeAccountType(raw.accountType ?? raw.account_type),
     assignable: Boolean(raw.assignable),
+    overrideTimestamps: Boolean(raw.overrideTimestamps ?? raw.override_timestamps),
     role: normalizeUserRole(raw.role),
     status: normalizeUserStatus(raw.status),
     mustChangePassword: Boolean(raw.mustChangePassword),
@@ -404,6 +408,7 @@ function AdminUsers() {
               username: createFormData.username,
               role: createFormData.role,
               assignable: createFormData.assignable,
+              override_timestamps: createFormData.overrideTimestamps,
               description: createFormData.description || undefined,
               initial_api_key_name: createFormData.initialApiKeyName,
               initial_api_key_expires_at:
@@ -435,6 +440,7 @@ function AdminUsers() {
       email: user.email,
       role: user.role,
       assignable: user.assignable,
+      overrideTimestamps: user.overrideTimestamps,
       description: user.description,
       initialApiKeyName: "",
       initialApiKeyExpiresAt: "",
@@ -464,7 +470,12 @@ function AdminUsers() {
               ? editFormData.email.trim() || null
               : undefined,
           role: editFormData.role,
-          assignable: editingUser.accountType === "NHI" ? editFormData.assignable : false,
+          assignable:
+            editingUser.accountType === "NHI" ? editFormData.assignable : false,
+          override_timestamps:
+            editingUser.accountType === "NHI"
+              ? editFormData.overrideTimestamps
+              : false,
           description: editFormData.description,
         },
       });
@@ -1336,6 +1347,20 @@ function AdminUsers() {
                     Assignable AI task agent
                   </label>
 
+                  <label className="flex w-full items-center gap-3 rounded-md border border-solid border-neutral-border px-3 py-2 text-body font-body text-default-font">
+                    <input
+                      type="checkbox"
+                      checked={createFormData.overrideTimestamps}
+                      onChange={(e) =>
+                        updateCreateFormField(
+                          "overrideTimestamps",
+                          e.target.checked,
+                        )
+                      }
+                    />
+                    Override timestamps
+                  </label>
+
                   <TextField
                     className="h-auto w-full flex-none"
                     label="Initial API Key Name"
@@ -1498,6 +1523,20 @@ function AdminUsers() {
                       }
                     />
                     Assignable AI task agent
+                  </label>
+
+                  <label className="flex w-full items-center gap-3 rounded-md border border-solid border-neutral-border px-3 py-2 text-body font-body text-default-font">
+                    <input
+                      type="checkbox"
+                      checked={editFormData.overrideTimestamps}
+                      onChange={(e) =>
+                        updateEditFormField(
+                          "overrideTimestamps",
+                          e.target.checked,
+                        )
+                      }
+                    />
+                    Override timestamps
                   </label>
                 </>
               )}
