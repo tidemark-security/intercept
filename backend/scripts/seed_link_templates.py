@@ -46,6 +46,8 @@ DEFAULT_TEMPLATES = [
         "url_template": "mailto:{{contact_email}}",
         "field_names": ["contact_email", "email"],
         "conditions": None,
+        "surface_scopes": ["timeline_item"],
+        "entity_types": None,
         "enabled": True,
         "display_order": 10,
     },
@@ -57,6 +59,8 @@ DEFAULT_TEMPLATES = [
         "url_template": "tel:{{contact_phone}}",
         "field_names": ["contact_phone", "phone"],
         "conditions": None,
+        "surface_scopes": ["timeline_item"],
+        "entity_types": None,
         "enabled": True,
         "display_order": 20,
     },
@@ -68,6 +72,8 @@ DEFAULT_TEMPLATES = [
         "url_template": "https://teams.microsoft.com/l/chat/0/0?users={{user_id}}",
         "field_names": ["user_id"],
         "conditions": {"type": "internal_actor"},
+        "surface_scopes": ["timeline_item"],
+        "entity_types": None,
         "enabled": True,
         "display_order": 30,
     },
@@ -79,6 +85,8 @@ DEFAULT_TEMPLATES = [
         "url_template": "https://teams.microsoft.com/l/call/0/0?users={{user_id}}",
         "field_names": ["user_id"],
         "conditions": {"type": "internal_actor"},
+        "surface_scopes": ["timeline_item"],
+        "entity_types": None,
         "enabled": True,
         "display_order": 40,
     },
@@ -87,9 +95,11 @@ DEFAULT_TEMPLATES = [
         "name": "Slack Direct Message",
         "icon_name": "Slack",
         "tooltip_template": "Message on Slack",
-        "url_template": "slack://user?team=YOUR_TEAM_ID&id={{slack_user_id}}",
+        "url_template": "https://slack.com/app_redirect?team=YOUR_TEAM_ID&channel={{slack_user_id}}",
         "field_names": ["slack_user_id"],
         "conditions": None,
+        "surface_scopes": ["timeline_item"],
+        "entity_types": None,
         "enabled": False,  # Disabled by default - requires configuration
         "display_order": 50,
     },
@@ -101,6 +111,8 @@ DEFAULT_TEMPLATES = [
         "url_template": "https://cmdb.example.com/asset/{{cmdb_id}}",
         "field_names": ["cmdb_id"],
         "conditions": None,
+        "surface_scopes": ["timeline_item"],
+        "entity_types": None,
         "enabled": False,  # Disabled by default - requires configuration
         "display_order": 60,
     },
@@ -112,6 +124,8 @@ DEFAULT_TEMPLATES = [
         "url_template": "https://directory.example.com/user/{{user_id}}",
         "field_names": ["user_id"],
         "conditions": None,
+        "surface_scopes": ["timeline_item"],
+        "entity_types": None,
         "enabled": False,  # Disabled by default - requires configuration
         "display_order": 70,
     },
@@ -123,6 +137,8 @@ DEFAULT_TEMPLATES = [
         "url_template": "https://threatintel.example.com/search?q={{observable_value}}",
         "field_names": ["observable_value"],
         "conditions": None,
+        "surface_scopes": ["timeline_item"],
+        "entity_types": None,
         "enabled": False,  # Disabled by default - requires configuration
         "display_order": 80,
     },
@@ -134,6 +150,8 @@ DEFAULT_TEMPLATES = [
         "url_template": "https://www.virustotal.com/gui/domain/{{observable_value}}",
         "field_names": ["observable_value"],
         "conditions": {"observable_type": "DOMAIN"},
+        "surface_scopes": ["timeline_item"],
+        "entity_types": None,
         "enabled": True,
         "display_order": 95,
     },
@@ -145,6 +163,8 @@ DEFAULT_TEMPLATES = [
         "url_template": "https://www.virustotal.com/gui/ip-address/{{observable_value}}",
         "field_names": ["observable_value"],
         "conditions": {"observable_type": "IP"},
+        "surface_scopes": ["timeline_item"],
+        "entity_types": None,
         "enabled": True,
         "display_order": 99,
     },
@@ -174,6 +194,8 @@ async def seed_link_templates():
             # Use native Python objects - SQLModel JSON column handles serialization
             field_names = template_data["field_names"]
             conditions = template_data["conditions"]
+            surface_scopes = template_data["surface_scopes"]
+            entity_types = template_data["entity_types"]
             
             if template_id in existing_ids:
                 # Update existing template
@@ -189,6 +211,8 @@ async def seed_link_templates():
                 existing.url_template = template_data["url_template"]
                 existing.field_names = field_names
                 existing.conditions = conditions
+                existing.surface_scopes = surface_scopes
+                existing.entity_types = entity_types
                 existing.display_order = template_data["display_order"]
                 # Note: Not updating 'enabled' - respect existing configuration
                 
@@ -205,6 +229,8 @@ async def seed_link_templates():
                     url_template=template_data["url_template"],
                     field_names=field_names,
                     conditions=conditions,
+                    surface_scopes=surface_scopes,
+                    entity_types=entity_types,
                     enabled=template_data["enabled"],
                     display_order=template_data["display_order"],
                 )

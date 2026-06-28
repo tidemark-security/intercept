@@ -29,7 +29,6 @@ import type { TaskStatus } from '@/types/generated/models/TaskStatus';
 import type { CaseRead } from '@/types/generated/models/CaseRead';
 import type { CaseStatus } from '@/types/generated/models/CaseStatus';
 import type { Priority as PriorityType } from '@/types/generated/models/Priority';
-import type { LinkTemplate } from '@/utils/linkTemplates';
 import {
   getTimelineItemIcon,
   getTimelineItemAction,
@@ -341,7 +340,6 @@ function renderNoteCard(
   options: {
     entityId: number | null;
     entityType?: 'alert' | 'case' | 'task';
-    linkTemplates?: LinkTemplate[];
     compactPreview?: boolean;
     isGrouped?: boolean;
     itemKey?: React.Key;
@@ -537,9 +535,6 @@ export interface TimelineItemRendererProps {
   
   /** Sort field to determine which timestamp to display */
   sortBy?: 'created_at' | 'timestamp';
-  
-  /** Link templates from API for auto-generating link buttons */
-  linkTemplates?: LinkTemplate[];
 
   /** Hide timeline rail/icon chrome for compact embedded previews. */
   compactPreview?: boolean;
@@ -617,7 +612,6 @@ export function TimelineItemRenderer({
   onDeleteBatch,
   onReply,
   sortBy = 'created_at',
-  linkTemplates,
   compactPreview = false,
   hideReplies = false,
   variant: rendererVariant = 'default',

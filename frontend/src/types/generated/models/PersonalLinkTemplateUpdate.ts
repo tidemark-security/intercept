@@ -3,9 +3,9 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
- * Schema for updating a link template.
+ * Schema for updating a personal link template.
  */
-export type LinkTemplateUpdate = {
+export type PersonalLinkTemplateUpdate = {
     name?: (string | null);
     icon_name?: (string | null);
     tooltip_template?: (string | null);

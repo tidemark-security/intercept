@@ -20,8 +20,7 @@ import { getTimelineIcon } from '@/utils/timelineIcons';
 import { Badge } from '@/components/data-display/Badge';
 import type { CopyTarget } from '@/components/cards/BaseCard';
 import { LoaderCircle } from 'lucide-react';
-import { combineWithAutoLinks, ResolvedLinkButtons } from './linkUtils';
-import type { LinkTemplate } from '@/utils/linkTemplates';
+import { ResolvedLinkButtons } from './linkUtils';
 import { CardActionsMenu } from './CardActionsMenu';
 import { isTimelineItemEnrichmentActive } from './timelineUtils';
 
@@ -181,8 +180,6 @@ export interface CardFactoryOptions {
   onClick?: (item: TimelineItem) => void;
   /** Custom action buttons */
   actionButtons?: React.ReactNode;
-  /** Link templates from API for auto-generating link buttons */
-  linkTemplates?: LinkTemplate[];
   /** Resolve link actions on the server for this item */
   resolveLinkTemplates?: boolean;
   /** Characteristics configuration for automatic processing */
@@ -328,11 +325,8 @@ function fallbackHandler(item: TimelineItem, options: CardFactoryOptions): CardC
  * Handlers should provide type-specific titles.
  * If a handler omits title, the factory applies a generic type-based fallback.
  * 
- * If linkTemplates are provided, auto-link buttons will be generated based on
- * item fields and combined with any custom action buttons.
- * 
  * @param item - Timeline item to render
- * @param options - Card generation options (size, onClick, custom buttons, templates)
+ * @param options - Card generation options (size, onClick, custom buttons)
  * @returns BaseCard component props
  * 
  * @example
@@ -341,9 +335,10 @@ function fallbackHandler(item: TimelineItem, options: CardFactoryOptions): CardC
  * const cardProps = createTimelineCard(item);
  * return <BaseCard {...cardProps} />; // Title will be "Task"
  * 
- * // With API templates for auto-link generation
- * const cardProps = createTimelineCard(item, { linkTemplates: apiTemplates });
- * return <BaseCard {...cardProps} />; // Auto-generates email, phone, etc. buttons
+ * const cardPropsWithActions = createTimelineCard(item, {
+ *   actionButtons: <IconButton icon={<Edit2 />} onClick={handleEdit} />
+ * });
+ * return <BaseCard {...cardPropsWithActions} />;
  * ```
  */
 export function createTimelineCard(
@@ -357,21 +352,13 @@ export function createTimelineCard(
     config.baseIcon = <LoaderCircle className="animate-spin" />;
   }
   
-  // Auto-generate link buttons if templates are provided
   let finalActionButtons = config.actionButtons || options.actionButtons;
-  
-  if (options.linkTemplates && options.linkTemplates.length > 0) {
-    finalActionButtons = combineWithAutoLinks(
-      finalActionButtons,
-      options.linkTemplates,
-      item
-    );
-  }
 
   if (options.resolveLinkTemplates) {
     finalActionButtons = (
       <ResolvedLinkButtons
         item={item as Record<string, unknown>}
+        entityType={options.entityType}
         customButtons={finalActionButtons}
       />
     );

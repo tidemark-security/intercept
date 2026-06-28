@@ -1508,6 +1508,14 @@ describe('TimelineItemRenderer enrichments', () => {
     const trailingFooterGroup = container.querySelector('.ml-auto');
 
     expect(emailButton).toBeInTheDocument();
+    expect(useResolvedLinkTemplatesMock).toHaveBeenCalledWith(
+      item,
+      true,
+      {
+        surface: 'timeline_item',
+        entity_type: 'alert',
+      },
+    );
     expect(refreshButton).toBeInTheDocument();
     expect(trailingFooterGroup).not.toBeNull();
     expect(trailingFooterGroup).toContainElement(refreshButton);

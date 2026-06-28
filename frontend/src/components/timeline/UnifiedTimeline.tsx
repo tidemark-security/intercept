@@ -49,7 +49,6 @@ import { ArrowRight } from 'lucide-react';
 
 const TIMELINE_VIEW_STORAGE_KEY = 'intercept.timeline-view';
 const SWIMLANE_GRID_MIN_WIDTH = 1120;
-type TimelineRendererLinkTemplates = React.ComponentProps<typeof TimelineItemRenderer>['linkTemplates'];
 function getTimelineViewStorageKey(entityType: 'case' | 'task', entityId: number): string {
   return `${TIMELINE_VIEW_STORAGE_KEY}.${entityType}.${entityId}`;
 }
@@ -120,14 +119,12 @@ function SwimlaneTaskButton({
   entityId,
   entityType,
   sortBy,
-  linkTemplates,
   onOpenTask,
 }: {
   item: TimelineItem;
   entityId: number;
   entityType: 'case' | 'task';
   sortBy: SortOption;
-  linkTemplates: TimelineRendererLinkTemplates;
   onOpenTask?: (task: TaskRead) => void;
 }) {
   const task = timelineTaskItemToTaskRead(item);
@@ -150,7 +147,6 @@ function SwimlaneTaskButton({
         entityId={entityId}
         entityType={entityType}
         sortBy={sortBy}
-        linkTemplates={linkTemplates}
         variant="super-compact"
         hideReplies
       />
@@ -166,7 +162,6 @@ function SwimlaneLane({
   entityId,
   entityType,
   sortBy,
-  linkTemplates,
   onOpenTask,
   className,
   itemsScrollable = true,
@@ -178,7 +173,6 @@ function SwimlaneLane({
   entityId: number;
   entityType: 'case' | 'task';
   sortBy: SortOption;
-  linkTemplates: TimelineRendererLinkTemplates;
   onOpenTask?: (task: TaskRead) => void;
   className?: string;
   itemsScrollable?: boolean;
@@ -214,7 +208,6 @@ function SwimlaneLane({
             entityId={entityId}
             entityType={entityType}
             sortBy={sortBy}
-            linkTemplates={linkTemplates}
             onOpenTask={onOpenTask}
           />
         ))}
@@ -235,7 +228,6 @@ function PICERLSwimlaneView({
   entityId,
   entityType,
   sortBy,
-  linkTemplates,
   onOpenTask,
 }: {
   stagedItems: TimelineItem[];
@@ -244,7 +236,6 @@ function PICERLSwimlaneView({
   entityId: number;
   entityType: 'case' | 'task';
   sortBy: SortOption;
-  linkTemplates: TimelineRendererLinkTemplates;
   onOpenTask?: (task: TaskRead) => void;
 }) {
   const containerRef = React.useRef<HTMLDivElement | null>(null);
@@ -323,7 +314,6 @@ function PICERLSwimlaneView({
             entityId={entityId}
             entityType={entityType}
             sortBy={sortBy}
-            linkTemplates={linkTemplates}
             onOpenTask={onOpenTask}
             className="min-h-0 w-full flex-1"
           />
@@ -352,7 +342,6 @@ function PICERLSwimlaneView({
                 entityId={entityId}
                 entityType={entityType}
                 sortBy={sortBy}
-                linkTemplates={linkTemplates}
                 onOpenTask={onOpenTask}
               />
             );
@@ -511,8 +500,8 @@ function UnifiedTimelineInner({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isInReplyMode, exitReplyMode]);
 
-  const linkTemplates = useMemo(() => [], []);
   const headerLinkContext = useMemo<Record<string, unknown>>(() => ({
+    surface: 'entity',
     type: entityType,
     entity_type: entityType,
     id: selectedEntityId,
@@ -520,8 +509,22 @@ function UnifiedTimelineInner({
     human_id: entityDetail?.human_id,
     title: entityDetail?.title,
     status: entityDetail?.status,
-  }), [entityDetail?.human_id, entityDetail?.status, entityDetail?.title, entityType, selectedEntityId]);
-  const { data: headerLinks = [] } = useResolvedLinkTemplates(headerLinkContext, Boolean(entityDetail));
+    priority: (entityDetail as any)?.priority,
+    assignee: (entityDetail as any)?.assignee,
+    source: (entityDetail as any)?.source,
+    tags: (entityDetail as any)?.tags,
+    created_at: (entityDetail as any)?.created_at,
+    updated_at: (entityDetail as any)?.updated_at,
+  }), [
+    entityDetail,
+    entityType,
+    selectedEntityId,
+  ]);
+  const { data: headerLinks = [] } = useResolvedLinkTemplates(
+    headerLinkContext,
+    Boolean(entityDetail),
+    { surface: 'entity', entity_type: entityType },
+  );
 
   // Auto-scroll to newly created timeline item by ID
   useAutoScrollToTimelineItem(scrollToItemId, entityDetail, isEditable);
@@ -1102,7 +1105,6 @@ function UnifiedTimelineInner({
               entityId={selectedEntityId}
               entityType={entityType as 'case' | 'task'}
               sortBy={sortBy}
-              linkTemplates={linkTemplates}
               onSelectItem={handleGraphSelectItem}
               onFlagItem={isEditable ? onFlagItem : undefined}
               onHighlightItem={isEditable ? onHighlightItem : undefined}
@@ -1181,7 +1183,6 @@ function UnifiedTimelineInner({
                           entityId={selectedEntityId}
                           entityType={entityType as 'case' | 'task'}
                           sortBy={sortBy}
-                          linkTemplates={linkTemplates}
                           onOpenTask={isEditable ? onEditLinkedTask : undefined}
                         />
                       ) : hasTimelineItems && filteredAndSortedItems.length > 0 ? (
@@ -1207,7 +1208,6 @@ function UnifiedTimelineInner({
                                 onDelete={isEditable ? handleInternalDelete : undefined}
                                 onDeleteBatch={isEditable ? handleInternalBatchDelete : undefined}
                                 onReply={isEditable ? handleReply : undefined}
-                                linkTemplates={linkTemplates}
                                 linkedEntityCollapseState={linkedEntityCollapseState}
                                 onLinkedEntityCollapseChange={handleLinkedEntityCollapseChange}
                               />
@@ -1229,7 +1229,6 @@ function UnifiedTimelineInner({
                                 onEditLinkedTask={isEditable ? onEditLinkedTask : undefined}
                                 onDelete={isEditable ? handleInternalDelete : undefined}
                                 onReply={isEditable ? handleReply : undefined}
-                                linkTemplates={linkTemplates}
                                 linkedEntityCollapseState={linkedEntityCollapseState}
                                 onLinkedEntityCollapseChange={handleLinkedEntityCollapseChange}
                               />

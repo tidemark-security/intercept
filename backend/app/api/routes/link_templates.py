@@ -1,35 +1,61 @@
-import re
-from urllib.parse import quote
-
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from typing import List
-from datetime import datetime, timezone
 import logging
+import re
+from datetime import datetime, timezone
+from typing import Any, Iterable, List, Type
+from urllib.parse import quote, urlparse
 
+from fastapi import APIRouter, Body, Depends, HTTPException
+from pydantic import ValidationError
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.api.routes.admin_auth import require_admin_user, require_authenticated_user
 from app.core.database import get_db
 from app.models.models import (
     LinkTemplate,
     LinkTemplateCreate,
+    LinkTemplateExportBundle,
+    LinkTemplateExportRequest,
     LinkTemplateRead,
     LinkTemplateResolveRequest,
     LinkTemplateUpdate,
+    LinkTemplateVisibility,
+    PersonalLinkTemplate,
+    PersonalLinkTemplateCreate,
+    PersonalLinkTemplateRead,
+    PersonalLinkTemplateUpdate,
+    PortableLinkTemplate,
     ResolvedLinkTemplateRead,
     UserAccount,
-    UserLinkTemplatePreference,
-    UserLinkTemplatePreferenceRead,
-    UserLinkTemplatePreferenceUpdate,
 )
-from app.api.routes.admin_auth import require_authenticated_user, require_admin_user
 
 logger = logging.getLogger(__name__)
+
 PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
+ALLOWED_URL_SCHEMES = {"http", "https", "mailto", "tel"}
+PORTABLE_TEMPLATE_FIELDS = {
+    "template_id",
+    "name",
+    "icon_name",
+    "tooltip_template",
+    "url_template",
+    "field_names",
+    "conditions",
+    "surface_scopes",
+    "entity_types",
+    "enabled",
+    "display_order",
+}
 
 router = APIRouter(
     prefix="/link-templates",
     tags=["link-templates"],
-    dependencies=[Depends(require_authenticated_user)]
+    dependencies=[Depends(require_authenticated_user)],
+)
+personal_router = APIRouter(
+    prefix="/personal-link-templates",
+    tags=["personal-link-templates"],
+    dependencies=[Depends(require_authenticated_user)],
 )
 
 
@@ -44,15 +70,9 @@ def _get_path_value(source: dict, path: str):
     return value
 
 
-def _lookup_placeholder(path: str, item: dict, user_values: dict):
-    if path.startswith("user."):
-        return _get_path_value(user_values, path.removeprefix("user."))
-    return _get_path_value(item, path)
-
-
-def _interpolate(template: str, item: dict, user_values: dict, *, encode_values: bool) -> str | None:
+def _interpolate(template: str, item: dict, *, encode_values: bool) -> str | None:
     def replace(match: re.Match[str]) -> str:
-        value = _lookup_placeholder(match.group(1), item, user_values)
+        value = _get_path_value(item, match.group(1))
         if value is None:
             raise KeyError(match.group(1))
         rendered = str(value)
@@ -64,7 +84,26 @@ def _interpolate(template: str, item: dict, user_values: dict, *, encode_values:
         return None
 
 
-def _matches_template(template: LinkTemplate, item: dict) -> bool:
+def _is_safe_resolved_url(value: str | None) -> bool:
+    if not value:
+        return False
+    parsed = urlparse(value)
+    return parsed.scheme.lower() in ALLOWED_URL_SCHEMES
+
+
+def _matches_template(
+    template: LinkTemplate | PersonalLinkTemplate,
+    item: dict,
+    *,
+    surface: str = "timeline_item",
+    entity_type: str | None = None,
+) -> bool:
+    if surface not in (template.surface_scopes or []):
+        return False
+
+    if template.entity_types and entity_type not in template.entity_types:
+        return False
+
     if template.conditions:
         for field, expected in template.conditions.items():
             if _get_path_value(item, field) != expected:
@@ -76,114 +115,167 @@ def _matches_template(template: LinkTemplate, item: dict) -> bool:
     return True
 
 
+def _template_to_portable(template: LinkTemplate | PersonalLinkTemplate) -> PortableLinkTemplate:
+    return PortableLinkTemplate.model_validate(
+        {field: getattr(template, field) for field in PORTABLE_TEMPLATE_FIELDS}
+    )
+
+
+def _templates_to_bundle(templates: Iterable[LinkTemplate | PersonalLinkTemplate]) -> LinkTemplateExportBundle:
+    return LinkTemplateExportBundle(
+        schema_version=1,
+        templates=[_template_to_portable(template) for template in templates],
+    )
+
+
+def _extract_portable_templates(payload: Any) -> List[PortableLinkTemplate]:
+    raw_templates: Any
+    if isinstance(payload, list):
+        raw_templates = payload
+    elif isinstance(payload, dict) and "templates" in payload:
+        schema_version = payload.get("schema_version", 1)
+        if schema_version != 1:
+            raise HTTPException(status_code=422, detail="Unsupported link template schema_version")
+        raw_templates = payload["templates"]
+    elif isinstance(payload, dict):
+        raw_templates = [payload]
+    else:
+        raise HTTPException(status_code=422, detail="Import payload must be a template or template bundle")
+
+    if not isinstance(raw_templates, list) or not raw_templates:
+        raise HTTPException(status_code=422, detail="Import payload must contain at least one template")
+
+    templates: List[PortableLinkTemplate] = []
+    for raw_template in raw_templates:
+        try:
+            templates.append(PortableLinkTemplate.model_validate(raw_template))
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return templates
+
+
+def _with_copy_suffix(template_id: str, existing_ids: set[str]) -> str:
+    if template_id not in existing_ids:
+        return template_id
+    candidate = f"{template_id}-copy"
+    if candidate not in existing_ids:
+        return candidate
+    index = 2
+    while True:
+        candidate = f"{template_id}-copy-{index}"
+        if candidate not in existing_ids:
+            return candidate
+        index += 1
+
+
+def _copy_name(name: str) -> str:
+    return name if name.endswith(" (copy)") else f"{name} (copy)"
+
+
+async def _import_templates(
+    *,
+    db: AsyncSession,
+    payload: Any,
+    model: Type[LinkTemplate] | Type[PersonalLinkTemplate],
+    read_model: Type[LinkTemplateRead] | Type[PersonalLinkTemplateRead],
+    user_id: Any = None,
+) -> list[LinkTemplateRead] | list[PersonalLinkTemplateRead]:
+    portable_templates = _extract_portable_templates(payload)
+
+    query = select(model.template_id)
+    if model is PersonalLinkTemplate:
+        query = query.where(PersonalLinkTemplate.user_id == user_id)
+    result = await db.execute(query)
+    existing_ids = set(result.scalars().all())
+
+    created: list[LinkTemplate | PersonalLinkTemplate] = []
+    for portable_template in portable_templates:
+        data = portable_template.model_dump()
+        next_template_id = _with_copy_suffix(portable_template.template_id, existing_ids)
+        if next_template_id != portable_template.template_id:
+            data["template_id"] = next_template_id
+            data["name"] = _copy_name(portable_template.name)
+        existing_ids.add(data["template_id"])
+
+        if model is PersonalLinkTemplate:
+            data["user_id"] = user_id
+
+        template = model(**data)
+        db.add(template)
+        created.append(template)
+
+    await db.commit()
+    for template in created:
+        await db.refresh(template)
+    return [read_model.model_validate(template) for template in created]
+
+
+async def _get_owned_personal_template(
+    template_id: int,
+    db: AsyncSession,
+    current_user: UserAccount,
+) -> PersonalLinkTemplate:
+    result = await db.execute(
+        select(PersonalLinkTemplate).where(
+            PersonalLinkTemplate.id == template_id,
+            PersonalLinkTemplate.user_id == current_user.id,
+        )
+    )
+    template = result.scalar_one_or_none()
+    if not template:
+        raise HTTPException(status_code=404, detail=f"Personal link template {template_id} not found")
+    return template
+
+
 @router.get("", response_model=List[LinkTemplateRead])
 async def get_link_templates(
     enabled_only: bool = True,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Get all link templates.
-    
-    Args:
-        enabled_only: If True, only return enabled templates (default: True)
-        db: Database session
-        
-    Returns:
-        List of link templates ordered by display_order
-    """
-    try:
-        # Build query
-        query = select(LinkTemplate).order_by(LinkTemplate.display_order)
-        
-        if enabled_only:
-            query = query.where(LinkTemplate.enabled == True)
-        
-        # Execute query
-        result = await db.execute(query)
-        templates = result.scalars().all()
-        
-        logger.info(f"Retrieved {len(templates)} link templates (enabled_only={enabled_only})")
-        return templates
-        
-    except Exception as e:
-        logger.error(f"Error fetching link templates: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching link templates: {str(e)}"
-        )
-
-
-@router.get("/user-preferences", response_model=List[UserLinkTemplatePreferenceRead])
-async def get_user_link_template_preferences(
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user),
 ):
-    """Get the authenticated user's link template preferences."""
-    result = await db.execute(
-        select(UserLinkTemplatePreference)
-        .where(UserLinkTemplatePreference.user_id == current_user.id)
-        .order_by(UserLinkTemplatePreference.template_id)
-    )
+    """Get public link templates."""
+    query = select(LinkTemplate).order_by(LinkTemplate.display_order, LinkTemplate.name)
+    if enabled_only:
+        query = query.where(LinkTemplate.enabled == True)
+    result = await db.execute(query)
     return result.scalars().all()
 
 
-@router.put("/user-preferences/{template_id}", response_model=UserLinkTemplatePreferenceRead)
-async def upsert_user_link_template_preference(
-    template_id: int,
-    preference_data: UserLinkTemplatePreferenceUpdate,
+@router.post("/export", response_model=LinkTemplateExportBundle)
+async def export_link_templates(
+    request: LinkTemplateExportRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user),
+    _: UserAccount = Depends(require_admin_user),
 ):
-    """Create or update the authenticated user's preference for a link template."""
-    template = await db.get(LinkTemplate, template_id)
-    if not template:
-        raise HTTPException(status_code=404, detail=f"Link template {template_id} not found")
+    """Export selected public link templates as a portable JSON bundle."""
+    if not request.template_ids:
+        raise HTTPException(status_code=422, detail="template_ids must contain at least one template id")
 
     result = await db.execute(
-        select(UserLinkTemplatePreference).where(
-            UserLinkTemplatePreference.user_id == current_user.id,
-            UserLinkTemplatePreference.template_id == template_id,
-        )
+        select(LinkTemplate)
+        .where(LinkTemplate.id.in_(request.template_ids))
+        .order_by(LinkTemplate.display_order, LinkTemplate.name)
     )
-    preference = result.scalar_one_or_none()
-
-    if preference is None:
-        preference = UserLinkTemplatePreference(
-            user_id=current_user.id,
-            template_id=template_id,
-            enabled=preference_data.enabled,
-            values=preference_data.values,
-        )
-        db.add(preference)
-    else:
-        preference.enabled = preference_data.enabled
-        preference.values = preference_data.values
-        preference.updated_at = datetime.now(timezone.utc)
-
-    await db.commit()
-    await db.refresh(preference)
-    return preference
+    templates = result.scalars().all()
+    found_ids = {template.id for template in templates}
+    missing_ids = [template_id for template_id in request.template_ids if template_id not in found_ids]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail=f"Link templates not found: {missing_ids}")
+    return _templates_to_bundle(templates)
 
 
-@router.delete("/user-preferences/{template_id}", status_code=204)
-async def delete_user_link_template_preference(
-    template_id: int,
+@router.post("/import", response_model=List[LinkTemplateRead])
+async def import_link_templates(
+    payload: Any = Body(...),
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user),
+    _: UserAccount = Depends(require_admin_user),
 ):
-    """Delete the authenticated user's preference for a link template."""
-    result = await db.execute(
-        select(UserLinkTemplatePreference).where(
-            UserLinkTemplatePreference.user_id == current_user.id,
-            UserLinkTemplatePreference.template_id == template_id,
-        )
+    """Import public link templates from a portable single-template or bundle payload."""
+    return await _import_templates(
+        db=db,
+        payload=payload,
+        model=LinkTemplate,
+        read_model=LinkTemplateRead,
     )
-    preference = result.scalar_one_or_none()
-    if preference is None:
-        raise HTTPException(status_code=404, detail=f"Link template preference {template_id} not found")
-
-    await db.delete(preference)
-    await db.commit()
 
 
 @router.post("/resolve", response_model=List[ResolvedLinkTemplateRead])
@@ -192,39 +284,50 @@ async def resolve_link_templates(
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_authenticated_user),
 ):
-    """Resolve enabled global templates using item context and current-user values."""
-    templates_result = await db.execute(
+    """Resolve enabled public and current-user personal templates for one context."""
+    public_result = await db.execute(
         select(LinkTemplate)
         .where(LinkTemplate.enabled == True)
-        .order_by(LinkTemplate.display_order)
+        .order_by(LinkTemplate.display_order, LinkTemplate.name)
     )
-    preference_result = await db.execute(
-        select(UserLinkTemplatePreference).where(
-            UserLinkTemplatePreference.user_id == current_user.id,
+    personal_result = await db.execute(
+        select(PersonalLinkTemplate)
+        .where(
+            PersonalLinkTemplate.user_id == current_user.id,
+            PersonalLinkTemplate.enabled == True,
         )
+        .order_by(PersonalLinkTemplate.display_order, PersonalLinkTemplate.name)
     )
-    preferences = {
-        preference.template_id: preference
-        for preference in preference_result.scalars().all()
-    }
+
+    context = dict(request.item or {})
+    context["surface"] = request.surface
+    if request.entity_type:
+        context["entity_type"] = request.entity_type
+
+    candidates: list[tuple[LinkTemplate | PersonalLinkTemplate, LinkTemplateVisibility]] = [
+        *((template, "PUBLIC") for template in public_result.scalars().all()),
+        *((template, "PERSONAL") for template in personal_result.scalars().all()),
+    ]
 
     resolved_links: List[ResolvedLinkTemplateRead] = []
-    for template in templates_result.scalars().all():
-        preference = preferences.get(template.id)
-        if preference is not None and not preference.enabled:
-            continue
-        if not _matches_template(template, request.item):
+    for template, visibility in sorted(candidates, key=lambda candidate: (candidate[0].display_order, candidate[0].name)):
+        if not _matches_template(
+            template,
+            context,
+            surface=request.surface,
+            entity_type=request.entity_type,
+        ):
             continue
 
-        user_values = preference.values if preference is not None else {}
-        url = _interpolate(template.url_template, request.item, user_values, encode_values=True)
-        tooltip = _interpolate(template.tooltip_template, request.item, user_values, encode_values=False)
-        if not url or tooltip is None:
+        url = _interpolate(template.url_template, context, encode_values=True)
+        tooltip = _interpolate(template.tooltip_template, context, encode_values=False)
+        if not _is_safe_resolved_url(url) or tooltip is None:
             continue
 
         resolved_links.append(
             ResolvedLinkTemplateRead(
                 id=template.id,
+                visibility=visibility,
                 template_id=template.template_id,
                 name=template.name,
                 icon_name=template.icon_name,
@@ -240,89 +343,35 @@ async def resolve_link_templates(
 @router.get("/{template_id}", response_model=LinkTemplateRead)
 async def get_link_template(
     template_id: int,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
-    """
-    Get a specific link template by ID.
-    
-    Args:
-        template_id: Database ID of the template
-        db: Database session
-        
-    Returns:
-        Link template details
-    """
-    try:
-        result = await db.execute(
-            select(LinkTemplate).where(LinkTemplate.id == template_id)
-        )
-        template = result.scalar_one_or_none()
-        
-        if not template:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Link template {template_id} not found"
-            )
-        
-        return template
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching link template {template_id}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching link template: {str(e)}"
-        )
+    """Get one public link template."""
+    template = await db.get(LinkTemplate, template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail=f"Link template {template_id} not found")
+    return template
 
 
 @router.post("", response_model=LinkTemplateRead)
 async def create_link_template(
     template_data: LinkTemplateCreate,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(require_admin_user)
+    _: UserAccount = Depends(require_admin_user),
 ):
-    """
-    Create a new link template.
-    
-    Args:
-        template_data: Link template data
-        db: Database session
-        
-    Returns:
-        Created link template
-    """
-    try:
-        # Check if template_id already exists
-        result = await db.execute(
-            select(LinkTemplate).where(LinkTemplate.template_id == template_data.template_id)
-        )
-        existing = result.scalar_one_or_none()
-        
-        if existing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Link template with template_id '{template_data.template_id}' already exists"
-            )
-        
-        # Create new template
-        template = LinkTemplate(**template_data.model_dump())
-        db.add(template)
-        await db.commit()
-        await db.refresh(template)
-        
-        logger.info(f"Created link template: {template.template_id} (id={template.id})")
-        return template
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        await db.rollback()
-        logger.error(f"Error creating link template: {e}", exc_info=True)
+    """Create a public link template."""
+    result = await db.execute(select(LinkTemplate).where(LinkTemplate.template_id == template_data.template_id))
+    if result.scalar_one_or_none():
         raise HTTPException(
-            status_code=500,
-            detail=f"Error creating link template: {str(e)}"
+            status_code=400,
+            detail=f"Link template with template_id '{template_data.template_id}' already exists",
         )
+
+    template = LinkTemplate(**template_data.model_dump())
+    db.add(template)
+    await db.commit()
+    await db.refresh(template)
+    logger.info("Created public link template %s (id=%s)", template.template_id, template.id)
+    return template
 
 
 @router.patch("/{template_id}", response_model=LinkTemplateRead)
@@ -330,96 +379,170 @@ async def update_link_template(
     template_id: int,
     template_data: LinkTemplateUpdate,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(require_admin_user)
+    _: UserAccount = Depends(require_admin_user),
 ):
-    """
-    Update a link template.
-    
-    Args:
-        template_id: Database ID of the template
-        template_data: Updated template data
-        db: Database session
-        
-    Returns:
-        Updated link template
-    """
-    try:
-        result = await db.execute(
-            select(LinkTemplate).where(LinkTemplate.id == template_id)
-        )
-        template = result.scalar_one_or_none()
-        
-        if not template:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Link template {template_id} not found"
-            )
-        
-        # Update fields
-        update_dict = template_data.model_dump(exclude_unset=True)
-        for key, value in update_dict.items():
-            setattr(template, key, value)
-        
-        template.updated_at = datetime.now(timezone.utc)
-        
-        await db.commit()
-        await db.refresh(template)
-        
-        logger.info(f"Updated link template: {template.template_id} (id={template.id})")
-        return template
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        await db.rollback()
-        logger.error(f"Error updating link template {template_id}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error updating link template: {str(e)}"
-        )
+    """Update a public link template."""
+    template = await db.get(LinkTemplate, template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail=f"Link template {template_id} not found")
+
+    update_dict = template_data.model_dump(exclude_unset=True)
+    for key, value in update_dict.items():
+        setattr(template, key, value)
+    template.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    await db.refresh(template)
+    logger.info("Updated public link template %s (id=%s)", template.template_id, template.id)
+    return template
 
 
 @router.delete("/{template_id}")
 async def delete_link_template(
     template_id: int,
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(require_admin_user)
+    _: UserAccount = Depends(require_admin_user),
 ):
-    """
-    Delete a link template.
-    
-    Args:
-        template_id: Database ID of the template
-        db: Database session
-        
-    Returns:
-        Success message
-    """
-    try:
-        result = await db.execute(
-            select(LinkTemplate).where(LinkTemplate.id == template_id)
+    """Delete a public link template."""
+    template = await db.get(LinkTemplate, template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail=f"Link template {template_id} not found")
+
+    await db.delete(template)
+    await db.commit()
+    logger.info("Deleted public link template %s (id=%s)", template.template_id, template_id)
+    return {"message": f"Link template {template_id} deleted successfully"}
+
+
+@personal_router.get("", response_model=List[PersonalLinkTemplateRead])
+async def get_personal_link_templates(
+    enabled_only: bool = False,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_authenticated_user),
+):
+    """Get the current user's personal link templates."""
+    query = (
+        select(PersonalLinkTemplate)
+        .where(PersonalLinkTemplate.user_id == current_user.id)
+        .order_by(PersonalLinkTemplate.display_order, PersonalLinkTemplate.name)
+    )
+    if enabled_only:
+        query = query.where(PersonalLinkTemplate.enabled == True)
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
+@personal_router.post("/export", response_model=LinkTemplateExportBundle)
+async def export_personal_link_templates(
+    request: LinkTemplateExportRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_authenticated_user),
+):
+    """Export selected current-user personal link templates as a portable JSON bundle."""
+    if not request.template_ids:
+        raise HTTPException(status_code=422, detail="template_ids must contain at least one template id")
+
+    result = await db.execute(
+        select(PersonalLinkTemplate)
+        .where(
+            PersonalLinkTemplate.user_id == current_user.id,
+            PersonalLinkTemplate.id.in_(request.template_ids),
         )
-        template = result.scalar_one_or_none()
-        
-        if not template:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Link template {template_id} not found"
-            )
-        
-        template_info = template.template_id
-        await db.delete(template)
-        await db.commit()
-        
-        logger.info(f"Deleted link template: {template_info} (id={template_id})")
-        return {"message": f"Link template {template_id} deleted successfully"}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        await db.rollback()
-        logger.error(f"Error deleting link template {template_id}: {e}", exc_info=True)
+        .order_by(PersonalLinkTemplate.display_order, PersonalLinkTemplate.name)
+    )
+    templates = result.scalars().all()
+    found_ids = {template.id for template in templates}
+    missing_ids = [template_id for template_id in request.template_ids if template_id not in found_ids]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail=f"Personal link templates not found: {missing_ids}")
+    return _templates_to_bundle(templates)
+
+
+@personal_router.post("/import", response_model=List[PersonalLinkTemplateRead])
+async def import_personal_link_templates(
+    payload: Any = Body(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_authenticated_user),
+):
+    """Import current-user personal templates from a portable single-template or bundle payload."""
+    return await _import_templates(
+        db=db,
+        payload=payload,
+        model=PersonalLinkTemplate,
+        read_model=PersonalLinkTemplateRead,
+        user_id=current_user.id,
+    )
+
+
+@personal_router.get("/{template_id}", response_model=PersonalLinkTemplateRead)
+async def get_personal_link_template(
+    template_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_authenticated_user),
+):
+    """Get one current-user personal link template."""
+    return await _get_owned_personal_template(template_id, db, current_user)
+
+
+@personal_router.post("", response_model=PersonalLinkTemplateRead)
+async def create_personal_link_template(
+    template_data: PersonalLinkTemplateCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_authenticated_user),
+):
+    """Create a current-user personal link template."""
+    result = await db.execute(
+        select(PersonalLinkTemplate).where(
+            PersonalLinkTemplate.user_id == current_user.id,
+            PersonalLinkTemplate.template_id == template_data.template_id,
+        )
+    )
+    if result.scalar_one_or_none():
         raise HTTPException(
-            status_code=500,
-            detail=f"Error deleting link template: {str(e)}"
+            status_code=400,
+            detail=f"Personal link template with template_id '{template_data.template_id}' already exists",
         )
+
+    template = PersonalLinkTemplate(**template_data.model_dump(), user_id=current_user.id)
+    db.add(template)
+    await db.commit()
+    await db.refresh(template)
+    logger.info(
+        "Created personal link template %s (id=%s, user_id=%s)",
+        template.template_id,
+        template.id,
+        current_user.id,
+    )
+    return template
+
+
+@personal_router.patch("/{template_id}", response_model=PersonalLinkTemplateRead)
+async def update_personal_link_template(
+    template_id: int,
+    template_data: PersonalLinkTemplateUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_authenticated_user),
+):
+    """Update a current-user personal link template."""
+    template = await _get_owned_personal_template(template_id, db, current_user)
+
+    update_dict = template_data.model_dump(exclude_unset=True)
+    for key, value in update_dict.items():
+        setattr(template, key, value)
+    template.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    await db.refresh(template)
+    return template
+
+
+@personal_router.delete("/{template_id}", status_code=204)
+async def delete_personal_link_template(
+    template_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_authenticated_user),
+):
+    """Delete a current-user personal link template."""
+    template = await _get_owned_personal_template(template_id, db, current_user)
+    await db.delete(template)
+    await db.commit()

@@ -35,6 +35,14 @@ export type LinkTemplateCreate = {
      */
     conditions?: (Record<string, any> | null);
     /**
+     * Surfaces where this template can render
+     */
+    surface_scopes?: Array<'entity' | 'timeline_item'>;
+    /**
+     * Entity types this template applies to; empty means all entity types
+     */
+    entity_types?: (Array<'alert' | 'case' | 'task'> | null);
+    /**
      * Whether this template is currently active
      */
     enabled?: boolean;

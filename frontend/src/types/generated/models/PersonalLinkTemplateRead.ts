@@ -3,11 +3,11 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
- * Schema for reading a link template.
+ * Schema for reading a personal link template.
  */
-export type LinkTemplateRead = {
+export type PersonalLinkTemplateRead = {
     /**
-     * Unique identifier for this template type (e.g., 'virustotal-domain')
+     * Unique identifier for this template type
      */
     template_id: string;
     /**
@@ -15,15 +15,15 @@ export type LinkTemplateRead = {
      */
     name: string;
     /**
-     * Icon identifier (e.g., 'FeatherMail', 'VirusTotalIcon')
+     * Icon identifier
      */
     icon_name: string;
     /**
-     * Tooltip text with {{variable}} placeholders for interpolation
+     * Tooltip text with {{variable}} placeholders
      */
     tooltip_template: string;
     /**
-     * URL template with {{variable}} placeholders for interpolation
+     * URL template with {{variable}} placeholders
      */
     url_template: string;
     /**
@@ -47,10 +47,11 @@ export type LinkTemplateRead = {
      */
     enabled?: boolean;
     /**
-     * Sort order for display (lower numbers first)
+     * Sort order for display
      */
     display_order?: number;
     id: number;
+    user_id: string;
     created_at: string;
     updated_at: string;
 };

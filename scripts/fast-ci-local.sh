@@ -305,7 +305,7 @@ select_backend_pytest() {
     fi
 
     if path_matches "$lower_file" 'link_template'; then
-      add_backend_pytest_path "tests/integration/test_user_link_template_preferences.py"
+      add_backend_pytest_path "tests/integration/test_link_templates.py"
       saw_mapped_backend_app=1
     fi
 

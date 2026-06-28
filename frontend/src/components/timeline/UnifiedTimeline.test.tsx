@@ -1,5 +1,5 @@
-import { screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderWithProviders } from "../../../tests/test-utils";
 import { UnifiedTimeline } from "@/components/timeline/UnifiedTimeline";
@@ -7,11 +7,24 @@ import type { AlertRead } from "@/types/generated/models/AlertRead";
 import type { AlertStatus } from "@/types/generated/models/AlertStatus";
 import type { CaseReadWithAlerts } from "@/types/generated/models/CaseReadWithAlerts";
 
+const resolveLinkTemplatesMock = vi.hoisted(() => vi.fn());
+
 vi.mock("@/contexts/WebSocketContext", () => ({
   usePresence: () => [],
 }));
 
+vi.mock("@/types/generated/services/LinkTemplatesService", () => ({
+  LinkTemplatesService: {
+    resolveLinkTemplatesApiV1LinkTemplatesResolvePost: resolveLinkTemplatesMock,
+  },
+}));
+
+beforeEach(() => {
+  resolveLinkTemplatesMock.mockResolvedValue([]);
+});
+
 afterEach(() => {
+  resolveLinkTemplatesMock.mockReset();
   vi.restoreAllMocks();
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -98,6 +111,59 @@ function renderAlertTimeline(status: AlertStatus) {
 }
 
 describe("UnifiedTimeline", () => {
+  it("resolves parent entity header links with the entity surface and core case context", async () => {
+    resolveLinkTemplatesMock.mockResolvedValue([
+      {
+        id: 99,
+        visibility: "PUBLIC",
+        template_id: "case-console",
+        name: "Case Console",
+        icon_name: "Link2",
+        tooltip: "Open CAS-0000009",
+        url: "https://console.example/cases/CAS-0000009",
+        display_order: 1,
+      },
+    ]);
+
+    renderWithProviders(
+      <UnifiedTimeline
+        entityDetail={caseWithStagedTasks}
+        entityType="case"
+        selectedEntityId={caseWithStagedTasks.id}
+        currentUser="admin"
+        isLoading={false}
+        error={null}
+        users={[]}
+        usersLoading={false}
+        mode="editable"
+      />,
+    );
+
+    await waitFor(() =>
+      expect(resolveLinkTemplatesMock).toHaveBeenCalledWith({
+        requestBody: {
+          surface: "entity",
+          entity_type: "case",
+          item: expect.objectContaining({
+            surface: "entity",
+            entity_type: "case",
+            id: caseWithStagedTasks.id,
+            entity_id: caseWithStagedTasks.id,
+            human_id: caseWithStagedTasks.human_id,
+            title: caseWithStagedTasks.title,
+            status: caseWithStagedTasks.status,
+            priority: caseWithStagedTasks.priority,
+            assignee: caseWithStagedTasks.assignee,
+            tags: caseWithStagedTasks.tags,
+            created_at: caseWithStagedTasks.created_at,
+            updated_at: caseWithStagedTasks.updated_at,
+          }),
+        },
+      }),
+    );
+    expect(await screen.findByRole("button", { name: "Open CAS-0000009" })).toBeInTheDocument();
+  });
+
   it("shows the AI triage request card for open alerts without a recommendation", () => {
     renderAlertTimeline("IN_PROGRESS");
 

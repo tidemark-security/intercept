@@ -193,6 +193,8 @@ function apiResponse(pathname: string): unknown {
   if (pathname === "/api/v1/admin/queue/entrypoints") return [];
 
   if (pathname === "/api/v1/link-templates") return [];
+  if (pathname === "/api/v1/personal-link-templates") return [];
+  if (pathname === "/api/v1/link-templates/resolve") return [];
   if (pathname === "/api/v1/search") {
     return { results: [], total: 0, limit: 25, offset: 0 };
   }

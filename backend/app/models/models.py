@@ -39,6 +39,10 @@ from app.models.enums import (
 
 TimelineGraphEntityType = Literal["case", "task"]
 TimelineGraphEdgeMarker = Literal["none", "forward", "reverse", "bidirectional"]
+LinkTemplateSurface = Literal["entity", "timeline_item"]
+LinkTemplateEntityType = Literal["alert", "case", "task"]
+LinkTemplateVisibility = Literal["PUBLIC", "PERSONAL"]
+LINK_TEMPLATE_ALLOWED_URL_SCHEMES = {"http", "https", "mailto", "tel"}
 TimelineGraphOperationType = Literal[
     "add_node",
     "add_group",
@@ -56,6 +60,66 @@ TimelineGraphOperationType = Literal[
 
 def enum_values(enum_cls):
     return [member.value for member in enum_cls]
+
+
+def _default_link_template_surfaces() -> List[LinkTemplateSurface]:
+    return ["timeline_item"]
+
+
+def _normalize_link_template_surfaces(value: Any) -> List[LinkTemplateSurface]:
+    if value is None:
+        value = _default_link_template_surfaces()
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list) or not value:
+        raise ValueError("surface_scopes must contain at least one surface")
+
+    allowed = {"entity", "timeline_item"}
+    normalized: List[LinkTemplateSurface] = []
+    for item in value:
+        if item not in allowed:
+            raise ValueError("surface_scopes may only contain 'entity' or 'timeline_item'")
+        if item not in normalized:
+            normalized.append(item)
+    return normalized
+
+
+def _normalize_link_template_entity_types(value: Any) -> Optional[List[LinkTemplateEntityType]]:
+    if value is None or value == []:
+        return None
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        raise ValueError("entity_types must be a list")
+
+    allowed = {"alert", "case", "task"}
+    normalized: List[LinkTemplateEntityType] = []
+    for item in value:
+        if item not in allowed:
+            raise ValueError("entity_types may only contain 'alert', 'case', or 'task'")
+        if item not in normalized:
+            normalized.append(item)
+    return normalized or None
+
+
+def _validate_link_template_icon_name(value: str) -> str:
+    if not re.match(r"^[A-Za-z][A-Za-z0-9]*$", value or ""):
+        raise ValueError("icon_name must be a valid icon identifier")
+    return value
+
+
+def _validate_link_template_required_string(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("link template fields must not be empty")
+    return value.strip()
+
+
+def _validate_link_template_url_template(value: str) -> str:
+    value = _validate_link_template_required_string(value)
+    scheme = value.split(":", 1)[0].lower() if ":" in value else ""
+    if scheme not in LINK_TEMPLATE_ALLOWED_URL_SCHEMES:
+        raise ValueError("url_template must use http, https, mailto, or tel")
+    return value
 
 
 def _normalize_response_tags(value: Any) -> List[str]:
@@ -1710,7 +1774,7 @@ class UserAccount(UserAccountBase, table=True):
     )
     langflow_sessions: List["LangFlowSession"] = Relationship(back_populates="user")
     api_keys: List["ApiKey"] = Relationship(back_populates="user")
-    link_template_preferences: List["UserLinkTemplatePreference"] = Relationship(back_populates="user")
+    personal_link_templates: List["PersonalLinkTemplate"] = Relationship(back_populates="user")
     passkey_credentials: List["PasskeyCredential"] = Relationship(
         back_populates="user",
         sa_relationship_kwargs={"foreign_keys": "[PasskeyCredential.user_id]"},
@@ -2157,6 +2221,16 @@ class LinkTemplateBase(SQLModel):
         sa_column=Column(JSONB),
         description="Object of field/value pairs that must match"
     )
+    surface_scopes: List[LinkTemplateSurface] = Field(
+        default_factory=_default_link_template_surfaces,
+        sa_column=Column(JSONB),
+        description="Surfaces where this template can render",
+    )
+    entity_types: Optional[List[LinkTemplateEntityType]] = Field(
+        default=None,
+        sa_column=Column(JSONB),
+        description="Entity types this template applies to; empty means all entity types",
+    )
     enabled: bool = Field(
         default=True,
         description="Whether this template is currently active"
@@ -2165,6 +2239,31 @@ class LinkTemplateBase(SQLModel):
         default=0,
         description="Sort order for display (lower numbers first)"
     )
+
+    @field_validator("template_id", "name", "tooltip_template")
+    @classmethod
+    def validate_required_text(cls, value: str) -> str:
+        return _validate_link_template_required_string(value)
+
+    @field_validator("icon_name")
+    @classmethod
+    def validate_icon_name(cls, value: str) -> str:
+        return _validate_link_template_icon_name(value)
+
+    @field_validator("url_template")
+    @classmethod
+    def validate_url_template(cls, value: str) -> str:
+        return _validate_link_template_url_template(value)
+
+    @field_validator("surface_scopes", mode="before")
+    @classmethod
+    def validate_surface_scopes(cls, value: Any) -> List[LinkTemplateSurface]:
+        return _normalize_link_template_surfaces(value)
+
+    @field_validator("entity_types", mode="before")
+    @classmethod
+    def validate_entity_types(cls, value: Any) -> Optional[List[LinkTemplateEntityType]]:
+        return _normalize_link_template_entity_types(value)
 
 
 class LinkTemplate(LinkTemplateBase, table=True):
@@ -2181,7 +2280,6 @@ class LinkTemplate(LinkTemplateBase, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(UTCDateTime)
     )
-    user_preferences: List["UserLinkTemplatePreference"] = Relationship(back_populates="template")
 
 
 class LinkTemplateCreate(LinkTemplateBase):
@@ -2198,8 +2296,43 @@ class LinkTemplateUpdate(SQLModel):
     url_template: Optional[str] = None
     field_names: Optional[List[str]] = None
     conditions: Optional[Dict[str, Any]] = None
+    surface_scopes: Optional[List[LinkTemplateSurface]] = None
+    entity_types: Optional[List[LinkTemplateEntityType]] = None
     enabled: Optional[bool] = None
     display_order: Optional[int] = None
+
+    @field_validator("name", "tooltip_template")
+    @classmethod
+    def validate_required_text(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return _validate_link_template_required_string(value)
+
+    @field_validator("icon_name")
+    @classmethod
+    def validate_icon_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return _validate_link_template_icon_name(value)
+
+    @field_validator("url_template")
+    @classmethod
+    def validate_url_template(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return _validate_link_template_url_template(value)
+
+    @field_validator("surface_scopes", mode="before")
+    @classmethod
+    def validate_surface_scopes(cls, value: Any) -> Optional[List[LinkTemplateSurface]]:
+        if value is None:
+            return None
+        return _normalize_link_template_surfaces(value)
+
+    @field_validator("entity_types", mode="before")
+    @classmethod
+    def validate_entity_types(cls, value: Any) -> Optional[List[LinkTemplateEntityType]]:
+        return _normalize_link_template_entity_types(value)
 
 
 class LinkTemplateRead(LinkTemplateBase):
@@ -2210,31 +2343,73 @@ class LinkTemplateRead(LinkTemplateBase):
     updated_at: datetime
 
 
-class UserLinkTemplatePreferenceBase(SQLModel):
-    """Per-user overrides and values for a global link template."""
+class PersonalLinkTemplateBase(SQLModel):
+    """Base model for user-owned personal link templates."""
 
-    template_id: int = Field(
-        foreign_key="link_templates.id",
+    template_id: str = Field(
         index=True,
-        description="Global link template this preference applies to",
+        max_length=100,
+        description="Unique identifier for this template type",
     )
-    enabled: bool = Field(
-        default=True,
-        description="Whether this user wants the template shown",
-    )
-    values: Dict[str, str] = Field(
-        default_factory=dict,
+    name: str = Field(max_length=200, description="Human-readable name of the link template")
+    icon_name: str = Field(max_length=100, description="Icon identifier")
+    tooltip_template: str = Field(description="Tooltip text with {{variable}} placeholders")
+    url_template: str = Field(description="URL template with {{variable}} placeholders")
+    field_names: Optional[List[str]] = Field(
+        default=None,
         sa_column=Column(JSONB),
-        description="User-scoped interpolation values referenced as {{user.key}}",
+        description="Array of field names this template applies to",
     )
+    conditions: Optional[Dict[str, Any]] = Field(
+        default=None,
+        sa_column=Column(JSONB),
+        description="Object of field/value pairs that must match",
+    )
+    surface_scopes: List[LinkTemplateSurface] = Field(
+        default_factory=_default_link_template_surfaces,
+        sa_column=Column(JSONB),
+        description="Surfaces where this template can render",
+    )
+    entity_types: Optional[List[LinkTemplateEntityType]] = Field(
+        default=None,
+        sa_column=Column(JSONB),
+        description="Entity types this template applies to; empty means all entity types",
+    )
+    enabled: bool = Field(default=True, description="Whether this template is currently active")
+    display_order: int = Field(default=0, description="Sort order for display")
+
+    @field_validator("template_id", "name", "tooltip_template")
+    @classmethod
+    def validate_required_text(cls, value: str) -> str:
+        return _validate_link_template_required_string(value)
+
+    @field_validator("icon_name")
+    @classmethod
+    def validate_icon_name(cls, value: str) -> str:
+        return _validate_link_template_icon_name(value)
+
+    @field_validator("url_template")
+    @classmethod
+    def validate_url_template(cls, value: str) -> str:
+        return _validate_link_template_url_template(value)
+
+    @field_validator("surface_scopes", mode="before")
+    @classmethod
+    def validate_surface_scopes(cls, value: Any) -> List[LinkTemplateSurface]:
+        return _normalize_link_template_surfaces(value)
+
+    @field_validator("entity_types", mode="before")
+    @classmethod
+    def validate_entity_types(cls, value: Any) -> Optional[List[LinkTemplateEntityType]]:
+        return _normalize_link_template_entity_types(value)
 
 
-class UserLinkTemplatePreference(UserLinkTemplatePreferenceBase, table=True):
-    """User-owned link template preference row."""
+class PersonalLinkTemplate(PersonalLinkTemplateBase, table=True):
+    """User-owned private link template configuration."""
 
-    __tablename__ = "user_link_template_preferences"  # type: ignore
+    __tablename__ = "personal_link_templates"  # type: ignore
     __table_args__ = (
-        UniqueConstraint("user_id", "template_id", name="uq_user_link_template_preference"),
+        UniqueConstraint("user_id", "template_id", name="uq_personal_link_template_user_template_id"),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -2248,19 +2423,64 @@ class UserLinkTemplatePreference(UserLinkTemplatePreferenceBase, table=True):
         sa_column=Column(UTCDateTime)
     )
 
-    user: Optional[UserAccount] = Relationship(back_populates="link_template_preferences")
-    template: Optional[LinkTemplate] = Relationship(back_populates="user_preferences")
+    user: Optional[UserAccount] = Relationship(back_populates="personal_link_templates")
 
 
-class UserLinkTemplatePreferenceUpdate(SQLModel):
-    """Schema for upserting per-user link template preferences."""
-
-    enabled: bool = True
-    values: Dict[str, str] = Field(default_factory=dict)
+class PersonalLinkTemplateCreate(PersonalLinkTemplateBase):
+    """Schema for creating a personal link template."""
+    pass
 
 
-class UserLinkTemplatePreferenceRead(UserLinkTemplatePreferenceBase):
-    """Schema for reading per-user link template preferences."""
+class PersonalLinkTemplateUpdate(SQLModel):
+    """Schema for updating a personal link template."""
+
+    name: Optional[str] = Field(default=None, max_length=200)
+    icon_name: Optional[str] = Field(default=None, max_length=100)
+    tooltip_template: Optional[str] = None
+    url_template: Optional[str] = None
+    field_names: Optional[List[str]] = None
+    conditions: Optional[Dict[str, Any]] = None
+    surface_scopes: Optional[List[LinkTemplateSurface]] = None
+    entity_types: Optional[List[LinkTemplateEntityType]] = None
+    enabled: Optional[bool] = None
+    display_order: Optional[int] = None
+
+    @field_validator("name", "tooltip_template")
+    @classmethod
+    def validate_required_text(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return _validate_link_template_required_string(value)
+
+    @field_validator("icon_name")
+    @classmethod
+    def validate_icon_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return _validate_link_template_icon_name(value)
+
+    @field_validator("url_template")
+    @classmethod
+    def validate_url_template(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        return _validate_link_template_url_template(value)
+
+    @field_validator("surface_scopes", mode="before")
+    @classmethod
+    def validate_surface_scopes(cls, value: Any) -> Optional[List[LinkTemplateSurface]]:
+        if value is None:
+            return None
+        return _normalize_link_template_surfaces(value)
+
+    @field_validator("entity_types", mode="before")
+    @classmethod
+    def validate_entity_types(cls, value: Any) -> Optional[List[LinkTemplateEntityType]]:
+        return _normalize_link_template_entity_types(value)
+
+
+class PersonalLinkTemplateRead(PersonalLinkTemplateBase):
+    """Schema for reading a personal link template."""
 
     id: int
     user_id: UUID
@@ -2268,10 +2488,65 @@ class UserLinkTemplatePreferenceRead(UserLinkTemplatePreferenceBase):
     updated_at: datetime
 
 
+class PortableLinkTemplate(SQLModel):
+    """Portable JSON representation shared by public and personal templates."""
+
+    template_id: str = Field(max_length=100)
+    name: str = Field(max_length=200)
+    icon_name: str = Field(max_length=100)
+    tooltip_template: str
+    url_template: str
+    field_names: Optional[List[str]] = None
+    conditions: Optional[Dict[str, Any]] = None
+    surface_scopes: List[LinkTemplateSurface] = Field(default_factory=_default_link_template_surfaces)
+    entity_types: Optional[List[LinkTemplateEntityType]] = None
+    enabled: bool = True
+    display_order: int = 0
+
+    @field_validator("template_id", "name", "tooltip_template")
+    @classmethod
+    def validate_required_text(cls, value: str) -> str:
+        return _validate_link_template_required_string(value)
+
+    @field_validator("icon_name")
+    @classmethod
+    def validate_icon_name(cls, value: str) -> str:
+        return _validate_link_template_icon_name(value)
+
+    @field_validator("url_template")
+    @classmethod
+    def validate_url_template(cls, value: str) -> str:
+        return _validate_link_template_url_template(value)
+
+    @field_validator("surface_scopes", mode="before")
+    @classmethod
+    def validate_surface_scopes(cls, value: Any) -> List[LinkTemplateSurface]:
+        return _normalize_link_template_surfaces(value)
+
+    @field_validator("entity_types", mode="before")
+    @classmethod
+    def validate_entity_types(cls, value: Any) -> Optional[List[LinkTemplateEntityType]]:
+        return _normalize_link_template_entity_types(value)
+
+
+class LinkTemplateExportBundle(SQLModel):
+    """Portable export bundle for one or more link templates."""
+
+    schema_version: int = 1
+    templates: List[PortableLinkTemplate]
+
+
+class LinkTemplateExportRequest(SQLModel):
+    """Request body for exporting selected templates."""
+
+    template_ids: List[int] = Field(default_factory=list)
+
+
 class ResolvedLinkTemplateRead(SQLModel):
     """A link template resolved against item context and user values."""
 
     id: int
+    visibility: LinkTemplateVisibility
     template_id: str
     name: str
     icon_name: str
@@ -2283,6 +2558,8 @@ class ResolvedLinkTemplateRead(SQLModel):
 class LinkTemplateResolveRequest(SQLModel):
     """Request body for resolving enabled link templates for a context item."""
 
+    surface: LinkTemplateSurface = Field(default="timeline_item")
+    entity_type: Optional[LinkTemplateEntityType] = None
     item: Dict[str, Any] = Field(default_factory=dict)
 
 

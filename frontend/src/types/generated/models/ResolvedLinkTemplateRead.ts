@@ -7,6 +7,7 @@
  */
 export type ResolvedLinkTemplateRead = {
     id: number;
+    visibility: 'PUBLIC' | 'PERSONAL';
     template_id: string;
     name: string;
     icon_name: string;

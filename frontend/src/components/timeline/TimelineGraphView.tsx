@@ -48,7 +48,6 @@ import {
   getTimelineItemIcon,
   getTimelineItemLabel,
 } from '@/utils/timelineMapping';
-import type { LinkTemplate } from '@/utils/linkTemplates';
 import { isDeletedItem, type TimelineItem } from '@/types/timeline';
 import type { PICERLStage } from '@/types/caseRunbooks';
 import type { TimelineGraphOperation } from '@/types/generated/models/TimelineGraphOperation';
@@ -62,7 +61,6 @@ interface TimelineGraphViewProps {
   entityId: number | null;
   entityType: 'case' | 'task';
   sortBy?: 'created_at' | 'timestamp';
-  linkTemplates?: LinkTemplate[];
   onSelectItem?: (itemId: string) => void;
   onFlagItem?: (itemId: string) => void;
   onHighlightItem?: (itemId: string) => void;
@@ -187,7 +185,6 @@ interface TimelineGraphNodeData extends Record<string, unknown> {
   entityId: number | null;
   entityType: 'case' | 'task';
   sortBy: 'created_at' | 'timestamp';
-  linkTemplates?: LinkTemplate[];
   hiddenByFilter?: boolean;
 }
 
@@ -1027,7 +1024,6 @@ function buildNodeData(
   sortBy: 'created_at' | 'timestamp',
   entityId: number | null,
   entityType: 'case' | 'task',
-  linkTemplates?: LinkTemplate[],
   width?: number,
   height?: number,
   autoSize = false,
@@ -1057,7 +1053,6 @@ function buildNodeData(
     entityId,
     entityType,
     sortBy,
-    linkTemplates,
   };
 }
 
@@ -1067,12 +1062,11 @@ function buildNode(
   sortBy: 'created_at' | 'timestamp',
   entityId: number | null,
   entityType: 'case' | 'task',
-  linkTemplates?: LinkTemplate[],
   width?: number,
   height?: number,
 ): TimelineGraphNode {
   const hasExplicitSize = typeof width === 'number' && typeof height === 'number';
-  const nodeData = buildNodeData(item, sortBy, entityId, entityType, linkTemplates, width, height, !hasExplicitSize);
+  const nodeData = buildNodeData(item, sortBy, entityId, entityType, width, height, !hasExplicitSize);
   const node: TimelineGraphNode = {
     id: `node-${item.id}`,
     type: 'timelineItem',
@@ -1096,7 +1090,6 @@ function buildFlowGraphState(
   sortBy: 'created_at' | 'timestamp',
   entityId: number | null,
   entityType: 'case' | 'task',
-  linkTemplates?: LinkTemplate[],
 ): { nodes: TimelineFlowNode[]; edges: TimelineGraphEdge[] } {
   try {
     if (!graph) {
@@ -1138,7 +1131,6 @@ function buildFlowGraphState(
           sortBy,
           entityId,
           entityType,
-          linkTemplates,
           width,
           height,
         ),
@@ -1490,7 +1482,6 @@ function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, heigh
                 entityId={data.entityId}
                 entityType={data.entityType}
                 sortBy={data.sortBy}
-                linkTemplates={data.linkTemplates}
                 compactPreview
                 hideReplies
               />
@@ -1880,7 +1871,6 @@ function TimelineGraphViewInner({
   entityId,
   entityType,
   sortBy = 'timestamp',
-  linkTemplates,
   onSelectItem,
   onFlagItem,
   onHighlightItem,
@@ -2072,7 +2062,7 @@ function TimelineGraphViewInner({
   }, [graphLayout.detailPaneHeight]);
 
   const applyGraphRead = useCallback((graphRead: TimelineGraphRead | null | undefined, keepSelectedEdge = false) => {
-    const graphState = buildFlowGraphState(graphRead?.graph as any, itemById, sortBy, entityId, entityType, linkTemplates);
+    const graphState = buildFlowGraphState(graphRead?.graph as any, itemById, sortBy, entityId, entityType);
     const edgeIdToKeepSelected = keepSelectedEdge ? selectedEdgeIdRef.current : null;
     const selectedEdgeStillExists = Boolean(
       edgeIdToKeepSelected && graphState.edges.some((edge) => edge.id === edgeIdToKeepSelected),
@@ -2087,7 +2077,7 @@ function TimelineGraphViewInner({
     setSelectedNodeIds([]);
     setSelectedEdgeId(selectedEdgeStillExists ? edgeIdToKeepSelected : null);
     setSelectedItemId(null);
-  }, [entityId, entityType, itemById, linkTemplates, setEdges, setNodes, sortBy]);
+  }, [entityId, entityType, itemById, setEdges, setNodes, sortBy]);
 
   useEffect(() => {
     if (!timelineGraphQuery.data) return;
@@ -2283,7 +2273,6 @@ function TimelineGraphViewInner({
       sortBy,
       entityId,
       entityType,
-      linkTemplates,
     );
     const containingGroup = findContainingGroup(node, nodes);
     const graphNode = containingGroup ? attachNodeToGroup(node, containingGroup, [...nodes, node]) : node;
@@ -2337,7 +2326,7 @@ function TimelineGraphViewInner({
         marker: 'forward' as const,
       }] : []),
     ]);
-  }, [edges, entityId, entityType, graphSettings.floatingEdges, itemById, linkTemplates, nodeItemIds, nodes, proximityConnectEnabled, screenToFlowPosition, sendGraphPatch, setEdges, setNodes, sortBy]);
+  }, [edges, entityId, entityType, graphSettings.floatingEdges, itemById, nodeItemIds, nodes, proximityConnectEnabled, screenToFlowPosition, sendGraphPatch, setEdges, setNodes, sortBy]);
 
   const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -2788,7 +2777,6 @@ function TimelineGraphViewInner({
                   entityId={entityId}
                   entityType={entityType}
                   sortBy={sortBy}
-                  linkTemplates={linkTemplates}
                   variant="super-compact"
                   hideReplies
                 />
