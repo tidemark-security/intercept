@@ -188,6 +188,43 @@ function apiResponse(pathname: string): unknown {
   if (pathname === "/api/v1/admin/audit/event-types") return [];
   if (pathname === "/api/v1/admin/settings") return [];
   if (pathname === "/api/v1/admin/enrichments/maxmind/databases") return [];
+  if (pathname === "/api/v1/admin/enrichments/providers") {
+    return [
+      {
+        provider_id: "entra_id",
+        display_name: "Microsoft Entra ID",
+        settings_prefix: "enrichment.entra_id",
+        enabled: false,
+        supports_bulk_sync: true,
+        item_types: ["internal_actor"],
+        cache_entry_count: 0,
+        alias_count: 0,
+        last_activity_at: null,
+      },
+      {
+        provider_id: "google_workspace",
+        display_name: "Google Workspace",
+        settings_prefix: "enrichment.google_workspace",
+        enabled: false,
+        supports_bulk_sync: true,
+        item_types: ["internal_actor"],
+        cache_entry_count: 0,
+        alias_count: 0,
+        last_activity_at: null,
+      },
+      {
+        provider_id: "ldap",
+        display_name: "LDAP",
+        settings_prefix: "enrichment.ldap",
+        enabled: false,
+        supports_bulk_sync: true,
+        item_types: ["internal_actor"],
+        cache_entry_count: 0,
+        alias_count: 0,
+        last_activity_at: null,
+      },
+    ];
+  }
   if (pathname === "/api/v1/admin/queue/jobs") return emptyPage;
   if (pathname === "/api/v1/admin/queue/stats") return [];
   if (pathname === "/api/v1/admin/queue/entrypoints") return [];
