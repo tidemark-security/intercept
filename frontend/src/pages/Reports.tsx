@@ -7,7 +7,7 @@ import { Loader } from '@/components/feedback/Loader';
 import { Badge } from '@/components/data-display/Badge';
 import { Table } from '@/components/data-display/Table';
 import { Button } from '@/components/buttons/Button';
-import { ToggleGroup } from '@/components/buttons/ToggleGroup';
+import { ToggleGroup } from '@tidemark-security/ux';
 import { BarChart, ScatterPlotChart, SemiDonutChart, TimeSeriesChart } from '@tidemark-security/ux';
 
 import { StatCard } from '@/components/cards/StatCard';

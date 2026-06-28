@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Union, cast
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, text, cast, String
+from sqlalchemy import select, func, text, cast as sql_cast, String
 
 from app.core.id_parser import parse_entity_id, format_entity_id, get_prefix_for_kind, ALERT_PREFIX
 from app.models.models import Alert, Case, CaseRunbook, Task, RunbookTaskDefinition
@@ -690,7 +690,7 @@ async def search_case_runbooks(
                     " ",
                     CaseRunbook.description,
                     " ",
-                    cast(CaseRunbook.runbook_tasks, String),
+                    sql_cast(CaseRunbook.runbook_tasks, String),
                 )
             ).like(pattern.lower())
         )

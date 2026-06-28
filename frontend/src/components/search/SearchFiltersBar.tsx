@@ -1,6 +1,6 @@
 import React from 'react';
 import { Bell, CheckSquare, NotebookPen } from 'lucide-react';
-import { ToggleGroup } from '@/components/buttons/ToggleGroup';
+import { ToggleGroup } from '@tidemark-security/ux';
 import { DateRangePicker, type DateRangeValue } from '@/components/forms/DateRangePicker';
 import { TagsManager } from '@/components/forms/TagsManager';
 import { cn } from '@/utils/cn';

@@ -46,7 +46,7 @@ const uxAliases = uxWorkspace
       },
       {
         find: "@tidemark-security/ux",
-        replacement: resolve(uxWorkspace, "dist/index.js"),
+        replacement: resolve(uxWorkspace, "src/index.ts"),
       },
     ]
   : []

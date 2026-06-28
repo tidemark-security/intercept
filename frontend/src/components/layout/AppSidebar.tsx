@@ -6,7 +6,6 @@ import { useViewTransitionNavigate } from "@/hooks/useViewTransitionNavigate";
 import Logo from "@/assets/TMS-logo-green.svg?react";
 
 import { DropdownMenu } from "@/components/overlays/DropdownMenu";
-import { ToggleGroup } from "@/components/buttons/ToggleGroup";
 import { SidebarRailWithLabels } from "@/components/navigation/SidebarRailWithLabels";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
 import { useSession } from "@/contexts/sessionContext";
@@ -15,6 +14,7 @@ import { useTimezonePreference } from "@/contexts/TimezoneContext";
 import { useSidebarBadgeCounts } from "@/hooks/useDashboard";
 import { cn } from "@/utils/cn";
 import type { SidebarBadgeCount } from "@/types/generated/models/SidebarBadgeCount";
+import { ToggleGroup } from "@tidemark-security/ux";
 
 import {
   BarChart2,

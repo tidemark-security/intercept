@@ -495,7 +495,7 @@ async def test_configure_service_now_saves_settings(
     assert response.status_code == 200
     assert response.json() == {
         "instance_url": "https://example.service-now.com",
-        "settings_saved": 20,
+        "settings_saved": 22,
         "enabled": True,
     }
 

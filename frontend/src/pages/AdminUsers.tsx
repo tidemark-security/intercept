@@ -14,7 +14,7 @@ import { ModalShell } from "@/components/overlays";
 import { Table } from "@/components/data-display/Table";
 import { TextField } from "@/components/forms/TextField";
 import { Toast } from "@/components/feedback/Toast";
-import { ToggleGroup } from "@/components/buttons/ToggleGroup";
+import { ToggleGroup } from "@tidemark-security/ux";
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { AdminPageLayout } from "../components/layout/AdminPageLayout";
 import { DateTimeManager } from "@/components/forms/DateTimeManager";

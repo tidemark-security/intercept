@@ -13,7 +13,7 @@ import { TimelineFilter } from "@/components/timeline/TimelineFilter";
 import { AdaptiveToggleLabel } from "@/components/timeline/AdaptiveToggleLabel";
 import { CaseClosureModal } from "@/components/entities/CaseClosureModal";
 import { TriageRejectionDialog } from "@/components/triage/TriageRejectionDialog";
-import { ToggleGroup } from "@/components/buttons/ToggleGroup";
+import { ToggleGroup } from "@tidemark-security/ux";
 
 import type { AlertStatus } from "@/types/generated/models/AlertStatus";
 import type { AcceptRecommendationRequest } from "@/types/generated/models/AcceptRecommendationRequest";

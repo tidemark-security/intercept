@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { ToggleGroup } from '@/components/buttons/ToggleGroup';
+import { ToggleGroup } from '@tidemark-security/ux';
 import type { TimelineItem } from '@/types/timeline';
 import { PICERL_STAGES, type PICERLStage } from '@/types/caseRunbooks';
 import { getPicerlStageIcon, getPicerlStageLabels } from '@/components/misc/PicerlStage';
