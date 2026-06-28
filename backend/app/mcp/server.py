@@ -228,14 +228,14 @@ async def record_triage_decision(
         disposition: Triage outcome. Valid values: TRUE_POSITIVE, FALSE_POSITIVE, BENIGN, NEEDS_INVESTIGATION, DUPLICATE, UNKNOWN
         confidence: Agent confidence (0.0-1.0)
         reasoning_bullets: Why this disposition (list of strings). Use markdown links for evidence references, e.g. [ALT-0000123:item-uuid](/alerts/ALT-0000123#timeline-item-uuid)
-        recommended_actions: Suggested next steps. Each action is an object with 'title' (required, max 200 chars) and 'description' (optional, markdown supported)
-        recommended_case_runbook_id: Published Case Runbook ID to apply on escalation. Mutually exclusive with recommended_actions.
-        suggested_status: Optional alert status patch. Valid values: NEW, IN_PROGRESS, ESCALATED, CLOSED_TP, CLOSED_BP, CLOSED_FP, CLOSED_UNRESOLVED, CLOSED_DUPLICATE
+        recommended_actions: Suggested next steps for escalating dispositions only. Each action is an object with 'title' (required, max 200 chars) and 'description' (optional, markdown supported)
+        recommended_case_runbook_id: Published Case Runbook ID to apply on escalation. Mutually exclusive with recommended_actions and only valid for escalating dispositions.
+        suggested_status: Optional alert status patch. Valid values: NEW, IN_PROGRESS, ESCALATED, CLOSED_TP, CLOSED_BP, CLOSED_FP, CLOSED_UNRESOLVED, CLOSED_DUPLICATE. Persisted value is derived from disposition.
         suggested_priority: Optional priority patch. Valid values: INFO, LOW, MEDIUM, HIGH, CRITICAL, EXTREME
         suggested_assignee: Optional assignee patch (username)
         suggested_tags_add: Tags to add
         suggested_tags_remove: Tags to remove
-        request_escalate_to_case: Request case creation
+        request_escalate_to_case: Optional/deprecated case creation request. Persisted value is derived from disposition.
         commit: If false, returns dry-run preview only (default: false)
     """
     return await record_triage_decision_tool(

@@ -139,14 +139,26 @@ class RecordTriageDecisionInput(BaseModel):
     ]
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning_bullets: Optional[List[str]] = None
-    recommended_actions: Optional[List[RecommendedAction]] = None
-    recommended_case_runbook_id: Optional[str | int] = None
-    suggested_status: Optional[str] = None
+    recommended_actions: Optional[List[RecommendedAction]] = Field(
+        default=None,
+        description="Suggested next steps for escalating dispositions only.",
+    )
+    recommended_case_runbook_id: Optional[str | int] = Field(
+        default=None,
+        description="Published Case Runbook ID for escalating dispositions only.",
+    )
+    suggested_status: Optional[str] = Field(
+        default=None,
+        description="Optional status patch; persisted value is derived from disposition.",
+    )
     suggested_priority: Optional[str] = None
     suggested_assignee: Optional[str] = None
     suggested_tags_add: Optional[List[str]] = None
     suggested_tags_remove: Optional[List[str]] = None
-    request_escalate_to_case: bool = False
+    request_escalate_to_case: bool = Field(
+        default=False,
+        description="Optional/deprecated request; persisted value is derived from disposition.",
+    )
     commit: bool = False  # Dry-run if false
 
 

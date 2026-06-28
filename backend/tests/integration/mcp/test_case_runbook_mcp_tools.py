@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.models.enums import AlertStatus, CaseRunbookStatus, PICERLStage, Priority
-from app.models.models import Alert, CaseRunbook
+from app.models.models import Alert, CaseRunbook, TriageRecommendation
 from app.services import mcp_service
 
 
@@ -111,6 +111,60 @@ async def test_get_case_runbook_returns_lean_published_payload_and_rejects_draft
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("disposition", "input_escalate", "input_status", "expected_escalate", "expected_status"),
+    [
+        ("TRUE_POSITIVE", False, AlertStatus.CLOSED_TP.value, True, AlertStatus.ESCALATED),
+        ("FALSE_POSITIVE", True, AlertStatus.ESCALATED.value, False, AlertStatus.CLOSED_FP),
+        ("BENIGN", True, AlertStatus.ESCALATED.value, False, AlertStatus.CLOSED_BP),
+        ("NEEDS_INVESTIGATION", False, AlertStatus.IN_PROGRESS.value, True, AlertStatus.ESCALATED),
+        ("DUPLICATE", True, AlertStatus.ESCALATED.value, False, AlertStatus.CLOSED_DUPLICATE),
+        ("UNKNOWN", False, AlertStatus.CLOSED_UNRESOLVED.value, True, AlertStatus.ESCALATED),
+    ],
+)
+async def test_record_triage_decision_derives_case_path_from_disposition(
+    session_maker: Any,
+    disposition: str,
+    input_escalate: bool,
+    input_status: str,
+    expected_escalate: bool,
+    expected_status: AlertStatus,
+) -> None:
+    async with session_maker() as session:
+        alert = Alert(
+            title=f"{disposition} alert",
+            description="Canonical case path test",
+            priority=Priority.MEDIUM,
+            source="SIEM",
+            status=AlertStatus.NEW,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        session.add(alert)
+        await session.flush()
+        assert alert.id is not None
+
+        result = await mcp_service.record_triage_decision(
+            session,
+            alert_id_str=f"ALT-{alert.id:07d}",
+            disposition=disposition,
+            confidence=0.7,
+            suggested_status=input_status,
+            request_escalate_to_case=input_escalate,
+            commit=True,
+            created_by="mcp-test",
+        )
+
+        assert result.recommendation_id is not None
+        recommendation = await session.get(TriageRecommendation, result.recommendation_id)
+
+    assert recommendation is not None
+    assert recommendation.request_escalate_to_case is expected_escalate
+    assert recommendation.suggested_status == expected_status
+    assert result.suggested_patches[0].new_value == expected_status.value
+
+
+@pytest.mark.asyncio
 async def test_record_triage_decision_runbook_contracts(
     session_maker: Any,
 ) -> None:
@@ -144,14 +198,25 @@ async def test_record_triage_decision_runbook_contracts(
         assert alert.id is not None
         assert runbook.id is not None
 
-        with pytest.raises(HTTPException) as non_escalating:
+        with pytest.raises(HTTPException) as dismissal_runbook:
             await mcp_service.record_triage_decision(
                 session,
                 alert_id_str=f"ALT-{alert.id:07d}",
-                disposition="NEEDS_INVESTIGATION",
+                disposition="BENIGN",
                 confidence=0.7,
                 recommended_case_runbook_id=runbook.id,
-                request_escalate_to_case=False,
+                request_escalate_to_case=True,
+                commit=True,
+            )
+
+        with pytest.raises(HTTPException) as dismissal_actions:
+            await mcp_service.record_triage_decision(
+                session,
+                alert_id_str=f"ALT-{alert.id:07d}",
+                disposition="FALSE_POSITIVE",
+                confidence=0.7,
+                recommended_actions=[{"title": "Follow up anyway"}],
+                request_escalate_to_case=True,
                 commit=True,
             )
 
@@ -173,12 +238,13 @@ async def test_record_triage_decision_runbook_contracts(
             disposition="NEEDS_INVESTIGATION",
             confidence=0.7,
             recommended_case_runbook_id=f"RUN-{runbook.id:07d}",
-            request_escalate_to_case=True,
+            request_escalate_to_case=False,
             commit=True,
             created_by="mcp-test",
         )
 
-    assert non_escalating.value.status_code == 400
+    assert dismissal_runbook.value.status_code == 400
+    assert dismissal_actions.value.status_code == 400
     assert mutually_exclusive.value.status_code == 400
     assert result.recommendation_id is not None
     assert result.suggested_patches[0].new_value == AlertStatus.ESCALATED.value

@@ -163,6 +163,10 @@ for alert in alerts["items"]:
     })
 ```
 
+`record_triage_decision` derives the case path from `disposition`: `TRUE_POSITIVE`, `NEEDS_INVESTIGATION`, and `UNKNOWN` escalate to a case; `FALSE_POSITIVE`, `BENIGN`, and `DUPLICATE` dismiss the alert. Recommended Actions and Case Runbooks are valid only for escalating dispositions.
+
+Updating the bundled static LangFlow asset does not update already-imported live LangFlow flows automatically. Re-import or update the configured alert triage flow after deploying prompt changes.
+
 ### Pattern 2: Investigation Assistant
 
 Help analysts investigate cases:

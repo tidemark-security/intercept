@@ -42,29 +42,70 @@ DISPOSITION_TO_CLOSED_STATUS: Dict[TriageDisposition, AlertStatus] = {
     TriageDisposition.DUPLICATE: AlertStatus.CLOSED_DUPLICATE,
 }
 
+ESCALATING_TRIAGE_DISPOSITIONS = {
+    TriageDisposition.TRUE_POSITIVE,
+    TriageDisposition.NEEDS_INVESTIGATION,
+    TriageDisposition.UNKNOWN,
+}
 
-def validate_recommendation_contract(data: Dict[str, Any]) -> None:
-    recommended_actions = data.get("recommended_actions") or []
-    recommended_case_runbook_id = data.get("recommended_case_runbook_id")
-    request_escalate_to_case = bool(data.get("request_escalate_to_case", False))
-    suggested_status = data.get("suggested_status")
-    suggested_status_value = suggested_status.value if hasattr(suggested_status, "value") else suggested_status
+DISPOSITION_TO_CANONICAL_STATUS: Dict[TriageDisposition, AlertStatus] = {
+    TriageDisposition.TRUE_POSITIVE: AlertStatus.ESCALATED,
+    TriageDisposition.FALSE_POSITIVE: AlertStatus.CLOSED_FP,
+    TriageDisposition.BENIGN: AlertStatus.CLOSED_BP,
+    TriageDisposition.NEEDS_INVESTIGATION: AlertStatus.ESCALATED,
+    TriageDisposition.DUPLICATE: AlertStatus.CLOSED_DUPLICATE,
+    TriageDisposition.UNKNOWN: AlertStatus.ESCALATED,
+}
+
+
+def _parse_triage_disposition(value: Any) -> TriageDisposition:
+    raw_value = value.value if hasattr(value, "value") else value
+    try:
+        return TriageDisposition(raw_value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid disposition: {raw_value}") from exc
+
+
+def _validate_suggested_status(value: Any) -> None:
+    if value is None:
+        return
+
+    raw_value = value.value if hasattr(value, "value") else value
+    try:
+        AlertStatus(raw_value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid suggested_status: {raw_value}") from exc
+
+
+def normalize_recommendation_contract(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply canonical disposition-derived case path and status rules."""
+    normalized = dict(data)
+    disposition = _parse_triage_disposition(data.get("disposition"))
+    _validate_suggested_status(data.get("suggested_status"))
+
+    should_escalate = disposition in ESCALATING_TRIAGE_DISPOSITIONS
+    recommended_actions = normalized.get("recommended_actions") or []
+    recommended_case_runbook_id = normalized.get("recommended_case_runbook_id")
 
     if recommended_actions and recommended_case_runbook_id is not None:
         raise HTTPException(
             status_code=400,
             detail="recommended_case_runbook_id and recommended_actions are mutually exclusive",
         )
-    if (recommended_actions or recommended_case_runbook_id is not None) and not request_escalate_to_case:
+    if (recommended_actions or recommended_case_runbook_id is not None) and not should_escalate:
         raise HTTPException(
             status_code=400,
-            detail="Work recommendations require request_escalate_to_case=true",
+            detail="Dismissal recommendations cannot include work recommendations",
         )
-    if request_escalate_to_case and suggested_status_value not in {None, AlertStatus.ESCALATED.value}:
-        raise HTTPException(
-            status_code=400,
-            detail="Escalating recommendations require suggested_status to be omitted or ESCALATED",
-        )
+
+    normalized["disposition"] = disposition.value
+    normalized["request_escalate_to_case"] = should_escalate
+    normalized["suggested_status"] = DISPOSITION_TO_CANONICAL_STATUS[disposition].value
+    return normalized
+
+
+def validate_recommendation_contract(data: Dict[str, Any]) -> None:
+    normalize_recommendation_contract(data)
 
 
 def get_effective_suggested_status(recommendation: TriageRecommendation) -> Optional[AlertStatus]:
@@ -170,7 +211,7 @@ async def create_or_replace_recommendation(
             status_code=404,
             detail=f"Alert {alert_id} not found"
         )
-    validate_recommendation_contract(data)
+    data = normalize_recommendation_contract(data)
 
     # Check for existing recommendation
     existing = await get_by_alert_id(db, alert_id)

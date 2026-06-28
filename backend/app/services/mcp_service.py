@@ -15,7 +15,7 @@ from sqlalchemy import select, func, text, cast as sql_cast, String
 
 from app.core.id_parser import parse_entity_id, format_entity_id, get_prefix_for_kind, ALERT_PREFIX
 from app.models.models import Alert, Case, CaseRunbook, Task, RunbookTaskDefinition
-from app.models.enums import AlertStatus, CaseStatus, CaseRunbookStatus, TaskStatus, Priority, TriageDisposition
+from app.models.enums import AlertStatus, CaseStatus, CaseRunbookStatus, TaskStatus, Priority
 from app.mcp.schemas import (
     GetSummaryOutput,
     ObjectHeader,
@@ -500,13 +500,13 @@ async def record_triage_decision(
         disposition: Triage disposition
         confidence: AI confidence (0.0-1.0)
         reasoning_bullets: Why this disposition. Use markdown links for evidence references.
-        recommended_actions: Suggested next steps
-        suggested_status: Optional status patch
+        recommended_actions: Suggested next steps for escalating dispositions only
+        suggested_status: Optional status patch; canonical value is derived from disposition
         suggested_priority: Optional priority patch
         suggested_assignee: Optional assignee patch
         suggested_tags_add: Tags to add
         suggested_tags_remove: Tags to remove
-    request_escalate_to_case: Request case creation
+        request_escalate_to_case: Optional/deprecated case creation request; persisted value is derived from disposition
         commit: If false, returns dry-run preview only
         created_by: Username from API key
         
@@ -528,34 +528,32 @@ async def record_triage_decision(
             detail=f"Alert {format_entity_id(numeric_id, canonical_prefix)} not found"
         )
 
-    normalized_suggested_status = suggested_status
-    if request_escalate_to_case and not normalized_suggested_status:
-        normalized_suggested_status = AlertStatus.ESCALATED.value
-    elif not normalized_suggested_status:
-        try:
-            disposition_enum = TriageDisposition(disposition)
-            inferred_status = triage_recommendation_service.DISPOSITION_TO_CLOSED_STATUS.get(disposition_enum)
-            normalized_suggested_status = inferred_status.value if inferred_status else None
-        except ValueError:
-            normalized_suggested_status = None
+    data = triage_recommendation_service.normalize_recommendation_contract({
+        "disposition": disposition,
+        "confidence": confidence,
+        "reasoning_bullets": reasoning_bullets or [],
+        "recommended_actions": recommended_actions or [],
+        "recommended_case_runbook_id": recommended_case_runbook_id,
+        "suggested_status": suggested_status,
+        "suggested_priority": suggested_priority,
+        "suggested_assignee": suggested_assignee,
+        "suggested_tags_add": suggested_tags_add or [],
+        "suggested_tags_remove": suggested_tags_remove or [],
+        "request_escalate_to_case": request_escalate_to_case,
+    })
 
     numeric_runbook_id: int | None = None
-    if recommended_case_runbook_id is not None:
+    if data["recommended_case_runbook_id"] is not None:
         try:
-            numeric_runbook_id = parse_case_runbook_id(recommended_case_runbook_id)
+            numeric_runbook_id = parse_case_runbook_id(data["recommended_case_runbook_id"])
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
         runbook = await db.get(CaseRunbook, numeric_runbook_id)
         if runbook is None or runbook.status != CaseRunbookStatus.PUBLISHED:
             raise HTTPException(status_code=400, detail="recommended_case_runbook_id must reference a published Case Runbook")
-
-    _validate_triage_work_recommendation(
-        recommended_actions=recommended_actions or [],
-        recommended_case_runbook_id=numeric_runbook_id,
-        request_escalate_to_case=request_escalate_to_case,
-        suggested_status=normalized_suggested_status,
-    )
+    data["recommended_case_runbook_id"] = numeric_runbook_id
+    normalized_suggested_status = data["suggested_status"]
     
     # Build suggested patches
     suggested_patches = []
@@ -581,8 +579,8 @@ async def record_triage_decision(
             new_value=suggested_assignee,
         ))
 
-    suggested_tags_add = normalize_persisted_tags(suggested_tags_add)
-    suggested_tags_remove = normalize_persisted_tags(suggested_tags_remove)
+    suggested_tags_add = normalize_persisted_tags(data["suggested_tags_add"])
+    suggested_tags_remove = normalize_persisted_tags(data["suggested_tags_remove"])
     
     if suggested_tags_add:
         for tag in suggested_tags_add:
@@ -612,20 +610,8 @@ async def record_triage_decision(
             message="Dry-run preview - no changes made",
         )
     
-    # Build recommendation data
-    data = {
-        "disposition": disposition,
-        "confidence": confidence,
-        "reasoning_bullets": reasoning_bullets or [],
-        "recommended_actions": recommended_actions or [],
-        "recommended_case_runbook_id": numeric_runbook_id,
-        "suggested_status": normalized_suggested_status,
-        "suggested_priority": suggested_priority,
-        "suggested_assignee": suggested_assignee,
-        "suggested_tags_add": suggested_tags_add or [],
-        "suggested_tags_remove": suggested_tags_remove or [],
-        "request_escalate_to_case": request_escalate_to_case,
-    }
+    data["suggested_tags_add"] = suggested_tags_add or []
+    data["suggested_tags_remove"] = suggested_tags_remove or []
     
     # Check if existing recommendation
     existing = await triage_recommendation_service.get_by_alert_id(db, numeric_id)
@@ -647,24 +633,6 @@ async def record_triage_decision(
         status="PENDING",
         message=f"Recommendation {mode} successfully. Status: PENDING until analyst reviews.",
     )
-
-
-def _validate_triage_work_recommendation(
-    *,
-    recommended_actions: List[Dict[str, Any]],
-    recommended_case_runbook_id: int | None,
-    request_escalate_to_case: bool,
-    suggested_status: str | None,
-) -> None:
-    has_actions = bool(recommended_actions)
-    has_runbook = recommended_case_runbook_id is not None
-
-    if has_actions and has_runbook:
-        raise HTTPException(status_code=400, detail="recommended_case_runbook_id and recommended_actions are mutually exclusive")
-    if (has_actions or has_runbook) and not request_escalate_to_case:
-        raise HTTPException(status_code=400, detail="Work recommendations require request_escalate_to_case=true")
-    if request_escalate_to_case and suggested_status not in {None, AlertStatus.ESCALATED.value}:
-        raise HTTPException(status_code=400, detail="Escalating recommendations require suggested_status to be omitted or ESCALATED")
 
 
 def _runbook_tasks(runbook: CaseRunbook) -> list[RunbookTaskDefinition]:
