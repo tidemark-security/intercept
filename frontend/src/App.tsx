@@ -154,7 +154,7 @@ export default function App() {
             }
           />
           <Route
-            path="/admin/link-runbooks"
+            path="/admin/link-templates"
             element={
               <ProtectedRoute requiredRole="ADMIN">
                 <AdminLinkTemplates />
