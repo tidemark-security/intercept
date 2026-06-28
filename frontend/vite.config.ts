@@ -28,9 +28,10 @@ const manualChunkGroups = {
 
 const localUxWorkspace = resolve(__dirname, "../../ux")
 const dockerUxWorkspace = "/ux"
-const uxWorkspace = existsSync(resolve(dockerUxWorkspace, "package.json"))
+const isVitest = process.env.VITEST === "true" || process.env.NODE_ENV === "test"
+const uxWorkspace = !isVitest && existsSync(resolve(dockerUxWorkspace, "package.json"))
   ? dockerUxWorkspace
-  : existsSync(resolve(localUxWorkspace, "package.json"))
+  : !isVitest && existsSync(resolve(localUxWorkspace, "package.json"))
     ? localUxWorkspace
     : null
 

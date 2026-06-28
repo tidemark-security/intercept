@@ -79,6 +79,8 @@ Install the tracked Git hooks for this clone:
 
 The pre-commit hook runs `frontend` lint when staged changes affect the frontend or lint hook setup. This is intended as a fast local check before CI.
 
+The pre-push hook runs `./scripts/fast-ci-local.sh`, which mirrors the Fast CI test jobs locally: backend pytest, frontend typecheck, and frontend tests. Docker image builds run when relevant build inputs changed. To force all image builds, run `FAST_CI_LOCAL_FULL=1 git push` or `./scripts/fast-ci-local.sh --full`. To skip image builds during a manual run, use `./scripts/fast-ci-local.sh --skip-images`.
+
 ### After Changing Backend Models
 
 Regenerate TypeScript types to keep frontend in sync:
