@@ -1,5 +1,6 @@
 import React from 'react';
 import { Minus, Plus, X } from 'lucide-react';
+import { openGlobalSearch } from '@/components/search/globalSearchEvents';
 import { cn } from '@/utils/cn';
 
 export function getTagSearchHref(tag: string): string {
@@ -77,6 +78,7 @@ const TagRoot = React.forwardRef<HTMLSpanElement, TagProps>(function TagRoot(
     searchable && typeof tagText === 'string' && tagText.trim()
       ? searchHref ?? getTagSearchHref(tagText.trim())
       : undefined;
+  const searchableTagText = searchable && typeof tagText === 'string' ? tagText.trim() : '';
   const textClassName = cn(
     'line-clamp-1 flex h-full grow shrink-0 basis-0 items-center justify-center overflow-hidden text-ellipsis text-center text-caption font-caption',
     {
@@ -137,6 +139,16 @@ const TagRoot = React.forwardRef<HTMLSpanElement, TagProps>(function TagRoot(
             if (hasCustomClick) {
               event.preventDefault();
               onClick?.(event as unknown as React.MouseEvent<HTMLSpanElement>);
+            } else if (
+              searchableTagText &&
+              event.button === 0 &&
+              !event.metaKey &&
+              !event.ctrlKey &&
+              !event.shiftKey &&
+              !event.altKey
+            ) {
+              event.preventDefault();
+              openGlobalSearch({ query: '', tags: [searchableTagText] });
             }
             event.stopPropagation();
           }}

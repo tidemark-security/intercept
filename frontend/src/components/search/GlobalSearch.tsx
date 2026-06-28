@@ -40,12 +40,17 @@ import {
 } from '@/components/search';
 
 import { ArrowRight, Search, X } from 'lucide-react';
+
+const EMPTY_INITIAL_TAGS: string[] = [];
+
 interface GlobalSearchProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  initialTags?: string[];
+  searchRequestKey?: number;
 }
 
-export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
+export function GlobalSearch({ open, onOpenChange, initialTags = EMPTY_INITIAL_TAGS, searchRequestKey = 0 }: GlobalSearchProps) {
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === 'dark';
@@ -99,6 +104,14 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   });
 
   const canSearch = isSearchQueryValid(debouncedQuery) || selectedTags.length > 0;
+
+  useEffect(() => {
+    if (searchRequestKey === 0) return;
+
+    clearSearch();
+    setSelectedTags(initialTags);
+    setSelectedIndex(0);
+  }, [searchRequestKey, initialTags, clearSearch]);
 
   // Results are already a flat list sorted by score (from the API)
   const allResults = useMemo(() => results ?? [], [results]);

@@ -26,27 +26,29 @@ interface MenuCardRootProps
   assignee?: React.ReactNode;
   tags?: string | string[] | null;
   state?:
-    | "closed"
-    | "new"
-    | "in_progress"
-    | "escalated"
-    | "closed_true_positive"
-    | "closed_benign_positive"
-    | "closed_false_positive"
-    | "closed_unresolved"
-    | "closed_duplicate"
-    | "tsk_todo"
-    | "tsk_in_progress"
-    | "tsk_done";
+  | "closed"
+  | "new"
+  | "in_progress"
+  | "escalated"
+  | "closed_true_positive"
+  | "closed_benign_positive"
+  | "closed_false_positive"
+  | "closed_unresolved"
+  | "closed_duplicate"
+  | "tsk_todo"
+  | "tsk_in_progress"
+  | "tsk_done";
   priority?:
-    | "default"
-    | "info"
-    | "low"
-    | "medium"
-    | "high"
-    | "critical"
-    | "extreme";
+  | "default"
+  | "info"
+  | "low"
+  | "medium"
+  | "high"
+  | "critical"
+  | "extreme";
   variant?: "default" | "selected";
+  leadingContent?: React.ReactNode;
+  bodyContent?: React.ReactNode;
   showDescription?: boolean;
   description?: React.ReactNode;
   onTagClick?: (tag: string, mode: "include" | "exclude") => void;
@@ -64,6 +66,8 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
       state = "closed",
       priority = "default",
       variant = "default",
+      leadingContent,
+      bodyContent,
       showDescription = false,
       description,
       onTagClick,
@@ -80,8 +84,8 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
       const list = Array.isArray(tags)
         ? tags
         : typeof tags === 'string'
-        ? tags.split(';').map((t) => t.trim()).filter(Boolean)
-        : [];
+          ? tags.split(';').map((t) => t.trim()).filter(Boolean)
+          : [];
       return list;
     }, [tags]);
     const [isExcludeModifierActive, setIsExcludeModifierActive] = React.useState(false);
@@ -143,78 +147,92 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
         ref={ref}
         {...otherProps}
       >
-        <div
-          className={cn(
-            "flex w-full flex-wrap items-center justify-between",
-            { "flex-row flex-wrap justify-between": showDescription }
-          )}
-        >
-          <div className="flex grow shrink-0 basis-0 flex-col flex-wrap items-start">
-            <div className="flex flex-wrap items-start gap-4">
-              {id ? (
-                <span
-                  className={getMenuCardMetaClassName(
-                    isDarkTheme,
-                    variant,
-                    "grow shrink-0 basis-0 whitespace-nowrap text-caption-bold font-caption-bold"
-                  )}
-                >
-                  {id}
-                </span>
-              ) : null}
-              {formattedTimestamp ? (
-                <span
-                  className={getMenuCardMetaClassName(
-                    isDarkTheme,
-                    variant,
-                    "grow shrink-0 basis-0 whitespace-nowrap text-caption text-right"
-                  )}
-                >
-                  {formattedTimestamp}
-                </span>
-              ) : null}
+        <div className="flex w-full min-w-0 items-start gap-3">
+          {leadingContent ? (
+            <div className="flex h-6 w-6 flex-none items-center justify-center">
+              {leadingContent}
             </div>
-            <div className="flex w-full flex-wrap items-center justify-center gap-2 pr-2">
-              {title ? (
-                <span className={getMenuCardTitleClassName(isDarkTheme, variant)}>
-                  {title}
-                </span>
-              ) : null}
-            </div>
-          </div>
-          <div className="flex grow shrink-0 basis-0 flex-wrap items-center gap-2 px-1 py-1">
-            <div className="flex grow shrink-0 basis-0 items-center justify-end gap-2">
-              <Badge
-                className="h-6 min-w-[128px] grow shrink-0 basis-0"
-                variant="neutral"
-                icon={<User2 />}
-                iconRight={null}
-              >
-                {assignee}
-              </Badge>
+          ) : null}
+          <div className="flex min-w-0 grow shrink basis-0 flex-col items-start gap-1">
+            <div
+              className={cn(
+                "flex w-full flex-wrap items-center justify-between",
+                { "flex-row flex-wrap justify-between": showDescription }
+              )}
+            >
+              <div className="flex grow shrink-0 basis-0 flex-col flex-wrap items-start">
+                <div className="flex flex-wrap items-start gap-4">
+                  {id ? (
+                    <span
+                      className={getMenuCardMetaClassName(
+                        isDarkTheme,
+                        variant,
+                        "grow shrink-0 basis-0 whitespace-nowrap text-caption-bold font-caption-bold"
+                      )}
+                    >
+                      {id}
+                    </span>
+                  ) : null}
+                  {formattedTimestamp ? (
+                    <span
+                      className={getMenuCardMetaClassName(
+                        isDarkTheme,
+                        variant,
+                        "grow shrink-0 basis-0 whitespace-nowrap text-caption text-right"
+                      )}
+                    >
+                      {formattedTimestamp}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="flex w-full flex-wrap items-center justify-center gap-2 pr-2">
+                  {title ? (
+                    <span className={getMenuCardTitleClassName(isDarkTheme, variant)}>
+                      {title}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+              <div className="flex grow shrink-0 basis-0 flex-wrap items-center gap-2 px-1 py-1">
+                <div className="flex grow shrink-0 basis-0 items-center justify-end gap-2">
+                  <Badge
+                    className="h-6 min-w-[128px] grow shrink-0 basis-0"
+                    variant="neutral"
+                    icon={<User2 />}
+                    iconRight={null}
+                  >
+                    {assignee}
+                  </Badge>
 
-              <State
-                state={state}
-                variant="mini"
-              />
-              <Priority
-                priority={
-                  priority === "extreme"
-                    ? "extreme"
-                    : priority === "critical"
-                    ? "critical"
-                    : priority === "high"
-                    ? "high"
-                    : priority === "medium"
-                    ? "medium"
-                    : priority === "low"
-                    ? "low"
-                    : undefined
-                }
-                size="mini"
-                className="grayscale-[50%]"
-              />
+                  <State
+                    state={state}
+                    variant="mini"
+                  />
+                  <Priority
+                    priority={
+                      priority === "extreme"
+                        ? "extreme"
+                        : priority === "critical"
+                          ? "critical"
+                          : priority === "high"
+                            ? "high"
+                            : priority === "medium"
+                              ? "medium"
+                              : priority === "low"
+                                ? "low"
+                                : undefined
+                    }
+                    size="mini"
+                  // className="grayscale-[50%]"
+                  />
+                </div>
+              </div>
             </div>
+            {bodyContent ? (
+              <div className="flex w-full min-w-0 flex-col gap-1 pt-1">
+                {bodyContent}
+              </div>
+            ) : null}
           </div>
         </div>
         {tagList.length > 0 && (

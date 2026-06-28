@@ -59,12 +59,4 @@ describe("MenuCard", () => {
     expect(onTagClick).not.toHaveBeenCalled();
   });
 
-  it("keeps priority colors partially visible", () => {
-    const { container } = renderWithProviders(
-      <MenuCard id="ALT-0000001" title="Suspicious login" priority="high" />
-    );
-
-    expect(container.innerHTML).toContain("grayscale-[50%]");
-    expect(container.innerHTML).not.toContain("saturate-0");
-  });
 });

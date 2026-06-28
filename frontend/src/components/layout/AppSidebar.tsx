@@ -8,6 +8,7 @@ import Logo from "@/assets/TMS-logo-green.svg?react";
 import { DropdownMenu } from "@/components/overlays/DropdownMenu";
 import { SidebarRailWithLabels } from "@/components/navigation/SidebarRailWithLabels";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
+import { OPEN_GLOBAL_SEARCH_EVENT, type OpenGlobalSearchDetail } from "@/components/search/globalSearchEvents";
 import { useSession } from "@/contexts/sessionContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useTimezonePreference } from "@/contexts/TimezoneContext";
@@ -510,6 +511,8 @@ export function MobileSidebar() {
 
 export function SearchOverlay() {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [initialTags, setInitialTags] = useState<string[]>([]);
+  const [searchRequestKey, setSearchRequestKey] = useState(0);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -522,5 +525,25 @@ export function SearchOverlay() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  return <GlobalSearch open={isSearchOpen} onOpenChange={setIsSearchOpen} />;
+  useEffect(() => {
+    const handleOpenSearch = (event: Event) => {
+      const detail = (event as CustomEvent<OpenGlobalSearchDetail>).detail;
+
+      setInitialTags(detail?.tags ?? []);
+      setSearchRequestKey((current) => current + 1);
+      setIsSearchOpen(true);
+    };
+
+    window.addEventListener(OPEN_GLOBAL_SEARCH_EVENT, handleOpenSearch);
+    return () => window.removeEventListener(OPEN_GLOBAL_SEARCH_EVENT, handleOpenSearch);
+  }, []);
+
+  return (
+    <GlobalSearch
+      open={isSearchOpen}
+      onOpenChange={setIsSearchOpen}
+      initialTags={initialTags}
+      searchRequestKey={searchRequestKey}
+    />
+  );
 }
