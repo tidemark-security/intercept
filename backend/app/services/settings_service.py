@@ -497,8 +497,7 @@ class SettingsService:
         await self.db.refresh(setting)
 
         logger.info(
-            "Updated setting: key=%s, value_changed=%s",
-            key,
+            "Updated setting: value_changed=%s",
             "value" in update_data,
         )
 
