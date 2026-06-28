@@ -58,7 +58,7 @@ def _format_terminal_failure_message(exc: Exception) -> str:
     root_message = str(root_cause).strip() or root_cause.__class__.__name__
 
     if isinstance(exc, MaxTimeExceeded):
-        return f"Retry time limit exceeded: {root_message}"
+        return f"Execution time limit exceeded: {root_message}"
     if isinstance(exc, MaxRetriesExceeded):
         return f"Retries exhausted: {root_message}"
     return root_message
@@ -568,7 +568,7 @@ async def handle_maxmind_update(payload: Dict[str, Any]):
             await maxmind_service.enqueue_next_scheduled_update(db)
 
 
-def register_task_handlers():
+async def register_task_handlers():
     """
     Register all task handlers with the task queue service.
     
@@ -576,6 +576,9 @@ def register_task_handlers():
     """
     try:
         task_queue = get_task_queue_service()
+
+        async with async_session_factory() as db:
+            await task_queue.refresh_task_runtime_config(SettingsService(db))
         
         # Register LangFlow chat handler
         task_queue.register_handler(

@@ -73,7 +73,7 @@ async def app_lifespan(app: FastAPI):
     logger.info("Initializing task queue service...")
     try:
         await initialize_task_queue_service(get_local("database.url"))
-        register_task_handlers()
+        await register_task_handlers()
         logger.info("✅ Task queue service initialized (enqueue-only mode)")
     except Exception as e:
         logger.warning(f"Task queue service initialization failed: {e}")

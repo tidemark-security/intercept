@@ -118,6 +118,19 @@ def _bulk_sync_schedule_defs(provider_id: str, provider_label: str) -> tuple[Set
     )
 
 
+def _worker_task_timeout_def(task_name: str, *, default: Any = None) -> SettingDefinition:
+    return _def(
+        f"worker.tasks.{task_name}.execution_timeout_seconds",
+        value_type=SettingType.NUMBER,
+        category="worker",
+        description=(
+            f"Execution timeout for {task_name} worker tasks in seconds. "
+            "Leave unset to inherit worker.tasks.default.execution_timeout_seconds."
+        ),
+        default=default,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Bootstrap / infrastructure  (local_only — needed before DB is available)
 # ---------------------------------------------------------------------------
@@ -170,6 +183,82 @@ _register(
             "http://127.0.0.1:3000",
             "http://127.0.0.1:5173",
         ],
+    ),
+    _def(
+        "worker.concurrency",
+        env_var="WORKER_CONCURRENCY",
+        value_type=SettingType.NUMBER,
+        local_only=True,
+        category="worker",
+        description="Number of concurrent tasks processed by each worker process",
+        default=20,
+    ),
+    _def(
+        "worker.health_port",
+        env_var="HEALTH_PORT",
+        value_type=SettingType.NUMBER,
+        local_only=True,
+        category="worker",
+        description="Port for the worker health and metrics HTTP server",
+        default=8001,
+    ),
+    _def(
+        "worker.database.command_timeout_seconds",
+        env_var="WORKER_DATABASE_COMMAND_TIMEOUT_SECONDS",
+        value_type=SettingType.NUMBER,
+        local_only=True,
+        category="worker",
+        description="asyncpg command timeout for worker task queue database operations",
+        default=60,
+    ),
+)
+
+# ---------------------------------------------------------------------------
+# Worker task runtime settings (hot-swappable)
+# ---------------------------------------------------------------------------
+_register(
+    _def(
+        "worker.tasks.default.execution_timeout_seconds",
+        value_type=SettingType.NUMBER,
+        category="worker",
+        description="Default execution timeout for worker tasks in seconds",
+        default=600,
+    ),
+    _worker_task_timeout_def("langflow_chat"),
+    _worker_task_timeout_def("langflow_batch"),
+    _worker_task_timeout_def("triage_alert"),
+    _worker_task_timeout_def("autonomous_task"),
+    _worker_task_timeout_def("enrich_item"),
+    _worker_task_timeout_def("directory_sync", default=3600),
+    _worker_task_timeout_def("refresh_bulk_sync_schedules"),
+    _worker_task_timeout_def("maxmind_update"),
+    _def(
+        "worker.tasks.retry_initial_delay_seconds",
+        value_type=SettingType.NUMBER,
+        category="worker",
+        description="Initial in-worker retry backoff delay in seconds",
+        default=5,
+    ),
+    _def(
+        "worker.tasks.retry_max_delay_seconds",
+        value_type=SettingType.NUMBER,
+        category="worker",
+        description="Maximum in-worker retry backoff delay in seconds",
+        default=60,
+    ),
+    _def(
+        "worker.tasks.retry_timer_buffer_seconds",
+        value_type=SettingType.NUMBER,
+        category="worker",
+        description="Additional pgqueuer stale-job lease buffer above each task execution timeout",
+        default=300,
+    ),
+    _def(
+        "worker.task_settings_refresh_interval_seconds",
+        value_type=SettingType.NUMBER,
+        category="worker",
+        description="How often running workers refresh task timeout settings from the registry",
+        default=30,
     ),
 )
 
@@ -741,6 +830,27 @@ _register(
         category="enrichment",
         description="TTL for Microsoft Entra enrichment results in seconds",
         default=86400,
+    ),
+    _def(
+        "enrichment.entra_id.request_timeout_seconds",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="Microsoft Graph per-request timeout for Entra ID enrichment and bulk sync in seconds",
+        default=30,
+    ),
+    _def(
+        "enrichment.entra_id.bulk_sync_page_size",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="Microsoft Graph user page size for Entra ID bulk sync, clamped by the backend to 1-999",
+        default=999,
+    ),
+    _def(
+        "enrichment.entra_id.bulk_sync_max_records",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="Maximum Entra ID users processed per bulk sync run; 0 means unlimited",
+        default=0,
     ),
     _def(
         "enrichment.google_workspace.enabled",
