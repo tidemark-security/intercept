@@ -262,7 +262,12 @@ function PICERLSwimlaneView({
       return () => window.removeEventListener('resize', updateAvailableWidth);
     }
 
-    const resizeObserver = new ResizeObserver(updateAvailableWidth);
+    const ResizeObserverCtor = ResizeObserver as unknown as {
+      new (callback: ResizeObserverCallback): ResizeObserver;
+    };
+    const resizeObserver = new ResizeObserverCtor(() => {
+      updateAvailableWidth();
+    });
     resizeObserver.observe(container);
 
     return () => resizeObserver.disconnect();

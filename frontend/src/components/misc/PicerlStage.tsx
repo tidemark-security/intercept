@@ -139,7 +139,12 @@ const PicerlStageRoot = React.forwardRef<HTMLDivElement, PicerlStageProps>(funct
       return;
     }
 
-    const resizeObserver = new ResizeObserver(updateLabelMode);
+    const ResizeObserverCtor = ResizeObserver as unknown as {
+      new (callback: ResizeObserverCallback): ResizeObserver;
+    };
+    const resizeObserver = new ResizeObserverCtor(() => {
+      updateLabelMode();
+    });
     resizeObserver.observe(root);
     resizeObserver.observe(labelElement);
 

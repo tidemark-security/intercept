@@ -51,7 +51,12 @@ export function AdaptiveToggleLabel({
       return () => window.removeEventListener('resize', updateLabel);
     }
 
-    const resizeObserver = new ResizeObserver(updateLabel);
+    const ResizeObserverCtor = ResizeObserver as unknown as {
+      new (callback: ResizeObserverCallback): ResizeObserver;
+    };
+    const resizeObserver = new ResizeObserverCtor(() => {
+      updateLabel();
+    });
     resizeObserver.observe(labelElement);
 
     return () => resizeObserver.disconnect();

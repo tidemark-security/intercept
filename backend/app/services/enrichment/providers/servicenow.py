@@ -604,11 +604,9 @@ class ServiceNowProvider(EnrichmentProvider):
                         records = resp.json().get("result") or []
                     except httpx.HTTPError as exc:
                         logger.warning(
-                            "ServiceNow CMDB lookup failed",
-                            extra={
-                                "source_table": str(cfg["cmdb_table"]),
-                                "matched_identifier": {"source": source, "field": field, "value": identifier},
-                            },
+                            "ServiceNow CMDB lookup failed for %s lookup field %s",
+                            source,
+                            field,
                         )
                         raise exc
                     if len(records) > 1:
