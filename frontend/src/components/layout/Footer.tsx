@@ -4,7 +4,7 @@ import React from "react";
 
 import { cn } from "@/utils/cn";
 
-import { Github } from 'lucide-react';
+import { GitGraph } from 'lucide-react';
 import TMSLogo from "@/assets/TMS-logo-green.svg";
 interface FooterRootProps extends React.HTMLAttributes<HTMLDivElement> {
   className?: string;
@@ -75,7 +75,7 @@ const FooterRoot = React.forwardRef<HTMLDivElement, FooterRootProps>(
                   <span className="font-['Saira'] text-[14px] font-[400] leading-[20px] text-subtext-color -tracking-[0.01em]">
                     Github
                   </span>
-                  <Github className="text-body font-body text-default-font" />
+                  <GitGraph className="text-body font-body text-default-font" />
                 </div>
               </div>
             </div>

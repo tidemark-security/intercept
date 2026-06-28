@@ -16,6 +16,7 @@ from app.core.database import get_db
 from app.services.alert_service import alert_service
 from app.models.models import (
     AlertCreate, AlertUpdate, AlertTriageRequest,
+    AlertBulkActionRequest, AlertBulkActionResponse,
     AlertRead, AlertReadWithCase, AlertTimelineItem, UserAccount,
     PresignedUploadRequest, PresignedUploadResponse,
     AttachmentStatusUpdate, PresignedDownloadResponse,
@@ -29,6 +30,7 @@ from app.api.route_utils import (
     handle_update_attachment_status,
     handle_generate_download_url,
 )
+from app.api.timestamp_overrides import normalize_created_at_override, reject_created_at_update
 from app.api.routes.admin_auth import require_authenticated_user, require_non_auditor_user
 
 logger = logging.getLogger(__name__)
@@ -50,13 +52,21 @@ handle_human_id = create_human_id_decorator(ID_PREFIX, "alert_id")
 @router.post("", response_model=AlertRead)
 async def create_alert(
     alert_data: AlertCreate,
+    migration: bool = Query(False, description="Allow authorized NHI migration clients to provide created_at"),
     db: AsyncSession = Depends(get_db),
-    _current_user: UserAccount = Depends(require_non_auditor_user),
+    current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     """Create a new alert."""
     try:
-        db_alert = await alert_service.create_alert(db, alert_data)
+        created_at_override = normalize_created_at_override(
+            current_user=current_user,
+            migration=migration,
+            created_at=alert_data.created_at,
+        )
+        db_alert = await alert_service.create_alert(db, alert_data, created_at_override=created_at_override)
         return db_alert
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating alert: {str(e)}")
 
@@ -68,6 +78,8 @@ async def get_alerts(
     case_id: Optional[int] = None,
     priority: Optional[List[Priority]] = Query(None, description="Filter by multiple priorities"),
     source: Optional[str] = None,
+    include_tags: Optional[List[str]] = Query(None, description="Require alerts to include all of these tags"),
+    exclude_tags: Optional[List[str]] = Query(None, description="Require alerts to exclude all of these tags"),
     has_case: Optional[bool] = None,
     start_date: Optional[str] = Query(None, description="Filter alerts created after this UTC datetime (ISO8601 format with 'Z' suffix)"),
     end_date: Optional[str] = Query(None, description="Filter alerts created before this UTC datetime (ISO8601 format with 'Z' suffix)"),
@@ -90,6 +102,8 @@ async def get_alerts(
             case_id=case_id,
             priority=priority,
             source=source,
+            include_tags=include_tags,
+            exclude_tags=exclude_tags,
             has_case=has_case,
             start_date=start_date,
             end_date=end_date,
@@ -100,6 +114,23 @@ async def get_alerts(
         return alerts
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching alerts: {str(e)}")
+
+
+@router.post("/bulk-actions", response_model=AlertBulkActionResponse)
+async def bulk_alert_action(
+    bulk_request: AlertBulkActionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_non_auditor_user),
+):
+    """Apply a supported bulk action to selected alerts."""
+    try:
+        return await alert_service.bulk_action(db, bulk_request, current_user.username)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error applying bulk alert action: {str(e)}")
 
 
 @router.get("/{alert_id}", response_model=AlertReadWithCase)
@@ -225,13 +256,28 @@ async def add_timeline_item(
     alert_id: int,
     request: Request, # pylint: disable=unused-argument
     timeline_item: dict,  # Using dict for now since we need to handle different timeline item types
+    migration: bool = Query(False, description="Allow authorized NHI migration clients to provide created_at"),
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Add a timeline item to an alert."""
     try:
+        has_created_at = "created_at" in timeline_item
         typed_item = convert_timeline_item(timeline_item)
-        db_alert = await alert_service.add_timeline_item(db, alert_id, typed_item, current_user.username)
+        created_at_override = normalize_created_at_override(
+            current_user=current_user,
+            migration=migration,
+            created_at=typed_item.created_at if has_created_at else None,
+        )
+        if created_at_override is not None:
+            typed_item.created_at = created_at_override
+        db_alert = await alert_service.add_timeline_item(
+            db,
+            alert_id,
+            typed_item,
+            current_user.username,
+            created_at_override=created_at_override,
+        )
         if not db_alert:
             raise HTTPException(status_code=404, detail="Alert not found")
         return db_alert
@@ -255,6 +301,7 @@ async def update_timeline_item(
 ):
     """Update a specific timeline item in an alert."""
     try:
+        reject_created_at_update(timeline_item)
         typed_item = convert_timeline_item(timeline_item)
         db_alert = await alert_service.update_timeline_item(db, alert_id, item_id, typed_item, current_user.username)
         if not db_alert:

@@ -44,6 +44,8 @@ export interface TimelineFormLayoutProps {
   showFlagHighlight?: boolean;
   /** Icon to display in the submit button (default: Plus) */
   submitIcon?: React.ReactNode;
+  /** Optional test id for the submit button */
+  submitDataTestId?: string;
   /** Initial flag/highlight state for edit mode */
   initialFlagHighlight?: FlagHighlightState;
   /** Autocomplete mode for the parent form element */
@@ -64,6 +66,7 @@ export function TimelineFormLayout({
   editMode = false,
   showFlagHighlight = true,
   submitIcon = <Plus />,
+  submitDataTestId,
   initialFlagHighlight,
   formAutoComplete,
 }: TimelineFormLayoutProps) {
@@ -147,6 +150,8 @@ export function TimelineFormLayout({
             iconRight={submitIcon}
             onClick={() => onSubmit()}
             disabled={submitDisabled || isSubmitting}
+            loading={isSubmitting}
+            data-testid={submitDataTestId}
           >
             {submitLabel}
           </Button>

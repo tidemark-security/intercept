@@ -13,24 +13,24 @@ import { getBreakpoint } from '@/hooks/useBreakpoint';
 export function getInitialVisibleColumns(): VisibleColumns {
   if (typeof window === 'undefined') return 'left';
   const breakpoint = getBreakpoint(window.innerWidth);
-  // On ultrawide, show left+center to display the empty state placeholder
-  // On other breakpoints, show only left
-  return breakpoint === 'ultrawide' ? 'left+center' : 'left';
+  // Keep the list/detail split visible on non-mobile breakpoints, even before
+  // an entity is selected, so the placeholder detail pane remains resizable.
+  return breakpoint === 'mobile' ? 'left' : 'left+center';
 }
 
 /**
  * Generate column configuration for responsive layout
  * Handles the common pattern where desktop/tablet/ultrawide share config
  */
-export function getColumnConfig(selectedAlertId: number | null): ColumnConfig {
-  const fixedListWidth = 'w-[768px] shrink-0';
-  const fullWidth = 'w-full';
+export function getColumnConfig(_selectedEntityId: number | null, listWidth?: number, expandLeft = false): ColumnConfig {
+  const fixedListWidth = expandLeft ? 'w-full' : listWidth ? 'shrink-0' : 'w-[768px] shrink-0';
   const centerWidth = 'flex-1';
   const rightWidth = 'w-[512px] shrink-0';
 
-  // Config for desktop/tablet where we want full width list when no alert is selected
+  // Keep list width fixed even when no entity is selected so list/detail resize
+  // works while the center placeholder is showing.
   const standardConfig = {
-    leftWidth: selectedAlertId ? fixedListWidth : fullWidth,
+    leftWidth: fixedListWidth,
     centerWidth,
     rightWidth,
   };

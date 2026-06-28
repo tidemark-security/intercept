@@ -313,6 +313,9 @@ interface CreateApiKeyModalContentProps {
   onSubmit: () => void;
   loading?: boolean;
   keyNamePlaceholder?: string;
+  showHeader?: boolean;
+  showFrame?: boolean;
+  showActions?: boolean;
 }
 
 export function CreateApiKeyModalContent({
@@ -324,56 +327,71 @@ export function CreateApiKeyModalContent({
   onSubmit,
   loading = false,
   keyNamePlaceholder = "Automation Key",
+  showHeader = true,
+  showFrame = true,
+  showActions = true,
 }: CreateApiKeyModalContentProps) {
+  const fields = (
+    <div className="flex w-full flex-col items-start gap-6">
+      <TextField
+        className="h-auto w-full flex-none"
+        label="Key Name"
+        helpText="A descriptive name for this API key"
+      >
+        <TextField.Input
+          placeholder={keyNamePlaceholder}
+          value={keyName}
+          onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+            onKeyNameChange(event.target.value)
+          }
+        />
+      </TextField>
+
+      <DateTimeManager
+        className="h-auto w-full flex-none"
+        label="Expiration Date"
+        helpText="When this API key should expire"
+        value={expiresAt}
+        onChange={onExpiresAtChange}
+        showNowButton={false}
+      />
+    </div>
+  );
+
   return (
     <>
-      <div className="flex w-full items-center gap-2">
-        <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
-          <span className="text-heading-2 font-heading-2 text-default-font">
-            Create API Key
-          </span>
-          <span className="text-body font-body text-subtext-color">
-            The key will only be shown once after creation.
-          </span>
+      {showHeader ? (
+        <div className="flex w-full items-center gap-2">
+          <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
+            <span className="text-heading-2 font-heading-2 text-default-font">
+              Create API Key
+            </span>
+            <span className="text-body font-body text-subtext-color">
+              The key will only be shown once after creation.
+            </span>
+          </div>
+          <Key className="text-[24px] text-default-font" />
         </div>
-        <Key className="text-[24px] text-default-font" />
-      </div>
+      ) : null}
 
-      <div className="flex w-full items-start rounded-md border border-solid border-neutral-border bg-default-background">
-        <div className="flex grow shrink-0 basis-0 flex-col items-start gap-6 px-4 py-4">
-          <TextField
-            className="h-auto w-full flex-none"
-            label="Key Name"
-            helpText="A descriptive name for this API key"
-          >
-            <TextField.Input
-              placeholder={keyNamePlaceholder}
-              value={keyName}
-              onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-                onKeyNameChange(event.target.value)
-              }
-            />
-          </TextField>
-
-          <DateTimeManager
-            className="h-auto w-full flex-none"
-            label="Expiration Date"
-            helpText="When this API key should expire"
-            value={expiresAt}
-            onChange={onExpiresAtChange}
-            showNowButton={false}
-          />
+      {showFrame ? (
+        <div className="flex w-full items-start rounded-md border border-solid border-neutral-border bg-default-background">
+          <div className="flex grow shrink-0 basis-0 flex-col items-start gap-6 px-4 py-4">
+            {fields}
+          </div>
         </div>
-      </div>
+      ) : fields}
 
-      <div className="flex w-full items-center justify-end gap-2">
-        <Button variant="neutral-secondary" onClick={onCancel} disabled={loading}>
-          Cancel
-        </Button>
-        <Button onClick={onSubmit} loading={loading}>
-          Create Key
-        </Button>
-      </div>
+      {showActions ? (
+        <div className="flex w-full items-center justify-end gap-2">
+          <Button variant="neutral-secondary" onClick={onCancel} disabled={loading}>
+            Cancel
+          </Button>
+          <Button onClick={onSubmit} loading={loading}>
+            Create Key
+          </Button>
+        </div>
+      ) : null}
     </>
   );
 }

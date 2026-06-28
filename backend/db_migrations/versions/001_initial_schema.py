@@ -122,6 +122,7 @@ BASELINE_TABLE_NAMES = {
     "audit_logs",
     "auth_sessions",
     "cases",
+    "case_runbooks",
     "enrichment_aliases",
     "enrichment_cache",
     "langflow_messages",

@@ -1,5 +1,5 @@
 import React from 'react';
-import { EntityMetadataCard } from '@/components/cards/EntityMetadataCard';
+import { EntityMetadataCard, type EntityMetadataCardVariant } from '@/components/cards/EntityMetadataCard';
 import type { AlertRead } from '@/types/generated/models/AlertRead';
 
 export interface AlertCardContentProps {
@@ -9,6 +9,8 @@ export interface AlertCardContentProps {
   isLoading?: boolean;
   /** Whether to render the metadata tag section. Timeline embeds render tags in the shared footer. */
   showTags?: boolean;
+  /** Presentation density for the shared metadata layout. */
+  variant?: EntityMetadataCardVariant;
 }
 
 /**
@@ -28,7 +30,7 @@ export interface AlertCardContentProps {
  * <AlertCardContent data={partialData} isLoading={true} />
  * ```
  */
-export function AlertCardContent({ data, isLoading = false, showTags = true }: AlertCardContentProps) {
+export function AlertCardContent({ data, isLoading = false, showTags = true, variant }: AlertCardContentProps) {
   if (isLoading) {
     return (
       <EntityMetadataCard 
@@ -36,6 +38,7 @@ export function AlertCardContent({ data, isLoading = false, showTags = true }: A
         entityType="alert" 
         isLoading={true} 
         showTags={showTags}
+        variant={variant}
       />
     );
   }
@@ -46,6 +49,7 @@ export function AlertCardContent({ data, isLoading = false, showTags = true }: A
       entityType="alert"
       isLoading={false}
       showTags={showTags}
+      variant={variant}
     />
   );
 }

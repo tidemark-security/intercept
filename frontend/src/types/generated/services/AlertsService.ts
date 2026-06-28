@@ -4,6 +4,8 @@
 /* eslint-disable */
 import type { AcceptRecommendationRequest } from '../models/AcceptRecommendationRequest';
 import type { AcceptRecommendationResponse } from '../models/AcceptRecommendationResponse';
+import type { AlertBulkActionRequest } from '../models/AlertBulkActionRequest';
+import type { AlertBulkActionResponse } from '../models/AlertBulkActionResponse';
 import type { AlertCreate } from '../models/AlertCreate';
 import type { AlertRead } from '../models/AlertRead';
 import type { AlertReadWithCase } from '../models/AlertReadWithCase';
@@ -30,12 +32,20 @@ export class AlertsService {
      */
     public static createAlertApiV1AlertsPost({
         requestBody,
+        migration = false,
     }: {
         requestBody: AlertCreate,
+        /**
+         * Allow authorized NHI migration clients to provide created_at
+         */
+        migration?: boolean,
     }): CancelablePromise<AlertRead> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/alerts',
+            query: {
+                'migration': migration,
+            },
             body: requestBody,
             mediaType: 'application/json',
             errors: {
@@ -59,6 +69,8 @@ export class AlertsService {
         caseId,
         priority,
         source,
+        includeTags,
+        excludeTags,
         hasCase,
         startDate,
         endDate,
@@ -82,6 +94,14 @@ export class AlertsService {
          */
         priority?: (Array<Priority> | null),
         source?: (string | null),
+        /**
+         * Require alerts to include all of these tags
+         */
+        includeTags?: (Array<string> | null),
+        /**
+         * Require alerts to exclude all of these tags
+         */
+        excludeTags?: (Array<string> | null),
         hasCase?: (boolean | null),
         /**
          * Filter alerts created after this UTC datetime (ISO8601 format with 'Z' suffix)
@@ -121,6 +141,8 @@ export class AlertsService {
                 'case_id': caseId,
                 'priority': priority,
                 'source': source,
+                'include_tags': includeTags,
+                'exclude_tags': excludeTags,
                 'has_case': hasCase,
                 'start_date': startDate,
                 'end_date': endDate,
@@ -130,6 +152,27 @@ export class AlertsService {
                 'page': page,
                 'size': size,
             },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Bulk Alert Action
+     * Apply a supported bulk action to selected alerts.
+     * @returns AlertBulkActionResponse Successful Response
+     * @throws ApiError
+     */
+    public static bulkAlertActionApiV1AlertsBulkActionsPost({
+        requestBody,
+    }: {
+        requestBody: AlertBulkActionRequest,
+    }): CancelablePromise<AlertBulkActionResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/alerts/bulk-actions',
+            body: requestBody,
+            mediaType: 'application/json',
             errors: {
                 422: `Validation Error`,
             },
@@ -278,15 +321,23 @@ export class AlertsService {
     public static addTimelineItemApiV1AlertsAlertIdTimelinePost({
         alertId,
         requestBody,
+        migration = false,
     }: {
         alertId: number,
         requestBody: Record<string, any>,
+        /**
+         * Allow authorized NHI migration clients to provide created_at
+         */
+        migration?: boolean,
     }): CancelablePromise<AlertRead> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/alerts/{alert_id}/timeline',
             path: {
                 'alert_id': alertId,
+            },
+            query: {
+                'migration': migration,
             },
             body: requestBody,
             mediaType: 'application/json',

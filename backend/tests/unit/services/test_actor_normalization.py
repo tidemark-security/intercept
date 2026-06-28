@@ -11,6 +11,30 @@ from app.services.normalization_service import normalization_service
 
 
 @pytest.mark.asyncio
+async def test_normalize_actor_snapshots_external_display_name_alias(
+    session_maker: Any,
+) -> None:
+    async with session_maker() as session:
+        normalized = await normalization_service.normalize_actor_item(
+            session,
+            {
+                'id': 'actor-ingested-1',
+                'type': 'internal_actor',
+                'display_name': 'External Payload User',
+                'username': 'external.user',
+                'created_at': '2026-05-24T00:00:00Z',
+            },
+        )
+        await session.commit()
+
+    async with session_maker() as session:
+        denormalized = await normalization_service.denormalize_actor_item(session, normalized)
+
+    assert denormalized['name'] == 'External Payload User'
+    assert denormalized['user_id'] == 'external.user'
+
+
+@pytest.mark.asyncio
 async def test_denormalize_actor_coalesces_google_workspace_fields_without_overriding_snapshot(
     session_maker: Any,
 ) -> None:

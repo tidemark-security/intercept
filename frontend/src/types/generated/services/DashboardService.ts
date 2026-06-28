@@ -4,10 +4,23 @@
 /* eslint-disable */
 import type { DashboardStatsResponse } from '../models/DashboardStatsResponse';
 import type { RecentItemsResponse } from '../models/RecentItemsResponse';
+import type { SidebarBadgeCountsResponse } from '../models/SidebarBadgeCountsResponse';
 import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
 import { request as __request } from '../core/request';
 export class DashboardService {
+    /**
+     * Get Sidebar Badge Counts
+     * Get authoritative sidebar badge counts for open and unassigned work.
+     * @returns SidebarBadgeCountsResponse Successful Response
+     * @throws ApiError
+     */
+    public static getSidebarBadgeCountsApiV1DashboardSidebarBadgeCountsGet(): CancelablePromise<SidebarBadgeCountsResponse> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/dashboard/sidebar-badge-counts',
+        });
+    }
     /**
      * Get Dashboard Stats
      * Get dashboard statistics.

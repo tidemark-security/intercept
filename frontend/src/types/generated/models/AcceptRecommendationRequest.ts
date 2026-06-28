@@ -22,5 +22,13 @@ export type AcceptRecommendationRequest = {
      * Apply suggested tag changes
      */
     apply_tags?: boolean;
+    /**
+     * Published Case Runbook ID to apply instead of the recommended runbook
+     */
+    case_runbook_id?: (number | null);
+    /**
+     * Continue escalation without applying the recommended Case Runbook
+     */
+    skip_case_runbook?: boolean;
 };
 

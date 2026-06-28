@@ -1,5 +1,5 @@
 import React from 'react';
-import { EntityMetadataCard } from '@/components/cards/EntityMetadataCard';
+import { EntityMetadataCard, type EntityMetadataCardVariant } from '@/components/cards/EntityMetadataCard';
 import type { TaskRead } from '@/types/generated/models/TaskRead';
 
 export interface TaskCardContentProps {
@@ -9,6 +9,8 @@ export interface TaskCardContentProps {
   isLoading?: boolean;
   /** Whether to render the metadata tag section. Timeline embeds render tags in the shared footer. */
   showTags?: boolean;
+  /** Presentation density for the shared metadata layout. */
+  variant?: EntityMetadataCardVariant;
 }
 
 /**
@@ -28,7 +30,7 @@ export interface TaskCardContentProps {
  * <TaskCardContent data={partialData} isLoading={true} />
  * ```
  */
-export function TaskCardContent({ data, isLoading = false, showTags = true }: TaskCardContentProps) {
+export function TaskCardContent({ data, isLoading = false, showTags = true, variant }: TaskCardContentProps) {
   if (isLoading) {
     return (
       <EntityMetadataCard 
@@ -36,6 +38,7 @@ export function TaskCardContent({ data, isLoading = false, showTags = true }: Ta
         entityType="task" 
         isLoading={true} 
         showTags={showTags}
+        variant={variant}
       />
     );
   }
@@ -46,6 +49,7 @@ export function TaskCardContent({ data, isLoading = false, showTags = true }: Ta
       entityType="task"
       isLoading={false}
       showTags={showTags}
+      variant={variant}
     />
   );
 }

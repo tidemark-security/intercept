@@ -559,6 +559,7 @@ async def test_analyst_can_edit_other_users_timeline_items(
         **original_item,
         "description": f"Edited by {editor_username}",
     }
+    update_payload.pop("created_at", None)
     response = await client.put(
         route.format(entity_id=entity_id, item_id=original_item["id"]),
         json=update_payload,

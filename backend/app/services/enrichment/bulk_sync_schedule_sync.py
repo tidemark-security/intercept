@@ -17,7 +17,7 @@ from app.services.task_queue_service import get_task_queue_service
 logger = logging.getLogger(__name__)
 
 TASK_DIRECTORY_SYNC = "directory_sync"
-SUPPORTED_BULK_SYNC_PROVIDER_IDS = ("entra_id", "google_workspace", "ldap")
+SUPPORTED_BULK_SYNC_PROVIDER_IDS = ("entra_id", "google_workspace", "ldap", "servicenow")
 BULK_SYNC_SCHEDULE_ENTRYPOINT_PREFIX = "bulk_sync_schedule__"
 BULK_SYNC_SCHEDULE_DEDUPE_KEY_PREFIX = "bulk_sync_schedule:"
 _BULK_SYNC_KEY_RE = re.compile(

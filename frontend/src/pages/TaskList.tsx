@@ -1,9 +1,11 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { useLocation } from "react-router-dom";
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
+import { getPersistedWidth } from "@/components/layout/ColumnRail";
 import { EntityList } from "@/components/data-display/EntityList";
 import { UnifiedTimeline } from "@/components/timeline/UnifiedTimeline";
 import { useTasks } from "@/hooks/useTasks";
@@ -12,13 +14,39 @@ import { useUsers } from "@/hooks/useUsers";
 import { useUpdateTask } from "@/hooks/useUpdateTask";
 import { useSession } from "@/contexts/sessionContext";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
+import { canShowSplitPaneCenter, useViewportWidth } from "@/hooks/useSplitPaneCenter";
 import { useURLFilters } from "@/hooks/useURLFilters";
+import { useTagFilterClick } from "@/hooks/useTagFilterClick";
 import { getColumnConfig, getInitialVisibleColumns } from "@/utils/columnConfig";
 import type { TaskStatus } from "@/types/generated/models/TaskStatus";
 import type { TaskRead } from "@/types/generated/models/TaskRead";
 import type { TaskFilterState } from "@/types/filters";
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { taskStatusToUIState, priorityToUIPriority, taskStateToMenuCardState } from "@/utils/statusHelpers";
+import { TASK_STATUS_OPTIONS } from "@/utils/statusLabels";
+
+const TASK_SORT_OPTIONS = [
+  {
+    value: "created_at",
+    label: "Created",
+    directionLabel: { desc: "Newest first", asc: "Oldest first" },
+  },
+  {
+    value: "updated_at",
+    label: "Updated",
+    directionLabel: { desc: "Recently updated", asc: "Least recently updated" },
+  },
+  {
+    value: "priority",
+    label: "Priority",
+    directionLabel: { desc: "Highest priority", asc: "Lowest priority" },
+  },
+  {
+    value: "status",
+    label: "Status",
+    directionLabel: { desc: "Status Z-A", asc: "Status A-Z" },
+  },
+];
 
 /**
  * Tasks List Page - Browse and filter tasks with optional preview
@@ -33,6 +61,7 @@ import { taskStatusToUIState, priorityToUIPriority, taskStateToMenuCardState } f
  */
 function TasksListPage() {
   const navigate = useViewTransitionNavigate();
+  const location = useLocation();
   const { user } = useSession();
   const currentUser = user?.username || null;
 
@@ -42,36 +71,39 @@ function TasksListPage() {
       search: "",
       assignee: null,
       status: ["TODO" as TaskStatus, "IN_PROGRESS" as TaskStatus],
+      includeTags: null,
+      excludeTags: null,
       dateRange: null,
+      sortBy: "created_at",
+      sortOrder: "desc",
     },
   });
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
+  const handleFilterByTag = useTagFilterClick(filters, setFilters);
 
   // Column visibility state
   const [visibleColumns, setVisibleColumns] = useState<VisibleColumns>(() => getInitialVisibleColumns());
+  const [taskListWidth, setTaskListWidth] = useState<number>(() => getPersistedWidth(768));
 
   // Reactive breakpoint state
   const breakpoint = useBreakpoint();
+  const viewportWidth = useViewportWidth();
+  const showSplitCenter = canShowSplitPaneCenter(viewportWidth, taskListWidth, breakpoint);
 
   // Automatically adjust visible columns based on selection and screen size
   useEffect(() => {
     if (!selectedTaskId) {
-      // On ultrawide, show left+center to display the empty state
-      if (breakpoint === 'ultrawide') {
+      setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
+    } else {
+      if (breakpoint === 'mobile') {
+        setVisibleColumns('center');
+      } else if (showSplitCenter) {
         setVisibleColumns('left+center');
       } else {
-        setVisibleColumns('left');
-      }
-    } else {
-      if (breakpoint === 'ultrawide') {
-        setVisibleColumns('left+center');
-      } else if (breakpoint === 'desktop' || breakpoint === 'tablet') {
-        // Match alerts behavior: focus the selected entity on desktop/tablet
         setVisibleColumns('center');
       }
-      // Mobile: keep current single column
     }
-  }, [selectedTaskId, breakpoint]);
+  }, [selectedTaskId, breakpoint, showSplitCenter]);
 
   // Fetch users for assignee dropdown
   const { data: users = [], isLoading: isLoadingUsers } = useUsers({});
@@ -81,9 +113,13 @@ function TasksListPage() {
   const { data: tasksData, isLoading, error } = useTasks({
     status: filters.status || null,
     assignee: filters.assignee?.[0] || null,
+    includeTags: filters.includeTags || null,
+    excludeTags: filters.excludeTags || null,
     search: filters.search || null,
     startDate: filters.dateRange?.start || null,
     endDate: filters.dateRange?.end || null,
+    sortBy: filters.sortBy ?? "created_at",
+    sortOrder: filters.sortOrder ?? "desc",
     page: currentPage,
     size: pageSize,
   });
@@ -146,32 +182,33 @@ function TasksListPage() {
   const handleTaskSelect = (taskId: number, taskHumanId: string) => {
     setSelectedTaskId(taskId);
     
-    if (breakpoint === 'mobile' || breakpoint === 'desktop' || breakpoint === 'tablet') {
-      // On mobile, desktop, and tablet, navigate directly to the detail view
-      navigate(`/tasks/${taskHumanId}`);
-    } else {
-      // On ultrawide, stay in list view and show read-only timeline
-      // (visibleColumns will be updated by useEffect)
+    if (breakpoint === 'mobile' || !showSplitCenter) {
+      navigate(`/tasks/${taskHumanId}${location.search}`);
     }
   };
 
   // Double-click handler - always navigate to detail view
   const handleTaskDoubleClick = (taskId: number, taskHumanId: string) => {
-    navigate(`/tasks/${taskHumanId}`);
+    navigate(`/tasks/${taskHumanId}${location.search}`);
   };
 
   // Handle "Open Task" from timeline to navigate to detail view
   const handleOpenTask = () => {
     if (taskDetail?.human_id) {
-      navigate(`/tasks/${taskDetail.human_id}`);
+      navigate(`/tasks/${taskDetail.human_id}${location.search}`);
     }
   };
 
   // Handle back to list (for mobile only)
   const handleBackToList = () => {
     setSelectedTaskId(null);
-    setVisibleColumns('left');
+    setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
   };
+
+  const handleTaskListRailToggle = () => {
+    // The task list/detail split pane is resizable but not collapsible.
+  };
+  const isLeftOnlyView = visibleColumns === 'left';
 
   return (
     <DefaultPageLayout priority={taskDetail?.priority || undefined}>
@@ -182,14 +219,13 @@ function TasksListPage() {
             selectedId={selectedTaskId}
             onSelect={handleTaskSelect}
             onDoubleClick={handleTaskDoubleClick}
-            getItemHref={(_id, humanId) => `/tasks/${humanId}`}
+            getItemHref={(_id, humanId) => `/tasks/${humanId}${location.search}`}
             filters={filters}
             onFilterChange={setFilters}
-            statusOptions={[
-              { value: 'TODO', label: 'To Do' },
-              { value: 'IN_PROGRESS', label: 'In Progress' },
-              { value: 'DONE', label: 'Done' },
-            ]}
+            enableTagFilters
+            onTagClick={handleFilterByTag}
+            statusOptions={TASK_STATUS_OPTIONS}
+            sortOptions={TASK_SORT_OPTIONS}
             currentPage={currentPage}
             totalPages={totalPages}
             totalItems={tasksData?.total}
@@ -235,8 +271,12 @@ function TasksListPage() {
         rightColumn={<div></div>}
         visibleColumns={visibleColumns}
         onVisibleColumnsChange={setVisibleColumns}
-        columnConfig={getColumnConfig(selectedTaskId)}
+        columnConfig={getColumnConfig(selectedTaskId, taskListWidth, isLeftOnlyView)}
         dimLeftColumn={!!selectedTaskId}
+        showLeftRail={!isLeftOnlyView}
+        onLeftRailToggle={handleTaskListRailToggle}
+        leftColumnWidth={isLeftOnlyView ? undefined : taskListWidth}
+        onLeftColumnWidthChange={isLeftOnlyView ? undefined : setTaskListWidth}
       />
     </DefaultPageLayout>
   );

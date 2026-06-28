@@ -3,7 +3,44 @@ import { describe, expect, it } from 'vitest';
 
 import { TimelineDescriptionBlock } from './TimelineDescriptionBlock';
 
+function NullAction() {
+  return null;
+}
+
 describe('TimelineDescriptionBlock', () => {
+  it('adds the outer divider when action buttons are present', () => {
+    const { container } = render(
+      <TimelineDescriptionBlock actionButtons={<button type="button">Open link</button>}>
+        <p>Description</p>
+      </TimelineDescriptionBlock>
+    );
+
+    expect(container.firstElementChild?.className).toContain('border-t');
+  });
+
+  it('omits the outer divider when no action buttons are present', () => {
+    const { container } = render(
+      <TimelineDescriptionBlock tags={['urgent']}>
+        <p>Description</p>
+      </TimelineDescriptionBlock>
+    );
+
+    expect(container.firstElementChild?.className).not.toContain('border-t');
+    expect(screen.getByText('Description')).toBeInTheDocument();
+    expect(screen.getByText('urgent')).toBeInTheDocument();
+  });
+
+  it('omits dividers when action content renders nothing', () => {
+    const { container } = render(
+      <TimelineDescriptionBlock actionButtons={<NullAction />} tags={['urgent']}>
+        <p>Description</p>
+      </TimelineDescriptionBlock>
+    );
+
+    expect(container.firstElementChild?.className).not.toContain('border-t');
+    expect(screen.getByText('urgent')).toBeInTheDocument();
+  });
+
   it('adds a divider before action buttons when description content exists', () => {
     render(
       <TimelineDescriptionBlock actionButtons={<button type="button">Open link</button>}>

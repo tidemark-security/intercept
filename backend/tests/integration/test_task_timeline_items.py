@@ -206,7 +206,6 @@ async def test_delete_task_timeline_item_returns_tombstone_when_timeline_is_empt
     task_id = await _create_task(client, session_cookie)
     payload = make_note("deleted-note-t1")
     payload["timestamp"] = "2026-01-02T14:00:00+00:00"
-    payload["created_at"] = "2026-01-02T14:00:01+00:00"
 
     add_body = await _add_timeline_item(client, task_id, payload, session_cookie)
     item_id = add_body["timeline_items"][0]["id"]
@@ -219,7 +218,7 @@ async def test_delete_task_timeline_item_returns_tombstone_when_timeline_is_empt
     assert tombstone["type"] == "_deleted"
     assert tombstone["original_type"] == "note"
     assert tombstone["original_timestamp"].startswith("2026-01-02T14:00:00")
-    assert tombstone["original_created_at"].startswith("2026-01-02T14:00:01")
+    assert tombstone["original_created_at"] is not None
     assert tombstone["deleted_at"] is not None
 
 

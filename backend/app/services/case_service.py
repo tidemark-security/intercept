@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, cast, String
+from sqlalchemy import select, func, and_, or_, cast, String, case
 from sqlalchemy.orm import selectinload, defer
 from sqlmodel import col
 from typing import List, Optional, Set, Dict, Any, Tuple
@@ -14,12 +14,16 @@ from app.models.models import (
     CaseCreate, CaseUpdate, CaseRead,
     AlertCreate, AlertUpdate, AlertTriageRequest,
     CaseReadWithAlerts, AlertReadWithCase, CaseTimelineItem, CaseAlertClosureUpdate,
+    CaseLinkedAlertResolutionRequest, AlertBulkActionResponse,
 )
 from app.models.enums import CaseStatus, AlertStatus, TaskStatus, RealtimeEventType
+from app.services.alert_triage_apply_service import apply_triage_state
 from app.services.timeline_add_service import add_timeline_item_and_commit, update_timeline_item_and_commit
 from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
+from app.services import triage_recommendation_service
+from app.services.tag_filter_utils import append_tag_filters, normalize_persisted_tags
 
 logger = logging.getLogger(__name__)
 
@@ -52,20 +56,25 @@ class CaseService:
         self, 
         db: AsyncSession, 
         case_data: CaseCreate, 
-        created_by: str
+        created_by: str,
+        created_at_override: Optional[datetime] = None,
     ) -> Case:
         """Create a new case."""
         try:
             # Create case
-            db_case = Case(
-                title=case_data.title,
-                description=case_data.description,
-                priority=case_data.priority,
-                assignee=case_data.assignee,
-                tags=case_data.tags or [],
-                timeline_items={},  # Initialize empty timeline as object-backed storage
-                created_by=created_by
-            )
+            case_kwargs = {
+                "title": case_data.title,
+                "description": case_data.description,
+                "priority": case_data.priority,
+                "assignee": case_data.assignee,
+                "tags": normalize_persisted_tags(case_data.tags),
+                "timeline_items": {},  # Initialize empty timeline as object-backed storage
+                "created_by": created_by,
+            }
+            if created_at_override is not None:
+                case_kwargs["created_at"] = created_at_override
+
+            db_case = Case(**case_kwargs)
             
             db.add(db_case)
             await db.flush()  # Get the ID without committing
@@ -173,9 +182,13 @@ class CaseService:
         limit: int = 100,
         status: Optional[List[CaseStatus]] = None,
         assignee: Optional[str] = None,
+        include_tags: Optional[List[str]] = None,
+        exclude_tags: Optional[List[str]] = None,
         search: Optional[str] = None,
         start_date: Optional[str] = None,
-        end_date: Optional[str] = None
+        end_date: Optional[str] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc"
     ) -> Page[Case]:
         """Get cases with optional filtering and pagination.
         
@@ -184,15 +197,17 @@ class CaseService:
             limit: Maximum number of records to return
             status: Filter by case status (can filter by multiple statuses)
             assignee: Filter by assignee username (exact match)
-            search: Search string to match against case title or description (case-insensitive partial match)
+            include_tags: Tags cases must include
+            exclude_tags: Tags cases must exclude
+            search: Search string to match against case ID, human ID, title, or description (case-insensitive partial match)
             start_date: Filter cases created after this UTC datetime (ISO8601 format with 'Z' suffix)
             end_date: Filter cases created before this UTC datetime (ISO8601 format with 'Z' suffix)
         """
         try:
-            # Build base query with ordering
+            # Build base query
             # Defer timeline_items - not needed for list view and can cause validation 
             # errors if malformed data exists. Detail view fetches them separately.
-            query = select(Case).options(defer(Case.timeline_items)).order_by(col(Case.created_at).desc())  # type: ignore[arg-type]
+            query = select(Case).options(defer(Case.timeline_items))
             
             # Apply filters
             filters = []
@@ -201,7 +216,12 @@ class CaseService:
                 filters.append(col(Case.status).in_(status))
             
             if assignee:
-                filters.append(Case.assignee == assignee)
+                if assignee == "__unassigned__":
+                    filters.append(Case.assignee.is_(None))  # type: ignore
+                else:
+                    filters.append(Case.assignee == assignee)
+
+            append_tag_filters(filters, Case.tags, include_tags, exclude_tags)
             
             # Date range filtering (expects UTC ISO8601 strings)
             if start_date:
@@ -223,10 +243,20 @@ class CaseService:
                     logger.warning(f"Invalid end_date format: {end_date}")
             
             if search:
-                # Search in title or description (case-insensitive)
+                # Search in ID, human ID, title, or description (case-insensitive)
                 search_pattern = f"%{search}%"
+                case_id_text = cast(Case.id, String)
+                padded_case_id = case(
+                    (func.length(case_id_text) < 7, func.lpad(case_id_text, 7, "0")),
+                    else_=case_id_text,
+                )
                 filters.append(
                     or_(
+                        case_id_text.ilike(search_pattern),  # type: ignore[arg-type]
+                        func.concat(
+                            "CAS-",
+                            padded_case_id,
+                        ).ilike(search_pattern),
                         col(Case.title).ilike(search_pattern),
                         cast(Case.description, String).ilike(search_pattern)  # type: ignore[arg-type]
                     )
@@ -235,6 +265,24 @@ class CaseService:
             # Apply all filters if any exist
             if filters:
                 query = query.where(and_(*filters))
+
+            allowed_sort_columns = {
+                "id": Case.id,
+                "title": Case.title,
+                "status": Case.status,
+                "priority": Case.priority,
+                "assignee": Case.assignee,
+                "created_at": Case.created_at,
+                "updated_at": Case.updated_at,
+            }
+            if sort_by not in allowed_sort_columns:
+                raise ValueError(f"Unsupported case sort column: {sort_by}")
+
+            sort_column = allowed_sort_columns[sort_by]
+            if sort_order.lower() == "asc":
+                query = query.order_by(sort_column.asc())  # type: ignore
+            else:
+                query = query.order_by(sort_column.desc())  # type: ignore
             
             # Use fastapi-pagination's paginate function
             # This automatically handles skip/limit from query parameters
@@ -243,7 +291,7 @@ class CaseService:
         except Exception as e:
             logger.error(f"Error fetching cases: {e}")
             raise
-    
+
     async def update_case(
         self, 
         db: AsyncSession, 
@@ -270,6 +318,8 @@ class CaseService:
             
             for field, new_value in update_data.items():
                 if hasattr(db_case, field):
+                    if field == "tags":
+                        new_value = normalize_persisted_tags(new_value)
                     old_value = getattr(db_case, field)
                     if old_value != new_value:
                         changes.append((field, str(old_value), str(new_value)))
@@ -294,6 +344,10 @@ class CaseService:
             
             # If case status changed to CLOSED, close all linked tasks and alerts
             if status_changed_to_closed and old_status != CaseStatus.CLOSED:
+                self._add_case_closure_summary_note(
+                    db_case, case_update.closure_summary, updated_by
+                )
+
                 # Extract alert closure statuses if provided
                 alert_closure_statuses = self._build_alert_closure_status_map(
                     case_update.alert_closure_updates
@@ -565,6 +619,195 @@ class CaseService:
             closure_status_map[alert_update.alert_id] = alert_update.status
 
         return closure_status_map
+
+    def _add_case_closure_summary_note(
+        self,
+        db_case: Case,
+        closure_summary: Optional[str],
+        closed_by: str,
+    ) -> None:
+        """Append an analyst-provided closure summary to the case timeline."""
+        summary = (closure_summary or "").strip()
+        if not summary:
+            return
+
+        closure_note = {
+            "type": "note",
+            "description": summary,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "tags": ["case-closure"],
+        }
+        timeline_service.add_timeline_item(db_case, closure_note, created_by=closed_by)
+
+    async def resolve_linked_alerts(
+        self,
+        db: AsyncSession,
+        case_id: int,
+        resolution: CaseLinkedAlertResolutionRequest,
+        resolved_by: str,
+    ) -> Optional[AlertBulkActionResponse]:
+        """Apply selected closure statuses to selected open alerts linked to a case."""
+        for alert_update in resolution.alert_updates:
+            if alert_update.status not in VALID_ALERT_CLOSED_STATUSES:
+                raise ValueError("status must be a closed alert resolution")
+
+        try:
+            db_case = await db.get(Case, case_id)
+            if db_case is None:
+                return None
+
+            result = await db.execute(
+                select(Alert)
+                .where(Alert.case_id == case_id)
+                .with_for_update()
+            )
+            linked_alerts = list(result.scalars().all())
+            linked_alerts_by_id = {
+                alert.id: alert for alert in linked_alerts if alert.id is not None
+            }
+            requested_alert_ids = [update.alert_id for update in resolution.alert_updates]
+            if len(set(requested_alert_ids)) != len(requested_alert_ids):
+                raise ValueError("alert_updates contains duplicate alerts")
+
+            unknown_alert_ids = [
+                alert_id
+                for alert_id in requested_alert_ids
+                if alert_id not in linked_alerts_by_id
+            ]
+            if unknown_alert_ids:
+                raise ValueError("alert_updates contains alerts not linked to this case")
+
+            changed_alert_ids: list[int] = []
+            case_human_id = f"CAS-{case_id:07d}"
+
+            for alert_update in resolution.alert_updates:
+                alert = linked_alerts_by_id[alert_update.alert_id]
+                if alert.status in VALID_ALERT_CLOSED_STATUSES:
+                    raise ValueError("alert_updates contains already closed alerts")
+
+                before = self._alert_resolution_audit_snapshot(alert)
+                apply_triage_state(
+                    alert,
+                    triaged_by=resolved_by,
+                    status=alert_update.status,
+                    triage_notes=resolution.note,
+                    set_assignee=True,
+                )
+                alert.updated_at = datetime.now(timezone.utc)
+                self._add_linked_alert_resolution_note(
+                    alert, case_human_id, alert_update.status, resolution.note, resolved_by
+                )
+
+                await triage_recommendation_service.auto_reject_if_pending(
+                    db, alert.id, resolved_by  # type: ignore[arg-type]
+                )
+                await self._audit_alert_resolution(db, alert, before, resolved_by)
+                await emit_event(
+                    db,
+                    entity_type="alert",
+                    entity_id=alert.id,  # type: ignore[arg-type]
+                    event_type=RealtimeEventType.ENTITY_UPDATED,
+                    performed_by=resolved_by,
+                )
+                if alert.id is not None:
+                    changed_alert_ids.append(alert.id)
+
+            await db.commit()
+            updated_alerts = await self._load_resolved_alerts(db, changed_alert_ids)
+            return AlertBulkActionResponse(
+                updated_alerts=updated_alerts,  # type: ignore[arg-type]
+                updated_count=len(updated_alerts),
+                case_id=case_id,
+                case_human_id=case_human_id,
+            )
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Error resolving linked alerts for case {case_id}: {e}")
+            raise
+
+    @staticmethod
+    def _alert_resolution_audit_snapshot(alert: Alert) -> dict[str, Any]:
+        return {
+            "status": alert.status,
+            "assignee": alert.assignee,
+            "triaged_at": alert.triaged_at,
+            "triage_notes": alert.triage_notes,
+        }
+
+    async def _audit_alert_resolution(
+        self,
+        db: AsyncSession,
+        alert: Alert,
+        before: dict[str, Any],
+        resolved_by: str,
+    ) -> None:
+        after = self._alert_resolution_audit_snapshot(alert)
+        changed_before = {
+            field: value for field, value in before.items() if value != after.get(field)
+        }
+        if not changed_before:
+            return
+
+        await get_audit_service(db).log_entity_updated(
+            entity_type="alert",
+            entity_id=alert.id,  # type: ignore[arg-type]
+            before=changed_before,
+            after={field: after.get(field) for field in changed_before},
+            user=resolved_by,
+        )
+
+    @staticmethod
+    def _add_linked_alert_resolution_note(
+        alert: Alert,
+        case_human_id: str,
+        status: AlertStatus,
+        note: Optional[str],
+        resolved_by: str,
+    ) -> None:
+        status_desc = ALERT_STATUS_DESCRIPTIONS.get(
+            status, status.value
+        )
+        description = (
+            note
+            or f"Alert resolved as {status_desc} during case {case_human_id} closure"
+        )
+        now = datetime.now(timezone.utc)
+        timeline_service.add_timeline_item(
+            alert,
+            {
+                "id": str(uuid4()),
+                "type": "note",
+                "description": description,
+                "created_at": now.isoformat(),
+                "timestamp": now.isoformat(),
+                "created_by": resolved_by,
+                "tags": ["bulk-action", "case-closure"],
+                "flagged": False,
+                "highlighted": False,
+                "replies": {},
+            },
+            created_by=resolved_by,
+        )
+
+    async def _load_resolved_alerts(
+        self,
+        db: AsyncSession,
+        alert_ids: list[int],
+    ) -> list[Alert]:
+        if not alert_ids:
+            return []
+
+        result = await db.execute(
+            select(Alert)
+            .options(selectinload(Alert.triage_recommendation))  # type: ignore
+            .where(col(Alert.id).in_(alert_ids))
+        )
+        alerts_by_id = {alert.id: alert for alert in result.scalars().all()}
+        return [
+            alerts_by_id[alert_id]
+            for alert_id in alert_ids
+            if alert_id in alerts_by_id
+        ]
     
     async def delete_case(self, db: AsyncSession, case_id: int, deleted_by: str) -> bool:
         """Permanently delete a case after recording an audit snapshot."""
@@ -634,7 +877,8 @@ class CaseService:
         db: AsyncSession, 
         case_id: int, 
         timeline_item: CaseTimelineItem, 
-        created_by: str
+        created_by: str,
+        created_at_override: Optional[datetime] = None,
     ) -> Optional[Case]:
         """Add a timeline item to a case."""
         try:
@@ -649,6 +893,7 @@ class CaseService:
                 entity_type="case",
                 timeline_item=timeline_item,
                 performed_by=created_by,
+                created_at_override=created_at_override,
             )
             
             await db.refresh(db_case)

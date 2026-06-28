@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -7,15 +8,19 @@ from httpx import AsyncClient
 from pgqueuer.errors import MaxRetriesExceeded
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm.attributes import flag_modified
+from sqlmodel import select
 
-from app.models.models import Alert, EnrichmentAlias, QueueJobRead
+from app.models.models import Alert, Case, EnrichmentAlias, EnrichmentCacheEntry, QueueJobRead, Task
+from app.core.security import initialize_encryption_service
 from app.models.enums import RealtimeEventType, SettingType
 from app.models.models import AppSetting
 from app.services.enrichment.base import EnrichmentResult
+from app.services.enrichment.providers.cross_case_observable import cross_case_observable_provider
 from app.services.enrichment.providers import register_providers
 from app.services.enrichment.service import enrichment_service
 from app.services.alert_service import alert_service
 from app.services.queue_status_service import QueueStatusService
+from app.services.settings_service import SettingsService
 from app.services.tasks import _handle_enrich_item_terminal_failure
 from app.services.timeline_service import timeline_service
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
@@ -67,6 +72,335 @@ def _timeline_map(items: Any) -> dict[str, dict[str, Any]]:
     return {}
 
 
+def _observable_item(item_id: str, observable_type: str = "IP", observable_value: str = "148.52.126.237") -> dict[str, Any]:
+    return {
+        "id": item_id,
+        "type": "observable",
+        "timestamp": "2026-03-14T00:00:00Z",
+        "created_at": "2026-03-14T00:00:00Z",
+        "created_by": "system",
+        "observable_type": observable_type,
+        "observable_value": observable_value,
+    }
+
+
+async def _run_cross_timeline_correlation(
+    session: AsyncSession,
+    *,
+    item: dict[str, Any] | None = None,
+    entity_type: str = "alert",
+    entity_id: int = 1,
+) -> dict[str, Any]:
+    result = await cross_case_observable_provider.enrich(
+        db=session,
+        settings=SettingsService(session),
+        item=item or _observable_item("source-item"),
+        entity_type=entity_type,
+        entity_id=entity_id,
+    )
+    return result.enrichment_data
+
+
+def test_cross_timeline_observable_provider_can_enrich_network_traffic() -> None:
+    item = {
+        "type": "network_traffic",
+        "source_ip": "10.0.0.5",
+        "destination_ip": "148.52.126.237",
+    }
+
+    assert cross_case_observable_provider.can_enrich(item)
+    assert cross_case_observable_provider.build_cache_key(item) == "IP:148.52.126.237"
+
+
+@pytest.mark.asyncio
+async def test_cross_timeline_observable_correlation_matches_alert_case_and_task(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    analyst = analyst_user_factory(username="analyst.cross-timeline")
+    now = datetime.now(timezone.utc)
+    source_alert = Alert(
+        title="Source alert",
+        description="Current entity should be excluded",
+        source="unit-test",
+        timeline_items=[_observable_item("source-item")],
+        created_at=now,
+        updated_at=now,
+    )
+    matching_alert = Alert(
+        title="Matching alert",
+        description="Alert match",
+        source="unit-test",
+        timeline_items=[_observable_item("alert-match", "ip", "148.52.126.237")],
+        created_at=now,
+        updated_at=now,
+    )
+    matching_network_alert = Alert(
+        title="Matching network traffic alert",
+        description="Alert match from all timeline fields",
+        source="unit-test",
+        timeline_items=[
+            {
+                "id": "network-match",
+                "type": "network_traffic",
+                "timestamp": "2026-03-14T00:00:00Z",
+                "created_at": "2026-03-14T00:00:00Z",
+                "created_by": "system",
+                "source_ip": "10.0.0.5",
+                "destination_ip": "148.52.126.237",
+                "protocol": "TCP",
+            }
+        ],
+        created_at=now,
+        updated_at=now,
+    )
+    matching_case = Case(
+        title="Matching case",
+        description="Case match",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("case-match")],
+        created_at=now,
+        updated_at=now,
+    )
+    matching_task = Task(
+        title="Matching task",
+        description="Task match",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("task-match")],
+        created_at=now,
+        updated_at=now,
+    )
+    non_matching_case = Case(
+        title="Different observable case",
+        description="Should not match",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("case-no-match", "DOMAIN", "example.com")],
+        created_at=now,
+        updated_at=now,
+    )
+    non_matching_task = Task(
+        title="Different value task",
+        description="Should not match",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("task-no-match", "IP", "8.8.8.8")],
+        created_at=now,
+        updated_at=now,
+    )
+
+    async with session_maker() as session:
+        session.add_all([
+            analyst,
+            source_alert,
+            matching_alert,
+            matching_network_alert,
+            matching_case,
+            matching_task,
+            non_matching_case,
+            non_matching_task,
+        ])
+        await session.commit()
+        await session.refresh(source_alert)
+
+        payload = await _run_cross_timeline_correlation(
+            session,
+            entity_type="alert",
+            entity_id=source_alert.id,
+        )
+
+    assert payload["observable_type"] == "IP"
+    assert payload["observable_value"] == "148.52.126.237"
+    assert payload["max_lookback_days"] == 180
+    assert payload["match_count"] == 4
+    assert {match["entity_type"] for match in payload["matches"]} == {"alert", "case", "task"}
+    assert {match["human_id"][:3] for match in payload["matches"]} == {"ALT", "CAS", "TSK"}
+    assert any(match["title"] == "Matching network traffic alert" for match in payload["matches"])
+    assert all(match["title"] != "Source alert" for match in payload["matches"])
+    assert all(match["title"] != "Different observable case" for match in payload["matches"])
+    assert all(match["title"] != "Different value task" for match in payload["matches"])
+
+
+@pytest.mark.asyncio
+async def test_cross_timeline_observable_correlation_respects_default_lookback(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    analyst = analyst_user_factory(username="analyst.default-lookback")
+    now = datetime.now(timezone.utc)
+    source_alert = Alert(
+        title="Source alert",
+        description="Current entity",
+        source="unit-test",
+        timeline_items=[_observable_item("source-item")],
+        created_at=now,
+        updated_at=now,
+    )
+    recent_case = Case(
+        title="Recent matching case",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("recent-case")],
+        created_at=now - timedelta(days=10),
+        updated_at=now - timedelta(days=10),
+    )
+    old_case = Case(
+        title="Old matching case",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("old-case")],
+        created_at=now - timedelta(days=181),
+        updated_at=now - timedelta(days=181),
+    )
+
+    async with session_maker() as session:
+        session.add_all([analyst, source_alert, recent_case, old_case])
+        await session.commit()
+        await session.refresh(source_alert)
+
+        payload = await _run_cross_timeline_correlation(
+            session,
+            entity_type="alert",
+            entity_id=source_alert.id,
+        )
+
+    assert payload["match_count"] == 1
+    assert [match["title"] for match in payload["matches"]] == ["Recent matching case"]
+
+
+@pytest.mark.asyncio
+async def test_cross_timeline_observable_correlation_respects_configured_lookback(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    analyst = analyst_user_factory(username="analyst.short-lookback")
+    now = datetime.now(timezone.utc)
+    source_alert = Alert(
+        title="Source alert",
+        description="Current entity",
+        source="unit-test",
+        timeline_items=[_observable_item("source-item")],
+        created_at=now,
+        updated_at=now,
+    )
+    recent_task = Task(
+        title="Recent matching task",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("recent-task")],
+        created_at=now - timedelta(days=3),
+        updated_at=now - timedelta(days=3),
+    )
+    older_task = Task(
+        title="Older matching task",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("older-task")],
+        created_at=now - timedelta(days=10),
+        updated_at=now - timedelta(days=10),
+    )
+
+    async with session_maker() as session:
+        session.add_all([
+            analyst,
+            source_alert,
+            recent_task,
+            older_task,
+            AppSetting(
+                key="enrichment.cross_case_observable.max_lookback_days",
+                value="7",
+                value_type=SettingType.NUMBER,
+                is_secret=False,
+                description="Max lookback",
+                category="enrichment",
+            ),
+        ])
+        await session.commit()
+        await session.refresh(source_alert)
+
+        payload = await _run_cross_timeline_correlation(
+            session,
+            entity_type="alert",
+            entity_id=source_alert.id,
+        )
+
+    assert payload["max_lookback_days"] == 7
+    assert payload["match_count"] == 1
+    assert [match["title"] for match in payload["matches"]] == ["Recent matching task"]
+
+
+@pytest.mark.asyncio
+async def test_cross_timeline_observable_correlation_falls_back_for_invalid_lookback(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    analyst = analyst_user_factory(username="analyst.invalid-lookback")
+    now = datetime.now(timezone.utc)
+    source_alert = Alert(
+        title="Source alert",
+        description="Current entity",
+        source="unit-test",
+        timeline_items=[_observable_item("source-item")],
+        created_at=now,
+        updated_at=now,
+    )
+    matching_case = Case(
+        title="Matching case",
+        created_by=analyst.username,
+        timeline_items=[_observable_item("matching-case")],
+        created_at=now - timedelta(days=30),
+        updated_at=now - timedelta(days=30),
+    )
+
+    async with session_maker() as session:
+        session.add_all([
+            analyst,
+            source_alert,
+            matching_case,
+            AppSetting(
+                key="enrichment.cross_case_observable.max_lookback_days",
+                value="0",
+                value_type=SettingType.NUMBER,
+                is_secret=False,
+                description="Invalid max lookback",
+                category="enrichment",
+            ),
+        ])
+        await session.commit()
+        await session.refresh(source_alert)
+
+        payload = await _run_cross_timeline_correlation(
+            session,
+            entity_type="alert",
+            entity_id=source_alert.id,
+        )
+
+    assert payload["max_lookback_days"] == 180
+    assert payload["match_count"] == 1
+    assert payload["matches"][0]["title"] == "Matching case"
+
+
+@pytest.mark.asyncio
+async def test_admin_settings_includes_observable_correlation_lookback_default(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    admin = admin_user_factory(username="admin.observable-settings")
+
+    async with session_maker() as session:
+        session.add(admin)
+        await session.commit()
+
+    session_cookie = await _login(client, admin.username)
+    response = await client.get(
+        "/api/v1/admin/settings",
+        params={"category": "enrichment"},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    settings_by_key = {setting["key"]: setting for setting in response.json()}
+    lookback = settings_by_key["enrichment.cross_case_observable.max_lookback_days"]
+    assert lookback["value"] == "180"
+    assert lookback["value_type"] == "NUMBER"
+    assert lookback["category"] == "enrichment"
+
+
 @pytest.mark.asyncio
 async def test_search_aliases_returns_matches_for_authenticated_users(
     client: AsyncClient,
@@ -103,6 +437,128 @@ async def test_search_aliases_returns_matches_for_authenticated_users(
     assert len(payload) == 1
     assert payload[0]["canonical_value"] == "alice@example.com"
     assert payload[0]["canonical_display"] == "Alice Analyst"
+
+
+@pytest.mark.asyncio
+async def test_provider_statuses_include_service_now(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    admin = admin_user_factory(username="admin.servicenow-status")
+    register_providers()
+
+    async with session_maker() as session:
+        session.add(admin)
+        await session.commit()
+
+    session_cookie = await _login(client, admin.username)
+    response = await client.get(
+        "/api/v1/admin/enrichments/providers",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    service_now = next(provider for provider in response.json() if provider["provider_id"] == "servicenow")
+    assert service_now["display_name"] == "ServiceNow"
+    assert service_now["item_types"] == ["internal_actor", "system"]
+    assert service_now["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_configure_service_now_saves_settings(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    initialize_encryption_service(b"test-master-key")
+    admin = admin_user_factory(username="admin.servicenow-configure")
+
+    async with session_maker() as session:
+        session.add(admin)
+        await session.commit()
+
+    session_cookie = await _login(client, admin.username)
+    response = await client.post(
+        "/api/v1/admin/enrichments/service-now/configure",
+        cookies={"intercept_session": session_cookie},
+        json={
+            "instance_url": "https://example.service-now.com/",
+            "username": "svc-user",
+            "password": "svc-pass",
+            "user_query_field": "email",
+            "ttl_seconds": 3600,
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "instance_url": "https://example.service-now.com",
+        "settings_saved": 22,
+        "enabled": True,
+    }
+
+    async with session_maker() as session:
+        rows = (
+            await session.execute(
+                select(AppSetting).where(AppSetting.key.in_([
+                    "enrichment.servicenow.instance_url",
+                    "enrichment.servicenow.auth_type",
+                    "enrichment.servicenow.password",
+                    "enrichment.servicenow.table",
+                    "enrichment.servicenow.user_query_field",
+                    "enrichment.servicenow.active_only",
+                    "enrichment.servicenow.lookup_query_template",
+                    "enrichment.servicenow.ttl_seconds",
+                    "enrichment.servicenow.enabled",
+                ]))
+            )
+        ).scalars().all()
+
+    by_key = {row.key: row for row in rows}
+    assert by_key["enrichment.servicenow.instance_url"].value == "https://example.service-now.com"
+    assert by_key["enrichment.servicenow.auth_type"].value == "basic"
+    assert by_key["enrichment.servicenow.table"].value == "sys_user"
+    assert by_key["enrichment.servicenow.user_query_field"].value == "email"
+    assert by_key["enrichment.servicenow.active_only"].value == "true"
+    assert by_key["enrichment.servicenow.lookup_query_template"].value == "email={value}^active=true"
+    assert by_key["enrichment.servicenow.ttl_seconds"].value == "3600"
+    assert by_key["enrichment.servicenow.enabled"].value == "true"
+    assert by_key["enrichment.servicenow.password"].is_secret is True
+    assert by_key["enrichment.servicenow.password"].value != "svc-pass"
+    stored_password = by_key["enrichment.servicenow.password"].value
+
+    response = await client.post(
+        "/api/v1/admin/enrichments/service-now/configure",
+        cookies={"intercept_session": session_cookie},
+        json={
+            "instance_url": "https://example.service-now.com/",
+            "username": "svc-user-updated",
+            "password": "",
+            "user_query_field": "email",
+            "ttl_seconds": 7200,
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+
+    async with session_maker() as session:
+        rows = (
+            await session.execute(
+                select(AppSetting).where(AppSetting.key.in_([
+                    "enrichment.servicenow.username",
+                    "enrichment.servicenow.password",
+                    "enrichment.servicenow.ttl_seconds",
+                ]))
+            )
+        ).scalars().all()
+
+    by_key = {row.key: row for row in rows}
+    assert by_key["enrichment.servicenow.username"].value == "svc-user-updated"
+    assert by_key["enrichment.servicenow.password"].value == stored_password
+    assert by_key["enrichment.servicenow.ttl_seconds"].value == "7200"
 
 
 @pytest.mark.asyncio
@@ -567,6 +1023,93 @@ async def test_run_item_enrichment_emits_timeline_updated_event(
             "item_id": "item-worker-1",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_servicenow_enrichment_updates_internal_actor_risk_flags(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    analyst = analyst_user_factory(username="analyst.servicenow-flags")
+    item = {
+        "id": "item-servicenow-1",
+        "type": "internal_actor",
+        "timestamp": "2026-03-14T00:00:00Z",
+        "created_at": "2026-03-14T00:00:00Z",
+        "created_by": analyst.username,
+        "user_id": "alice@example.com",
+        "is_vip": False,
+        "is_privileged": False,
+        "enrichment_status": "pending",
+        "enrichments": {},
+    }
+    alert = Alert(
+        title="Alert with ServiceNow actor enrichment",
+        description="Test alert",
+        source="unit-test",
+        timeline_items=[item],
+        created_by=analyst.username,
+    )
+    register_providers()
+
+    async with session_maker() as session:
+        session.add(analyst)
+        session.add(alert)
+        session.add(
+            AppSetting(
+                key="enrichment.servicenow.enabled",
+                value="true",
+                value_type=SettingType.BOOLEAN,
+                is_secret=False,
+                description="Enable ServiceNow enrichment provider",
+                category="enrichment",
+            )
+        )
+        await session.commit()
+        await session.refresh(alert)
+
+    async def fake_enrich(*, db: AsyncSession, settings: object, item: dict[str, object], entity_type: str, entity_id: int) -> EnrichmentResult:
+        return EnrichmentResult(
+            provider_id="servicenow",
+            cache_key="user:alice@example.com",
+            enrichment_data={
+                "source_table": "sys_user",
+                "record_id": "sn-user-1",
+                "record_link": "https://example.service-now.com/sys_user.do?sys_id=sn-user-1",
+                "matched_identifier": "alice@example.com",
+                "is_vip": True,
+                "is_privileged": True,
+                "mapped_fields": {
+                    "vip": {"field": "vip", "value": "true", "mapped": True},
+                    "privileged": {"field": "u_privileged_user", "value": "1", "mapped": True},
+                },
+            },
+        )
+
+    monkeypatch.setattr("app.services.enrichment.providers.servicenow.servicenow_provider.enrich", fake_enrich)
+
+    async with session_maker() as session:
+        await enrichment_service.run_item_enrichment(
+            session,
+            entity_type="alert",
+            entity_id=alert.id,
+            item_id="item-servicenow-1",
+        )
+
+    async with session_maker() as session:
+        refreshed_alert = await session.get(Alert, alert.id)
+        assert refreshed_alert is not None
+        stored_item = next(
+            item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-servicenow-1"
+        )
+
+    assert stored_item["enrichment_status"] == "complete"
+    assert stored_item["is_vip"] is True
+    assert stored_item["is_privileged"] is True
+    assert stored_item["enrichments"]["servicenow"]["source_table"] == "sys_user"
+    assert stored_item["enrichments"]["servicenow"]["record_id"] == "sn-user-1"
+    assert stored_item["enrichments"]["servicenow"]["matched_identifier"] == "alice@example.com"
 
 
 @pytest.mark.asyncio
@@ -1124,6 +1667,133 @@ async def test_admin_directory_sync_enqueues_task(
 
     assert response.status_code == 200
     assert response.json() == {"enqueued": True, "task_id": "task-sync-123"}
+
+
+@pytest.mark.asyncio
+async def test_admin_provider_status_includes_servicenow_counts(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    admin = admin_user_factory(username="admin.servicenow-status")
+    register_providers()
+    now = datetime.now(timezone.utc)
+
+    async with session_maker() as session:
+        session.add(admin)
+        session.add(
+            AppSetting(
+                key="enrichment.servicenow.enabled",
+                value="true",
+                value_type=SettingType.BOOLEAN,
+                category="enrichment",
+                description="Enable ServiceNow",
+            )
+        )
+        session.add(
+            EnrichmentCacheEntry(
+                provider_id="servicenow",
+                cache_key="user:alice@example.com",
+                result={"provider_id": "servicenow", "cache_key": "user:alice@example.com"},
+                expires_at=now + timedelta(hours=1),
+            )
+        )
+        session.add(
+            EnrichmentAlias(
+                provider_id="servicenow",
+                entity_type="user",
+                canonical_value="alice@example.com",
+                canonical_display="Alice Analyst",
+                alias_type="email",
+                alias_value="alice@example.com",
+                attributes={},
+            )
+        )
+        await session.commit()
+
+    session_cookie = await _login(client, admin.username)
+    response = await client.get(
+        "/api/v1/admin/enrichments/providers",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    providers = {provider["provider_id"]: provider for provider in response.json()}
+    servicenow = providers["servicenow"]
+    assert servicenow["display_name"] == "ServiceNow"
+    assert servicenow["settings_prefix"] == "enrichment.servicenow"
+    assert servicenow["enabled"] is True
+    assert servicenow["supports_bulk_sync"] is True
+    assert servicenow["item_types"] == ["internal_actor", "system"]
+    assert servicenow["cache_entry_count"] == 1
+    assert servicenow["alias_count"] == 1
+    assert servicenow["last_activity_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_admin_clear_cache_clears_servicenow_entries(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    admin = admin_user_factory(username="admin.servicenow-cache")
+
+    async with session_maker() as session:
+        session.add(admin)
+        session.add(
+            EnrichmentCacheEntry(
+                provider_id="servicenow",
+                cache_key="user:alice@example.com",
+                result={"provider_id": "servicenow", "cache_key": "user:alice@example.com"},
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+        )
+        session.add(
+            EnrichmentCacheEntry(
+                provider_id="ldap",
+                cache_key="user:bob@example.com",
+                result={"provider_id": "ldap", "cache_key": "user:bob@example.com"},
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+        )
+        await session.commit()
+
+    session_cookie = await _login(client, admin.username)
+    response = await client.post(
+        "/api/v1/admin/enrichments/cache/clear",
+        params={"provider_id": "servicenow"},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"cleared": 1, "provider_id": "servicenow"}
+
+    async with session_maker() as session:
+        rows = (await session.execute(select(EnrichmentCacheEntry))).scalars().all()
+    assert [(row.provider_id, row.cache_key) for row in rows] == [("ldap", "user:bob@example.com")]
+
+
+@pytest.mark.asyncio
+async def test_admin_directory_sync_rejects_provider_without_bulk_sync(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    admin = admin_user_factory(username="admin.unsupported-sync")
+    register_providers()
+
+    async with session_maker() as session:
+        session.add(admin)
+        await session.commit()
+
+    session_cookie = await _login(client, admin.username)
+    response = await client.post(
+        "/api/v1/admin/enrichments/providers/maxmind/directory-sync",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Provider does not support bulk sync"
 
 
 @pytest.mark.asyncio

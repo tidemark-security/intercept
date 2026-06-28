@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # These should NOT be stored in the timeline JSON (snapshots)
 TASK_SNAPSHOT_FIELDS: Set[str] = {
     "title", "status", "priority", "assignee", "due_date",
-    "task_human_id", "description",
+    "task_human_id", "description", "picerl_stage", "source_runbook",
 }
 
 # Fields that should be preserved in the timeline JSON for task items
@@ -344,6 +344,7 @@ class TimelineService:
                             "title": alert.title,
                             "priority": alert.priority,
                             "assignee": alert.assignee,
+                            "entity_description": alert.description,
                             "created_at": alert.linked_at.isoformat() if alert.linked_at else alert.created_at.isoformat(),
                             "timestamp": alert.linked_at.isoformat() if alert.linked_at else alert.created_at.isoformat(),
                             "created_by": alert.assignee or "system",
@@ -369,7 +370,10 @@ class TimelineService:
                             "status": task.status.value if hasattr(task.status, 'value') else str(task.status),
                             "priority": task.priority,
                             "assignee": task.assignee,
+                            "entity_description": task.description,
                             "due_date": task.due_date.isoformat() if task.due_date else None,
+                            "picerl_stage": task.picerl_stage.value if task.picerl_stage else None,
+                            "source_runbook": task.source_runbook,
                             "created_at": task.linked_at.isoformat() if task.linked_at else task.created_at.isoformat(),
                             "timestamp": task.linked_at.isoformat() if task.linked_at else task.created_at.isoformat(),
                             "created_by": task.created_by or "system",
@@ -397,6 +401,7 @@ class TimelineService:
                         "title": case.title,
                         "priority": case.priority,
                         "assignee": case.assignee,
+                        "entity_description": case.description,
                         "description": f"Linked to Case CAS-{case_id:07d}",
                         "created_at": linked_at.isoformat(),
                         "timestamp": linked_at.isoformat(),
@@ -425,6 +430,7 @@ class TimelineService:
                         "title": case.title,
                         "priority": case.priority,
                         "assignee": case.assignee,
+                        "entity_description": case.description,
                         "description": f"Linked to Case CAS-{case_id:07d}",
                         "created_at": linked_at.isoformat(),
                         "timestamp": linked_at.isoformat(),
@@ -536,11 +542,13 @@ class TimelineService:
         item["task_id"] = task.id
         item["task_human_id"] = f"TSK-{task.id:07d}"
         item["title"] = task.title
-        item["description"] = task.description
+        item["entity_description"] = task.description
         item["status"] = task.status.value if task.status else None
         item["priority"] = task.priority.value if task.priority else None
         item["assignee"] = task.assignee
         item["due_date"] = task.due_date.isoformat() if task.due_date else None
+        item["picerl_stage"] = task.picerl_stage.value if task.picerl_stage else None
+        item["source_runbook"] = task.source_runbook
         
         # Use Task's created_at/created_by as the canonical source
         item["created_at"] = task.created_at.isoformat() if task.created_at else item.get("created_at")
@@ -581,19 +589,36 @@ class TimelineService:
         if not alert_id:
             return item
         
-        # Lazy import to avoid circular dependency
-        from app.services.alert_service import alert_service
-        
         try:
-            alert = await alert_service.get_alert(db, alert_id)
+            # Fetch the linked alert directly and denormalize its timeline in-place.
+            # Going through alert_service.get_alert() can run unrelated detail-page
+            # side effects; failures there should not make alert child timelines
+            # disappear from case/task linked-entity cards.
+            from app.models.models import Alert
+
+            result = await db.execute(select(Alert).where(Alert.id == alert_id))
+            alert = result.scalar_one_or_none()
             if not alert:
                 logger.warning(f"Alert {alert_id} not found for timeline embedding")
                 return item
+
+            item["title"] = alert.title
+            item["entity_description"] = alert.description
+            item["status"] = alert.status.value if alert.status else None
+            item["priority"] = alert.priority.value if alert.priority else None
+            item["assignee"] = alert.assignee
             
             # Embed the alert's timeline items
             if alert.timeline_items:
-                # Items are already denormalized from get_alert
-                item["source_timeline_items"] = alert.timeline_items
+                source_items: Dict[str, Dict[str, Any]] = {}
+                for alert_item in self._iter_items(alert.timeline_items):
+                    denormalized = await self._denormalize_item_recursive(
+                        db,
+                        alert_item,
+                        include_linked_timelines=False,
+                    )
+                    source_items[str(denormalized["id"])] = denormalized
+                item["source_timeline_items"] = source_items
         except Exception as e:
             logger.warning(f"Failed to embed timeline items for alert {alert_id}: {e}")
         
@@ -630,6 +655,13 @@ class TimelineService:
             if not case:
                 logger.warning(f"Case {case_id} not found for timeline embedding")
                 return item
+
+            item["title"] = case.title
+            item["entity_description"] = case.description
+            item["status"] = case.status.value if case.status else None
+            item["priority"] = case.priority.value if case.priority else None
+            item["assignee"] = case.assignee
+            item["created_by"] = case.created_by or item.get("created_by")
             
             # Embed the case's timeline items
             if case.timeline_items:
@@ -665,7 +697,7 @@ class TimelineService:
         """
         from app.services.task_service import task_service
         from app.models.models import TaskCreate
-        from app.models.enums import Priority, TaskStatus
+        from app.models.enums import PICERLStage, Priority, TaskStatus
         
         # Extract task data from the timeline item
         # Prioritize title field, only fall back to description if title is None or empty
@@ -706,6 +738,13 @@ class TimelineService:
                     due_date = datetime.fromisoformat(due_date_val.replace("Z", "+00:00"))
                 except ValueError:
                     pass
+
+        picerl_stage = None
+        if item.get("picerl_stage"):
+            try:
+                picerl_stage = PICERLStage(item["picerl_stage"]) if isinstance(item["picerl_stage"], str) else item["picerl_stage"]
+            except (ValueError, TypeError):
+                pass
         
         task_create = TaskCreate(
             title=title,
@@ -714,7 +753,9 @@ class TimelineService:
             status=status,
             assignee=item.get("assignee"),
             due_date=due_date,
+            picerl_stage=picerl_stage,
             case_id=case_id,
+            tags=item.get("tags") or [],
         )
         
         task = await task_service.create_task(db, task_create, created_by)
@@ -1101,7 +1142,7 @@ class TimelineService:
         return False
     
     def _build_updated_item(self, item: Dict[str, Any], item_id: str, updated: Dict[str, Any]) -> Dict[str, Any]:
-        created_at = item.get("created_at")
+        created_at = item.get("created_at") or item.get("timestamp") or datetime.now(timezone.utc).isoformat()
         created_by = item.get("created_by")
         existing_replies = item.get("replies")
 

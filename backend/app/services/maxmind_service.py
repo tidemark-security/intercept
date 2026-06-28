@@ -343,7 +343,7 @@ class MaxMindService:
             for removed in current_editions - desired_editions:
                 state = self._readers.pop(removed, None)
                 if state is not None:
-                    await asyncio.to_thread(state.reader.close)
+                    state.reader.close()
 
             for edition_id in desired_editions:
                 db_path = self._local_db_path(local_cache_dir, edition_id)
@@ -355,17 +355,17 @@ class MaxMindService:
                 if existing is not None and existing.path == str(db_path) and existing.mtime_ns == mtime_ns:
                     continue
 
-                reader = await asyncio.to_thread(geoip2.database.Reader, str(db_path))
+                reader = geoip2.database.Reader(str(db_path))
                 self._readers[edition_id] = _ReaderState(reader=reader, path=str(db_path), mtime_ns=mtime_ns)
                 if existing is not None:
-                    await asyncio.to_thread(existing.reader.close)
+                    existing.reader.close()
 
     async def close_readers(self) -> None:
         async with self._reader_lock:
             readers = list(self._readers.values())
             self._readers.clear()
         for state in readers:
-            await asyncio.to_thread(state.reader.close)
+            state.reader.close()
 
     async def lookup_ip(self, ip: str) -> Dict[str, Any]:
         ipaddress.ip_address(ip)
@@ -379,7 +379,7 @@ class MaxMindService:
             if not method_name:
                 continue
             try:
-                result = await asyncio.to_thread(getattr(reader, method_name), ip)
+                result = getattr(reader, method_name)(ip)
             except AddressNotFoundError:
                 continue
             except Exception as exc:
@@ -397,6 +397,9 @@ class MaxMindService:
 
     async def get_database_status(self, db: AsyncSession) -> list[dict[str, Any]]:
         settings, cfg = await self._get_settings(db, strict_editions=False)
+        if not cfg["edition_ids"]:
+            return []
+
         storage_available = True
         try:
             await self._ensure_bucket()

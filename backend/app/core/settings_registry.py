@@ -118,6 +118,19 @@ def _bulk_sync_schedule_defs(provider_id: str, provider_label: str) -> tuple[Set
     )
 
 
+def _worker_task_timeout_def(task_name: str, *, default: Any = None) -> SettingDefinition:
+    return _def(
+        f"worker.tasks.{task_name}.execution_timeout_seconds",
+        value_type=SettingType.NUMBER,
+        category="worker",
+        description=(
+            f"Execution timeout for {task_name} worker tasks in seconds. "
+            "Leave unset to inherit worker.tasks.default.execution_timeout_seconds."
+        ),
+        default=default,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Bootstrap / infrastructure  (local_only — needed before DB is available)
 # ---------------------------------------------------------------------------
@@ -170,6 +183,82 @@ _register(
             "http://127.0.0.1:3000",
             "http://127.0.0.1:5173",
         ],
+    ),
+    _def(
+        "worker.concurrency",
+        env_var="WORKER_CONCURRENCY",
+        value_type=SettingType.NUMBER,
+        local_only=True,
+        category="worker",
+        description="Number of concurrent tasks processed by each worker process",
+        default=20,
+    ),
+    _def(
+        "worker.health_port",
+        env_var="HEALTH_PORT",
+        value_type=SettingType.NUMBER,
+        local_only=True,
+        category="worker",
+        description="Port for the worker health and metrics HTTP server",
+        default=8001,
+    ),
+    _def(
+        "worker.database.command_timeout_seconds",
+        env_var="WORKER_DATABASE_COMMAND_TIMEOUT_SECONDS",
+        value_type=SettingType.NUMBER,
+        local_only=True,
+        category="worker",
+        description="asyncpg command timeout for worker task queue database operations",
+        default=60,
+    ),
+)
+
+# ---------------------------------------------------------------------------
+# Worker task runtime settings (hot-swappable)
+# ---------------------------------------------------------------------------
+_register(
+    _def(
+        "worker.tasks.default.execution_timeout_seconds",
+        value_type=SettingType.NUMBER,
+        category="worker",
+        description="Default execution timeout for worker tasks in seconds",
+        default=600,
+    ),
+    _worker_task_timeout_def("langflow_chat"),
+    _worker_task_timeout_def("langflow_batch"),
+    _worker_task_timeout_def("triage_alert"),
+    _worker_task_timeout_def("autonomous_task"),
+    _worker_task_timeout_def("enrich_item"),
+    _worker_task_timeout_def("directory_sync", default=3600),
+    _worker_task_timeout_def("refresh_bulk_sync_schedules"),
+    _worker_task_timeout_def("maxmind_update"),
+    _def(
+        "worker.tasks.retry_initial_delay_seconds",
+        value_type=SettingType.NUMBER,
+        category="worker",
+        description="Initial in-worker retry backoff delay in seconds",
+        default=5,
+    ),
+    _def(
+        "worker.tasks.retry_max_delay_seconds",
+        value_type=SettingType.NUMBER,
+        category="worker",
+        description="Maximum in-worker retry backoff delay in seconds",
+        default=60,
+    ),
+    _def(
+        "worker.tasks.retry_timer_buffer_seconds",
+        value_type=SettingType.NUMBER,
+        category="worker",
+        description="Additional pgqueuer stale-job lease buffer above each task execution timeout",
+        default=300,
+    ),
+    _def(
+        "worker.task_settings_refresh_interval_seconds",
+        value_type=SettingType.NUMBER,
+        category="worker",
+        description="How often running workers refresh task timeout settings from the registry",
+        default=30,
     ),
 )
 
@@ -502,6 +591,58 @@ _register(
         description="Maximum text attachment size in megabytes that will render an inline preview",
         default=1,
     ),
+    _def(
+        "storage.allowed_file_types",
+        env_var="ALLOWED_FILE_TYPES",
+        value_type=SettingType.JSON,
+        category="storage",
+        description=(
+            "JSON array of MIME types accepted for attachment uploads. "
+            "Legacy aliases (e.g. application/x-zip-compressed) are normalized to "
+            "their canonical type before matching."
+        ),
+        default=[
+            # Images
+            "image/png", "image/jpeg", "image/gif", "image/webp",
+            "image/bmp", "image/tiff",
+            # Documents
+            "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            # Text / data
+            "text/plain", "application/json", "text/csv",
+            "text/markdown", "application/xml",
+            # Email
+            "message/rfc822", "application/vnd.ms-outlook",
+            # Archives
+            "application/zip", "application/x-7z-compressed",
+            "application/gzip", "application/x-tar",
+            # Forensics / network captures
+            "application/vnd.tcpdump.pcap",
+            # Generic binary (e.g. memory dumps, firmware)
+            "application/octet-stream",
+        ],
+    ),
+    _def(
+        "storage.denied_file_types",
+        env_var="DENIED_FILE_TYPES",
+        value_type=SettingType.JSON,
+        category="storage",
+        description=(
+            "JSON array of MIME types rejected for attachment uploads even when "
+            "present in the allowed list. Defaults to script-capable types that "
+            "could enable stored XSS if served inline."
+        ),
+        default=[
+            "text/html",
+            "image/svg+xml",
+            "application/xhtml+xml",
+        ],
+    ),
 )
 
 # ---------------------------------------------------------------------------
@@ -585,6 +726,12 @@ _register(
         default=None,
     ),
     _def(
+        "langflow.autonomous_task_flow_id",
+        category="langflow",
+        description="LangFlow flow ID for autonomous task execution when tasks are assigned to assignable NHI accounts",
+        default=None,
+    ),
+    _def(
         "langflow.alert_triage_flow_id",
         category="langflow",
         description="LangFlow flow ID for alert triage",
@@ -631,6 +778,27 @@ _register(
         default=1024,
     ),
     _def(
+        "enrichment.cross_case_observable.enabled",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Enable exact-match observable correlation across alert, case, and task timelines",
+        default=True,
+    ),
+    _def(
+        "enrichment.cross_case_observable.ttl_seconds",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="Legacy TTL for observable correlation results in seconds",
+        default=3600,
+    ),
+    _def(
+        "enrichment.cross_case_observable.max_lookback_days",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="Maximum age, in days, for alert, case, and task rows considered by observable correlation",
+        default=180,
+    ),
+    _def(
         "enrichment.entra_id.enabled",
         value_type=SettingType.BOOLEAN,
         category="enrichment",
@@ -662,6 +830,27 @@ _register(
         category="enrichment",
         description="TTL for Microsoft Entra enrichment results in seconds",
         default=86400,
+    ),
+    _def(
+        "enrichment.entra_id.request_timeout_seconds",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="Microsoft Graph per-request timeout for Entra ID enrichment and bulk sync in seconds",
+        default=30,
+    ),
+    _def(
+        "enrichment.entra_id.bulk_sync_page_size",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="Microsoft Graph user page size for Entra ID bulk sync, clamped by the backend to 1-999",
+        default=999,
+    ),
+    _def(
+        "enrichment.entra_id.bulk_sync_max_records",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="Maximum Entra ID users processed per bulk sync run; 0 means unlimited",
+        default=0,
     ),
     _def(
         "enrichment.google_workspace.enabled",
@@ -780,6 +969,171 @@ _register(
         default=86400,
     ),
     _def(
+        "enrichment.servicenow.enabled",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Enable ServiceNow user enrichment provider",
+        default=False,
+    ),
+    _def(
+        "enrichment.servicenow.instance_url",
+        category="enrichment",
+        description="Base ServiceNow instance URL, for example https://example.service-now.com",
+        default=None,
+    ),
+    _def(
+        "enrichment.servicenow.username",
+        category="enrichment",
+        description="ServiceNow API username with read access to the configured user table",
+        default=None,
+    ),
+    _def(
+        "enrichment.servicenow.password",
+        is_secret=True,
+        category="enrichment",
+        description="ServiceNow API password for the configured API user",
+        default=None,
+    ),
+    _def(
+        "enrichment.servicenow.auth_type",
+        category="enrichment",
+        description="ServiceNow authentication mode: basic or oauth_password",
+        default="basic",
+    ),
+    _def(
+        "enrichment.servicenow.oauth_client_id",
+        category="enrichment",
+        description="ServiceNow OAuth application client ID",
+        default=None,
+    ),
+    _def(
+        "enrichment.servicenow.oauth_client_secret",
+        is_secret=True,
+        category="enrichment",
+        description="ServiceNow OAuth application client secret",
+        default=None,
+    ),
+    _def(
+        "enrichment.servicenow.table",
+        category="enrichment",
+        description="ServiceNow table used for user enrichment lookups",
+        default="sys_user",
+    ),
+    _def(
+        "enrichment.servicenow.user_table_enabled",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Enable ServiceNow user table enrichment lookups",
+        default=True,
+    ),
+    _def(
+        "enrichment.servicenow.user_query_field",
+        category="enrichment",
+        description="Comma-separated ServiceNow user table fields matched by the simplified setup form",
+        default="user_name",
+    ),
+    _def(
+        "enrichment.servicenow.active_only",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Append active=true to simplified ServiceNow user lookups",
+        default=True,
+    ),
+    _def(
+        "enrichment.servicenow.fields",
+        category="enrichment",
+        description="Comma-separated ServiceNow fields returned for enrichment and bulk sync",
+        default=(
+            "sys_id,user_name,email,name,first_name,last_name,title,department,"
+            "department.name,company,company.name,phone,mobile_phone,active,vip,u_privileged_user"
+        ),
+    ),
+    _def(
+        "enrichment.servicenow.user_vip_field",
+        category="enrichment",
+        description="ServiceNow user field that marks VIP users",
+        default="vip",
+    ),
+    _def(
+        "enrichment.servicenow.user_privileged_field",
+        category="enrichment",
+        description="ServiceNow user field that marks privileged users",
+        default="u_privileged_user",
+    ),
+    _def(
+        "enrichment.servicenow.lookup_query_template",
+        category="enrichment",
+        description="ServiceNow encoded query template for single-user lookups; use {value} as the escaped identifier",
+        default="email={value}^ORuser_name={value}^ORname={value}",
+    ),
+    _def(
+        "enrichment.servicenow.bulk_sync_query",
+        category="enrichment",
+        description="ServiceNow encoded query used for bulk sync/backfill",
+        default="active=true",
+    ),
+    _def(
+        "enrichment.servicenow.page_size",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="ServiceNow bulk sync page size, clamped by the backend to 1-1000",
+        default=500,
+    ),
+    _def(
+        "enrichment.servicenow.max_records",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description=(
+            "Maximum ServiceNow records processed per bulk sync/backfill run, "
+            "clamped by the backend to 1-50000"
+        ),
+        default=5000,
+    ),
+    _def(
+        "enrichment.servicenow.ttl_seconds",
+        value_type=SettingType.NUMBER,
+        category="enrichment",
+        description="TTL for ServiceNow enrichment results in seconds",
+        default=86400,
+    ),
+    _def(
+        "enrichment.servicenow.cmdb_table",
+        category="enrichment",
+        description="ServiceNow CMDB table used for system lookups",
+        default="cmdb_ci",
+    ),
+    _def(
+        "enrichment.servicenow.cmdb_table_enabled",
+        value_type=SettingType.BOOLEAN,
+        category="enrichment",
+        description="Enable ServiceNow CMDB table enrichment lookups",
+        default=True,
+    ),
+    _def(
+        "enrichment.servicenow.cmdb_query_field",
+        category="enrichment",
+        description="Comma-separated ServiceNow CMDB fields matched against timeline system identifiers",
+        default="name",
+    ),
+    _def(
+        "enrichment.servicenow.cmdb_fields",
+        category="enrichment",
+        description="Comma-separated ServiceNow CMDB fields returned for system enrichment",
+        default="sys_id,name,fqdn,ip_address,asset_tag,classification,criticality,u_privileged_system,install_status",
+    ),
+    _def(
+        "enrichment.servicenow.cmdb_criticality_field",
+        category="enrichment",
+        description="ServiceNow CMDB field that marks critical systems",
+        default="criticality",
+    ),
+    _def(
+        "enrichment.servicenow.cmdb_privileged_field",
+        category="enrichment",
+        description="ServiceNow CMDB field that marks privileged systems",
+        default="u_privileged_system",
+    ),
+    _def(
         "enrichment.maxmind.enabled",
         value_type=SettingType.BOOLEAN,
         category="enrichment",
@@ -837,6 +1191,7 @@ _register(
     *_bulk_sync_schedule_defs("entra_id", "Microsoft Entra ID"),
     *_bulk_sync_schedule_defs("google_workspace", "Google Workspace"),
     *_bulk_sync_schedule_defs("ldap", "LDAP / Active Directory"),
+    *_bulk_sync_schedule_defs("servicenow", "ServiceNow"),
 )
 
 # ---------------------------------------------------------------------------

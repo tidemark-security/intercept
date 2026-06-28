@@ -725,7 +725,12 @@ class EnrichmentService:
         try:
             for provider in providers:
                 cache_key = provider.build_cache_key(provider_item)
-                cached_payload = await enrichment_cache.get(db, provider.provider_id, cache_key)
+                provider_cacheable = bool(getattr(provider, "cacheable", True))
+                cached_payload = (
+                    await enrichment_cache.get(db, provider.provider_id, cache_key)
+                    if provider_cacheable
+                    else None
+                )
                 if cached_payload is not None:
                     result = EnrichmentResult.from_cache_payload(cached_payload)
                 else:
@@ -739,13 +744,14 @@ class EnrichmentService:
                     ttl_seconds = result.ttl_seconds or int(
                         await settings.get(f"{provider.settings_prefix}.ttl_seconds", await settings.get("enrichment.cache.default_ttl_seconds", 86400))
                     )
-                    await enrichment_cache.set(
-                        db,
-                        provider_id=provider.provider_id,
-                        cache_key=cache_key,
-                        result_payload=result.to_cache_payload(),
-                        ttl_seconds=ttl_seconds,
-                    )
+                    if provider_cacheable:
+                        await enrichment_cache.set(
+                            db,
+                            provider_id=provider.provider_id,
+                            cache_key=cache_key,
+                            result_payload=result.to_cache_payload(),
+                            ttl_seconds=ttl_seconds,
+                        )
 
                 await self._apply_result(db, entity=entity, item=item, item_id=item_id, result=result)
 
@@ -959,6 +965,19 @@ class EnrichmentService:
         result: EnrichmentResult,
     ) -> None:
         item.setdefault("enrichments", {})[result.provider_id] = result.enrichment_data
+        if (
+            result.provider_id == "servicenow"
+            and item.get("type") == "internal_actor"
+            and "error" not in result.enrichment_data
+        ):
+            for item_key, enrichment_key in (
+                ("is_vip", "is_vip"),
+                ("is_privileged", "is_privileged"),
+            ):
+                value = result.enrichment_data.get(enrichment_key)
+                if isinstance(value, bool):
+                    item[item_key] = value
+        self._apply_system_enrichment_fields(item, result)
         await self._upsert_alias_mappings(db, result.provider_id, result.aliases)
 
         if result.timeline_reply:
@@ -967,6 +986,27 @@ class EnrichmentService:
             reply = dict(result.timeline_reply)
             reply["parent_id"] = item_id
             timeline_service.add_timeline_item(entity, reply, created_by=reply.get("created_by", result.provider_id))
+
+    def _apply_system_enrichment_fields(self, item: Dict[str, Any], result: EnrichmentResult) -> None:
+        if item.get("type") != "system" or result.enrichment_data.get("status") != "matched":
+            return
+
+        for key in ("is_privileged", "is_critical"):
+            value = result.enrichment_data.get(key)
+            if isinstance(value, bool):
+                item[key] = value
+
+        field_map = {
+            "cmdb_id": "record_id",
+            "hostname": "name",
+            "ip_address": "ip_address",
+        }
+        for item_key, enrichment_key in field_map.items():
+            if item.get(item_key):
+                continue
+            value = result.enrichment_data.get(enrichment_key)
+            if isinstance(value, str) and value.strip():
+                item[item_key] = value.strip()
 
     async def _upsert_alias_mappings(
         self,

@@ -13,6 +13,8 @@ from app.models.models import (
     CaseRead,
     CaseReadWithAlerts,
     CaseTimelineItem,
+    CaseLinkedAlertResolutionRequest,
+    AlertBulkActionResponse,
     UserAccount,
     PresignedUploadRequest,
     PresignedUploadResponse,
@@ -30,6 +32,7 @@ from app.api.route_utils import (
     handle_update_attachment_status,
     handle_generate_download_url,
 )
+from app.api.timestamp_overrides import normalize_created_at_override, reject_created_at_update
 from app.api.routes.admin_auth import (
     require_authenticated_user,
     require_admin_user,
@@ -58,13 +61,26 @@ handle_human_id = create_human_id_decorator(ID_PREFIX, "case_id")
 @router.post("", response_model=CaseRead)
 async def create_case(
     case_data: CaseCreate,
+    migration: bool = Query(False, description="Allow authorized NHI migration clients to provide created_at"),
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     """Create a new case."""
     try:
-        db_case = await case_service.create_case(db, case_data, current_user.username)
+        created_at_override = normalize_created_at_override(
+            current_user=current_user,
+            migration=migration,
+            created_at=case_data.created_at,
+        )
+        db_case = await case_service.create_case(
+            db,
+            case_data,
+            current_user.username,
+            created_at_override=created_at_override,
+        )
         return db_case
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error creating case: {str(e)}")
 
@@ -77,9 +93,11 @@ async def get_cases(
         None, description="Filter by multiple case statuses"
     ),
     assignee: Optional[str] = None,
+    include_tags: Optional[List[str]] = Query(None, description="Require cases to include all of these tags"),
+    exclude_tags: Optional[List[str]] = Query(None, description="Require cases to exclude all of these tags"),
     search: Optional[str] = Query(
         None,
-        description="Search cases by title or description (case-insensitive partial match)",
+        description="Search cases by ID, human ID, title, or description (case-insensitive partial match)",
     ),
     start_date: Optional[str] = Query(
         None,
@@ -89,12 +107,14 @@ async def get_cases(
         None,
         description="Filter cases created before this UTC datetime (ISO8601 format with 'Z' suffix)",
     ),
+    sort_by: str = Query("created_at", description="Field to sort by"),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
     db: AsyncSession = Depends(get_db),
 ):
     """Get cases with optional filtering and pagination.
 
     Returns a paginated response with items, total count, page information.
-    Search parameter matches against case title or description using case-insensitive partial matching.
+    Search parameter matches against case ID, human ID, title, or description using case-insensitive partial matching.
     Date filtering expects UTC ISO8601 strings with 'Z' suffix (e.g., "2025-10-20T14:30:00Z").
     Cases are filtered by created_at timestamp.
     """
@@ -105,9 +125,13 @@ async def get_cases(
             limit=limit,
             status=status,
             assignee=assignee,
+            include_tags=include_tags,
+            exclude_tags=exclude_tags,
             search=search,
             start_date=start_date,
             end_date=end_date,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
         return cases
     except Exception as e:
@@ -214,6 +238,33 @@ async def update_case(
         raise HTTPException(status_code=500, detail=f"Error updating case: {str(e)}")
 
 
+@router.post("/{case_id}/resolve-linked-alerts", response_model=AlertBulkActionResponse)
+@handle_human_id()
+async def resolve_linked_alerts(
+    case_id: int,
+    request: Request,  # pylint: disable=unused-argument
+    resolution: CaseLinkedAlertResolutionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_non_auditor_user),
+):
+    """Apply selected resolutions to open alerts linked to a case."""
+    try:
+        response = await case_service.resolve_linked_alerts(
+            db, case_id, resolution, current_user.username
+        )
+        if response is None:
+            raise HTTPException(status_code=404, detail="Case not found")
+        return response
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Error resolving linked alerts: {str(e)}"
+        )
+
+
 @router.delete("/{case_id}")
 @handle_human_id()
 async def delete_case(
@@ -241,14 +292,27 @@ async def add_timeline_item(
     case_id: int,
     request: Request,  # pylint: disable=unused-argument
     timeline_item: Dict[str, Any],
+    migration: bool = Query(False, description="Allow authorized NHI migration clients to provide created_at"),
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     """Add a timeline item to a case."""
     try:
+        has_created_at = "created_at" in timeline_item
         typed_item = convert_timeline_item(timeline_item)
+        created_at_override = normalize_created_at_override(
+            current_user=current_user,
+            migration=migration,
+            created_at=typed_item.created_at if has_created_at else None,
+        )
+        if created_at_override is not None:
+            typed_item.created_at = created_at_override
         db_case = await case_service.add_timeline_item(
-            db, case_id, typed_item, current_user.username
+            db,
+            case_id,
+            typed_item,
+            current_user.username,
+            created_at_override=created_at_override,
         )
         if not db_case:
             raise HTTPException(status_code=404, detail="Case not found")
@@ -275,6 +339,7 @@ async def update_timeline_item(
 ):
     """Update a timeline item in a case."""
     try:
+        reject_created_at_update(timeline_item)
         typed_item = convert_timeline_item(timeline_item)
         db_case = await case_service.update_timeline_item(
             db, case_id, item_id, typed_item, current_user.username

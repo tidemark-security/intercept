@@ -40,7 +40,8 @@ vi.mock('magika', () => ({
   Magika: {
     create: vi.fn().mockResolvedValue({
       identifyBytes: vi.fn().mockResolvedValue({
-        prediction: { output: { mime_type: 'text/plain' } },
+        // Real magika JS shape: output carries a label, not a MIME type
+        prediction: { output: { label: 'TXT' } },
       }),
     }),
   },

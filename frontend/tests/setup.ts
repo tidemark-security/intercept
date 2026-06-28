@@ -2,6 +2,8 @@ import "@testing-library/jest-dom";
 import { vi } from "vitest";
 
 class ResizeObserverMock {
+	constructor(_callback?: ResizeObserverCallback) {}
+
 	observe() {}
 	unobserve() {}
 	disconnect() {}

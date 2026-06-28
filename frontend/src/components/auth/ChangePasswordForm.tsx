@@ -23,7 +23,10 @@ export function ChangePasswordForm({ logo, onSuccess, forced = true }: ChangePas
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [currentPasswordError, setCurrentPasswordError] = useState<string | null>(null);
+  const [newPasswordError, setNewPasswordError] = useState<string | null>(null);
+  const [confirmPasswordError, setConfirmPasswordError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
   const validatePassword = (password: string): string | null => {
@@ -47,28 +50,31 @@ export function ChangePasswordForm({ logo, onSuccess, forced = true }: ChangePas
 
   const handleSubmit = async (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
-    setError(null);
+    setCurrentPasswordError(null);
+    setNewPasswordError(null);
+    setConfirmPasswordError(null);
+    setFormError(null);
     
     // Validate fields
     if (!currentPassword.trim()) {
-      setError("Current password is required");
+      setCurrentPasswordError("Current password is required");
       return;
     }
     
     if (!newPassword.trim()) {
-      setError("New password is required");
+      setNewPasswordError("New password is required");
       return;
     }
     
     if (newPassword !== confirmPassword) {
-      setError("New passwords do not match");
+      setConfirmPasswordError("New passwords do not match");
       return;
     }
     
     // Validate new password policy
     const validationError = validatePassword(newPassword);
     if (validationError) {
-      setError(validationError);
+      setNewPasswordError(validationError);
       return;
     }
     
@@ -96,14 +102,14 @@ export function ChangePasswordForm({ logo, onSuccess, forced = true }: ChangePas
     } catch (err) {
       if (err instanceof ApiError) {
         if (err.status === 401) {
-          setError("Current password is incorrect");
+          setCurrentPasswordError("Current password is incorrect");
         } else if (err.status === 400) {
-          setError(err.body?.message || "Password does not meet requirements");
+          setNewPasswordError(err.body?.message || "Password does not meet requirements");
         } else {
-          setError("An error occurred while changing your password");
+          setFormError("An error occurred while changing your password");
         }
       } else {
-        setError("An unexpected error occurred");
+        setFormError("An unexpected error occurred");
       }
       setIsSubmitting(false);
     }
@@ -149,6 +155,14 @@ export function ChangePasswordForm({ logo, onSuccess, forced = true }: ChangePas
           </div>
         )}
 
+        {formError && !success && (
+          <div className="flex w-full items-center gap-2 rounded-md bg-error-50 px-4 py-3">
+            <p className="text-body font-body text-error-700">
+              {formError}
+            </p>
+          </div>
+        )}
+
         {/* Form Fields */}
         {!success && (
           <>
@@ -156,8 +170,8 @@ export function ChangePasswordForm({ logo, onSuccess, forced = true }: ChangePas
               <TextField
                 className="h-auto w-full flex-none"
                 label=""
-                helpText={error || ""}
-                error={!!error}
+                helpText={currentPasswordError || ""}
+                error={!!currentPasswordError}
               >
                 <TextField.Input
                   type="password"
@@ -165,7 +179,8 @@ export function ChangePasswordForm({ logo, onSuccess, forced = true }: ChangePas
                   value={currentPassword}
                   onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
                     setCurrentPassword(event.target.value);
-                    if (error) setError(null);
+                    if (currentPasswordError) setCurrentPasswordError(null);
+                    if (formError) setFormError(null);
                   }}
                   onKeyPress={handleKeyPress}
                   disabled={isSubmitting}
@@ -177,7 +192,8 @@ export function ChangePasswordForm({ logo, onSuccess, forced = true }: ChangePas
               <TextField
                 className="h-auto w-full flex-none"
                 label=""
-                helpText="Minimum 12 characters with uppercase, lowercase, number, and special character"
+                helpText={newPasswordError || "Minimum 12 characters with uppercase, lowercase, number, and special character"}
+                error={!!newPasswordError}
               >
                 <TextField.Input
                   type="password"
@@ -185,7 +201,9 @@ export function ChangePasswordForm({ logo, onSuccess, forced = true }: ChangePas
                   value={newPassword}
                   onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
                     setNewPassword(event.target.value);
-                    if (error) setError(null);
+                    if (newPasswordError) setNewPasswordError(null);
+                    if (confirmPasswordError) setConfirmPasswordError(null);
+                    if (formError) setFormError(null);
                   }}
                   onKeyPress={handleKeyPress}
                   disabled={isSubmitting}
@@ -197,6 +215,8 @@ export function ChangePasswordForm({ logo, onSuccess, forced = true }: ChangePas
               <TextField
                 className="h-auto w-full flex-none"
                 label=""
+                helpText={confirmPasswordError || ""}
+                error={!!confirmPasswordError}
               >
                 <TextField.Input
                   type="password"
@@ -204,7 +224,8 @@ export function ChangePasswordForm({ logo, onSuccess, forced = true }: ChangePas
                   value={confirmPassword}
                   onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
                     setConfirmPassword(event.target.value);
-                    if (error) setError(null);
+                    if (confirmPasswordError) setConfirmPasswordError(null);
+                    if (formError) setFormError(null);
                   }}
                   onKeyPress={handleKeyPress}
                   disabled={isSubmitting}

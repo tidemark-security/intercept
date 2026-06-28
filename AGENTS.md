@@ -34,15 +34,15 @@ A single `bump-my-version bump <part>` command:
    - `VERSION`
    - `frontend/package.json`
    - `frontend/package-lock.json`
-   - `docs/quickstart/docker-compose.yml` (image TAG defaults)
 2. Creates a git commit (`release: v{new_version}`)
-3. Creates a git tag (`v{new_version}`)
+3. Does **not** create a git tag. The GitHub Release workflow creates `v{new_version}` after the version bump commit is merged to `main`.
 
 ### When to bump
 
-- **After** all code changes for the release are committed to `main`
-- **Before** `git push origin main --tags` (the tag triggers the release workflow)
-- Bump should be the final commit before pushing
+- **After** all code changes for the release are committed on the release branch
+- **Before** merging the release branch to `main`
+- Bump should be the final commit on the release branch before merge
+- After the merge reaches `main`, `.github/workflows/release.yml` creates the `v{new_version}` tag from `VERSION` and runs the release
 
 ### Adding new versioned files
 
@@ -51,4 +51,5 @@ If a new file contains the version string and should be updated on bump, add a `
 ### Important
 
 - The working directory must be clean (no uncommitted changes) before running `bump-my-version`
-- If you need to fix something after bumping, delete the tag (`git tag -d v{version}`), reset the commit (`git reset --soft HEAD~1`), make your fix, commit it, then re-run `bump-my-version bump <part>`
+- If you need to fix something after bumping but before merging to `main`, reset the bump commit (`git reset --soft HEAD~1`), make your fix, commit it, then re-run `bump-my-version bump <part>`
+- Do not create or push release tags manually; release tags are owned by `.github/workflows/release.yml`

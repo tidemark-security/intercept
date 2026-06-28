@@ -68,11 +68,11 @@ jobs:
         env:
           POSTGRES_USER: intercept_user
           POSTGRES_PASSWORD: intercept_password
-          POSTGRES_DB: intercept_case_db
+          POSTGRES_DB: intercept_test_db
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U intercept_user -d intercept_test_db"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -91,7 +91,7 @@ jobs:
       - name: Run tests
         working-directory: backend
         env:
-          TEST_DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db
+          TEST_DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_test_db
           SECRET_KEY: ci-test-secret-key
           SKIP_DOCKER_TEST_SETUP: "1"
           CSRF_ENABLED: "false"

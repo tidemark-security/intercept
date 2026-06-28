@@ -158,7 +158,8 @@ vi.mock("@/components/forms/TextArea", () => {
   return { TextArea };
 });
 
-vi.mock("@/components/buttons/ToggleGroup", () => {
+vi.mock("@tidemark-security/ux", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tidemark-security/ux")>();
   const ToggleGroup = ({ children }: { children: React.ReactNode }) => (
     <div>{children}</div>
   );
@@ -167,7 +168,7 @@ vi.mock("@/components/buttons/ToggleGroup", () => {
     <button type="button">{children}</button>
   );
 
-  return { ToggleGroup };
+  return { ...actual, ToggleGroup };
 });
 
 vi.mock("@/components/forms/RadioCardGroup", () => {

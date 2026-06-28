@@ -4,13 +4,22 @@ import { QuickTerminal } from '@/components/forms/QuickTerminal';
 import { TimelineItemRenderer } from '@/components/timeline/TimelineItemRenderer';
 import { TimelineGraphView } from '@/components/timeline/TimelineGraphView';
 import { InlineReplyTerminal } from '@/components/timeline/InlineReplyTerminal';
+import {
+  getLinkedEntityCollapseKey,
+  isLinkedEntityTimelineItem,
+  loadLinkedEntityCollapseState,
+  saveLinkedEntityCollapseState,
+  type LinkedEntityCollapseState,
+} from '@/components/timeline/linkedEntityCollapse';
 import { ReplyProvider } from '@/contexts/ReplyProvider';
 import { useReplyMode } from '@/contexts/ReplyContext';
 import { usePresence } from '@/contexts/WebSocketContext';
+import { useBreakpointContext } from '@/contexts/BreakpointContext';
 import { useAutoScrollToTimelineItem, groupTimelineItems } from '@/components/timeline/timelineUtils';
-import { useLinkTemplates } from '@/hooks/useLinkTemplates';
+import { useResolvedLinkTemplates } from '@/hooks/useUserLinkTemplates';
 import { TriageRecommendationCard } from '@/components/triage/TriageRecommendationCard';
 import { TriageRequestCard } from '@/components/triage/TriageRequestCard';
+import { PicerlStage } from '@/components/misc/PicerlStage';
 // Import handlers to ensure they're registered
 import '@/components/timeline/eventHandlers';
 import type { UnifiedTimelineProps, UnifiedEntity } from './UnifiedTimeline.types';
@@ -20,22 +29,332 @@ import type { AlertRead } from '@/types/generated/models/AlertRead';
 import type { AlertStatus } from '@/types/generated/models/AlertStatus';
 import InterceptLogo from '@/assets/Intercept-Green.svg';
 import InterceptLogoBlack from '@/assets/Intercept-Black.svg';
+import { ContextCard } from '@/components/cards/ContextCard';
 import { EntityMetadataCard } from '@/components/cards/EntityMetadataCard';
 import { Button } from '@/components/buttons/Button';
 import { Dialog } from "@/components/overlays/Dialog";
+import { CarouselControl } from "@/components/navigation/CarouselControl";
 import { findTimelineItem } from "@/utils/timelineUtils";
 import { compareTimelineItems, getTimelineItems } from "@/utils/timelineHelpers";
 import { useTheme } from '@/contexts/ThemeContext';
 import { cn } from '@/utils/cn';
 import { formatPresenceText } from '@/utils/presenceText';
+import { PICERL_STAGES, type PICERLStage } from '@/types/caseRunbooks';
+import { Badge } from '@/components/data-display/Badge';
+import type { TaskRead } from '@/types/generated/models/TaskRead';
+import type { TaskStatus } from '@/types/generated/models/TaskStatus';
 
 
 import { ArrowRight } from 'lucide-react';
 
 const TIMELINE_VIEW_STORAGE_KEY = 'intercept.timeline-view';
-
+const SWIMLANE_GRID_MIN_WIDTH = 1120;
 function getTimelineViewStorageKey(entityType: 'case' | 'task', entityId: number): string {
   return `${TIMELINE_VIEW_STORAGE_KEY}.${entityType}.${entityId}`;
+}
+
+function isPICERLStage(value: unknown): value is PICERLStage {
+  return typeof value === 'string' && (PICERL_STAGES as readonly string[]).includes(value);
+}
+
+function getPICERLStage(item: TimelineItem): PICERLStage | null {
+  const stage = (item as any).picerl_stage;
+  return isPICERLStage(stage) ? stage : null;
+}
+
+function normalizeTaskStatusForEdit(status: unknown): TaskStatus {
+  return status === 'IN_PROGRESS' || status === 'DONE' || status === 'TODO'
+    ? status
+    : 'TODO';
+}
+
+function timelineTaskItemToTaskRead(item: TimelineItem): TaskRead | null {
+  if (item.type !== 'task') {
+    return null;
+  }
+
+  const taskItem = item as TimelineItem & {
+    task_id?: number | null;
+    task_human_id?: string | null;
+    title?: string | null;
+    status?: string | null;
+    priority?: TaskRead['priority'] | null;
+    assignee?: string | null;
+    due_date?: string | null;
+    picerl_stage?: TaskRead['picerl_stage'];
+    source_runbook?: number | null;
+    case_id?: number | null;
+    updated_at?: string | null;
+    tags?: string[] | null;
+    source_timeline_items?: TaskRead['timeline_items'];
+  };
+
+  if (!taskItem.task_id) {
+    return null;
+  }
+
+  return {
+    id: taskItem.task_id,
+    human_id: taskItem.task_human_id || '',
+    title: taskItem.title || taskItem.task_human_id || 'Task',
+    description: taskItem.description ?? null,
+    priority: taskItem.priority ?? undefined,
+    status: normalizeTaskStatusForEdit(taskItem.status),
+    assignee: taskItem.assignee ?? null,
+    due_date: taskItem.due_date ?? null,
+    picerl_stage: taskItem.picerl_stage ?? null,
+    source_runbook: taskItem.source_runbook ?? null,
+    case_id: taskItem.case_id ?? null,
+    linked_at: null,
+    created_by: taskItem.created_by || 'System',
+    created_at: taskItem.created_at || taskItem.timestamp || '',
+    updated_at: taskItem.updated_at || taskItem.created_at || taskItem.timestamp || '',
+    timeline_items: taskItem.source_timeline_items ?? null,
+    tags: Array.isArray(taskItem.tags) ? taskItem.tags : [],
+  };
+}
+
+function SwimlaneTaskButton({
+  item,
+  entityId,
+  entityType,
+  sortBy,
+  onOpenTask,
+}: {
+  item: TimelineItem;
+  entityId: number;
+  entityType: 'case' | 'task';
+  sortBy: SortOption;
+  onOpenTask?: (task: TaskRead) => void;
+}) {
+  const task = timelineTaskItemToTaskRead(item);
+
+  return (
+    <button
+      type="button"
+      className="flex min-w-0 cursor-pointer flex-col gap-2 rounded-md border border-solid border-neutral-border bg-neutral-0 px-3 py-3 text-left transition-colors hover:border-brand-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary"
+      onClick={() => {
+        if (task) {
+          onOpenTask?.(task);
+        }
+      }}
+      disabled={!task || !onOpenTask}
+    >
+      <TimelineItemRenderer
+        item={item}
+        index={0}
+        total={1}
+        entityId={entityId}
+        entityType={entityType}
+        sortBy={sortBy}
+        variant="super-compact"
+        hideReplies
+      />
+    </button>
+  );
+}
+
+function SwimlaneLane({
+  stage,
+  stageItems,
+  selectedStage,
+  onSelectStage,
+  entityId,
+  entityType,
+  sortBy,
+  onOpenTask,
+  className,
+  itemsScrollable = true,
+}: {
+  stage: PICERLStage;
+  stageItems: TimelineItem[];
+  selectedStage?: PICERLStage;
+  onSelectStage: (stage: PICERLStage | undefined) => void;
+  entityId: number;
+  entityType: 'case' | 'task';
+  sortBy: SortOption;
+  onOpenTask?: (task: TaskRead) => void;
+  className?: string;
+  itemsScrollable?: boolean;
+}) {
+  const muted = Boolean(selectedStage && selectedStage !== stage);
+
+  return (
+    <section
+      className={cn(
+        "flex min-h-0 flex-col gap-2 border border-solid border-neutral-border bg-neutral-50 p-3",
+        muted && "opacity-45",
+        className,
+      )}
+    >
+      <button
+        type="button"
+        className="flex min-h-8 min-w-0 items-center justify-between gap-2 text-left"
+        onClick={() => onSelectStage(selectedStage === stage ? undefined : stage)}
+      >
+        <PicerlStage stage={stage} className="min-w-0 flex-1" />
+        <Badge variant="neutral">{String(stageItems.length)}</Badge>
+      </button>
+      <div
+        className={cn(
+          "flex min-h-0 flex-col gap-2",
+          itemsScrollable ? "flex-1 overflow-auto" : "flex-none overflow-visible",
+        )}
+      >
+        {stageItems.map((item) => (
+          <SwimlaneTaskButton
+            key={item.id}
+            item={item}
+            entityId={entityId}
+            entityType={entityType}
+            sortBy={sortBy}
+            onOpenTask={onOpenTask}
+          />
+        ))}
+        {stageItems.length === 0 ? (
+          <div className="flex min-h-24 flex-1 items-center justify-center border border-dashed border-neutral-border px-2 text-center text-caption font-caption text-subtext-color">
+            No staged tasks
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function PICERLSwimlaneView({
+  stagedItems,
+  selectedStage,
+  onSelectStage,
+  entityId,
+  entityType,
+  sortBy,
+  onOpenTask,
+}: {
+  stagedItems: TimelineItem[];
+  selectedStage?: PICERLStage;
+  onSelectStage: (stage: PICERLStage | undefined) => void;
+  entityId: number;
+  entityType: 'case' | 'task';
+  sortBy: SortOption;
+  onOpenTask?: (task: TaskRead) => void;
+}) {
+  const containerRef = React.useRef<HTMLDivElement | null>(null);
+  const [availableWidth, setAvailableWidth] = React.useState<number | null>(null);
+  const [mobileStageIndex, setMobileStageIndex] = React.useState(() => (
+    selectedStage ? Math.max(PICERL_STAGES.indexOf(selectedStage), 0) : 0
+  ));
+  const useCarouselLayout = availableWidth === null || availableWidth < SWIMLANE_GRID_MIN_WIDTH;
+
+  React.useEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const updateAvailableWidth = () => {
+      setAvailableWidth(container.getBoundingClientRect().width);
+    };
+
+    updateAvailableWidth();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateAvailableWidth);
+      return () => window.removeEventListener('resize', updateAvailableWidth);
+    }
+
+    const ResizeObserverCtor = ResizeObserver as unknown as {
+      new (callback: ResizeObserverCallback): ResizeObserver;
+    };
+    const resizeObserver = new ResizeObserverCtor(() => {
+      updateAvailableWidth();
+    });
+    resizeObserver.observe(container);
+
+    return () => resizeObserver.disconnect();
+  }, []);
+
+  React.useEffect(() => {
+    if (!selectedStage) {
+      return;
+    }
+
+    const nextIndex = PICERL_STAGES.indexOf(selectedStage);
+    if (nextIndex >= 0) {
+      setMobileStageIndex(nextIndex);
+    }
+  }, [selectedStage]);
+
+  const selectMobileStageIndex = React.useCallback((index: number) => {
+    const nextIndex = (index + PICERL_STAGES.length) % PICERL_STAGES.length;
+    setMobileStageIndex(nextIndex);
+    onSelectStage(PICERL_STAGES[nextIndex]);
+  }, [onSelectStage]);
+
+  const moveMobileStage = React.useCallback((delta: number) => {
+    setMobileStageIndex((current) => {
+      const nextIndex = (current + delta + PICERL_STAGES.length) % PICERL_STAGES.length;
+      onSelectStage(PICERL_STAGES[nextIndex]);
+      return nextIndex;
+    });
+  }, [onSelectStage]);
+
+  return (
+    <div
+      ref={containerRef}
+      aria-label="PICERL swimlane"
+      className={cn(
+        "flex h-full min-h-0 w-full grow flex-col",
+        useCarouselLayout
+          ? "overflow-hidden p-6 mobile:p-0"
+          : "overflow-hidden p-6",
+      )}
+    >
+      {useCarouselLayout ? (
+        <div className="flex h-full min-h-0 w-full flex-col gap-2">
+          <SwimlaneLane
+            stage={PICERL_STAGES[mobileStageIndex]}
+            stageItems={stagedItems.filter((item) => getPICERLStage(item) === PICERL_STAGES[mobileStageIndex])}
+            selectedStage={selectedStage}
+            onSelectStage={onSelectStage}
+            entityId={entityId}
+            entityType={entityType}
+            sortBy={sortBy}
+            onOpenTask={onOpenTask}
+            className="min-h-0 w-full flex-1"
+          />
+          <CarouselControl
+            count={PICERL_STAGES.length}
+            index={mobileStageIndex}
+            onPrevious={() => moveMobileStage(-1)}
+            onNext={() => moveMobileStage(1)}
+            onSelect={selectMobileStageIndex}
+            itemLabel="PICERL lane"
+            size="medium"
+            className="flex-none"
+          />
+        </div>
+      ) : (
+        <div className="grid min-h-0 grow grid-cols-6 gap-3">
+          {PICERL_STAGES.map((stage) => {
+            const stageItems = stagedItems.filter((item) => getPICERLStage(item) === stage);
+            return (
+              <SwimlaneLane
+                key={stage}
+                stage={stage}
+                stageItems={stageItems}
+                selectedStage={selectedStage}
+                onSelectStage={onSelectStage}
+                entityId={entityId}
+                entityType={entityType}
+                sortBy={sortBy}
+                onOpenTask={onOpenTask}
+              />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 /**
  * UnifiedTimeline - Displays entity details, timeline items, and quick terminal
@@ -110,6 +429,7 @@ function UnifiedTimelineInner({
   onFlagItem,
   onHighlightItem,
   onEditItem,
+  onEditLinkedTask,
   onDeleteItem,
   onDeleteBatch,
   onAssignToMe,
@@ -140,13 +460,16 @@ function UnifiedTimelineInner({
   onNavigateToCase,
   isAcceptingRecommendation,
   isRejectingRecommendation,
+  acceptRecommendationError,
   onRetryTriage,
   onRequestTriage,
   isEnqueuingTriage,
   isTriageEnabled,
 }: UnifiedTimelineProps) {
   const { resolvedTheme } = useTheme();
+  const { isMobile, isTablet } = useBreakpointContext();
   const isDarkTheme = resolvedTheme === 'dark';
+  const isCompactHeader = isMobile || isTablet;
   const presenceViewers = usePresence(entityType, selectedEntityId);
   const resolvedPresenceText = useMemo(
     () => presenceText ?? formatPresenceText(presenceViewers, entityType, currentUser),
@@ -156,10 +479,10 @@ function UnifiedTimelineInner({
 
   // Access reply context
   const { activeReplyParentId, activeReplyDepth, enterReplyMode, exitReplyMode, isInReplyMode } = useReplyMode();
-  
+
   // Ref for the scrollable timeline items container (for scroll-based hide/show on mobile)
   const timelineScrollRef = useRef<HTMLDivElement>(null);
-  
+
   const isReadOnly = mode === 'readonly';
   const isEditable = mode === 'editable';
   const canReviewTriage = isEditable && !!onAcceptTriageRecommendation && !!onRejectTriageRecommendation;
@@ -169,7 +492,7 @@ function UnifiedTimelineInner({
   React.useEffect(() => {
     onReplyParentIdChange?.(activeReplyParentId);
   }, [activeReplyParentId, onReplyParentIdChange]);
-  
+
   // Handle Escape key to exit reply mode
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -177,13 +500,36 @@ function UnifiedTimelineInner({
         exitReplyMode();
       }
     };
-    
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isInReplyMode, exitReplyMode]);
-  
-  // Fetch link templates for timeline items
-  const { data: linkTemplates = [] } = useLinkTemplates(true);
+
+  const headerLinkContext = useMemo<Record<string, unknown>>(() => ({
+    surface: 'entity',
+    type: entityType,
+    entity_type: entityType,
+    id: selectedEntityId,
+    entity_id: selectedEntityId,
+    human_id: entityDetail?.human_id,
+    title: entityDetail?.title,
+    status: entityDetail?.status,
+    priority: (entityDetail as any)?.priority,
+    assignee: (entityDetail as any)?.assignee,
+    source: (entityDetail as any)?.source,
+    tags: (entityDetail as any)?.tags,
+    created_at: (entityDetail as any)?.created_at,
+    updated_at: (entityDetail as any)?.updated_at,
+  }), [
+    entityDetail,
+    entityType,
+    selectedEntityId,
+  ]);
+  const { data: headerLinks = [] } = useResolvedLinkTemplates(
+    headerLinkContext,
+    Boolean(entityDetail),
+    { surface: 'entity', entity_type: entityType },
+  );
 
   // Auto-scroll to newly created timeline item by ID
   useAutoScrollToTimelineItem(scrollToItemId, entityDetail, isEditable);
@@ -230,12 +576,44 @@ function UnifiedTimelineInner({
 
   const supportsGraphView = entityType === 'case' || entityType === 'task';
 
-  // Timeline filter and sort state - defaults: Timestamp / Ascending / All / Grouped
+  // Timeline filter and sort state - defaults: Timestamp / Oldest first / All / Ungrouped
   const [selectedType, setSelectedType] = useState<string | undefined>(undefined);
+  const [selectedPICERLStage, setSelectedPICERLStage] = useState<PICERLStage | undefined>(undefined);
   const [sortBy, setSortBy] = useState<SortOption>('timestamp');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
-  const [groupSimilar, setGroupSimilar] = useState<boolean>(true);
+  const [groupSimilar, setGroupSimilar] = useState<boolean>(false);
   const [timelineViewMode, setTimelineViewMode] = useState<TimelineViewMode>('timeline');
+  const [linkedEntityCollapseState, setLinkedEntityCollapseState] = useState<LinkedEntityCollapseState>(() =>
+    typeof window === 'undefined' ? {} : loadLinkedEntityCollapseState(window.localStorage)
+  );
+  const defaultCollapsedCaseIdRef = useRef<number | null>(null);
+
+  React.useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    setLinkedEntityCollapseState(loadLinkedEntityCollapseState(window.localStorage));
+  }, []);
+
+  const updateLinkedEntityCollapseState = React.useCallback((updater: (current: LinkedEntityCollapseState) => LinkedEntityCollapseState) => {
+    setLinkedEntityCollapseState((current) => {
+      const next = updater(current);
+
+      if (typeof window !== 'undefined') {
+        saveLinkedEntityCollapseState(next, window.localStorage);
+      }
+
+      return next;
+    });
+  }, []);
+
+  const handleLinkedEntityCollapseChange = React.useCallback((collapseKey: string, isCollapsed: boolean) => {
+    updateLinkedEntityCollapseState((current) => ({
+      ...current,
+      [collapseKey]: isCollapsed,
+    }));
+  }, [updateLinkedEntityCollapseState]);
 
   const updateTimelineViewMode = React.useCallback((nextMode: TimelineViewMode) => {
     setTimelineViewMode(nextMode);
@@ -260,7 +638,7 @@ function UnifiedTimelineInner({
       getTimelineViewStorageKey(entityType, selectedEntityId),
     );
 
-    setTimelineViewMode(persistedMode === 'graph' ? 'graph' : 'timeline');
+    setTimelineViewMode(persistedMode === 'graph' || persistedMode === 'swimlane' ? persistedMode : 'timeline');
   }, [entityType, selectedEntityId, supportsGraphView]);
 
   const handleSortChange = (newSortBy: SortOption, newDirection: SortDirection) => {
@@ -294,20 +672,114 @@ function UnifiedTimelineInner({
     return sorted;
   }, [entityDetail, sortBy, sortDirection]);
 
+  const stagedTaskItems = useMemo(() => (
+    sortedTimelineItems.filter((item) => item.type === 'task' && getPICERLStage(item))
+  ), [sortedTimelineItems]);
+
+  const hasPICERLStages = entityType === 'case' && stagedTaskItems.length > 0;
+
+  React.useEffect(() => {
+    if (!hasPICERLStages && selectedPICERLStage) {
+      setSelectedPICERLStage(undefined);
+    }
+    if (!hasPICERLStages && timelineViewMode === 'swimlane') {
+      setTimelineViewMode('timeline');
+    }
+  }, [hasPICERLStages, selectedPICERLStage, timelineViewMode]);
+
   // Filter and sort timeline items
   const filteredAndSortedItems = useMemo(() => {
-    if (!selectedType) {
-      return sortedTimelineItems;
+    return sortedTimelineItems.filter((item) => {
+      if (selectedType && item.type !== selectedType) {
+        return false;
+      }
+      if (selectedPICERLStage) {
+        return item.type === 'task' && getPICERLStage(item) === selectedPICERLStage;
+      }
+      return true;
+    });
+  }, [selectedPICERLStage, selectedType, sortedTimelineItems]);
+
+  const visibleLinkedEntityCollapseKeys = useMemo(() => {
+    const keys = new Set<string>();
+
+    const collectKeys = (items: TimelineItem[]) => {
+      items.forEach((timelineItem) => {
+        if (isLinkedEntityTimelineItem(timelineItem)) {
+          const key = getLinkedEntityCollapseKey(timelineItem);
+          if (key) {
+            keys.add(key);
+          }
+        }
+
+        const replies = getTimelineItems({ timeline_items: timelineItem.replies ?? null });
+        if (replies.length > 0) {
+          collectKeys(replies);
+        }
+
+        const sourceTimelineItems = getTimelineItems({
+          timeline_items: (timelineItem as TimelineItem & { source_timeline_items?: Record<string, TimelineItem> | null }).source_timeline_items ?? null,
+        });
+        if (sourceTimelineItems.length > 0) {
+          collectKeys(sourceTimelineItems);
+        }
+      });
+    };
+
+    collectKeys(filteredAndSortedItems);
+    return Array.from(keys);
+  }, [filteredAndSortedItems]);
+
+  const hasVisibleLinkedEntityCards = visibleLinkedEntityCollapseKeys.length > 0;
+
+  React.useEffect(() => {
+    if (entityType !== 'case' || selectedEntityId === null) {
+      defaultCollapsedCaseIdRef.current = null;
+      return;
     }
 
-    return sortedTimelineItems.filter((item) => item.type === selectedType);
-  }, [selectedType, sortedTimelineItems]);
+    if (
+      defaultCollapsedCaseIdRef.current === selectedEntityId ||
+      visibleLinkedEntityCollapseKeys.length === 0
+    ) {
+      return;
+    }
+
+    defaultCollapsedCaseIdRef.current = selectedEntityId;
+    updateLinkedEntityCollapseState((current) => {
+      const next = { ...current };
+      visibleLinkedEntityCollapseKeys.forEach((key) => {
+        next[key] = true;
+      });
+      return next;
+    });
+  }, [entityType, selectedEntityId, updateLinkedEntityCollapseState, visibleLinkedEntityCollapseKeys]);
+
+  const collapseVisibleLinkedEntityCards = React.useCallback(() => {
+    updateLinkedEntityCollapseState((current) => {
+      const next = { ...current };
+      visibleLinkedEntityCollapseKeys.forEach((key) => {
+        next[key] = true;
+      });
+      return next;
+    });
+  }, [updateLinkedEntityCollapseState, visibleLinkedEntityCollapseKeys]);
+
+  const expandVisibleLinkedEntityCards = React.useCallback(() => {
+    updateLinkedEntityCollapseState((current) => {
+      const next = { ...current };
+      visibleLinkedEntityCollapseKeys.forEach((key) => {
+        next[key] = false;
+      });
+      return next;
+    });
+  }, [updateLinkedEntityCollapseState, visibleLinkedEntityCollapseKeys]);
 
   // Helper function to calculate reply depth for a timeline item
   const calculateReplyDepth = (item: TimelineItem, items: TimelineItem[]): number => {
     let depth = 0;
     let currentParentId = item.parent_id;
-    
+
     // Walk up the parent chain (max 6 iterations for safety)
     while (currentParentId && depth < 6) {
       const parent = items.find((i) => i.id === currentParentId);
@@ -315,7 +787,7 @@ function UnifiedTimelineInner({
       depth++;
       currentParentId = parent.parent_id;
     }
-    
+
     return depth;
   };
 
@@ -354,19 +826,19 @@ function UnifiedTimelineInner({
 
       return current;
     };
-    
+
     // Recursively search for the item (could be nested reply)
     const item = findItemById(itemId, allItems);
     if (!item) return;
-    
+
     // For Slack-style threading: always reply to the root parent, not the nested item
     const rootParent = findRootParent(item, allItems);
     const depth = calculateReplyDepth(item, allItems);
-    
+
     // Enter reply mode with the ROOT parent ID (so all replies are siblings under the same parent)
     enterReplyMode(rootParent.id || itemId, depth);
   }, [entityDetail, enterReplyMode, isReadOnly]);
-  
+
   // Reply submission handler (wraps existing onQuickTerminalSubmit)
   const handleReplySubmit = React.useCallback(async (text: string) => {
     if (!onQuickTerminalSubmit) return;
@@ -376,10 +848,10 @@ function UnifiedTimelineInner({
       await onQuickTerminalSubmit(text);
       return;
     }
-    
+
     // In reply mode - submit as reply with parent_id
     await onQuickTerminalSubmit(text, activeReplyParentId);
-    
+
     // Keep reply mode active for additional replies
     // User can press Escape or click Cancel to exit
   }, [activeReplyParentId, onQuickTerminalSubmit]);
@@ -420,7 +892,7 @@ function UnifiedTimelineInner({
 
   const handleConfirmDelete = () => {
     if (deleteConfirmItemIds.length === 0) return;
-    
+
     if (deleteConfirmItemIds.length === 1 && onDeleteItem) {
       onDeleteItem(deleteConfirmItemIds[0]);
     } else if (onDeleteBatch) {
@@ -429,17 +901,17 @@ function UnifiedTimelineInner({
       // Fallback if no batch handler but multiple items
       deleteConfirmItemIds.forEach(id => onDeleteItem(id));
     }
-    
+
     setDeleteConfirmItemIds([]);
   };
 
   // Calculate total children count for items being deleted
   const deleteChildCount = useMemo(() => {
     if (!entityDetail || deleteConfirmItemIds.length === 0) return 0;
-    
+
     const timelineItems = getTimelineItems(entityDetail);
     if (!timelineItems) return 0;
-    
+
     const countDescendants = (item: TimelineItem): number => {
       let c = 0;
       const replies = getTimelineItems({ timeline_items: item.replies ?? null });
@@ -448,7 +920,7 @@ function UnifiedTimelineInner({
       }
       return c;
     };
-    
+
     let count = 0;
     for (const id of deleteConfirmItemIds) {
       const item = findTimelineItem(timelineItems, id);
@@ -456,7 +928,7 @@ function UnifiedTimelineInner({
         count += countDescendants(item);
       }
     }
-    
+
     return count;
   }, [entityDetail, deleteConfirmItemIds]);
 
@@ -489,22 +961,22 @@ function UnifiedTimelineInner({
   // Alerts: no task items allowed (they are created via case)
   // Cases: all item types including task items
   // Tasks: all item types EXCEPT task (tasks cannot be nested)
-  const availableItemTypes: TimelineItemType[] = entityType === 'alert' 
+  const availableItemTypes: TimelineItemType[] = entityType === 'alert'
     ? [
-        'note',
-        'attachment',
-        'link',
-        'observable',
-        'system',
-        'actor',
-        'email',
-        'network_traffic',
-        'process',
-        'registry_change',
-        'ttp',
-      ]
+      'note',
+      'attachment',
+      'link',
+      'observable',
+      'system',
+      'actor',
+      'email',
+      'network_traffic',
+      'process',
+      'registry_change',
+      'ttp',
+    ]
     : entityType === 'task'
-    ? [
+      ? [
         'note',
         'attachment',
         'link',
@@ -518,10 +990,11 @@ function UnifiedTimelineInner({
         'ttp',
         'forensic_artifact',
       ]
-    : [
+      : [
         'note',
         'attachment',
         'link',
+        'case_runbook',
         'task',
         'observable',
         'system',
@@ -537,7 +1010,14 @@ function UnifiedTimelineInner({
   return (
     <div className="flex h-full w-full flex-col items-start">
       {/* Entity Header */}
-      <div className={`flex min-h-[150px] mobile:min-h-0 w-full flex-col items-start p-6 mobile:p-4 border-b border-solid  ${isDarkTheme ? 'border-brand-primary' : 'border-neutral-1000'}`}>
+      <div
+        className={cn(
+          "flex w-full flex-col items-start border-b border-solid",
+          isCompactHeader ? "p-4" : "p-6",
+          !isCompactHeader && "min-h-[150px]",
+          isDarkTheme ? "border-brand-primary" : "border-neutral-1000",
+        )}
+      >
         <EntityHeader
           entityType={entityType}
           mode={mode}
@@ -563,14 +1043,21 @@ function UnifiedTimelineInner({
           onLinkToCase={onLinkToCase}
           onUnlinkFromCase={onUnlinkFromCase}
           onPrimaryAction={onOpenEntity}
+          triageRecommendation={entityType === 'alert' ? (entityDetail as AlertRead)?.triage_recommendation : null}
+          onAcceptTriageRecommendation={onAcceptTriageRecommendation}
+          onRejectTriageRecommendation={onRejectTriageRecommendation}
+          isAcceptingRecommendation={isAcceptingRecommendation}
+          isRejectingRecommendation={isRejectingRecommendation}
           onEdit={onEditEntity}
           showTimelineViewToggle={supportsGraphView}
           timelineViewMode={timelineViewMode}
           onTimelineViewModeChange={updateTimelineViewMode}
           graphViewDisabled={getTimelineItems(entityDetail).length === 0}
+          swimlaneViewDisabled={!hasPICERLStages}
           linkedCaseAlerts={linkedCaseAlerts}
           linkedTaskCount={linkedTaskCount}
           caseTags={caseTags}
+          customLinks={headerLinks}
           showTimelineFilter={true}
           timelineItems={getTimelineItems(entityDetail)}
           selectedType={selectedType}
@@ -580,20 +1067,29 @@ function UnifiedTimelineInner({
           onSortChange={handleSortChange}
           groupSimilar={groupSimilar}
           onGroupSimilarChange={setGroupSimilar}
+          picerlStages={hasPICERLStages ? PICERL_STAGES : []}
+          selectedPICERLStage={selectedPICERLStage}
+          onPICERLStageChange={hasPICERLStages ? setSelectedPICERLStage : undefined}
+          hasLinkedEntityCards={hasVisibleLinkedEntityCards}
+          onCollapseLinkedEntityCards={collapseVisibleLinkedEntityCards}
+          onExpandLinkedEntityCards={expandVisibleLinkedEntityCards}
           showBackButton={!!onBackToList}
           onBackClick={onBackToList}
           scrollContainerRef={timelineScrollRef}
         />
       </div>
 
-      
+
       {/* Timeline Items */}
       <div
         ref={timelineScrollRef}
+        aria-label={`${entityType} timeline content`}
         className={cn(
           'flex w-full grow shrink-0 basis-0 flex-col items-start',
           timelineViewMode === 'graph'
             ? 'min-h-0 overflow-hidden p-0'
+            : timelineViewMode === 'swimlane'
+              ? 'min-h-0 overflow-auto p-0'
             : 'overflow-auto p-0'
         )}
       >
@@ -610,10 +1106,10 @@ function UnifiedTimelineInner({
             <TimelineGraphView
               items={sortedTimelineItems}
               selectedType={selectedType}
+              selectedPICERLStage={selectedPICERLStage}
               entityId={selectedEntityId}
               entityType={entityType as 'case' | 'task'}
               sortBy={sortBy}
-              linkTemplates={linkTemplates}
               onSelectItem={handleGraphSelectItem}
               onFlagItem={isEditable ? onFlagItem : undefined}
               onHighlightItem={isEditable ? onHighlightItem : undefined}
@@ -623,116 +1119,144 @@ function UnifiedTimelineInner({
           ) : (
             <>
               {(() => {
-              const timelineItems = getTimelineItems(entityDetail);
-              const hasTimelineItems = timelineItems.length > 0;
-              
-              return (
-                <div className="flex w-full flex-col items-start">
-                  {/* Triage Recommendation Card (Alerts only) */}
-                  {entityType === 'alert' && (entityDetail as AlertRead).triage_recommendation && (
-                    <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
-                      <TriageRecommendationCard
-                        recommendation={(entityDetail as AlertRead).triage_recommendation!}
-                        onAccept={onAcceptTriageRecommendation || (() => {})}
-                        onReject={onRejectTriageRecommendation || (() => {})}
-                        onRetry={canReviewTriage ? onRetryTriage : undefined}
-                        onNavigateToCase={onNavigateToCase}
-                        isAccepting={isAcceptingRecommendation}
-                        isRejecting={isRejectingRecommendation}
-                        isRetrying={isEnqueuingTriage}
-                        canReview={canReviewTriage}
-                      />
-                    </div>
-                  )}
-                  
-                  {/* Triage Request Card (Alerts only - when no recommendation exists and triage is enabled) */}
-                  {entityType === 'alert' && 
-                   !(entityDetail as AlertRead).triage_recommendation && 
-                   isTriageEnabled && 
-                   canRequestTriage && (
-                    <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
-                      <TriageRequestCard
-                        onRequestTriage={onRequestTriage}
-                        isEnqueuing={isEnqueuingTriage}
-                      />
-                    </div>
-                  )}
-                  
-                  {/* Entity Metadata Card */}
-                  <div className="flex w-full">
-                    <EntityMetadataCard
-                      entity={entityDetail}
-                      entityType={entityType}
-                      isLoading={isLoading}
-                      onUpdateTags={onUpdateTags}
-                    />
-                  </div>
+                const timelineItems = getTimelineItems(entityDetail);
+                const hasTimelineItems = timelineItems.length > 0;
 
-                  {/* Timeline Items */}
-                  <div className="flex w-full flex-col items-start p-6 mobile:p-2">
-                    {hasTimelineItems && filteredAndSortedItems.length > 0 ? (
-                    (() => {
-                      // Conditionally group timeline items based on groupSimilar toggle
-                      if (groupSimilar) {
-                        const groupedItems = groupTimelineItems(filteredAndSortedItems);
-                        
-                        return groupedItems.map((group) => (
-                          <TimelineItemRenderer
-                            key={group.item.id}
-                            item={group.item}
-                            items={group.items}
-                            index={group.index}
-                            total={filteredAndSortedItems.length}
-                            entityId={selectedEntityId}
-                            entityType={entityType}
-                            sortBy={sortBy}
-                            onFlag={isEditable ? onFlagItem : undefined}
-                            onHighlight={isEditable ? onHighlightItem : undefined}
-                            onEdit={isEditable ? onEditItem : undefined}
-                            onDelete={isEditable ? handleInternalDelete : undefined}
-                            onDeleteBatch={isEditable ? handleInternalBatchDelete : undefined}
-                            onReply={isEditable ? handleReply : undefined}
-                            linkTemplates={linkTemplates}
+                return (
+                  <div className={cn(
+                    "flex w-full flex-col items-start",
+                    timelineViewMode === 'swimlane' && "h-full min-h-0",
+                  )}>
+                    {/* Triage Recommendation Card (Alerts only) */}
+                    {entityType === 'alert' && (entityDetail as AlertRead).triage_recommendation && (
+                      <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
+                        <TriageRecommendationCard
+                          recommendation={(entityDetail as AlertRead).triage_recommendation!}
+                          onAccept={onAcceptTriageRecommendation || (() => { })}
+                          onReject={onRejectTriageRecommendation || (() => { })}
+                          onRetry={canReviewTriage ? onRetryTriage : undefined}
+                          onNavigateToCase={onNavigateToCase}
+                          isAccepting={isAcceptingRecommendation}
+                          isRejecting={isRejectingRecommendation}
+                          acceptError={acceptRecommendationError}
+                          isRetrying={isEnqueuingTriage}
+                          canReview={canReviewTriage}
+                        />
+                      </div>
+                    )}
+
+                    {/* Triage Request Card (Alerts only - when no recommendation exists and triage is enabled) */}
+                    {entityType === 'alert' &&
+                      !(entityDetail as AlertRead).triage_recommendation &&
+                      isTriageEnabled &&
+                      !isEntityClosed &&
+                      canRequestTriage && (
+                        <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
+                          <TriageRequestCard
+                            onRequestTriage={onRequestTriage}
+                            isEnqueuing={isEnqueuingTriage}
                           />
-                        ));
-                      } else {
-                        // Render items without grouping
-                        return filteredAndSortedItems.map((item, index) => (
-                          <TimelineItemRenderer
-                            key={item.id}
-                            item={item}
-                            index={index}
-                            total={filteredAndSortedItems.length}
-                            entityId={selectedEntityId}
-                            entityType={entityType}
-                            sortBy={sortBy}
-                            onFlag={isEditable ? onFlagItem : undefined}
-                            onHighlight={isEditable ? onHighlightItem : undefined}
-                            onEdit={isEditable ? onEditItem : undefined}
-                            onDelete={isEditable ? handleInternalDelete : undefined}
-                            onReply={isEditable ? handleReply : undefined}
-                            linkTemplates={linkTemplates}
-                          />
-                        ));
-                      }
-                    })()
-                  ) : hasTimelineItems && filteredAndSortedItems.length === 0 ? (
-                    <div className="flex w-full h-full items-center justify-center pt-4">
-                      <span className="text-body font-body text-subtext-color">
-                        No timeline items match the selected filter
-                      </span>
+                        </div>
+                      )}
+
+                    {entityType === 'alert' && Array.isArray((entityDetail as AlertRead).context?.items) && (entityDetail as AlertRead).context!.items!.length > 0 ? (
+                      <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
+                        <ContextCard context={(entityDetail as AlertRead).context} />
+                      </div>
+                    ) : null}
+
+                    {/* Entity Metadata Card */}
+                    <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
+                      <EntityMetadataCard
+                        entity={entityDetail}
+                        entityType={entityType}
+                        isLoading={isLoading}
+                        onUpdateTags={onUpdateTags}
+                      />
                     </div>
-                  ) : (
-                    <div className="flex w-full h-full items-center justify-center pt-4">
-                      <span className="text-body font-body text-subtext-color">
-                        No timeline items yet
-                      </span>
+
+                    {/* Timeline Items */}
+                    <div className={cn(
+                      "flex w-full flex-col items-start p-6 mobile:p-2",
+                      timelineViewMode === 'swimlane' && "h-full min-h-0 flex-none overflow-hidden p-0",
+                    )}>
+                      {timelineViewMode === 'swimlane' && hasPICERLStages ? (
+                        <PICERLSwimlaneView
+                          stagedItems={stagedTaskItems}
+                          selectedStage={selectedPICERLStage}
+                          onSelectStage={setSelectedPICERLStage}
+                          entityId={selectedEntityId}
+                          entityType={entityType as 'case' | 'task'}
+                          sortBy={sortBy}
+                          onOpenTask={isEditable ? onEditLinkedTask : undefined}
+                        />
+                      ) : hasTimelineItems && filteredAndSortedItems.length > 0 ? (
+                        (() => {
+                          // Conditionally group timeline items based on groupSimilar toggle
+                          if (groupSimilar) {
+                            const groupedItems = groupTimelineItems(filteredAndSortedItems);
+
+                            return groupedItems.map((group) => (
+                              <TimelineItemRenderer
+                                key={group.item.id}
+                                item={group.item}
+                                items={group.items}
+                                index={group.index}
+                                total={filteredAndSortedItems.length}
+                                entityId={selectedEntityId}
+                                entityType={entityType}
+                                sortBy={sortBy}
+                                onFlag={isEditable ? onFlagItem : undefined}
+                                onHighlight={isEditable ? onHighlightItem : undefined}
+                                onEdit={isEditable ? onEditItem : undefined}
+                                onEditLinkedTask={isEditable ? onEditLinkedTask : undefined}
+                                onDelete={isEditable ? handleInternalDelete : undefined}
+                                onDeleteBatch={isEditable ? handleInternalBatchDelete : undefined}
+                                onReply={isEditable ? handleReply : undefined}
+                                linkedEntityCollapseState={linkedEntityCollapseState}
+                                onLinkedEntityCollapseChange={handleLinkedEntityCollapseChange}
+                              />
+                            ));
+                          } else {
+                            // Render items without grouping
+                            return filteredAndSortedItems.map((item, index) => (
+                              <TimelineItemRenderer
+                                key={item.id}
+                                item={item}
+                                index={index}
+                                total={filteredAndSortedItems.length}
+                                entityId={selectedEntityId}
+                                entityType={entityType}
+                                sortBy={sortBy}
+                                onFlag={isEditable ? onFlagItem : undefined}
+                                onHighlight={isEditable ? onHighlightItem : undefined}
+                                onEdit={isEditable ? onEditItem : undefined}
+                                onEditLinkedTask={isEditable ? onEditLinkedTask : undefined}
+                                onDelete={isEditable ? handleInternalDelete : undefined}
+                                onReply={isEditable ? handleReply : undefined}
+                                linkedEntityCollapseState={linkedEntityCollapseState}
+                                onLinkedEntityCollapseChange={handleLinkedEntityCollapseChange}
+                              />
+                            ));
+                          }
+                        })()
+                      ) : hasTimelineItems && filteredAndSortedItems.length === 0 ? (
+                        <div className="flex w-full h-full items-center justify-center pt-4">
+                          <span className="text-body font-body text-subtext-color">
+                            No timeline items match the selected filter
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex w-full h-full items-center justify-center pt-4">
+                          <span className="text-body font-body text-subtext-color">
+                            No timeline items yet
+                          </span>
+                        </div>
+                      )}
                     </div>
-                  )}
                   </div>
-                </div>
-              );
-            })()}
+                );
+              })()}
             </>
           )
         ) : (
@@ -775,10 +1299,11 @@ function UnifiedTimelineInner({
             enableGlobalSlashFocus={true}
             suppressGlobalSlashFocus={suppressGlobalSlashFocus}
             onPasteFiles={onPasteFiles}
+            variant={timelineViewMode === 'swimlane' && entityType === 'case' ? 'task-create' : 'default'}
           />
         </div>
       )}
-      
+
       {/* Inline Reply Terminal (show when in reply mode) */}
       {isEditable && isInReplyMode() && activeReplyParentId && onQuickTerminalSubmit && onSlashCommand && onAddNote && onMenuItemSelect && (
         <div className="flex w-full items-start gap-4 p-6 mobile:p-2 border-t border-solid border-neutral-border">
@@ -812,7 +1337,7 @@ function UnifiedTimelineInner({
               </span>
               <span className="text-body font-body text-subtext-color">
                 Are you sure you want to delete {deleteConfirmItemIds.length === 1 ? 'this timeline item' : `these ${deleteConfirmItemIds.length} items`}
-                {deleteChildCount > 0 && ` and ${deleteChildCount === 1 ? 'its' : 'their'} ${deleteChildCount} descendant${deleteChildCount !== 1 ? 's' : ''}`}? 
+                {deleteChildCount > 0 && ` and ${deleteChildCount === 1 ? 'its' : 'their'} ${deleteChildCount} descendant${deleteChildCount !== 1 ? 's' : ''}`}?
                 This action cannot be undone.
               </span>
             </div>

@@ -208,7 +208,6 @@ async def test_delete_case_timeline_item_returns_tombstone_when_timeline_is_empt
     case_id = await _create_case(client, session_cookie)
     payload = make_note("deleted-note-c1")
     payload["timestamp"] = "2026-01-02T12:00:00+00:00"
-    payload["created_at"] = "2026-01-02T12:00:01+00:00"
 
     add_body = await _add_timeline_item(client, case_id, payload, session_cookie)
     item_id = add_body["timeline_items"][0]["id"]
@@ -221,7 +220,7 @@ async def test_delete_case_timeline_item_returns_tombstone_when_timeline_is_empt
     assert tombstone["type"] == "_deleted"
     assert tombstone["original_type"] == "note"
     assert tombstone["original_timestamp"].startswith("2026-01-02T12:00:00")
-    assert tombstone["original_created_at"].startswith("2026-01-02T12:00:01")
+    assert tombstone["original_created_at"] is not None
     assert tombstone["deleted_at"] is not None
 
 
@@ -237,7 +236,6 @@ async def test_delete_case_timeline_reply_returns_tombstone_under_parent(
     reply_payload = make_note("deleted-reply-c1")
     reply_payload["parent_id"] = "parent-note-c1"
     reply_payload["timestamp"] = "2026-01-02T12:15:00+00:00"
-    reply_payload["created_at"] = "2026-01-02T12:15:01+00:00"
 
     parent_body = await _add_timeline_item(client, case_id, parent_payload, session_cookie)
     parent_id = parent_body["timeline_items"][0]["id"]

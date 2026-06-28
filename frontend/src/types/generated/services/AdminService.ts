@@ -26,6 +26,10 @@ import type { MaxMindDatabaseStatus } from '../models/MaxMindDatabaseStatus';
 import type { Page_AuditLogRead_ } from '../models/Page_AuditLogRead_';
 import type { QueueJobsPage } from '../models/QueueJobsPage';
 import type { QueueStatsRead } from '../models/QueueStatsRead';
+import type { ServiceNowConfigureRequest } from '../models/ServiceNowConfigureRequest';
+import type { ServiceNowConfigureResponse } from '../models/ServiceNowConfigureResponse';
+import type { ServiceNowPreviewRequest } from '../models/ServiceNowPreviewRequest';
+import type { ServiceNowPreviewResponse } from '../models/ServiceNowPreviewResponse';
 import type { UserRole } from '../models/UserRole';
 import type { UserStatus } from '../models/UserStatus';
 import type { CancelablePromise } from '../core/CancelablePromise';
@@ -614,6 +618,46 @@ export class AdminService {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/admin/enrichments/maxmind/update',
+        });
+    }
+    /**
+     * Configure Service Now
+     * @returns ServiceNowConfigureResponse Successful Response
+     * @throws ApiError
+     */
+    public static configureServiceNowApiV1AdminEnrichmentsServiceNowConfigurePost({
+        requestBody,
+    }: {
+        requestBody: ServiceNowConfigureRequest,
+    }): CancelablePromise<ServiceNowConfigureResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/admin/enrichments/service-now/configure',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Preview Service Now
+     * @returns ServiceNowPreviewResponse Successful Response
+     * @throws ApiError
+     */
+    public static previewServiceNowApiV1AdminEnrichmentsServiceNowPreviewPost({
+        requestBody,
+    }: {
+        requestBody: ServiceNowPreviewRequest,
+    }): CancelablePromise<ServiceNowPreviewResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/admin/enrichments/service-now/preview',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
         });
     }
     /**

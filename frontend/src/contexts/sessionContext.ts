@@ -20,6 +20,7 @@ export interface SessionState {
   user: UserSummary | null;
   session: SessionSummary | null;
   mustChangePassword: boolean;
+  localCredentialManagementAllowed?: boolean;
   lockout: LockoutResponse | null;
   error: string | null;
 }
@@ -29,6 +30,7 @@ export const sessionInitialState: SessionState = {
   user: null,
   session: null,
   mustChangePassword: false,
+  localCredentialManagementAllowed: true,
   lockout: null,
   error: null,
 };
@@ -41,6 +43,7 @@ export type SessionAction =
         user: UserSummary;
         session: SessionSummary;
         mustChangePassword?: boolean;
+        localCredentialManagementAllowed?: boolean;
       };
     }
   | { type: "SET_UNAUTHENTICATED" }

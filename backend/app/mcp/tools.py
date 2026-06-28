@@ -13,10 +13,12 @@ Tool implementations added per User Stories (Phase 3-8).
 """
 
 from fastapi import HTTPException
+from datetime import datetime
 from typing import Dict, Any
 
 from app.core.database import async_session_factory
 from app.models.enums import UserRole
+from app.api.timestamp_overrides import normalize_created_at_override
 from app.services import mcp_service
 
 # Import FastMCP dependency to access HTTP request for authenticated user
@@ -95,8 +97,8 @@ def _get_authenticated_username() -> str:
     return "System"
 
 
-def _require_mcp_non_auditor_user() -> str:
-    """Require an authenticated non-auditor MCP user for commit operations."""
+def _require_mcp_non_auditor_user_object() -> Any:
+    """Require an authenticated non-auditor MCP user for write operations."""
     user = _get_authenticated_user()
     if not user or not hasattr(user, "username"):
         raise HTTPException(status_code=401, detail="Authentication required")
@@ -106,7 +108,12 @@ def _require_mcp_non_auditor_user() -> str:
             status_code=403, detail="Auditor accounts have read-only access"
         )
 
-    return user.username
+    return user
+
+
+def _require_mcp_non_auditor_user() -> str:
+    """Require an authenticated non-auditor MCP user for commit operations."""
+    return _require_mcp_non_auditor_user_object().username
 
 
 # Phase 3 (User Story 1): get_summary implementation ✅
@@ -193,6 +200,7 @@ async def record_triage_decision_tool(
     confidence: float,
     reasoning_bullets: list[str] | None = None,
     recommended_actions: list[dict[str, Any]] | None = None,
+    recommended_case_runbook_id: int | str | None = None,
     suggested_status: str | None = None,
     suggested_priority: str | None = None,
     suggested_assignee: str | None = None,
@@ -217,6 +225,7 @@ async def record_triage_decision_tool(
             confidence=confidence,
             reasoning_bullets=reasoning_bullets,
             recommended_actions=recommended_actions,
+            recommended_case_runbook_id=recommended_case_runbook_id,
             suggested_status=suggested_status,
             suggested_priority=suggested_priority,
             suggested_assignee=suggested_assignee,
@@ -229,6 +238,23 @@ async def record_triage_decision_tool(
         return result.model_dump()
 
 
+async def search_case_runbooks_tool(
+    query: str | None = None,
+    limit: int = 10,
+) -> Dict[str, Any]:
+    """Search published Case Runbooks for triage recommendation planning."""
+    async with async_session_factory() as db:
+        result = await mcp_service.search_case_runbooks(db=db, query=query, limit=limit)
+        return result.model_dump()
+
+
+async def get_case_runbook_tool(id: str) -> Dict[str, Any]:
+    """Get lean detail for a published Case Runbook."""
+    async with async_session_factory() as db:
+        result = await mcp_service.get_case_runbook(db=db, id_str=id)
+        return result.model_dump()
+
+
 async def add_timeline_item_tool(
     target_kind: str,
     target_id: str,
@@ -236,13 +262,26 @@ async def add_timeline_item_tool(
     body: str,
     commit: bool = False,
     created_at: str | None = None,
+    migration: bool = False,
 ) -> Dict[str, Any]:
     """Add timeline note to alert/case/task.
 
     Phase 7 (User Story 5): add_timeline_item implementation
     """
-    username = (
-        _require_mcp_non_auditor_user() if commit else _get_authenticated_username()
+    user = _require_mcp_non_auditor_user_object() if commit or migration or created_at is not None else _get_authenticated_user()
+    username = user.username if user and hasattr(user, "username") else "System"
+
+    parsed_created_at = None
+    if created_at is not None:
+        try:
+            parsed_created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="created_at must be a valid ISO-8601 datetime")
+
+    created_at_override = normalize_created_at_override(
+        current_user=user,
+        migration=migration,
+        created_at=parsed_created_at,
     )
 
     async with async_session_factory() as db:
@@ -254,7 +293,7 @@ async def add_timeline_item_tool(
             body=body,
             commit=commit,
             created_by=username,
-            created_at=None,
+            created_at=created_at_override,
         )
         return result.model_dump()
 

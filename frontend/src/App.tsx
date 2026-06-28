@@ -14,11 +14,13 @@ const AdminLinkTemplates = lazy(() => import("./pages/AdminLinkTemplates"))
 const AdminSettings = lazy(() => import("./pages/AdminSettings"))
 const AdminQueueStatus = lazy(() => import("./pages/AdminQueueStatus"))
 const AIChat = lazy(() => import("./pages/AIChat").then(m => ({ default: m.AIChat })))
+const ContextEntries = lazy(() => import("./pages/ContextEntries"))
 const Home = lazy(() => import("./pages/Home"))
 const Login = lazy(() => import("./pages/Login"))
 const SetPasswordPage = lazy(() => import("./pages/SetPasswordPage"))
 const CasesListPage = lazy(() => import("./pages/CaseList"))
 const CaseDetailPage = lazy(() => import("./pages/CaseDetail"))
+const CaseRunbooksPage = lazy(() => import("./pages/CaseRunbooks"))
 const Logout = lazy(() => import("./pages/Logout"))
 const SelfPasswordChange = lazy(() => import("./pages/SelfPasswordChange"))
 const ProfileManagement = lazy(() => import("./pages/ProfileManagement"))
@@ -76,6 +78,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <CaseDetailPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/case-runbooks"
+            element={
+              <ProtectedRoute>
+                <CaseRunbooksPage />
               </ProtectedRoute>
             }
           />
@@ -172,6 +182,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <AIChat />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/context-entries"
+            element={
+              <ProtectedRoute>
+                <ContextEntries />
               </ProtectedRoute>
             }
           />

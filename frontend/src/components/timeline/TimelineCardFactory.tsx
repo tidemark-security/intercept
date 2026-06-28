@@ -20,8 +20,7 @@ import { getTimelineIcon } from '@/utils/timelineIcons';
 import { Badge } from '@/components/data-display/Badge';
 import type { CopyTarget } from '@/components/cards/BaseCard';
 import { LoaderCircle } from 'lucide-react';
-import { combineWithAutoLinks } from './linkUtils';
-import type { LinkTemplate } from '@/utils/linkTemplates';
+import { ResolvedLinkButtons } from './linkUtils';
 import { CardActionsMenu } from './CardActionsMenu';
 import { isTimelineItemEnrichmentActive } from './timelineUtils';
 
@@ -64,6 +63,24 @@ export type CardSystem = 'default' | 'success' | 'warning' | 'error';
  * Card size variants
  */
 export type CardSize = 'x-large'| 'large' | 'medium' | 'small';
+
+export type TimelineCardVariant = 'default' | 'super-compact';
+
+/**
+ * Card metadata fields rendered below the primary rows.
+ */
+export interface CardMetadataItem {
+  key: string;
+  label: string;
+  value: React.ReactNode;
+  icon?: React.ReactNode;
+}
+
+/**
+ * Metadata layout variants. `stack` is the current default; `two-column`
+ * reserves a future denser layout for rich entity cards.
+ */
+export type CardMetadataLayout = 'stack' | 'two-column';
 
 /**
  * Item characteristic definition for priority-based display
@@ -157,12 +174,14 @@ export function processCharacteristics<T extends TimelineItem>(
 export interface CardFactoryOptions {
   /** Override card size (default: 'large') */
   size?: CardSize;
+  /** Denser embedded card treatment for graph/tray previews. */
+  variant?: TimelineCardVariant;
   /** Click handler for card interactions */
   onClick?: (item: TimelineItem) => void;
   /** Custom action buttons */
   actionButtons?: React.ReactNode;
-  /** Link templates from API for auto-generating link buttons */
-  linkTemplates?: LinkTemplate[];
+  /** Resolve link actions on the server for this item */
+  resolveLinkTemplates?: boolean;
   /** Characteristics configuration for automatic processing */
   characteristics?: CharacteristicsConfig;
   /** Alert ID for context-dependent features (e.g., attachment downloads) */
@@ -206,6 +225,8 @@ export interface CardConfig {
   actionButtons?: React.ReactNode;
   system?: CardSystem;
   characterFlags?: React.ReactNode;
+  metadataItems?: CardMetadataItem[];
+  metadataLayout?: CardMetadataLayout;
   line1Icon?: React.ReactNode;
   line2Icon?: React.ReactNode;
   line3Icon?: React.ReactNode;
@@ -304,11 +325,8 @@ function fallbackHandler(item: TimelineItem, options: CardFactoryOptions): CardC
  * Handlers should provide type-specific titles.
  * If a handler omits title, the factory applies a generic type-based fallback.
  * 
- * If linkTemplates are provided, auto-link buttons will be generated based on
- * item fields and combined with any custom action buttons.
- * 
  * @param item - Timeline item to render
- * @param options - Card generation options (size, onClick, custom buttons, templates)
+ * @param options - Card generation options (size, onClick, custom buttons)
  * @returns BaseCard component props
  * 
  * @example
@@ -317,9 +335,10 @@ function fallbackHandler(item: TimelineItem, options: CardFactoryOptions): CardC
  * const cardProps = createTimelineCard(item);
  * return <BaseCard {...cardProps} />; // Title will be "Task"
  * 
- * // With API templates for auto-link generation
- * const cardProps = createTimelineCard(item, { linkTemplates: apiTemplates });
- * return <BaseCard {...cardProps} />; // Auto-generates email, phone, etc. buttons
+ * const cardPropsWithActions = createTimelineCard(item, {
+ *   actionButtons: <IconButton icon={<Edit2 />} onClick={handleEdit} />
+ * });
+ * return <BaseCard {...cardPropsWithActions} />;
  * ```
  */
 export function createTimelineCard(
@@ -333,14 +352,15 @@ export function createTimelineCard(
     config.baseIcon = <LoaderCircle className="animate-spin" />;
   }
   
-  // Auto-generate link buttons if templates are provided
   let finalActionButtons = config.actionButtons || options.actionButtons;
-  
-  if (options.linkTemplates && options.linkTemplates.length > 0) {
-    finalActionButtons = combineWithAutoLinks(
-      finalActionButtons,
-      options.linkTemplates,
-      item
+
+  if (options.resolveLinkTemplates) {
+    finalActionButtons = (
+      <ResolvedLinkButtons
+        item={item as Record<string, unknown>}
+        entityType={options.entityType}
+        customButtons={finalActionButtons}
+      />
     );
   }
   

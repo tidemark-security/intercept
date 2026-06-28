@@ -44,13 +44,19 @@ async function globalSetup(config: FullConfig) {
     // Find and fill the username field
     const usernameField = page.locator('input[type="text"], input[name="username"], input[placeholder*="username" i], input[placeholder*="email" i]').first();
     await usernameField.fill(username);
+
+    const continueButton = page.getByRole('button', { name: /^Continue$/i });
+    if (await continueButton.isVisible()) {
+      await continueButton.click();
+    }
     
     // Find and fill the password field
     const passwordField = page.locator('input[type="password"]').first();
+    await passwordField.waitFor({ state: 'visible', timeout: 30000 });
     await passwordField.fill(password);
     
-    // Click the "Sign in with Password" button specifically
-    const signInButton = page.getByRole('button', { name: 'Sign in with Password' });
+    // Click the password sign-in button
+    const signInButton = page.getByRole('button', { name: /^Sign in$/i });
     await signInButton.click();
     
     // Wait for navigation to complete (should redirect to home or dashboard)

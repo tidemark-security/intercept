@@ -11,11 +11,12 @@ import {
   CreateApiKeyModalContent,
   PasskeySecurityCard,
 } from "@/components/auth";
+import { UserLinkTemplatesPanel } from "@/components/profile/UserLinkTemplatesPanel";
 import { Button } from "@/components/buttons/Button";
 import { DropdownMenu } from "@/components/overlays/DropdownMenu";
 import { IconButton } from "@/components/buttons/IconButton";
-import { IconWithBackground } from "@/components/misc/IconWithBackground";
-import { ModalShell } from "@/components/overlays";
+import { FormDrawer, ModalShell } from "@/components/overlays";
+import { SectionNavigation, type SectionNavigationItem } from "@/components/navigation";
 import { Select } from "@/components/forms/Select";
 import { Slider } from "@/components/forms/Slider";
 import { TextField } from "@/components/forms/TextField";
@@ -23,7 +24,9 @@ import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useTimezonePreference } from "@/contexts/TimezoneContext";
 import { useToast } from "@/contexts/ToastContext";
+import { useSession } from "@/contexts/sessionContext";
 import { useVisualFilterPreference } from "@/contexts/VisualFilterContext";
+import { useBreakpoint } from "@/hooks/useBreakpoint";
 import type { ApiKeyCreateResponse } from "@/types/generated/models/ApiKeyCreateResponse";
 import type { ApiKeyRead } from "@/types/generated/models/ApiKeyRead";
 import type { PasskeyRead } from "@/types/generated/models/PasskeyRead";
@@ -47,6 +50,7 @@ import {
   Edit2,
   Fingerprint,
   Key,
+  Link2,
   Lock,
   Monitor,
   MoreHorizontal,
@@ -89,8 +93,36 @@ const isApiKeyExpired = (expiresAt: string | null | undefined): boolean => {
 
 type PasskeyModalMode = "register" | "rename";
 
+const profileSectionClassName =
+  "scroll-mt-24 flex w-full flex-col items-start gap-6 rounded-lg border border-neutral-border bg-default-background p-4 sm:p-6";
+
+function ProfileSectionHeader({
+  icon,
+  title,
+  action,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="flex w-full flex-wrap items-center gap-3 border-b border-neutral-border pb-4">
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        {icon}
+        <h3 className="text-heading-3 font-heading-3 text-default-font">
+          {title}
+        </h3>
+      </div>
+      {action ? <div className="flex flex-none items-center gap-2">{action}</div> : null}
+    </div>
+  );
+}
+
 function ProfileManagement() {
-  const { themePreference, setThemePreference } = useTheme();
+  const { themePreference, setThemePreference, resolvedTheme } = useTheme();
+  const isDarkTheme = resolvedTheme === "dark";
+  const breakpoint = useBreakpoint();
+  const { localCredentialManagementAllowed = true } = useSession();
   const { timezonePreference, setTimezonePreference } = useTimezonePreference();
   const {
     visualFilterPreference,
@@ -119,6 +151,29 @@ function ProfileManagement() {
   const [passkeyModalMode, setPasskeyModalMode] = React.useState<PasskeyModalMode>("register");
   const [passkeyNameInput, setPasskeyNameInput] = React.useState("");
   const [selectedPasskey, setSelectedPasskey] = React.useState<PasskeyRead | null>(null);
+  const [activeSectionId, setActiveSectionId] = React.useState("profile-appearance");
+  const [isCompactTocOpen, setIsCompactTocOpen] = React.useState(false);
+
+  const profileSectionNavigationItems = React.useMemo<SectionNavigationItem[]>(
+    () => [
+      { id: "profile-appearance", label: "Appearance", group: "Preferences" },
+      { id: "profile-password", label: "Password", group: "Security" },
+      { id: "profile-api-keys", label: "API Keys", group: "Security" },
+      { id: "profile-passkeys", label: "Passkeys", group: "Security" },
+      {
+        id: "profile-personal-link-templates",
+        label: "Personal Link Templates",
+        group: "Automation",
+      },
+    ],
+    [],
+  );
+
+  const activeSectionLabel =
+    profileSectionNavigationItems.find((item) => item.id === activeSectionId)?.label ??
+    profileSectionNavigationItems[0]?.label ??
+    "Profile Sections";
+  const showDesktopToc = breakpoint === "desktop" || breakpoint === "ultrawide";
 
   const loadPasskeys = React.useCallback(async () => {
     setIsLoadingPasskeys(true);
@@ -439,31 +494,116 @@ function ProfileManagement() {
     [setVisualFilterPreference],
   );
 
+  React.useEffect(() => {
+    if (
+      typeof window === "undefined" ||
+      typeof IntersectionObserver === "undefined"
+    ) {
+      return;
+    }
+
+    const sectionElements = profileSectionNavigationItems
+      .map((item) => document.getElementById(item.id))
+      .filter(
+        (element): element is HTMLElement => element instanceof HTMLElement,
+      );
+
+    if (sectionElements.length === 0) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visibleEntries = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((left, right) => {
+            if (right.intersectionRatio !== left.intersectionRatio) {
+              return right.intersectionRatio - left.intersectionRatio;
+            }
+            return left.boundingClientRect.top - right.boundingClientRect.top;
+          });
+
+        if (visibleEntries.length > 0) {
+          setActiveSectionId(visibleEntries[0].target.id);
+        }
+      },
+      {
+        root: null,
+        rootMargin: "-20% 0px -60% 0px",
+        threshold: [0.1, 0.25, 0.5, 0.75],
+      },
+    );
+
+    sectionElements.forEach((element) => observer.observe(element));
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [profileSectionNavigationItems]);
+
+  const scrollToSection = (sectionId: string) => {
+    const targetSection = document.getElementById(sectionId);
+    if (!targetSection) {
+      return;
+    }
+
+    setActiveSectionId(sectionId);
+    setIsCompactTocOpen(false);
+    targetSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   return (
     <DefaultPageLayout withContainer>
-      <div className="flex h-full w-full flex-col items-start gap-6 overflow-auto px-6 py-12 mobile:px-4 mobile:py-6">
-        <div className="mx-auto flex w-full max-w-7xl flex-col items-start gap-6">
-          <div className="flex w-full flex-col items-start gap-2">
-            <span className="text-heading-1 font-heading-1 text-default-font">
-              Profile Management
-            </span>
-            <span className="text-body font-body text-subtext-color">
-              Manage your password, API keys, and passkeys to keep your account secure.
-            </span>
-          </div>
+      <div className="mx-auto flex h-full w-full max-w-[1536px] flex-col items-start gap-6 px-6 py-8 mobile:px-4 mobile:py-6">
+        <div className="flex w-full flex-col items-start gap-2">
+          <span className="text-heading-1 font-heading-1 text-default-font">
+            Profile Management
+          </span>
+          <span className="text-body font-body text-subtext-color">
+            Manage your password, API keys, and passkeys to keep your account secure.
+          </span>
+        </div>
 
-          <div className="flex w-full flex-col items-start gap-8">
-            <div className="flex w-full flex-col items-start gap-6 rounded-md border border-solid border-neutral-border bg-neutral-50 px-6 py-6">
-              <div className="flex w-full items-center gap-2">
-                <IconWithBackground
-                  variant="neutral"
-                  size="medium"
-                  icon={<Monitor />}
+        {!showDesktopToc ? (
+          <SectionNavigation
+            items={profileSectionNavigationItems}
+            activeSectionId={activeSectionId}
+            activeSectionLabel={activeSectionLabel}
+            isDarkTheme={isDarkTheme}
+            isCompact
+            isOpen={isCompactTocOpen}
+            ariaLabel="Profile sections"
+            title="Profile Sections"
+            onToggle={() => setIsCompactTocOpen((open) => !open)}
+            onNavigate={scrollToSection}
+          />
+        ) : null}
+
+        <div className="flex w-full items-start gap-6 tablet:flex-col mobile:flex-col">
+          {showDesktopToc ? (
+            <div className="sticky top-6 w-64 shrink-0 self-start max-h-[calc(100vh-3rem)] overflow-y-auto">
+              <SectionNavigation
+                items={profileSectionNavigationItems}
+                activeSectionId={activeSectionId}
+                activeSectionLabel={activeSectionLabel}
+                isDarkTheme={isDarkTheme}
+                ariaLabel="Profile sections"
+                title="Profile Sections"
+                onNavigate={scrollToSection}
+              />
+            </div>
+          ) : null}
+
+          <div className="min-w-0 w-full flex-1 flex flex-col gap-8">
+            <div className="flex flex-col gap-6">
+              <h2 className="text-heading-2 font-heading-2 text-default-font">
+                Preferences
+              </h2>
+              <section id="profile-appearance" className={profileSectionClassName}>
+                <ProfileSectionHeader
+                  icon={<Monitor className="text-[20px] text-subtext-color" />}
+                  title="Appearance"
                 />
-                <span className="grow shrink-0 basis-0 text-heading-2 font-heading-2 text-default-font">
-                  Appearance
-                </span>
-              </div>
 
               <span className="text-body font-body text-subtext-color">
                 Choose how the app theme is applied on this device.
@@ -644,19 +784,18 @@ function ProfileManagement() {
                 </div>
 
               </div>
+              </section>
             </div>
 
-            <div className="flex w-full flex-col items-start gap-6 rounded-md border border-solid border-neutral-border bg-neutral-50 px-6 py-6">
-              <div className="flex w-full items-center gap-2">
-                <IconWithBackground
-                  variant="neutral"
-                  size="medium"
-                  icon={<Lock />}
+            <div className="flex flex-col gap-6">
+              <h2 className="text-heading-2 font-heading-2 text-default-font">
+                Security
+              </h2>
+              <section id="profile-password" className={profileSectionClassName}>
+                <ProfileSectionHeader
+                  icon={<Lock className="text-[20px] text-subtext-color" />}
+                  title="Password"
                 />
-                <span className="grow shrink-0 basis-0 text-heading-2 font-heading-2 text-default-font">
-                  Password
-                </span>
-              </div>
 
               <div className="flex w-full flex-col items-start gap-4">
                 <TextField
@@ -710,22 +849,18 @@ function ProfileManagement() {
                   {isChangingPassword ? "Changing..." : "Change Password"}
                 </Button>
               </div>
-            </div>
+            </section>
 
-            <div className="flex w-full flex-col items-start gap-6 rounded-md border border-solid border-neutral-border bg-neutral-50 px-6 py-6">
-              <div className="flex w-full flex-wrap items-center gap-2">
-                <IconWithBackground
-                  variant="neutral"
-                  size="medium"
-                  icon={<Key />}
+              <section id="profile-api-keys" className={profileSectionClassName}>
+                <ProfileSectionHeader
+                  icon={<Key className="text-[20px] text-subtext-color" />}
+                  title="API Keys"
+                  action={
+                    <Button icon={<Plus />} onClick={openCreateApiKeyModal} disabled={isCreatingApiKey}>
+                      Create New API Key
+                    </Button>
+                  }
                 />
-                <span className="grow shrink-0 basis-0 text-heading-2 font-heading-2 text-default-font">
-                  API Keys
-                </span>
-                <Button icon={<Plus />} onClick={openCreateApiKeyModal} disabled={isCreatingApiKey}>
-                  Create New API Key
-                </Button>
-              </div>
 
               <span className="text-body font-body text-subtext-color">
                 API keys are for programmatic access to your account.
@@ -753,22 +888,20 @@ function ProfileManagement() {
                   />
                 ))}
               </div>
-            </div>
+            </section>
 
-            <div className="flex w-full flex-col items-start gap-6 rounded-md border border-solid border-neutral-border bg-neutral-50 px-6 py-6">
-              <div className="flex w-full flex-wrap items-center gap-2">
-                <IconWithBackground
-                  variant="neutral"
-                  size="medium"
-                  icon={<Fingerprint />}
+              <section id="profile-passkeys" className={profileSectionClassName}>
+                <ProfileSectionHeader
+                  icon={<Fingerprint className="text-[20px] text-subtext-color" />}
+                  title="Passkeys"
+                  action={
+                    localCredentialManagementAllowed ? (
+                      <Button icon={<Plus />} onClick={openRegisterPasskeyModal} disabled={isRegisteringPasskey}>
+                        {isRegisteringPasskey ? "Registering..." : "Register New Passkey"}
+                      </Button>
+                    ) : undefined
+                  }
                 />
-                <span className="grow shrink-0 basis-0 text-heading-2 font-heading-2 text-default-font">
-                  Passkeys
-                </span>
-                <Button icon={<Plus />} onClick={openRegisterPasskeyModal} disabled={isRegisteringPasskey}>
-                  {isRegisteringPasskey ? "Registering..." : "Register New Passkey"}
-                </Button>
-              </div>
 
               <span className="text-body font-body text-subtext-color">
                 Passkeys are a more secure alternative to passwords. Use your
@@ -816,71 +949,50 @@ function ProfileManagement() {
                 ))}
               </div>
 
-              <Alert
-                variant="neutral"
-                icon={<Shield />}
-                title="Enhance your security"
-                description="We recommend registering at least two passkeys on different devices to ensure you always have a backup authentication method."
-              />
+              {localCredentialManagementAllowed ? (
+                <Alert
+                  variant="neutral"
+                  icon={<Shield />}
+                  title="Enhance your security"
+                  description="We recommend registering at least two passkeys on different devices to ensure you always have a backup authentication method."
+                />
+              ) : null}
+              </section>
+            </div>
+
+            <div className="flex flex-col gap-6">
+              <h2 className="text-heading-2 font-heading-2 text-default-font">
+                Automation
+              </h2>
+              <section id="profile-personal-link-templates" className={profileSectionClassName}>
+                <UserLinkTemplatesPanel
+                  headerIcon={<Link2 className="text-[20px] text-subtext-color" />}
+                  headerVariant="settings-card"
+                />
+              </section>
             </div>
           </div>
         </div>
       </div>
 
-      {showPasskeyModal && (
-        <ModalShell
-          title={passkeyModalMode === "register" ? "Register Passkey" : "Rename Passkey"}
-          description={passkeyModalMode === "register" ? "Choose a descriptive name for your new passkey" : "Update the display name for this passkey"}
-          onClose={closePasskeyModal}
-        >
+      <FormDrawer
+        open={showPasskeyModal}
+        title={passkeyModalMode === "register" ? "Register Passkey" : "Rename Passkey"}
+        description={
+          passkeyModalMode === "register"
+            ? "Choose a descriptive name for your new passkey"
+            : "Update the display name for this passkey"
+        }
+        closeLabel="Close passkey drawer"
+        onOpenChange={(open) => {
+          if (!open && !isRegisteringPasskey && !isRenamingPasskey) {
+            closePasskeyModal();
+          }
+        }}
+        footer={
           <div className="flex w-full items-center gap-2">
-            <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
-              <span className="text-heading-2 font-heading-2 text-default-font">
-                {passkeyModalMode === "register" ? "Register Passkey" : "Rename Passkey"}
-              </span>
-              <span className="text-body font-body text-subtext-color">
-                {passkeyModalMode === "register"
-                  ? "Choose a descriptive name for your new passkey"
-                  : "Update the display name for this passkey"}
-              </span>
-            </div>
-            <Fingerprint className="text-[24px] text-default-font" />
-          </div>
-
-          <div className="flex w-full items-start rounded-md border border-solid border-neutral-border bg-default-background">
-            <div className="flex grow shrink-0 basis-0 flex-col items-start gap-6 px-4 py-4">
-              {passkeyModalMode === "register" && !isLoadingPasskeys && passkeys.length === 0 && (
-                <div className="flex w-full flex-col gap-3 rounded-md border border-solid border-warning-300 bg-warning-50 px-4 py-4">
-                  <div className="flex items-center gap-2">
-                    <AlertCircle className="text-warning-500" />
-                    <span className="text-body-bold font-body-bold text-warning-700">
-                      Important account change
-                    </span>
-                  </div>
-                  <span className="text-body font-body text-default-font">
-                    Registering your first passkey will disable password-based login for this account.
-                  </span>
-                </div>
-              )}
-
-              <TextField
-                className="h-auto w-full flex-none"
-                label="Passkey Name"
-                helpText="A friendly name to identify this passkey"
-              >
-                <TextField.Input
-                  placeholder="My Passkey"
-                  value={passkeyNameInput}
-                  onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-                    setPasskeyNameInput(event.target.value)
-                  }
-                />
-              </TextField>
-            </div>
-          </div>
-
-          <div className="flex w-full items-center justify-end gap-2">
             <Button
+              className="flex-1"
               variant="neutral-secondary"
               onClick={closePasskeyModal}
               disabled={isRegisteringPasskey || isRenamingPasskey}
@@ -888,6 +1000,7 @@ function ProfileManagement() {
               Cancel
             </Button>
             <Button
+              className="flex-1"
               onClick={handleSubmitPasskeyModal}
               loading={passkeyModalMode === "register" ? isRegisteringPasskey : isRenamingPasskey}
               disabled={
@@ -899,23 +1012,78 @@ function ProfileManagement() {
               {passkeyModalMode === "register" ? "Register Passkey" : "Save Name"}
             </Button>
           </div>
-        </ModalShell>
-      )}
+        }
+      >
+        {passkeyModalMode === "register" && !isLoadingPasskeys && passkeys.length === 0 && (
+          <div className="flex w-full flex-col gap-3 rounded-md border border-solid border-warning-300 bg-warning-50 px-4 py-4">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="text-warning-500" />
+              <span className="text-body-bold font-body-bold text-warning-700">
+                Important account change
+              </span>
+            </div>
+            <span className="text-body font-body text-default-font">
+              Registering your first passkey will disable password-based login for this account.
+            </span>
+          </div>
+        )}
 
-      {showCreateApiKeyModal && (
-        <ModalShell title="Create API Key" description="Generate a new API key for programmatic access" onClose={closeCreateApiKeyModal}>
-          <CreateApiKeyModalContent
-            keyName={apiKeyNameInput}
-            expiresAt={apiKeyExpiresAtInput}
-            onKeyNameChange={setApiKeyNameInput}
-            onExpiresAtChange={setApiKeyExpiresAtInput}
-            onCancel={closeCreateApiKeyModal}
-            onSubmit={handleCreateApiKey}
-            loading={isCreatingApiKey}
-            keyNamePlaceholder="Automation Key"
+        <TextField
+          className="h-auto w-full flex-none"
+          label="Passkey Name"
+          helpText="A friendly name to identify this passkey"
+        >
+          <TextField.Input
+            placeholder="My Passkey"
+            value={passkeyNameInput}
+            onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+              setPasskeyNameInput(event.target.value)
+            }
           />
-        </ModalShell>
-      )}
+        </TextField>
+      </FormDrawer>
+
+      <FormDrawer
+        open={showCreateApiKeyModal}
+        title="Create API Key"
+        description="Generate a new API key for programmatic access"
+        widthClassName="w-[520px]"
+        closeLabel="Close API key drawer"
+        onOpenChange={(open) => {
+          if (!open && !isCreatingApiKey) {
+            closeCreateApiKeyModal();
+          }
+        }}
+        footer={
+          <div className="flex w-full items-center gap-2">
+            <Button
+              className="flex-1"
+              variant="neutral-secondary"
+              onClick={closeCreateApiKeyModal}
+              disabled={isCreatingApiKey}
+            >
+              Cancel
+            </Button>
+            <Button className="flex-1" onClick={handleCreateApiKey} loading={isCreatingApiKey}>
+              Create Key
+            </Button>
+          </div>
+        }
+      >
+        <CreateApiKeyModalContent
+          keyName={apiKeyNameInput}
+          expiresAt={apiKeyExpiresAtInput}
+          onKeyNameChange={setApiKeyNameInput}
+          onExpiresAtChange={setApiKeyExpiresAtInput}
+          onCancel={closeCreateApiKeyModal}
+          onSubmit={handleCreateApiKey}
+          loading={isCreatingApiKey}
+          keyNamePlaceholder="Automation Key"
+          showHeader={false}
+          showFrame={false}
+          showActions={false}
+        />
+      </FormDrawer>
 
       {createdApiKey && (
         <ModalShell title="API Key Created" description="Copy your new API key before closing this dialog" onClose={closeCreatedApiKeyModal}>

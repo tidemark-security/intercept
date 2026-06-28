@@ -29,6 +29,14 @@ export type app__api__routes__admin_auth__UserSummary = {
      */
     accountType: AccountType;
     /**
+     * Whether this account can be assigned work
+     */
+    assignable?: boolean;
+    /**
+     * Whether this account can override timestamps
+     */
+    overrideTimestamps?: boolean;
+    /**
      * OIDC issuer for linked SSO identities
      */
     oidcIssuer?: (string | null);

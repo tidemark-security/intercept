@@ -76,6 +76,21 @@ Get bounded context summary for an alert, case, or task.
     "total_count": 5,
     "omitted_count": 0
   },
+  "context": {
+    "items": [
+      {
+        "id": 12,
+        "criteria": [{"type": "ALERT_SOURCE", "value": "Splunk"}],
+        "body": "Network team is testing this detection today.",
+        "author": "analyst1",
+        "created_at": "2026-01-12T09:00:00Z",
+        "updated_at": "2026-01-12T09:00:00Z",
+        "expires_at": "2026-01-13T09:00:00Z"
+      }
+    ],
+    "total_count": 1,
+    "omitted_count": 0
+  },
   "related_counts": {
     "linked_alerts": 2,
     "linked_cases": 1,
@@ -266,14 +281,13 @@ Recommendations start as `PENDING` until an analyst accepts or rejects them. A n
 | `disposition` | string | Yes | - | Triage outcome (see valid values) |
 | `confidence` | float | Yes | - | Agent confidence (0.0-1.0) |
 | `reasoning_bullets` | array[string] | No | null | Why this disposition |
-| `evidence_refs` | array[string] | No | null | Timeline item IDs supporting recommendation |
-| `recommended_actions` | array[object] | No | null | Suggested next steps. Each object: `{title: string, description?: string}` |
-| `suggested_status` | string | No | null | Optional alert status patch |
+| `recommended_actions` | array[object] | No | null | Suggested next steps for escalating dispositions only. Each object: `{title: string, description?: string}` |
+| `suggested_status` | string | No | null | Optional alert status patch; persisted value is derived from disposition |
 | `suggested_priority` | string | No | null | Optional priority patch |
 | `suggested_assignee` | string | No | null | Optional assignee patch (username) |
 | `suggested_tags_add` | array[string] | No | null | Tags to add |
 | `suggested_tags_remove` | array[string] | No | null | Tags to remove |
-| `request_escalate_to_case` | boolean | No | false | Request case creation |
+| `request_escalate_to_case` | boolean | No | false | Optional/deprecated request; persisted value is derived from disposition |
 | `commit` | boolean | No | false | If false, returns dry-run preview only |
 
 ### Valid Disposition Values
@@ -284,6 +298,21 @@ Recommendations start as `PENDING` until an analyst accepts or rejects them. A n
 - `NEEDS_INVESTIGATION`
 - `DUPLICATE`
 - `UNKNOWN`
+
+### Canonical Case Path
+
+`request_escalate_to_case` and `suggested_status` are derived from `disposition`; contradictory input values are ignored and the canonical values are persisted.
+
+| Disposition | request_escalate_to_case | suggested_status |
+|-------------|---------------------------|------------------|
+| `TRUE_POSITIVE` | `true` | `ESCALATED` |
+| `FALSE_POSITIVE` | `false` | `CLOSED_FP` |
+| `BENIGN` | `false` | `CLOSED_BP` |
+| `NEEDS_INVESTIGATION` | `true` | `ESCALATED` |
+| `DUPLICATE` | `false` | `CLOSED_DUPLICATE` |
+| `UNKNOWN` | `true` | `ESCALATED` |
+
+`recommended_actions` and `recommended_case_runbook_id` are valid only for escalating dispositions. Dismissal dispositions reject work recommendations.
 
 ### Valid Status Values (for suggested_status)
 
@@ -360,7 +389,12 @@ This is an append-only operation. Idempotent via client-provided `item_id`.
 | `item_id` | string | Yes | - | Client-provided unique ID (for idempotency) |
 | `body` | string | Yes | - | Note content (max 16,000 chars) |
 | `commit` | boolean | No | false | If false, returns dry-run preview only |
-| `created_at` | string | No | now | ISO-8601 timestamp |
+| `created_at` | string | No | server time | Migration-only ISO-8601 creation timestamp. Requires `migration=true`, an authenticated NHI, and `override_timestamps=true`. |
+| `migration` | boolean | No | false | Enables the NHI-only migration timestamp override gate. |
+
+`created_at` is rejected unless `migration=true` is supplied by an authorized
+NHI account. Accepted values must include timezone information and are
+normalized to UTC. Timeline event `timestamp` remains server time.
 
 ### Returns
 
@@ -409,6 +443,23 @@ When item already exists (idempotent):
     "item_id": "agent-analysis-20260112-001",
     "body": "## Automated Analysis\n\nReviewed 15 related alerts. Key findings:\n- Common IOC: 10.0.0.1\n- Pattern suggests lateral movement\n- Recommend immediate containment",
     "commit": true
+  }
+}
+```
+
+Migration import example:
+
+```json
+{
+  "name": "add_timeline_item",
+  "arguments": {
+    "target_kind": "case",
+    "target_id": "CAS-0000123",
+    "item_id": "legacy-note-4815162342",
+    "body": "Imported analyst note from legacy system.",
+    "commit": true,
+    "migration": true,
+    "created_at": "2024-01-02T04:15:00+10:00"
   }
 }
 ```

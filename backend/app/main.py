@@ -36,7 +36,7 @@ from app.api.routes.admin_auth import (
 from app.services.task_queue_service import initialize_task_queue_service, shutdown_task_queue_service
 from app.services.enrichment.providers import register_providers
 from app.services.tasks import register_task_handlers
-from app.api.routes import admin_auth, alerts, audit, auth, cases, dashboard, dummy_data, link_templates, mitre, tasks, settings as settings_routes, langflow, api_keys, soc_metrics, triage_recommendations, search, validation, features, oidc, enrichments, queue_status
+from app.api.routes import admin_auth, alerts, audit, auth, cases, case_runbooks, dashboard, dummy_data, link_templates, mitre, tasks, settings as settings_routes, langflow, api_keys, soc_metrics, triage_recommendations, search, validation, features, oidc, enrichments, queue_status, context_entries
 from app.api.routes import websocket as ws_route
 # from app.api.routes import admin_auth, alerts, auth, cases, dashboard, dummy_data, link_templates, mitre, soc_metrics, tasks, api_keys
 # Import models to register them with SQLModel
@@ -73,7 +73,7 @@ async def app_lifespan(app: FastAPI):
     logger.info("Initializing task queue service...")
     try:
         await initialize_task_queue_service(get_local("database.url"))
-        register_task_handlers()
+        await register_task_handlers()
         logger.info("✅ Task queue service initialized (enqueue-only mode)")
     except Exception as e:
         logger.warning(f"Task queue service initialization failed: {e}")
@@ -201,8 +201,10 @@ app.add_middleware(
 
 # Include routers BEFORE MCP generation so routes are available
 app.include_router(cases.router, prefix="/api/v1")
+app.include_router(case_runbooks.router, prefix="/api/v1")
 app.include_router(alerts.router, prefix="/api/v1")
 app.include_router(triage_recommendations.router, prefix="/api/v1")
+app.include_router(context_entries.router, prefix="/api/v1")
 app.include_router(tasks.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(oidc.router, prefix="/api/v1")
@@ -211,6 +213,7 @@ app.include_router(admin_auth.router, prefix="/api/v1")
 app.include_router(audit.router, prefix="/api/v1")
 app.include_router(dummy_data.router, prefix="/api/v1")
 app.include_router(link_templates.router, prefix="/api/v1")
+app.include_router(link_templates.personal_router, prefix="/api/v1")
 app.include_router(mitre.router, prefix="/api/v1")
 app.include_router(dashboard.router, prefix="/api/v1")
 app.include_router(settings_routes.authenticated_router, prefix="/api/v1")

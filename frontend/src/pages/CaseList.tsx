@@ -1,9 +1,11 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { useLocation } from "react-router-dom";
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
+import { getPersistedWidth } from "@/components/layout/ColumnRail";
 import { EntityList } from "@/components/data-display/EntityList";
 import { Button } from "@/components/buttons/Button";
 import { CreateCaseModal } from "@/components/entities/CreateCaseModal";
@@ -16,14 +18,40 @@ import { useUpdateCase } from "@/hooks/useUpdateCase";
 import { useSession } from "@/contexts/sessionContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
+import { canShowSplitPaneCenter, useViewportWidth } from "@/hooks/useSplitPaneCenter";
 import { useURLFilters } from "@/hooks/useURLFilters";
+import { useTagFilterClick } from "@/hooks/useTagFilterClick";
 import { getColumnConfig, getInitialVisibleColumns } from "@/utils/columnConfig";
 import type { CaseStatus } from "@/types/generated/models/CaseStatus";
 import type { CaseRead } from "@/types/generated/models/CaseRead";
 import type { CaseFilterState } from "@/types/filters";
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { caseStatusToUIState, priorityToUIPriority } from "@/utils/statusHelpers";
+import { CASE_STATUS_OPTIONS } from "@/utils/statusLabels";
 import { Plus } from "lucide-react";
+
+const CASE_SORT_OPTIONS = [
+  {
+    value: "created_at",
+    label: "Created",
+    directionLabel: { desc: "Newest first", asc: "Oldest first" },
+  },
+  {
+    value: "updated_at",
+    label: "Updated",
+    directionLabel: { desc: "Recently updated", asc: "Least recently updated" },
+  },
+  {
+    value: "priority",
+    label: "Priority",
+    directionLabel: { desc: "Highest priority", asc: "Lowest priority" },
+  },
+  {
+    value: "status",
+    label: "Status",
+    directionLabel: { desc: "Status Z-A", asc: "Status A-Z" },
+  },
+];
 
 /**
  * Cases List Page - Browse and filter cases with optional preview
@@ -38,6 +66,7 @@ import { Plus } from "lucide-react";
  */
 function CasesListPage() {
   const navigate = useViewTransitionNavigate();
+  const location = useLocation();
   const { user } = useSession();
   const { showToast } = useToast();
   const currentUser = user?.username || null;
@@ -48,38 +77,41 @@ function CasesListPage() {
       search: "",
       assignee: null,
       status: ["NEW" as CaseStatus, "IN_PROGRESS" as CaseStatus],
+      includeTags: null,
+      excludeTags: null,
       dateRange: null,
+      sortBy: "created_at",
+      sortOrder: "desc",
     },
   });
   const [selectedCaseId, setSelectedCaseId] = useState<number | null>(null);
+  const handleFilterByTag = useTagFilterClick(filters, setFilters);
   const [isCreateCaseModalOpen, setIsCreateCaseModalOpen] = useState(false);
   const [createCaseError, setCreateCaseError] = useState<string | null>(null);
 
   // Column visibility state
   const [visibleColumns, setVisibleColumns] = useState<VisibleColumns>(() => getInitialVisibleColumns());
+  const [caseListWidth, setCaseListWidth] = useState<number>(() => getPersistedWidth(768));
 
   // Reactive breakpoint state
   const breakpoint = useBreakpoint();
+  const viewportWidth = useViewportWidth();
+  const showSplitCenter = canShowSplitPaneCenter(viewportWidth, caseListWidth, breakpoint);
 
   // Automatically adjust visible columns based on selection and screen size
   useEffect(() => {
     if (!selectedCaseId) {
-      // On ultrawide, show left+center to display the empty state
-      if (breakpoint === 'ultrawide') {
+      setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
+    } else {
+      if (breakpoint === 'mobile') {
+        setVisibleColumns('center');
+      } else if (showSplitCenter) {
         setVisibleColumns('left+center');
       } else {
-        setVisibleColumns('left');
-      }
-    } else {
-      if (breakpoint === 'ultrawide') {
-        setVisibleColumns('left+center');
-      } else if (breakpoint === 'desktop' || breakpoint === 'tablet') {
-        // Match alerts behavior: focus the selected entity on desktop/tablet
         setVisibleColumns('center');
       }
-      // Mobile: keep current single column
     }
-  }, [selectedCaseId, breakpoint]);
+  }, [selectedCaseId, breakpoint, showSplitCenter]);
 
   // Fetch users for assignee dropdown
   const { data: users = [], isLoading: isLoadingUsers } = useUsers({});
@@ -89,9 +121,13 @@ function CasesListPage() {
   const { data: casesData, isLoading, error } = useCases({
     status: filters.status || null,
     assignee: filters.assignee?.[0] || null,
+    includeTags: filters.includeTags || null,
+    excludeTags: filters.excludeTags || null,
     search: filters.search || null,
     startDate: filters.dateRange?.start || null,
     endDate: filters.dateRange?.end || null,
+    sortBy: filters.sortBy ?? "created_at",
+    sortOrder: filters.sortOrder ?? "desc",
     page: currentPage,
     size: pageSize,
   });
@@ -151,31 +187,31 @@ function CasesListPage() {
   const handleCaseSelect = (caseId: number, caseHumanId: string) => {
     setSelectedCaseId(caseId);
     
-    if (breakpoint === 'mobile' || breakpoint === 'desktop' || breakpoint === 'tablet') {
-      // On mobile, desktop, and tablet, navigate directly to the detail view
-      navigate(`/cases/${caseHumanId}`);
-    } else {
-      // On ultrawide, stay in list view and show read-only timeline
-      // (visibleColumns will be updated by useEffect)
+    if (breakpoint === 'mobile' || !showSplitCenter) {
+      navigate(`/cases/${caseHumanId}${location.search}`);
     }
   };
 
   // Double-click handler - always navigate to detail view
   const handleCaseDoubleClick = (caseId: number, caseHumanId: string) => {
-    navigate(`/cases/${caseHumanId}`);
+    navigate(`/cases/${caseHumanId}${location.search}`);
   };
 
   // Handle "Open Case" from timeline to navigate to detail view
   const handleOpenCase = () => {
     if (caseDetail?.human_id) {
-      navigate(`/cases/${caseDetail.human_id}`);
+      navigate(`/cases/${caseDetail.human_id}${location.search}`);
     }
   };
 
   // Handle back to list (for mobile only)
   const handleBackToList = () => {
     setSelectedCaseId(null);
-    setVisibleColumns('left');
+    setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
+  };
+
+  const handleCaseListRailToggle = () => {
+    // The case list/detail split pane is resizable but not collapsible.
   };
 
   const handleCreateCase = async (payload: {
@@ -198,6 +234,7 @@ function CasesListPage() {
       // Error state is handled by mutation onError callback
     }
   };
+  const isLeftOnlyView = visibleColumns === 'left';
 
   return (
     <DefaultPageLayout priority={caseDetail?.priority || undefined}>
@@ -208,14 +245,13 @@ function CasesListPage() {
             selectedId={selectedCaseId}
             onSelect={handleCaseSelect}
             onDoubleClick={handleCaseDoubleClick}
-            getItemHref={(_id, humanId) => `/cases/${humanId}`}
+            getItemHref={(_id, humanId) => `/cases/${humanId}${location.search}`}
             filters={filters}
             onFilterChange={setFilters}
-            statusOptions={[
-              { value: 'NEW', label: 'New' },
-              { value: 'IN_PROGRESS', label: 'In Progress' },
-              { value: 'CLOSED', label: 'Closed' },
-            ]}
+            enableTagFilters
+            onTagClick={handleFilterByTag}
+            statusOptions={CASE_STATUS_OPTIONS}
+            sortOptions={CASE_SORT_OPTIONS}
             currentPage={currentPage}
             totalPages={totalPages}
             totalItems={casesData?.total}
@@ -271,8 +307,12 @@ function CasesListPage() {
         rightColumn={<div></div>}
         visibleColumns={visibleColumns}
         onVisibleColumnsChange={setVisibleColumns}
-        columnConfig={getColumnConfig(selectedCaseId)}
+        columnConfig={getColumnConfig(selectedCaseId, caseListWidth, isLeftOnlyView)}
         dimLeftColumn={!!selectedCaseId}
+        showLeftRail={!isLeftOnlyView}
+        onLeftRailToggle={handleCaseListRailToggle}
+        leftColumnWidth={isLeftOnlyView ? undefined : caseListWidth}
+        onLeftColumnWidthChange={isLeftOnlyView ? undefined : setCaseListWidth}
       />
 
       <CreateCaseModal

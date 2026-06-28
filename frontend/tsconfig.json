@@ -26,6 +26,12 @@
       "@/*": [
         "./src/*"
       ],
+      "@tidemark-security/ux": [
+        "../../ux/src/index.ts"
+      ],
+      "@tidemark-security/ux/tokens.css": [
+        "../../ux/src/tokens/index.css"
+      ],
       "react": ["./node_modules/@types/react"],
       "@types/react": ["./node_modules/@types/react"]
     }

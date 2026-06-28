@@ -2,9 +2,11 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { AlertBulkActionResponse } from '../models/AlertBulkActionResponse';
 import type { AttachmentStatusUpdate } from '../models/AttachmentStatusUpdate';
 import type { Body_bulk_update_cases_api_v1_cases_bulk_update_post } from '../models/Body_bulk_update_cases_api_v1_cases_bulk_update_post';
 import type { CaseCreate } from '../models/CaseCreate';
+import type { CaseLinkedAlertResolutionRequest } from '../models/CaseLinkedAlertResolutionRequest';
 import type { CaseRead } from '../models/CaseRead';
 import type { CaseReadWithAlerts } from '../models/CaseReadWithAlerts';
 import type { CaseStatus } from '../models/CaseStatus';
@@ -27,12 +29,20 @@ export class CasesService {
      */
     public static createCaseApiV1CasesPost({
         requestBody,
+        migration = false,
     }: {
         requestBody: CaseCreate,
+        /**
+         * Allow authorized NHI migration clients to provide created_at
+         */
+        migration?: boolean,
     }): CancelablePromise<CaseRead> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/cases',
+            query: {
+                'migration': migration,
+            },
             body: requestBody,
             mediaType: 'application/json',
             errors: {
@@ -45,7 +55,7 @@ export class CasesService {
      * Get cases with optional filtering and pagination.
      *
      * Returns a paginated response with items, total count, page information.
-     * Search parameter matches against case title or description using case-insensitive partial matching.
+     * Search parameter matches against case ID, human ID, title, or description using case-insensitive partial matching.
      * Date filtering expects UTC ISO8601 strings with 'Z' suffix (e.g., "2025-10-20T14:30:00Z").
      * Cases are filtered by created_at timestamp.
      * @returns Page_CaseRead_ Successful Response
@@ -56,9 +66,13 @@ export class CasesService {
         limit = 100,
         status,
         assignee,
+        includeTags,
+        excludeTags,
         search,
         startDate,
         endDate,
+        sortBy = 'created_at',
+        sortOrder = 'desc',
         page = 1,
         size = 50,
     }: {
@@ -70,7 +84,15 @@ export class CasesService {
         status?: (Array<CaseStatus> | null),
         assignee?: (string | null),
         /**
-         * Search cases by title or description (case-insensitive partial match)
+         * Require cases to include all of these tags
+         */
+        includeTags?: (Array<string> | null),
+        /**
+         * Require cases to exclude all of these tags
+         */
+        excludeTags?: (Array<string> | null),
+        /**
+         * Search cases by ID, human ID, title, or description (case-insensitive partial match)
          */
         search?: (string | null),
         /**
@@ -81,6 +103,14 @@ export class CasesService {
          * Filter cases created before this UTC datetime (ISO8601 format with 'Z' suffix)
          */
         endDate?: (string | null),
+        /**
+         * Field to sort by
+         */
+        sortBy?: string,
+        /**
+         * Sort order
+         */
+        sortOrder?: string,
         /**
          * Page number
          */
@@ -98,9 +128,13 @@ export class CasesService {
                 'limit': limit,
                 'status': status,
                 'assignee': assignee,
+                'include_tags': includeTags,
+                'exclude_tags': excludeTags,
                 'search': search,
                 'start_date': startDate,
                 'end_date': endDate,
+                'sort_by': sortBy,
+                'sort_order': sortOrder,
                 'page': page,
                 'size': size,
             },
@@ -170,7 +204,7 @@ export class CasesService {
     }
     /**
      * Delete Case
-     * Delete a case.
+     * Permanently delete a case. Restricted to admins.
      * @returns any Successful Response
      * @throws ApiError
      */
@@ -239,6 +273,32 @@ export class CasesService {
         });
     }
     /**
+     * Resolve Linked Alerts
+     * Apply selected resolutions to open alerts linked to a case.
+     * @returns AlertBulkActionResponse Successful Response
+     * @throws ApiError
+     */
+    public static resolveLinkedAlertsApiV1CasesCaseIdResolveLinkedAlertsPost({
+        caseId,
+        requestBody,
+    }: {
+        caseId: number,
+        requestBody: CaseLinkedAlertResolutionRequest,
+    }): CancelablePromise<AlertBulkActionResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/cases/{case_id}/resolve-linked-alerts',
+            path: {
+                'case_id': caseId,
+            },
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
      * Add Timeline Item
      * Add a timeline item to a case.
      * @returns CaseRead Successful Response
@@ -247,15 +307,23 @@ export class CasesService {
     public static addTimelineItemApiV1CasesCaseIdTimelinePost({
         caseId,
         requestBody,
+        migration = false,
     }: {
         caseId: number,
         requestBody: Record<string, any>,
+        /**
+         * Allow authorized NHI migration clients to provide created_at
+         */
+        migration?: boolean,
     }): CancelablePromise<CaseRead> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/cases/{case_id}/timeline',
             path: {
                 'case_id': caseId,
+            },
+            query: {
+                'migration': migration,
             },
             body: requestBody,
             mediaType: 'application/json',

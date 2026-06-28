@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 import pytest
 from httpx import AsyncClient
 
 from app.models.enums import RecommendationStatus, TriageDisposition
-from app.models.models import Alert, TriageRecommendation
+from app.models.models import Alert, ContextEntry, TriageRecommendation
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -95,15 +95,61 @@ async def test_update_alert_serializes_loaded_triage_recommendation(
 
     response = await client.put(
         f"/api/v1/alerts/{alert_id}",
-        json={"title": "Updated title"},
+        json={
+            "title": "Updated title",
+            "tags": [" Review ", "review", "Null", "escalated"],
+        },
         cookies={"intercept_session": session_cookie},
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["title"] == "Updated title"
+    assert payload["tags"] == ["Review", "escalated"]
     assert payload["triage_recommendation"] is not None
     assert payload["triage_recommendation"]["alert_id"] == alert_id
+
+
+@pytest.mark.asyncio
+async def test_get_alert_includes_global_context(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        alert = Alert(
+            title="Context visibility alert",
+            description="Alert should show global analyst context",
+            source="Network IDS",
+        )
+        context_entry = ContextEntry(
+            criteria=[],
+            body="This is test context for all alerts",
+            author="admin",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=15),
+        )
+        session.add_all([alert, context_entry])
+        await session.commit()
+        assert alert.id is not None
+        alert_id = alert.id
+        assert context_entry.id is not None
+        context_entry_id = context_entry.id
+
+    response = await client.get(
+        f"/api/v1/alerts/{alert_id}",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["context"]["total_count"] == 1
+    assert payload["context"]["omitted_count"] == 0
+    assert payload["context"]["items"][0]["id"] == context_entry_id
+    assert payload["context"]["items"][0]["criteria"] == []
+    assert payload["context"]["items"][0]["body"] == "This is test context for all alerts"
+    assert payload["context"]["items"][0]["author"] == "admin"
 
 
 @pytest.mark.asyncio
@@ -137,3 +183,79 @@ async def test_get_alerts_serializes_legacy_list_backed_timeline_items(
     payload = response.json()
     matching_alert = next(item for item in payload["items"] if item["title"] == "Legacy list-backed alert")
     assert matching_alert["timeline_items"] == {}
+
+
+@pytest.mark.asyncio
+async def test_get_alerts_normalizes_legacy_duplicate_tags(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        alert = Alert(
+            title="Legacy duplicate tag alert",
+            description="Stored before read response normalization",
+            source="seed",
+            tags=cast(Any, ["Null", "Null", "codex-test", "Codex-Test", " review "]),
+        )
+        session.add(alert)
+        await session.commit()
+        assert alert.id is not None
+        alert_id = alert.id
+
+    detail_response = await client.get(
+        f"/api/v1/alerts/{alert_id}",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert detail_response.status_code == 200
+    assert detail_response.json()["tags"] == ["codex-test", "review"]
+
+    list_response = await client.get(
+        "/api/v1/alerts",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert list_response.status_code == 200
+    matching_alert = next(
+        item for item in list_response.json()["items"] if item["title"] == "Legacy duplicate tag alert"
+    )
+    assert matching_alert["tags"] == ["codex-test", "review"]
+
+
+@pytest.mark.asyncio
+async def test_get_alerts_filters_unassigned_sentinel(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        unassigned_alert = Alert(
+            title="Unassigned alert",
+            description="Should match sentinel filter",
+            source="seed",
+            assignee=None,
+        )
+        assigned_alert = Alert(
+            title="Assigned alert",
+            description="Should not match sentinel filter",
+            source="seed",
+            assignee="analyst-user",
+        )
+        session.add_all([unassigned_alert, assigned_alert])
+        await session.commit()
+
+    response = await client.get(
+        "/api/v1/alerts",
+        params={"assignee": "__unassigned__"},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    titles = {item["title"] for item in response.json()["items"]}
+    assert "Unassigned alert" in titles
+    assert "Assigned alert" not in titles

@@ -44,6 +44,22 @@ class TaskStatus(str, Enum):
     DONE = "DONE"
 
 
+class CaseRunbookStatus(str, Enum):
+    DRAFT = "DRAFT"
+    PUBLISHED = "PUBLISHED"
+    DISABLED = "DISABLED"
+    DELETED = "DELETED"
+
+
+class PICERLStage(str, Enum):
+    PREPARATION = "Preparation"
+    IDENTIFICATION = "Identification"
+    CONTAINMENT = "Containment"
+    ERADICATION = "Eradication"
+    RECOVERY = "Recovery"
+    LESSONS_LEARNED = "Lessons Learned"
+
+
 class ActorType(str, Enum):
     INTERNAL = "INTERNAL"
     EXTERNAL = "EXTERNAL"
@@ -111,6 +127,16 @@ class RealtimeEventType(str, Enum):
     TIMELINE_GRAPH_UPDATED = "timeline_graph_updated"
     ENTITY_UPDATED = "entity_updated"
     TRIAGE_COMPLETED = "triage_completed"
+
+
+class ContextCriterionType(str, Enum):
+    """Criteria types for analyst-authored context entries."""
+
+    ALERT_SOURCE = "ALERT_SOURCE"
+    ACTOR = "ACTOR"
+    SYSTEM = "SYSTEM"
+    OBSERVABLE = "OBSERVABLE"
+    TAG = "TAG"
 
 
 class Protocol(str, Enum):
@@ -443,4 +469,3 @@ class MessageFeedback(str, Enum):
     """Feedback for AI chat messages"""
     POSITIVE = "POSITIVE"
     NEGATIVE = "NEGATIVE"
-

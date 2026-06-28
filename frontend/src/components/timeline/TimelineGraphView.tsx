@@ -48,8 +48,8 @@ import {
   getTimelineItemIcon,
   getTimelineItemLabel,
 } from '@/utils/timelineMapping';
-import type { LinkTemplate } from '@/utils/linkTemplates';
 import { isDeletedItem, type TimelineItem } from '@/types/timeline';
+import type { PICERLStage } from '@/types/caseRunbooks';
 import type { TimelineGraphOperation } from '@/types/generated/models/TimelineGraphOperation';
 import type { TimelineGraphRead } from '@/types/generated/models/TimelineGraphRead';
 import { ArrowLeft, ArrowLeftRight, ArrowRight, Check, Clock, ClockAlert, ClockPlus, Copy, Flag, GitBranch, Group, Highlighter, IdCard, Magnet, Minus, Pencil, Search, Trash, Trash2, X } from 'lucide-react';
@@ -57,10 +57,10 @@ import { ArrowLeft, ArrowLeftRight, ArrowRight, Check, Clock, ClockAlert, ClockP
 interface TimelineGraphViewProps {
   items: TimelineItem[];
   selectedType?: string;
+  selectedPICERLStage?: PICERLStage;
   entityId: number | null;
   entityType: 'case' | 'task';
   sortBy?: 'created_at' | 'timestamp';
-  linkTemplates?: LinkTemplate[];
   onSelectItem?: (itemId: string) => void;
   onFlagItem?: (itemId: string) => void;
   onHighlightItem?: (itemId: string) => void;
@@ -185,7 +185,6 @@ interface TimelineGraphNodeData extends Record<string, unknown> {
   entityId: number | null;
   entityType: 'case' | 'task';
   sortBy: 'created_at' | 'timestamp';
-  linkTemplates?: LinkTemplate[];
   hiddenByFilter?: boolean;
 }
 
@@ -388,8 +387,9 @@ function getFilteredGraphState(
   nodes: TimelineFlowNode[],
   edges: TimelineGraphEdge[],
   selectedType?: string,
+  selectedPICERLStage?: PICERLStage,
 ): { nodes: TimelineFlowNode[]; edges: TimelineGraphEdge[] } {
-  if (!selectedType) {
+  if (!selectedType && !selectedPICERLStage) {
     return {
       nodes: nodes.map((node) => (
         node.type === 'timelineItem'
@@ -404,9 +404,18 @@ function getFilteredGraphState(
   }
 
   const hiddenNodeIds = new Set(
-    nodes.flatMap((node) => (
-      node.type === 'timelineItem' && node.data.itemType !== selectedType ? [node.id] : []
-    )),
+    nodes.flatMap((node) => {
+      if (node.type !== 'timelineItem') {
+        return [];
+      }
+      if (selectedType && node.data.itemType !== selectedType) {
+        return [node.id];
+      }
+      if (selectedPICERLStage && (node.data.item as any).picerl_stage !== selectedPICERLStage) {
+        return [node.id];
+      }
+      return [];
+    }),
   );
 
   return {
@@ -1015,7 +1024,6 @@ function buildNodeData(
   sortBy: 'created_at' | 'timestamp',
   entityId: number | null,
   entityType: 'case' | 'task',
-  linkTemplates?: LinkTemplate[],
   width?: number,
   height?: number,
   autoSize = false,
@@ -1045,7 +1053,6 @@ function buildNodeData(
     entityId,
     entityType,
     sortBy,
-    linkTemplates,
   };
 }
 
@@ -1055,12 +1062,11 @@ function buildNode(
   sortBy: 'created_at' | 'timestamp',
   entityId: number | null,
   entityType: 'case' | 'task',
-  linkTemplates?: LinkTemplate[],
   width?: number,
   height?: number,
 ): TimelineGraphNode {
   const hasExplicitSize = typeof width === 'number' && typeof height === 'number';
-  const nodeData = buildNodeData(item, sortBy, entityId, entityType, linkTemplates, width, height, !hasExplicitSize);
+  const nodeData = buildNodeData(item, sortBy, entityId, entityType, width, height, !hasExplicitSize);
   const node: TimelineGraphNode = {
     id: `node-${item.id}`,
     type: 'timelineItem',
@@ -1084,7 +1090,6 @@ function buildFlowGraphState(
   sortBy: 'created_at' | 'timestamp',
   entityId: number | null,
   entityType: 'case' | 'task',
-  linkTemplates?: LinkTemplate[],
 ): { nodes: TimelineFlowNode[]; edges: TimelineGraphEdge[] } {
   try {
     if (!graph) {
@@ -1126,7 +1131,6 @@ function buildFlowGraphState(
           sortBy,
           entityId,
           entityType,
-          linkTemplates,
           width,
           height,
         ),
@@ -1478,7 +1482,6 @@ function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, heigh
                 entityId={data.entityId}
                 entityType={data.entityType}
                 sortBy={data.sortBy}
-                linkTemplates={data.linkTemplates}
                 compactPreview
                 hideReplies
               />
@@ -1864,10 +1867,10 @@ const edgeTypes: EdgeTypes = {
 function TimelineGraphViewInner({
   items,
   selectedType,
+  selectedPICERLStage,
   entityId,
   entityType,
   sortBy = 'timestamp',
-  linkTemplates,
   onSelectItem,
   onFlagItem,
   onHighlightItem,
@@ -1922,8 +1925,8 @@ function TimelineGraphViewInner({
   const selectedNode = selectedNodeId ? nodes.find((node) => node.id === selectedNodeId) : null;
   const selectedEdge = selectedEdgeId ? edges.find((edge) => edge.id === selectedEdgeId) : null;
   const filteredGraphState = useMemo(
-    () => getFilteredGraphState(nodes, edges, selectedType),
-    [edges, nodes, selectedType],
+    () => getFilteredGraphState(nodes, edges, selectedType, selectedPICERLStage),
+    [edges, nodes, selectedPICERLStage, selectedType],
   );
   const flowEdges = useMemo(
     () => filteredGraphState.edges.map((edge) => withFloatingEdgeData(edge, graphSettings.floatingEdges)),
@@ -2059,7 +2062,7 @@ function TimelineGraphViewInner({
   }, [graphLayout.detailPaneHeight]);
 
   const applyGraphRead = useCallback((graphRead: TimelineGraphRead | null | undefined, keepSelectedEdge = false) => {
-    const graphState = buildFlowGraphState(graphRead?.graph as any, itemById, sortBy, entityId, entityType, linkTemplates);
+    const graphState = buildFlowGraphState(graphRead?.graph as any, itemById, sortBy, entityId, entityType);
     const edgeIdToKeepSelected = keepSelectedEdge ? selectedEdgeIdRef.current : null;
     const selectedEdgeStillExists = Boolean(
       edgeIdToKeepSelected && graphState.edges.some((edge) => edge.id === edgeIdToKeepSelected),
@@ -2074,7 +2077,7 @@ function TimelineGraphViewInner({
     setSelectedNodeIds([]);
     setSelectedEdgeId(selectedEdgeStillExists ? edgeIdToKeepSelected : null);
     setSelectedItemId(null);
-  }, [entityId, entityType, itemById, linkTemplates, setEdges, setNodes, sortBy]);
+  }, [entityId, entityType, itemById, setEdges, setNodes, sortBy]);
 
   useEffect(() => {
     if (!timelineGraphQuery.data) return;
@@ -2270,7 +2273,6 @@ function TimelineGraphViewInner({
       sortBy,
       entityId,
       entityType,
-      linkTemplates,
     );
     const containingGroup = findContainingGroup(node, nodes);
     const graphNode = containingGroup ? attachNodeToGroup(node, containingGroup, [...nodes, node]) : node;
@@ -2324,7 +2326,7 @@ function TimelineGraphViewInner({
         marker: 'forward' as const,
       }] : []),
     ]);
-  }, [edges, entityId, entityType, graphSettings.floatingEdges, itemById, linkTemplates, nodeItemIds, nodes, proximityConnectEnabled, screenToFlowPosition, sendGraphPatch, setEdges, setNodes, sortBy]);
+  }, [edges, entityId, entityType, graphSettings.floatingEdges, itemById, nodeItemIds, nodes, proximityConnectEnabled, screenToFlowPosition, sendGraphPatch, setEdges, setNodes, sortBy]);
 
   const handleDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -2733,8 +2735,6 @@ function TimelineGraphViewInner({
         </div>
         <div className="flex min-h-0 grow flex-col gap-2 overflow-auto p-3">
           {stagedItems.length > 0 ? stagedItems.map((item) => {
-            const Icon = getTimelineItemIcon(item.type || 'note');
-
             return (
               <div
                 key={item.id}
@@ -2770,18 +2770,16 @@ function TimelineGraphViewInner({
                 }}
                 onDragEnd={() => setIsDraggingTimelineItem(false)}
               >
-                <div className="flex items-center gap-2">
-                  <Icon className="h-4 w-4 flex-none text-subtext-color" />
-                  <span className="truncate text-caption-bold font-caption-bold uppercase text-subtext-color">
-                    {getTimelineItemLabel(item.type || 'note')}
-                  </span>
-                </div>
-                <span className="line-clamp-2 text-body-bold font-body-bold text-default-font">
-                  {getNodeTitle(item)}
-                </span>
-                <span className="text-caption font-caption text-subtext-color">
-                  {formatTimestamp(item, sortBy)}
-                </span>
+                <TimelineItemRenderer
+                  item={item}
+                  index={0}
+                  total={1}
+                  entityId={entityId}
+                  entityType={entityType}
+                  sortBy={sortBy}
+                  variant="super-compact"
+                  hideReplies
+                />
               </div>
             );
           }) : (

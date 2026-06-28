@@ -1,16 +1,27 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { useParams } from 'react-router-dom';
+import { useLocation, useParams } from 'react-router-dom';
+import { CheckCircle2, Copy, FolderPlus, Link2, Tags, X } from 'lucide-react';
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { Button } from "@/components/buttons/Button";
+import { Select } from "@/components/forms/Select";
+import { AssigneeSelector } from "@/components/forms/AssigneeSelector";
+import { TagsManager } from "@/components/forms/TagsManager";
+import { TextArea } from "@/components/forms/TextArea";
+import { TextField } from "@/components/forms/TextField";
 import { Dialog } from "@/components/overlays/Dialog";
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
+import { getPersistedWidth } from "@/components/layout/ColumnRail";
 import { EntityList } from "@/components/data-display/EntityList";
 import { UnifiedTimeline } from "@/components/timeline/UnifiedTimeline";
 import { RightDock } from '@/components/layout/RightDock';
 import { CaseSelectorModal } from "@/components/entities/CaseSelectorModal";
+import {
+  DuplicateTargetSelectorModal,
+  type DuplicateTargetSelection,
+} from "@/components/entities/DuplicateTargetSelectorModal";
 import { useAlerts } from "@/hooks/useAlerts";
 import { useAlertDetail } from "@/hooks/useAlertDetail";
 import { convertHumanIdToNumeric } from "@/hooks/useAlertIdFromHumanId";
@@ -19,6 +30,7 @@ import { useUpdateAlert } from "@/hooks/useUpdateAlert";
 import { useTriageAlert } from "@/hooks/useTriageAlert";
 import { useLinkAlertToCase } from "@/hooks/useLinkAlertToCase";
 import { useUnlinkAlertFromCase } from "@/hooks/useUnlinkAlertFromCase";
+import { useBulkAlertAction } from "@/hooks/useBulkAlertAction";
 import { useUpdateTimelineItem } from "@/hooks/useUpdateTimelineItem";
 import { useDeleteTimelineItem } from "@/hooks/useDeleteTimelineItem";
 import { useQuickTerminalSubmit } from "@/hooks/useQuickTerminalSubmit";
@@ -28,10 +40,12 @@ import { useEnqueueTriage } from "@/hooks/useEnqueueTriage";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useSession } from "@/contexts/sessionContext";
 import { useURLFilters } from "@/hooks/useURLFilters";
+import { useTagFilterClick } from "@/hooks/useTagFilterClick";
 import type { RejectionCategory } from "@/types/generated/models/RejectionCategory";
 import { cleanupExpiredDrafts } from "@/utils/draftStorage";
 import { useDockState } from "@/hooks/useDockState";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
+import { canShowSplitPaneCenter, useViewportWidth } from "@/hooks/useSplitPaneCenter";
 import { useColumnNavigation } from "@/hooks/useColumnNavigation";
 import { useAutoScroll } from "@/hooks/useAutoScroll";
 import { findTimelineItem, mapItemTypeToDockType } from "@/utils/timelineUtils";
@@ -43,7 +57,48 @@ import type { FilterState } from "@/types/filters";
 import type { TimelineItemType } from '@/types/drafts';
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { alertStatusToUIState, priorityToUIPriority, uiStateToAlertStatus, type UIState } from "@/utils/statusHelpers";
+import { ALERT_STATUS_OPTIONS } from "@/utils/statusLabels";
+import { ApiError } from "@/types/generated/core/ApiError";
 import { NotFoundError } from "@/pages/NotFoundError";
+
+const ALERT_SORT_OPTIONS = [
+  {
+    value: "created_at",
+    label: "Created",
+    directionLabel: { desc: "Newest first", asc: "Oldest first" },
+  },
+  {
+    value: "updated_at",
+    label: "Updated",
+    directionLabel: { desc: "Recently updated", asc: "Least recently updated" },
+  },
+  {
+    value: "priority",
+    label: "Priority",
+    directionLabel: { desc: "Highest priority", asc: "Lowest priority" },
+  },
+  {
+    value: "status",
+    label: "Status",
+    directionLabel: { desc: "Status Z-A", asc: "Status A-Z" },
+  },
+];
+
+function getApiErrorMessage(error: Error, fallback: string): string {
+  if (error instanceof ApiError) {
+    if (error.body && typeof error.body === 'object' && 'detail' in error.body) {
+      const detail = error.body.detail;
+      if (typeof detail === 'string') return detail;
+      if (detail && typeof detail === 'object' && 'message' in detail && typeof detail.message === 'string') {
+        return detail.message;
+      }
+    }
+    if (error.body && typeof error.body === 'object' && 'message' in error.body && typeof error.body.message === 'string') {
+      return error.body.message;
+    }
+  }
+  return error.message || fallback;
+}
 
 /**
  * Alerts page component for displaying and managing security alerts.
@@ -66,6 +121,7 @@ import { NotFoundError } from "@/pages/NotFoundError";
 function Alerts() {
   // Get URL parameters and navigation
   const { humanId } = useParams<{ humanId?: string }>();
+  const location = useLocation();
   const navigate = useViewTransitionNavigate();
 
   // Get current authenticated user from session context
@@ -79,16 +135,30 @@ function Alerts() {
       search: "",
       assignee: null,
       status: ["NEW", "IN_PROGRESS"],
+      includeTags: null,
+      excludeTags: null,
       dateRange: null,
+      sortBy: "created_at",
+      sortOrder: "desc",
     },
   });
   const [selectedAlertId, setSelectedAlertId] = useState<number | null>(null);
+  const handleFilterByTag = useTagFilterClick(filters, setFilters);
+  const [bulkSelectedAlertIds, setBulkSelectedAlertIds] = useState<Set<number>>(new Set());
+  const [bulkDialog, setBulkDialog] = useState<'status' | 'create_case' | 'duplicate' | 'tags' | null>(null);
+  const [isBulkCaseSelectorOpen, setIsBulkCaseSelectorOpen] = useState(false);
+  const [bulkStatus, setBulkStatus] = useState<AlertStatus>('IN_PROGRESS');
+  const [bulkCaseTitle, setBulkCaseTitle] = useState('');
+  const [bulkCaseDescription, setBulkCaseDescription] = useState('');
+  const [bulkTags, setBulkTags] = useState<string[]>([]);
+  const [acceptRecommendationError, setAcceptRecommendationError] = useState<string | null>(null);
 
   // Column visibility state: controls which columns are visible
   // On mobile (<768px): typically 'left' | 'center' | 'right' for single column
   // On tablet/desktop: typically 'left+center' | 'center+right' based on dock state
   // On ultrawide: typically 'all' for three columns
   const [visibleColumns, setVisibleColumns] = useState<VisibleColumns>(() => getInitialVisibleColumns());
+  const [alertListWidth, setAlertListWidth] = useState<number>(() => getPersistedWidth(768));
 
   // Right Dock state for three-column layout (with automatic persistence per alert)
   const {
@@ -112,6 +182,8 @@ function Alerts() {
 
   // Reactive breakpoint state and column navigation helpers
   const breakpoint = useBreakpoint();
+  const viewportWidth = useViewportWidth();
+  const showSplitCenter = canShowSplitPaneCenter(viewportWidth, alertListWidth, breakpoint);
   const { switchToColumnOnMobile } = useColumnNavigation(setVisibleColumns);
 
   // Automatically adjust visible columns based on screen size, dock state, and alert selection
@@ -119,30 +191,21 @@ function Alerts() {
   useEffect(() => {
     // If no alert is selected
     if (!selectedAlertId) {
-      // On ultrawide, show left+center to display the empty state
-      if (breakpoint === 'ultrawide') {
-        setVisibleColumns('left+center');
-      } else {
-        // On other breakpoints, show only left
-        setVisibleColumns('left');
-      }
+      setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
       return;
     }
 
-    // On ultrawide, show all columns when dock is open, otherwise left+center
-    if (breakpoint === 'ultrawide') {
+    if (breakpoint === 'mobile') {
+      return;
+    }
+
+    if (showSplitCenter) {
       setVisibleColumns(dockOpen ? 'all' : 'left+center');
       return;
     }
 
-    // On desktop/tablet, dock floats as drawer over center column
-    // Show center+right when dock is open (right will float), otherwise just center
-    if (breakpoint === 'desktop' || breakpoint === 'tablet') {
-      setVisibleColumns(dockOpen ? 'center+right' : 'center');
-    }
-    // On mobile, keep current single column (don't auto-switch)
-    // Mobile navigation is handled explicitly by user interactions
-  }, [dockOpen, selectedAlertId, breakpoint]);
+    setVisibleColumns(dockOpen ? 'center+right' : 'center');
+  }, [dockOpen, selectedAlertId, breakpoint, showSplitCenter]);
 
   // Initialize selectedAlertId from URL parameter if present
   useEffect(() => {
@@ -152,26 +215,20 @@ function Alerts() {
         setSelectedAlertId(numericId);
 
         // Set appropriate columns based on current breakpoint
-        if (breakpoint === 'ultrawide') {
-          setVisibleColumns('left+center');
-        } else if (breakpoint === 'desktop' || breakpoint === 'tablet') {
+        if (breakpoint === 'mobile') {
           setVisibleColumns('center');
+        } else if (showSplitCenter) {
+          setVisibleColumns('left+center');
         } else {
-          // Mobile: switch to center (timeline) view when alert is selected via URL
           setVisibleColumns('center');
         }
       }
     } else {
       // No humanId in URL - clear selected alert
       setSelectedAlertId(null);
-      // Show left+center on ultrawide to display empty state, otherwise just left
-      if (breakpoint === 'ultrawide') {
-        setVisibleColumns('left+center');
-      } else {
-        setVisibleColumns('left');
-      }
+      setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
     }
-  }, [humanId, breakpoint]);
+  }, [humanId, breakpoint, showSplitCenter]);
 
   // Fetch users for assignee dropdown
   const { data: users = [], isLoading: isLoadingUsers } = useUsers({});
@@ -184,6 +241,10 @@ function Alerts() {
     startDate: filters.dateRange?.start || null,
     endDate: filters.dateRange?.end || null,
     search: filters.search || null,
+    includeTags: filters.includeTags || null,
+    excludeTags: filters.excludeTags || null,
+    sortBy: filters.sortBy ?? "created_at",
+    sortOrder: filters.sortOrder ?? "desc",
     page: currentPage,
     size: pageSize,
   });
@@ -197,6 +258,7 @@ function Alerts() {
     error: detailError,
   } = useAlertDetail(selectedAlertId, { includeLinkedTimelines: true });
   const isAlertReadOnly = isAuditor || alertDetail?.status === 'ESCALATED' || !!alertDetail?.case_id;
+  const bulkSelectedIds = Array.from(bulkSelectedAlertIds);
 
   // Check if the error is a 404 (only relevant when an alert is selected)
   const is404Error = selectedAlertId && detailError && (
@@ -205,6 +267,10 @@ function Alerts() {
     detailError.message?.includes('404') ||
     detailError.message?.includes('not found')
   );
+
+  const handleAlertListRailToggle = () => {
+    // The alerts split pane is resizable but not collapsible.
+  };
 
   // Alert update mutation for assignment operations
   const updateAlertMutation = useUpdateAlert(selectedAlertId, {
@@ -271,9 +337,25 @@ function Alerts() {
     },
   });
 
+  const bulkAlertActionMutation = useBulkAlertAction({
+    onSuccess: (data) => {
+      setBulkSelectedAlertIds(new Set());
+      setBulkDialog(null);
+      setBulkTags([]);
+      setIsBulkCaseSelectorOpen(false);
+      if (data.case_human_id) {
+        navigate(`/cases/${data.case_human_id}`);
+      }
+    },
+    onError: (error) => {
+      console.error("Failed to apply bulk alert action:", error);
+    },
+  });
+
   // Triage recommendation mutations
   const acceptTriageRecommendationMutation = useAcceptTriageRecommendation(selectedAlertId, {
     onSuccess: (data) => {
+      setAcceptRecommendationError(null);
       // If a case was created, navigate to it
       if (data.case_human_id) {
         navigate(`/cases/${data.case_human_id}`);
@@ -281,6 +363,7 @@ function Alerts() {
     },
     onError: (error) => {
       console.error("Failed to accept triage recommendation:", error);
+      setAcceptRecommendationError(getApiErrorMessage(error, "Failed to accept triage recommendation"));
     },
   });
 
@@ -400,6 +483,92 @@ function Alerts() {
     linkAlertToCaseMutation.mutate(caseId);
   };
 
+  const handleBulkSelectionChange = (alertId: number, selected: boolean) => {
+    setBulkSelectedAlertIds((previous) => {
+      const next = new Set(previous);
+      if (selected) {
+        next.add(alertId);
+      } else {
+        next.delete(alertId);
+      }
+      return next;
+    });
+  };
+
+  const handleBulkSelectVisible = (selected: boolean, alertIds: number[]) => {
+    setBulkSelectedAlertIds((previous) => {
+      const next = new Set(previous);
+      alertIds.forEach((alertId) => {
+        if (selected) {
+          next.add(alertId);
+        } else {
+          next.delete(alertId);
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleBulkLinkToCase = (caseId: number) => {
+    bulkAlertActionMutation.mutate({
+      alert_ids: bulkSelectedIds,
+      action: 'link_case',
+      case_id: caseId,
+    });
+  };
+
+  const handleBulkStatusSubmit = () => {
+    bulkAlertActionMutation.mutate({
+      alert_ids: bulkSelectedIds,
+      action: 'update_status',
+      status: bulkStatus,
+    });
+  };
+
+  const handleBulkCreateCaseSubmit = () => {
+    bulkAlertActionMutation.mutate({
+      alert_ids: bulkSelectedIds,
+      action: 'create_case',
+      case_title: bulkCaseTitle.trim(),
+      case_description: bulkCaseDescription.trim() || null,
+    });
+  };
+
+  const handleBulkDuplicateTargetSelect = (target: DuplicateTargetSelection) => {
+    bulkAlertActionMutation.mutate({
+      alert_ids: bulkSelectedIds,
+      action: 'close_duplicate',
+      duplicate_target_case_id: target.type === 'case' ? target.id : null,
+      duplicate_target_alert_id: target.type === 'alert' ? target.id : null,
+    });
+  };
+
+  const handleBulkTagsSubmit = () => {
+    bulkAlertActionMutation.mutate({
+      alert_ids: bulkSelectedIds,
+      action: 'add_tags',
+      tags: bulkTags,
+    });
+  };
+
+  const handleBulkAssignToMe = () => {
+    if (!currentUser) return;
+    handleBulkAssignToUser(currentUser);
+  };
+
+  const handleBulkAssignToUser = (username: string) => {
+    bulkAlertActionMutation.mutate({
+      alert_ids: bulkSelectedIds,
+      action: 'assign',
+      assignee: username,
+    });
+  };
+
+  const handleBulkTagsClose = () => {
+    setBulkTags([]);
+    setBulkDialog(null);
+  };
+
   // Tag update handler
   const handleUpdateTags = (tags: string[]) => {
     if (!selectedAlertId) return;
@@ -409,6 +578,7 @@ function Alerts() {
   // Triage recommendation handlers
   const handleAcceptTriageRecommendation = (options: import('@/types/generated/models/AcceptRecommendationRequest').AcceptRecommendationRequest) => {
     if (!selectedAlertId) return;
+    setAcceptRecommendationError(null);
     acceptTriageRecommendationMutation.mutate(options);
   };
 
@@ -564,7 +734,7 @@ function Alerts() {
   // Alert selection handler
   const handleAlertSelect = (alertId: number, humanId: string) => {
     setSelectedAlertId(alertId);
-    navigate(`/alerts/${humanId}`);
+    navigate(`/alerts/${humanId}${location.search}`);
 
     // Only change visible columns on mobile - ultrawide/desktop/tablet stay as-is
     switchToColumnOnMobile('center');
@@ -574,8 +744,76 @@ function Alerts() {
   // Handler for going back to alert list from 404 page
   const handleBackToAlertList = () => {
     setSelectedAlertId(null);
-    navigate('/alerts');
+    navigate(`/alerts${location.search}`);
   };
+
+  const bulkActionsPanel = !isAuditor && bulkSelectedIds.length > 1 ? (
+    <div className="flex w-full flex-wrap items-center gap-2 rounded-md border border-solid border-neutral-border bg-default-background px-3 py-2">
+      <span className="mr-auto text-body-bold font-body-bold text-default-font">
+        {bulkSelectedIds.length} selected
+      </span>
+      <Button
+        size="small"
+        variant="neutral-secondary"
+        icon={<CheckCircle2 />}
+        onClick={() => setBulkDialog('status')}
+      >
+        Status
+      </Button>
+      <Button
+        size="small"
+        variant="neutral-secondary"
+        icon={<Link2 />}
+        onClick={() => setIsBulkCaseSelectorOpen(true)}
+      >
+        Link
+      </Button>
+      <Button
+        size="small"
+        variant="neutral-secondary"
+        icon={<FolderPlus />}
+        onClick={() => setBulkDialog('create_case')}
+      >
+        New Case
+      </Button>
+      <Button
+        size="small"
+        variant="neutral-secondary"
+        icon={<Copy />}
+        onClick={() => setBulkDialog('duplicate')}
+      >
+        Duplicate
+      </Button>
+      <Button
+        size="small"
+        variant="neutral-secondary"
+        icon={<Tags />}
+        onClick={() => setBulkDialog('tags')}
+      >
+        Tags
+      </Button>
+      <AssigneeSelector
+        mode="assign"
+        size="small"
+        className="!h-6 w-auto px-2 py-0"
+        currentAssignee={null}
+        currentUser={currentUser}
+        users={users}
+        isLoadingUsers={isLoadingUsers}
+        disabled={bulkAlertActionMutation.isPending}
+        onAssignToMe={handleBulkAssignToMe}
+        onAssignToUser={handleBulkAssignToUser}
+        unassignedLabel="Assign"
+      />
+      <Button
+        size="small"
+        variant="neutral-tertiary"
+        icon={<X />}
+        onClick={() => setBulkSelectedAlertIds(new Set())}
+      />
+    </div>
+  ) : null;
+  const isLeftOnlyView = visibleColumns === 'left';
 
   // Show 404 error if alert not found (when viewing a specific alert)
   if (is404Error) {
@@ -599,9 +837,15 @@ function Alerts() {
             items={alertsData?.items ?? []}
             selectedId={selectedAlertId}
             onSelect={handleAlertSelect}
-            getItemHref={(_id, humanId) => `/alerts/${humanId}`}
+            getItemHref={(_id, humanId) => `/alerts/${humanId}${location.search}`}
+            selectable={!isAuditor}
+            selectedIds={bulkSelectedAlertIds}
+            onSelectionChange={handleBulkSelectionChange}
+            onSelectVisible={handleBulkSelectVisible}
+            toolbarActions={bulkActionsPanel}
             filters={filters}
             onFilterChange={setFilters}
+            sortOptions={ALERT_SORT_OPTIONS}
             currentPage={currentPage}
             totalPages={totalPages}
             totalItems={alertsData?.total}
@@ -611,6 +855,8 @@ function Alerts() {
             error={error}
             users={users}
             usersLoading={isLoadingUsers}
+            enableTagFilters
+            onTagClick={handleFilterByTag}
             getItemIds={(alert: AlertRead) => ({ id: alert.id, humanId: alert.human_id })}
             mapItemToCard={(alert: AlertRead) => ({
               id: alert.human_id,
@@ -637,7 +883,7 @@ function Alerts() {
             users={users}
             usersLoading={isLoadingUsers}
             isUpdating={updateAlertMutation.isPending}
-            isOverlayOpen={dockOpen || isCaseSelectorOpen}
+            isOverlayOpen={dockOpen || isCaseSelectorOpen || isBulkCaseSelectorOpen || bulkDialog !== null}
             onFlagItem={handleFlagItem}
             onHighlightItem={handleHighlightItem}
             onEditItem={handleEditItem}
@@ -667,6 +913,7 @@ function Alerts() {
             onNavigateToCase={handleNavigateToCase}
             isAcceptingRecommendation={acceptTriageRecommendationMutation.isPending}
             isRejectingRecommendation={rejectTriageRecommendationMutation.isPending}
+            acceptRecommendationError={acceptRecommendationError}
             onRetryTriage={isAuditor ? undefined : handleRetryTriage}
             onRequestTriage={isAuditor ? undefined : handleRequestTriage}
             isEnqueuingTriage={enqueueTriageMutation.isPending}
@@ -693,8 +940,12 @@ function Alerts() {
         }
         visibleColumns={visibleColumns}
         onVisibleColumnsChange={setVisibleColumns}
-        columnConfig={getColumnConfig(selectedAlertId)}
+        columnConfig={getColumnConfig(selectedAlertId, alertListWidth, isLeftOnlyView)}
         dimLeftColumn={!!selectedAlertId}
+        showLeftRail={!isLeftOnlyView}
+        onLeftRailToggle={handleAlertListRailToggle}
+        leftColumnWidth={isLeftOnlyView ? undefined : alertListWidth}
+        onLeftColumnWidthChange={isLeftOnlyView ? undefined : setAlertListWidth}
       />
 
       {/* Case Selector Modal */}
@@ -704,6 +955,131 @@ function Alerts() {
         onSelectCase={handleSelectCase}
         isLinking={linkAlertToCaseMutation.isPending}
       />
+
+      <CaseSelectorModal
+        isOpen={isBulkCaseSelectorOpen}
+        onClose={() => setIsBulkCaseSelectorOpen(false)}
+        onSelectCase={handleBulkLinkToCase}
+        isLinking={bulkAlertActionMutation.isPending}
+      />
+
+      {bulkDialog === 'duplicate' ? (
+        <DuplicateTargetSelectorModal
+          isOpen
+          onClose={() => setBulkDialog(null)}
+          onSelectTarget={handleBulkDuplicateTargetSelect}
+          excludedAlertIds={bulkSelectedIds}
+          isSubmitting={bulkAlertActionMutation.isPending}
+        />
+      ) : null}
+
+      <Dialog open={bulkDialog === 'status'} onOpenChange={(open) => !open && setBulkDialog(null)}>
+        <Dialog.Content className="w-[520px] max-w-[90vw]">
+          <div className="flex w-full items-center justify-between border-b border-solid border-neutral-border px-6 py-4">
+            <span className="text-heading-3 font-heading-3 text-default-font">Update Status</span>
+            <Button
+              variant="neutral-tertiary"
+              size="small"
+              icon={<X />}
+              onClick={() => setBulkDialog(null)}
+            />
+          </div>
+          <div className="w-full px-6 py-4">
+            <Select
+              className="w-full"
+              label="Status"
+              placeholder="Select status"
+              value={bulkStatus}
+              onValueChange={(value) => setBulkStatus(value as AlertStatus)}
+            >
+              {ALERT_STATUS_OPTIONS.map((option) => (
+                <Select.Item key={option.value} value={option.value}>
+                  {option.label}
+                </Select.Item>
+              ))}
+            </Select>
+          </div>
+          <div className="flex w-full items-center justify-end gap-2 border-t border-solid border-neutral-border px-6 py-4">
+            <Button variant="neutral-secondary" onClick={() => setBulkDialog(null)}>Cancel</Button>
+            <Button onClick={handleBulkStatusSubmit} loading={bulkAlertActionMutation.isPending}>
+              Apply
+            </Button>
+          </div>
+        </Dialog.Content>
+      </Dialog>
+
+      <Dialog open={bulkDialog === 'create_case'} onOpenChange={(open) => !open && setBulkDialog(null)}>
+        <Dialog.Content className="w-[560px] max-w-[90vw]">
+          <div className="flex w-full items-center justify-between border-b border-solid border-neutral-border px-6 py-4">
+            <span className="text-heading-3 font-heading-3 text-default-font">Create Case From Alerts</span>
+            <Button
+              variant="neutral-tertiary"
+              size="small"
+              icon={<X />}
+              onClick={() => setBulkDialog(null)}
+            />
+          </div>
+          <div className="flex w-full flex-col gap-4 px-6 py-4">
+            <TextField className="w-full" label="Case Title" helpText="">
+              <TextField.Input
+                value={bulkCaseTitle}
+                onChange={(event) => setBulkCaseTitle(event.target.value)}
+                placeholder="Case title"
+              />
+            </TextField>
+            <TextArea className="w-full" label="Description" helpText="">
+              <TextArea.Input
+                value={bulkCaseDescription}
+                onChange={(event) => setBulkCaseDescription(event.target.value)}
+                placeholder="Description"
+              />
+            </TextArea>
+          </div>
+          <div className="flex w-full items-center justify-end gap-2 border-t border-solid border-neutral-border px-6 py-4">
+            <Button variant="neutral-secondary" onClick={() => setBulkDialog(null)}>Cancel</Button>
+            <Button
+              onClick={handleBulkCreateCaseSubmit}
+              disabled={!bulkCaseTitle.trim()}
+              loading={bulkAlertActionMutation.isPending}
+            >
+              Create
+            </Button>
+          </div>
+        </Dialog.Content>
+      </Dialog>
+
+      <Dialog open={bulkDialog === 'tags'} onOpenChange={(open) => !open && handleBulkTagsClose()}>
+        <Dialog.Content className="w-[520px] max-w-[90vw]">
+          <div className="flex w-full items-center justify-between border-b border-solid border-neutral-border px-6 py-4">
+            <span className="text-heading-3 font-heading-3 text-default-font">Add Tags</span>
+            <Button
+              variant="neutral-tertiary"
+              size="small"
+              icon={<X />}
+              onClick={handleBulkTagsClose}
+            />
+          </div>
+          <div className="w-full px-6 py-4">
+            <TagsManager
+              tags={bulkTags}
+              onTagsChange={setBulkTags}
+              label="Tags"
+              placeholder="Enter tags and press Enter"
+              className="w-full"
+            />
+          </div>
+          <div className="flex w-full items-center justify-end gap-2 border-t border-solid border-neutral-border px-6 py-4">
+            <Button variant="neutral-secondary" onClick={handleBulkTagsClose}>Cancel</Button>
+            <Button
+              onClick={handleBulkTagsSubmit}
+              disabled={bulkTags.length === 0}
+              loading={bulkAlertActionMutation.isPending}
+            >
+              Add
+            </Button>
+          </div>
+        </Dialog.Content>
+      </Dialog>
 
     </DefaultPageLayout>
   );

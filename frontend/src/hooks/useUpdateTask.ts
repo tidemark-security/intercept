@@ -76,6 +76,10 @@ export function useUpdateTask(
         queryClient.invalidateQueries({ queryKey: queryKeys.task.detailBase(taskId), exact: false });
         queryClient.invalidateQueries({ queryKey: queryKeys.task.listBase() }); // Also invalidate the list
       }
+      if (data.case_id) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.case.detailBase(data.case_id), exact: false });
+        queryClient.invalidateQueries({ queryKey: queryKeys.case.listBase() });
+      }
       options?.onSuccess?.(data);
     },
   });

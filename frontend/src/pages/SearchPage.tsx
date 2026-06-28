@@ -27,18 +27,18 @@ import { SearchFiltersBar, SearchPrompt, NoResults, SearchError } from '@/compon
 import { SearchResultRow } from '@/components/search/SearchResultRow';
 import { ExtendedSearchResultItem, getEntityPath, isSearchQueryValid } from '@/components/search/searchUtils';
 
-import { AlertTriangle, NotebookPen, List, Search, X } from 'lucide-react';
+import { Bell, CheckSquare, NotebookPen, Search, X } from 'lucide-react';
 /**
  * Get the icon component for an entity type
  */
 function EntityIcon({ type }: { type: EntityType }) {
   switch (type) {
     case 'alert':
-      return <AlertTriangle className="h-4 w-4 text-subtext-color" />;
+      return <Bell className="h-4 w-4 text-subtext-color" />;
     case 'case':
       return <NotebookPen className="h-4 w-4 text-subtext-color" />;
     case 'task':
-      return <List className="h-4 w-4 text-subtext-color" />;
+      return <CheckSquare className="h-4 w-4 text-subtext-color" />;
     default:
       return null;
   }
@@ -87,13 +87,13 @@ export function SearchPage() {
     navigate(path);
   }, [navigate]);
 
-  const isQueryValid = isSearchQueryValid(debouncedQuery);
+  const canSearch = isSearchQueryValid(debouncedQuery) || selectedTags.length > 0;
 
   const results = queryResult.data?.results || [];
 
   return (
     <DefaultPageLayout withContainer>
-      <div className="container max-w-none flex h-full w-full flex-col items-start gap-6 py-8">
+      <div className="mx-auto flex h-full w-full max-w-[1536px] flex-col items-start gap-6 px-6 py-8 mobile:px-4">
         {/* Header */}
         <div className="flex w-full items-center justify-between">
           <div className="flex flex-col gap-1">
@@ -145,7 +145,7 @@ export function SearchPage() {
 
         {/* Results */}
         <div className="flex-1 w-full overflow-auto">
-          {!isQueryValid ? (
+          {!canSearch ? (
             <SearchPrompt variant="page" />
           ) : queryResult.isError ? (
             <SearchError 
@@ -167,6 +167,7 @@ export function SearchPage() {
                   item={item as ExtendedSearchResultItem}
                   onClick={() => navigateToResult(item)}
                   searchQuery={debouncedQuery}
+                  selectedTags={selectedTags}
                   icon={<EntityIcon type={item.entity_type} />}
                 />
               ))}

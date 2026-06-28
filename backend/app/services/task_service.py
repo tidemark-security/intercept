@@ -16,6 +16,7 @@ from app.services.timeline_add_service import add_timeline_item_and_commit, upda
 from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
+from app.services.tag_filter_utils import append_tag_filters, normalize_persisted_tags
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,8 @@ class TaskService:
         self, 
         db: AsyncSession, 
         task_data: TaskCreate, 
-        created_by: str
+        created_by: str,
+        created_at_override: Optional[datetime] = None,
     ) -> Task:
         """Create a new task.
         
@@ -75,18 +77,25 @@ class TaskService:
             elif not isinstance(status, TaskStatus):
                 status = TaskStatus.TODO
             
+            task_kwargs = {
+                "title": task_data.title,
+                "description": task_data.description,
+                "priority": priority,
+                "due_date": task_data.due_date,
+                "picerl_stage": task_data.picerl_stage,
+                "status": status,
+                "assignee": assignee,
+                "case_id": task_data.case_id,
+                "source_runbook": getattr(task_data, "source_runbook", None),
+                "linked_at": datetime.now(timezone.utc) if task_data.case_id else None,
+                "created_by": created_by,
+                "tags": normalize_persisted_tags(task_data.tags),
+            }
+            if created_at_override is not None:
+                task_kwargs["created_at"] = created_at_override
+
             # Create task
-            db_task = Task(
-                title=task_data.title,
-                description=task_data.description,
-                priority=priority,
-                due_date=task_data.due_date,
-                status=status,
-                assignee=assignee,
-                case_id=task_data.case_id,
-                linked_at=datetime.now(timezone.utc) if task_data.case_id else None,
-                created_by=created_by
-            )
+            db_task = Task(**task_kwargs)
             
             db.add(db_task)
             await db.commit()
@@ -148,9 +157,13 @@ class TaskService:
         status: Optional[List[TaskStatus]] = None,
         assignee: Optional[str] = None,
         case_id: Optional[int] = None,
+        include_tags: Optional[List[str]] = None,
+        exclude_tags: Optional[List[str]] = None,
         search: Optional[str] = None,
         start_date: Optional[str] = None,
-        end_date: Optional[str] = None
+        end_date: Optional[str] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc"
     ) -> Page[Task]:
         """Get tasks with optional filtering and pagination.
         
@@ -160,15 +173,17 @@ class TaskService:
             status: Filter by task status (can filter by multiple statuses)
             assignee: Filter by assignee username (exact match)
             case_id: Filter by case ID (for tasks linked to a specific case)
+            include_tags: Tags tasks must include
+            exclude_tags: Tags tasks must exclude
             search: Search string to match against task title or description (case-insensitive partial match)
             start_date: Filter tasks created after this UTC datetime (ISO8601 format with 'Z' suffix)
             end_date: Filter tasks created before this UTC datetime (ISO8601 format with 'Z' suffix)
         """
         try:
-            # Build base query with ordering
+            # Build base query
             # Defer timeline_items - not needed for list view and can cause validation 
             # errors if malformed data exists. Detail view fetches them separately.
-            query = select(Task).options(defer(Task.timeline_items)).order_by(col(Task.created_at).desc())  # type: ignore[arg-type]
+            query = select(Task).options(defer(Task.timeline_items))
             
             # Apply filters
             filters = []
@@ -199,10 +214,15 @@ class TaskService:
                     filters.append(col(Task.status).in_(normalized_statuses))
             
             if assignee:
-                filters.append(Task.assignee == assignee)
+                if assignee == "__unassigned__":
+                    filters.append(Task.assignee.is_(None))  # type: ignore
+                else:
+                    filters.append(Task.assignee == assignee)
             
             if case_id is not None:
                 filters.append(Task.case_id == case_id)
+
+            append_tag_filters(filters, Task.tags, include_tags, exclude_tags)
             
             # Date range filtering (expects UTC ISO8601 strings)
             if start_date:
@@ -234,6 +254,24 @@ class TaskService:
             # Apply all filters if any exist
             if filters:
                 query = query.where(and_(*filters))
+
+            allowed_sort_columns = {
+                "id": Task.id,
+                "title": Task.title,
+                "status": Task.status,
+                "priority": Task.priority,
+                "assignee": Task.assignee,
+                "created_at": Task.created_at,
+                "updated_at": Task.updated_at,
+            }
+            if sort_by not in allowed_sort_columns:
+                raise ValueError(f"Unsupported task sort column: {sort_by}")
+
+            sort_column = allowed_sort_columns[sort_by]
+            if sort_order.lower() == "asc":
+                query = query.order_by(sort_column.asc())  # type: ignore
+            else:
+                query = query.order_by(sort_column.desc())  # type: ignore
             
             # Use fastapi-pagination's paginate function
             return await paginate(db, query)
@@ -241,7 +279,7 @@ class TaskService:
         except Exception as e:
             logger.error(f"Error fetching tasks: {e}")
             raise
-    
+
     async def update_task(
         self, 
         db: AsyncSession, 
@@ -282,6 +320,8 @@ class TaskService:
             
             for field, new_value in update_data.items():
                 if hasattr(db_task, field):
+                    if field == "tags":
+                        new_value = normalize_persisted_tags(new_value)
                     # Normalize status to TaskStatus enum
                     if field == 'status' and new_value is not None:
                         if isinstance(new_value, str):
@@ -375,6 +415,13 @@ class TaskService:
                     user=updated_by,
                 )
 
+            if assignee_changed and db_task.assignee:
+                await self._enqueue_autonomous_task_if_assigned_to_nhi(
+                    db,
+                    task_id=task_id,
+                    assignee=db_task.assignee,
+                )
+
             logger.info(f"Task {task_id} updated by {updated_by}")
             return await self._reload_task_response(db, task_id)
             
@@ -382,6 +429,44 @@ class TaskService:
             await db.rollback()
             logger.error(f"Error updating task {task_id}: {e}")
             raise
+
+    async def _enqueue_autonomous_task_if_assigned_to_nhi(
+        self,
+        db: AsyncSession,
+        *,
+        task_id: int,
+        assignee: str,
+    ) -> None:
+        from sqlalchemy import select
+
+        from app.models.enums import AccountType, UserStatus
+        from app.models.models import UserAccount
+        from app.services.task_queue_service import get_task_queue_service
+        from app.services.tasks import TASK_AUTONOMOUS_TASK
+
+        result = await db.execute(
+            select(UserAccount).where(
+                UserAccount.username == assignee,
+                UserAccount.account_type == AccountType.NHI,
+                UserAccount.status == UserStatus.ACTIVE,
+                UserAccount.assignable.is_(True),  # type: ignore[attr-defined]
+            )
+        )
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            return
+
+        try:
+            queue = get_task_queue_service()
+        except RuntimeError:
+            logger.warning("Task queue not available; autonomous task was not enqueued", extra={"task_id": task_id})
+            return
+
+        await queue.enqueue(
+            task_name=TASK_AUTONOMOUS_TASK,
+            payload={"task_id": task_id, "agent_username": agent.username},
+            dedupe_key=f"autonomous_task:{task_id}:{agent.username}",
+        )
     
     async def delete_task(
         self, 
@@ -425,7 +510,8 @@ class TaskService:
         db: AsyncSession,
         task_id: int,
         timeline_item: TaskTimelineItem,
-        added_by: str
+        added_by: str,
+        created_at_override: Optional[datetime] = None,
     ) -> Optional[Task]:
         """Add a single timeline item to a task's timeline.
         
@@ -445,6 +531,7 @@ class TaskService:
                 timeline_item=timeline_item,
                 performed_by=added_by,
                 validate_item=self._validate_task_timeline_item,
+                created_at_override=created_at_override,
             )
 
             await db.refresh(db_task)

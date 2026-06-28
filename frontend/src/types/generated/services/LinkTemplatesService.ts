@@ -3,22 +3,19 @@
 /* tslint:disable */
 /* eslint-disable */
 import type { LinkTemplateCreate } from '../models/LinkTemplateCreate';
+import type { LinkTemplateExportBundle } from '../models/LinkTemplateExportBundle';
+import type { LinkTemplateExportRequest } from '../models/LinkTemplateExportRequest';
 import type { LinkTemplateRead } from '../models/LinkTemplateRead';
+import type { LinkTemplateResolveRequest } from '../models/LinkTemplateResolveRequest';
 import type { LinkTemplateUpdate } from '../models/LinkTemplateUpdate';
+import type { ResolvedLinkTemplateRead } from '../models/ResolvedLinkTemplateRead';
 import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
 import { request as __request } from '../core/request';
 export class LinkTemplatesService {
     /**
      * Get Link Templates
-     * Get all link templates.
-     *
-     * Args:
-     * enabled_only: If True, only return enabled templates (default: True)
-     * db: Database session
-     *
-     * Returns:
-     * List of link templates ordered by display_order
+     * Get public link templates.
      * @returns LinkTemplateRead Successful Response
      * @throws ApiError
      */
@@ -40,14 +37,7 @@ export class LinkTemplatesService {
     }
     /**
      * Create Link Template
-     * Create a new link template.
-     *
-     * Args:
-     * template_data: Link template data
-     * db: Database session
-     *
-     * Returns:
-     * Created link template
+     * Create a public link template.
      * @returns LinkTemplateRead Successful Response
      * @throws ApiError
      */
@@ -67,15 +57,71 @@ export class LinkTemplatesService {
         });
     }
     /**
+     * Export Link Templates
+     * Export selected public link templates as a portable JSON bundle.
+     * @returns LinkTemplateExportBundle Successful Response
+     * @throws ApiError
+     */
+    public static exportLinkTemplatesApiV1LinkTemplatesExportPost({
+        requestBody,
+    }: {
+        requestBody: LinkTemplateExportRequest,
+    }): CancelablePromise<LinkTemplateExportBundle> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/link-templates/export',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Import Link Templates
+     * Import public link templates from a portable single-template or bundle payload.
+     * @returns LinkTemplateRead Successful Response
+     * @throws ApiError
+     */
+    public static importLinkTemplatesApiV1LinkTemplatesImportPost({
+        requestBody,
+    }: {
+        requestBody: any,
+    }): CancelablePromise<Array<LinkTemplateRead>> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/link-templates/import',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Resolve Link Templates
+     * Resolve enabled public and current-user personal templates for one context.
+     * @returns ResolvedLinkTemplateRead Successful Response
+     * @throws ApiError
+     */
+    public static resolveLinkTemplatesApiV1LinkTemplatesResolvePost({
+        requestBody,
+    }: {
+        requestBody: LinkTemplateResolveRequest,
+    }): CancelablePromise<Array<ResolvedLinkTemplateRead>> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/link-templates/resolve',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
      * Get Link Template
-     * Get a specific link template by ID.
-     *
-     * Args:
-     * template_id: Database ID of the template
-     * db: Database session
-     *
-     * Returns:
-     * Link template details
+     * Get one public link template.
      * @returns LinkTemplateRead Successful Response
      * @throws ApiError
      */
@@ -97,15 +143,7 @@ export class LinkTemplatesService {
     }
     /**
      * Update Link Template
-     * Update a link template.
-     *
-     * Args:
-     * template_id: Database ID of the template
-     * template_data: Updated template data
-     * db: Database session
-     *
-     * Returns:
-     * Updated link template
+     * Update a public link template.
      * @returns LinkTemplateRead Successful Response
      * @throws ApiError
      */
@@ -131,14 +169,7 @@ export class LinkTemplatesService {
     }
     /**
      * Delete Link Template
-     * Delete a link template.
-     *
-     * Args:
-     * template_id: Database ID of the template
-     * db: Database session
-     *
-     * Returns:
-     * Success message
+     * Delete a public link template.
      * @returns any Successful Response
      * @throws ApiError
      */

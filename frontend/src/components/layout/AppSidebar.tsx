@@ -6,20 +6,25 @@ import { useViewTransitionNavigate } from "@/hooks/useViewTransitionNavigate";
 import Logo from "@/assets/TMS-logo-green.svg?react";
 
 import { DropdownMenu } from "@/components/overlays/DropdownMenu";
-import { ToggleGroup } from "@/components/buttons/ToggleGroup";
 import { SidebarRailWithLabels } from "@/components/navigation/SidebarRailWithLabels";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
+import { OPEN_GLOBAL_SEARCH_EVENT, type OpenGlobalSearchDetail } from "@/components/search/globalSearchEvents";
 import { useSession } from "@/contexts/sessionContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useTimezonePreference } from "@/contexts/TimezoneContext";
+import { useSidebarBadgeCounts } from "@/hooks/useDashboard";
+import { cn } from "@/utils/cn";
+import type { SidebarBadgeCount } from "@/types/generated/models/SidebarBadgeCount";
+import { ToggleGroup } from "@tidemark-security/ux";
 
 import {
   BarChart2,
   Bell,
+  BrainCircuit,
+  CheckSquare,
   Clock,
   Globe,
   Home,
-  List,
   Lock,
   MapPin,
   Menu,
@@ -28,6 +33,7 @@ import {
   NotebookPen,
   Search,
   Settings,
+  SportShoe,
   Sun,
   User,
 } from "lucide-react";
@@ -39,6 +45,7 @@ type NavigationItem = {
   to?: string;
   match?: (path: string) => boolean;
   mobileClassName?: string;
+  badgeKey?: "alerts" | "cases" | "tasks";
 };
 
 const navigationItems: NavigationItem[] = [
@@ -56,6 +63,7 @@ const navigationItems: NavigationItem[] = [
     icon: Bell,
     to: "/alerts",
     match: (path: string) => path === "/alerts" || path.startsWith("/alerts/"),
+    badgeKey: "alerts",
   },
   {
     key: "cases",
@@ -63,13 +71,15 @@ const navigationItems: NavigationItem[] = [
     icon: NotebookPen,
     to: "/cases",
     match: (path: string) => path.startsWith("/cases"),
+    badgeKey: "cases",
   },
   {
     key: "tasks",
     label: "Tasks",
-    icon: List,
+    icon: CheckSquare,
     to: "/tasks",
     match: (path: string) => path.startsWith("/tasks"),
+    badgeKey: "tasks",
   },
   {
     key: "ai-chat",
@@ -86,6 +96,20 @@ const navigationItems: NavigationItem[] = [
     match: (path: string) => path.startsWith("/reports"),
   },
   {
+    key: "context-entries",
+    label: "Context",
+    icon: BrainCircuit,
+    to: "/context-entries",
+    match: (path: string) => path.startsWith("/context-entries"),
+  },
+  {
+    key: "case-runbooks",
+    label: "Runbooks",
+    icon: SportShoe,
+    to: "/case-runbooks",
+    match: (path: string) => path.startsWith("/case-runbooks"),
+  },
+  {
     key: "admin",
     label: "Admin",
     icon: Settings,
@@ -93,6 +117,79 @@ const navigationItems: NavigationItem[] = [
     match: (path: string) => path.startsWith("/admin"),
   },
 ];
+
+type SidebarNavItemProps = React.ComponentProps<
+  typeof SidebarRailWithLabels.NavItem
+> & {
+  label: string;
+};
+
+function SidebarNavItem({
+  label,
+  children,
+  ...navItemProps
+}: SidebarNavItemProps) {
+  return (
+    <SidebarRailWithLabels.NavItem aria-label={label} {...navItemProps}>
+      {children}
+    </SidebarRailWithLabels.NavItem>
+  );
+}
+
+function formatBadgeCount(count: number) {
+  return count > 99 ? "99+" : count.toString();
+}
+
+type SidebarBadgeGroupProps = {
+  counts?: SidebarBadgeCount;
+};
+
+function SidebarNotificationBadge({ counts }: SidebarBadgeGroupProps) {
+  if (!counts || counts.open <= 0) {
+    return null;
+  }
+
+  return (
+    <span
+      className="absolute right-0 top-0 inline-flex h-4 min-w-4 items-center justify-center border border-black bg-accent-2-primary px-1 text-[10px] font-monospace-body leading-none text-white"
+      aria-hidden="true"
+    >
+      {formatBadgeCount(counts.open)}
+    </span>
+  );
+}
+
+type SidebarIconWithBadgeProps = {
+  icon: React.ReactNode;
+  counts?: SidebarBadgeCount;
+};
+
+function SidebarIconWithBadge({ icon, counts }: SidebarIconWithBadgeProps) {
+  return (
+    <span className="inline-flex">
+      {icon}
+      <SidebarNotificationBadge counts={counts} />
+    </span>
+  );
+}
+
+type SidebarNavLabelProps = {
+  label: string;
+  counts?: SidebarBadgeCount;
+};
+
+function SidebarNavLabel({ label, counts }: SidebarNavLabelProps) {
+  const describedBy = counts
+    ? `${label}: ${counts.open} open`
+    : label;
+
+  return (
+    <span className="flex min-w-0 flex-1 items-center gap-2">
+      <span className="truncate">{label}</span>
+      {counts ? <span className="sr-only">{describedBy}</span> : null}
+    </span>
+  );
+}
 
 function useNavigation() {
   const location = useLocation();
@@ -157,8 +254,10 @@ export function DesktopSidebar() {
     handleNavClick,
     handleNavKeyDown,
   } = useNavigation();
+  const { data: sidebarBadgeCounts } = useSidebarBadgeCounts();
   const { timezonePreference, setTimezonePreference } = useTimezonePreference();
   const { resolvedTheme, setThemePreference } = useTheme();
+  const timezoneLabel = `Timezone (${timezonePreference === "utc" ? "UTC" : "Local"})`;
 
   return (
     <SidebarRailWithLabels
@@ -171,18 +270,22 @@ export function DesktopSidebar() {
             height="64"
             aria-label="TMS Logo"
           />
-          <SidebarRailWithLabels.NavItem
+          <SidebarNavItem
+            label="Search"
             icon={<Search />}
+            role="button"
+            tabIndex={0}
             onClick={() => handleNavClick("/search")}
+            onKeyDown={(event: React.KeyboardEvent<HTMLDivElement>) =>
+              handleNavKeyDown(event, "/search")
+            }
             selected={
               location.pathname === "/search" ||
               location.pathname.startsWith("/search?")
             }
-            aria-label="Search"
-            title="Search"
           >
             Search
-          </SidebarRailWithLabels.NavItem>
+          </SidebarNavItem>
         </>
       }
       footer={
@@ -190,10 +293,12 @@ export function DesktopSidebar() {
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
               <SidebarRailWithLabels.NavItem
+                aria-label={timezoneLabel}
                 icon={<Clock />}
-                title="Timezone"
+                role="button"
+                tabIndex={0}
               >
-                Timezone ({timezonePreference === "utc" ? "UTC" : "Local"})
+                {timezoneLabel}
               </SidebarRailWithLabels.NavItem>
             </DropdownMenu.Trigger>
             <DropdownMenu.Content side="right" align="end" sideOffset={8}>
@@ -261,28 +366,43 @@ export function DesktopSidebar() {
               </div>
             </DropdownMenu.Content>
           </DropdownMenu.Root>
-          <SidebarRailWithLabels.NavItem
+          <SidebarNavItem
+            label="Profile"
             icon={<User />}
+            role="button"
+            tabIndex={0}
             onClick={() => handleNavClick("/profile")}
+            onKeyDown={(event: React.KeyboardEvent<HTMLDivElement>) =>
+              handleNavKeyDown(event, "/profile")
+            }
           >
             Profile
-          </SidebarRailWithLabels.NavItem>
-          <SidebarRailWithLabels.NavItem
+          </SidebarNavItem>
+          <SidebarNavItem
+            label="Logout"
             icon={<Lock />}
+            role="button"
+            tabIndex={0}
             onClick={() => handleNavClick("/logout")}
+            onKeyDown={(event: React.KeyboardEvent<HTMLDivElement>) =>
+              handleNavKeyDown(event, "/logout")
+            }
           >
             Logout
-          </SidebarRailWithLabels.NavItem>
+          </SidebarNavItem>
         </>
       }
     >
       {visibleNavigationItems.map((item) => {
         const Icon = item.icon;
         const selected = isItemSelected(item);
+        const counts = item.badgeKey ? sidebarBadgeCounts?.[item.badgeKey] : undefined;
         return (
-          <SidebarRailWithLabels.NavItem
+          <SidebarNavItem
             key={item.key}
-            icon={<Icon />}
+            label={item.label}
+            className="relative"
+            icon={<SidebarIconWithBadge icon={<Icon />} counts={counts} />}
             selected={selected}
             aria-current={selected ? "page" : undefined}
             role={item.to ? "button" : undefined}
@@ -291,12 +411,12 @@ export function DesktopSidebar() {
             onKeyDown={
               item.to
                 ? (event: React.KeyboardEvent<HTMLDivElement>) =>
-                    handleNavKeyDown(event, item)
+                  handleNavKeyDown(event, item)
                 : undefined
             }
           >
-            {item.label}
-          </SidebarRailWithLabels.NavItem>
+            <SidebarNavLabel label={item.label} counts={counts} />
+          </SidebarNavItem>
         );
       })}
     </SidebarRailWithLabels>
@@ -311,6 +431,7 @@ export function MobileSidebar() {
     handleNavClick,
     handleNavKeyDown,
   } = useNavigation();
+  const { data: sidebarBadgeCounts } = useSidebarBadgeCounts();
 
   return (
     <SidebarRailWithLabels
@@ -329,11 +450,12 @@ export function MobileSidebar() {
       {mobileNavItems.map((item) => {
         const Icon = item.icon;
         const selected = isItemSelected(item);
+        const counts = item.badgeKey ? sidebarBadgeCounts?.[item.badgeKey] : undefined;
         return (
           <SidebarRailWithLabels.NavItem
             key={item.key}
-            className={item.mobileClassName}
-            icon={<Icon />}
+            className={cn(item.mobileClassName, "relative")}
+            icon={<SidebarIconWithBadge icon={<Icon />} counts={counts} />}
             selected={selected}
             mobile={true}
             aria-current={selected ? "page" : undefined}
@@ -343,11 +465,11 @@ export function MobileSidebar() {
             onKeyDown={
               item.to
                 ? (event: React.KeyboardEvent<HTMLDivElement>) =>
-                    handleNavKeyDown(event, item)
+                  handleNavKeyDown(event, item)
                 : undefined
             }
           >
-            {item.label}
+            <SidebarNavLabel label={item.label} counts={counts} />
           </SidebarRailWithLabels.NavItem>
         );
       })}
@@ -389,6 +511,8 @@ export function MobileSidebar() {
 
 export function SearchOverlay() {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [initialTags, setInitialTags] = useState<string[]>([]);
+  const [searchRequestKey, setSearchRequestKey] = useState(0);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -401,5 +525,25 @@ export function SearchOverlay() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  return <GlobalSearch open={isSearchOpen} onOpenChange={setIsSearchOpen} />;
+  useEffect(() => {
+    const handleOpenSearch = (event: Event) => {
+      const detail = (event as CustomEvent<OpenGlobalSearchDetail>).detail;
+
+      setInitialTags(detail?.tags ?? []);
+      setSearchRequestKey((current) => current + 1);
+      setIsSearchOpen(true);
+    };
+
+    window.addEventListener(OPEN_GLOBAL_SEARCH_EVENT, handleOpenSearch);
+    return () => window.removeEventListener(OPEN_GLOBAL_SEARCH_EVENT, handleOpenSearch);
+  }, []);
+
+  return (
+    <GlobalSearch
+      open={isSearchOpen}
+      onOpenChange={setIsSearchOpen}
+      initialTags={initialTags}
+      searchRequestKey={searchRequestKey}
+    />
+  );
 }

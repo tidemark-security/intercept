@@ -3,6 +3,7 @@
 /* tslint:disable */
 /* eslint-disable */
 import type { EntityType } from './EntityType';
+import type { SearchTagMatch } from './SearchTagMatch';
 /**
  * Single search result item.
  */
@@ -40,8 +41,27 @@ export type SearchResultItem = {
      */
     created_at: string;
     /**
+     * When the entity was last updated
+     */
+    updated_at?: (string | null);
+    /**
+     * Entity priority
+     */
+    priority?: (string | null);
+    /**
+     * Entity status
+     */
+    status?: (string | null);
+    /**
+     * Current entity assignee
+     */
+    assignee?: (string | null);
+    /**
      * Top-level entity tags
      */
     tags?: Array<string>;
+    /**
+     * Tag filter match metadata
+     */
+    tag_matches?: Array<SearchTagMatch>;
 };
-

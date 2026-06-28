@@ -10,9 +10,13 @@ export interface UseCasesParams {
   size?: number;
   status?: CaseStatus[] | null;
   assignee?: string | null;
+  includeTags?: string[] | null;
+  excludeTags?: string[] | null;
   search?: string | null;
   startDate?: string | null;
   endDate?: string | null;
+  sortBy?: string;
+  sortOrder?: string;
 }
 
 /**
@@ -34,23 +38,31 @@ export function useCases({
   size = 50,
   status = null,
   assignee = null,
+  includeTags = null,
+  excludeTags = null,
   search = null,
   startDate = null,
   endDate = null,
+  sortBy = 'created_at',
+  sortOrder = 'desc',
 }: UseCasesParams = {}) {
   const { isConnected } = useWebSocket();
 
   return useQuery<Page_CaseRead_, Error>({
-    queryKey: ['cases', { page, size, status, assignee, search, startDate, endDate }],
+    queryKey: ['cases', { page, size, status, assignee, includeTags, excludeTags, search, startDate, endDate, sortBy, sortOrder }],
     queryFn: async () => {
       const response = await CasesService.getCasesApiV1CasesGet({
         page,
         size,
         status: status || undefined,
         assignee: assignee || undefined,
+        includeTags: includeTags || undefined,
+        excludeTags: excludeTags || undefined,
         search: search || undefined,
         startDate: startDate || undefined,
         endDate: endDate || undefined,
+        sortBy,
+        sortOrder,
       });
 
       return response as Page_CaseRead_;

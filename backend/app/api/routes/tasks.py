@@ -29,6 +29,7 @@ from app.api.route_utils import (
     handle_update_attachment_status,
     handle_generate_download_url,
 )
+from app.api.timestamp_overrides import normalize_created_at_override, reject_created_at_update
 from app.api.routes.admin_auth import require_authenticated_user, require_non_auditor_user
 from app.services.timeline_graph_service import TimelineGraphConflict, timeline_graph_service
 
@@ -52,6 +53,7 @@ handle_human_id = create_human_id_decorator(ID_PREFIX, "task_id")
 @router.post("", response_model=TaskRead)
 async def create_task(
     task_data: TaskCreate,
+    migration: bool = Query(False, description="Allow authorized NHI migration clients to provide created_at"),
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user)
 ):
@@ -61,8 +63,20 @@ async def create_task(
     Tasks can optionally be linked to a case via case_id.
     """
     try:
-        db_task = await task_service.create_task(db, task_data, current_user.username)
+        created_at_override = normalize_created_at_override(
+            current_user=current_user,
+            migration=migration,
+            created_at=task_data.created_at,
+        )
+        db_task = await task_service.create_task(
+            db,
+            task_data,
+            current_user.username,
+            created_at_override=created_at_override,
+        )
         return db_task
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating task: {e}")
         raise HTTPException(status_code=500, detail=f"Error creating task: {str(e)}")
@@ -75,9 +89,13 @@ async def get_tasks(
     status: Optional[List[TaskStatus]] = Query(None, description="Filter by multiple task statuses"),
     assignee: Optional[str] = None,
     case_id: Optional[int] = Query(None, description="Filter by case ID"),
+    include_tags: Optional[List[str]] = Query(None, description="Require tasks to include all of these tags"),
+    exclude_tags: Optional[List[str]] = Query(None, description="Require tasks to exclude all of these tags"),
     search: Optional[str] = Query(None, description="Search tasks by title or description (case-insensitive partial match)"),
     start_date: Optional[str] = Query(None, description="Filter tasks created after this UTC datetime (ISO8601 format with 'Z' suffix)"),
     end_date: Optional[str] = Query(None, description="Filter tasks created before this UTC datetime (ISO8601 format with 'Z' suffix)"),
+    sort_by: str = Query("created_at", description="Field to sort by"),
+    sort_order: str = Query("desc", pattern="^(asc|desc)$", description="Sort order"),
     db: AsyncSession = Depends(get_db)
 ):
     """Get tasks with optional filtering and pagination.
@@ -90,7 +108,9 @@ async def get_tasks(
     try:
         tasks = await task_service.get_tasks(
             db, skip=skip, limit=limit, status=status, assignee=assignee,
-            case_id=case_id, search=search, start_date=start_date, end_date=end_date
+            case_id=case_id, include_tags=include_tags, exclude_tags=exclude_tags,
+            search=search, start_date=start_date, end_date=end_date,
+            sort_by=sort_by, sort_order=sort_order
         )
         return tasks
     except Exception as e:
@@ -227,13 +247,28 @@ async def add_timeline_item(
     task_id: int,
     request: Request,  # pylint: disable=unused-argument
     timeline_item: dict,  # Using dict for now since we need to handle different timeline item types
+    migration: bool = Query(False, description="Allow authorized NHI migration clients to provide created_at"),
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Add a timeline item to a task."""
     try:
+        has_created_at = "created_at" in timeline_item
         typed_item = convert_timeline_item(timeline_item)
-        db_task = await task_service.add_timeline_item(db, task_id, typed_item, current_user.username)
+        created_at_override = normalize_created_at_override(
+            current_user=current_user,
+            migration=migration,
+            created_at=typed_item.created_at if has_created_at else None,
+        )
+        if created_at_override is not None:
+            typed_item.created_at = created_at_override
+        db_task = await task_service.add_timeline_item(
+            db,
+            task_id,
+            typed_item,
+            current_user.username,
+            created_at_override=created_at_override,
+        )
         if not db_task:
             raise HTTPException(status_code=404, detail="Task not found")
         return db_task
@@ -258,6 +293,7 @@ async def update_timeline_item(
 ):
     """Update a specific timeline item in a task."""
     try:
+        reject_created_at_update(timeline_item)
         typed_item = convert_timeline_item(timeline_item)
         db_task = await task_service.update_timeline_item(db, task_id, item_id, typed_item, current_user.username)
         if not db_task:

@@ -7,7 +7,7 @@ import { Loader } from '@/components/feedback/Loader';
 import { Badge } from '@/components/data-display/Badge';
 import { Table } from '@/components/data-display/Table';
 import { Button } from '@/components/buttons/Button';
-import { ToggleGroup } from '@/components/buttons/ToggleGroup';
+import { ToggleGroup } from '@tidemark-security/ux';
 import { BarChart, ScatterPlotChart, SemiDonutChart, TimeSeriesChart } from '@tidemark-security/ux';
 
 import { StatCard } from '@/components/cards/StatCard';
@@ -18,9 +18,10 @@ import { useSOCMetrics, useAnalystMetrics, useAlertMetrics, useAITriageMetrics, 
 import { useChatFeedbackDrillDown } from '@/hooks/useAIDrillDown';
 import { useSession } from '@/contexts/sessionContext';
 import { useTheme } from '@/contexts/ThemeContext';
+import { useTimezonePreference } from '@/contexts/TimezoneContext';
 import { useReportsURLState, ReportTabType } from '@/hooks/useReportsURLState';
-import { formatAbsoluteTime } from '@/utils/dateFormatters';
-import { Activity, AlertTriangle, Bot, CheckCircle, ChevronLeft, ChevronRight, Clock, ExternalLink, MessageSquare, ThumbsDown, ThumbsUp, TrendingUp, Users } from 'lucide-react';
+import { formatAbsoluteTime, getHourOfDayForPreference } from '@/utils/dateFormatters';
+import { Activity, AlertTriangle, Bell, Bot, CheckCircle, ChevronLeft, ChevronRight, Clock, ExternalLink, MessageSquare, NotebookPen, ThumbsDown, ThumbsUp, TrendingUp, Users } from 'lucide-react';
 import type { ChatFeedbackMessageDetail, MessageFeedback } from '@/types/generated';
 
 type TabType = ReportTabType;
@@ -133,6 +134,7 @@ function parseConfidenceBucketToPercent(bucket: string | null | undefined): numb
 function Reports() {
   const { user } = useSession();
   const { resolvedTheme } = useTheme();
+  const { timezonePreference } = useTimezonePreference();
   const navigate = useNavigate();
   const isAdmin = user?.role === 'ADMIN';
   const isDarkTheme = resolvedTheme === 'dark';
@@ -223,7 +225,7 @@ function Reports() {
     }>();
     
     for (const window of socData.time_series) {
-      const time = formatAbsoluteTime(window.time_window, 'MMM d h:mm a');
+      const time = formatAbsoluteTime(window.time_window, 'MMM d h:mm a', timezonePreference);
       const existing = aggregated.get(time) || { time, alerts: 0, cases: 0, tasks: 0, alertsClosed: 0 };
       existing.alerts += window.alert_count ?? 0;
       existing.cases += window.case_count ?? 0;
@@ -233,7 +235,7 @@ function Reports() {
     }
     
     return Array.from(aggregated.values());
-  }, [socData]);
+  }, [socData, timezonePreference]);
 
   // Prepare disposition pie chart data
   const dispositionData = useMemo(() => {
@@ -249,17 +251,24 @@ function Reports() {
   // Prepare hourly chart data
   const hourlyData = useMemo(() => {
     if (!alertData?.by_hour) return [];
-    return alertData.by_hour.map(h => ({
-      hour: `${h.hour_of_day}:00`,
-      count: h.alert_count,
-      avg: h.avg_alerts,
-    }));
-  }, [alertData]);
+    return alertData.by_hour
+      .map(h => {
+        const preferredHour = getHourOfDayForPreference(h.hour_of_day, timezonePreference);
+
+        return {
+          hourValue: preferredHour ?? h.hour_of_day,
+          hour: preferredHour === null ? '' : `${preferredHour}:00`,
+          count: h.alert_count,
+          avg: h.avg_alerts,
+        };
+      })
+      .sort((a, b) => (a.hourValue ?? 0) - (b.hourValue ?? 0));
+  }, [alertData, timezonePreference]);
 
   const tabs = [
     { id: 'soc' as TabType, label: 'SOC Summary', icon: <Activity /> },
     { id: 'analyst' as TabType, label: 'Analyst Performance', icon: <Users />, adminOnly: true },
-    { id: 'alert' as TabType, label: 'Alert Performance', icon: <AlertTriangle /> },
+    { id: 'alert' as TabType, label: 'Alert Performance', icon: <Bell /> },
     { id: 'ai-triage' as TabType, label: 'AI Triage Accuracy', icon: <Bot /> },
     { id: 'ai-chat' as TabType, label: 'AI Chat Feedback', icon: <MessageSquare /> },
   ];
@@ -314,7 +323,7 @@ function Reports() {
             } : undefined}
           />
           <StatCard
-            icon={<AlertTriangle />}
+            icon={<NotebookPen />}
             label="Open Cases"
             value={summary.open_cases ?? 0}
             subtext={`${summary.open_tasks ?? 0} open tasks`}
@@ -394,7 +403,7 @@ function Reports() {
         {/* Last Refreshed */}
         {socData.refreshed_at && (
           <div className="text-caption text-subtext-color text-right">
-            Data last refreshed: {formatAbsoluteTime(socData.refreshed_at, 'MMM d, yyyy h:mm a')}
+            Data last refreshed: {formatAbsoluteTime(socData.refreshed_at, 'MMM d, yyyy h:mm a', timezonePreference)}
           </div>
         )}
       </div>
@@ -493,7 +502,7 @@ function Reports() {
 
         {analystData.refreshed_at && (
           <div className="text-caption text-subtext-color text-right">
-            Data last refreshed: {formatAbsoluteTime(analystData.refreshed_at, 'MMM d, yyyy h:mm a')}
+            Data last refreshed: {formatAbsoluteTime(analystData.refreshed_at, 'MMM d, yyyy h:mm a', timezonePreference)}
           </div>
         )}
       </div>
@@ -598,7 +607,7 @@ function Reports() {
 
         {alertData.refreshed_at && (
           <div className="text-caption text-subtext-color text-right">
-            Data last refreshed: {formatAbsoluteTime(alertData.refreshed_at, 'MMM d, yyyy h:mm a')}
+            Data last refreshed: {formatAbsoluteTime(alertData.refreshed_at, 'MMM d, yyyy h:mm a', timezonePreference)}
           </div>
         )}
       </div>
@@ -671,7 +680,7 @@ function Reports() {
 
     // Prepare weekly trend line chart data
     const weeklyChartData = (weekly_trend ?? []).map(item => ({
-      week: formatAbsoluteTime(item.week_start, 'MMM d'),
+      week: formatAbsoluteTime(item.week_start, 'MMM d', timezonePreference),
       total: item.total_recommendations ?? 0,
       accepted: item.accepted ?? 0,
       rejected: item.rejected ?? 0,
@@ -883,7 +892,7 @@ function Reports() {
 
     // Prepare weekly trend data
     const weeklyChartData = (weekly_trend ?? []).map(item => ({
-      week: formatAbsoluteTime(item.week_start, 'MMM d'),
+      week: formatAbsoluteTime(item.week_start, 'MMM d', timezonePreference),
       positive: item.positive_feedback ?? 0,
       negative: item.negative_feedback ?? 0,
       satisfactionRate: (item.satisfaction_rate ?? 0) * 100,
@@ -1120,7 +1129,7 @@ function Reports() {
 
   return (
     <DefaultPageLayout withContainer>
-      <div className="container max-w-none flex h-full w-full flex-col items-start gap-6 py-8">
+      <div className="mx-auto flex h-full w-full max-w-[1536px] flex-col items-start gap-6 px-6 py-8 mobile:px-4">
         {/* Header */}
         <div className="flex w-full items-center justify-between">
           <div className="flex flex-col gap-1">

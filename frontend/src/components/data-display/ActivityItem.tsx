@@ -465,7 +465,7 @@ const ActivityItemRoot = React.forwardRef<
           </div>
         </div>
         {replies ? (
-          <div className="flex w-full flex-col items-start">
+          <div className="flex w-full flex-col items-start pt-4">
             {replies}
           </div>
         ) : null}

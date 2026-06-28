@@ -1,6 +1,7 @@
 import { defineConfig, type PluginOption } from "vite"
 import react from "@vitejs/plugin-react"
 import svgr from "vite-plugin-svgr"
+import { existsSync } from "node:fs"
 import { resolve } from "node:path"
 
 const manualChunkGroups = {
@@ -24,6 +25,32 @@ const manualChunkGroups = {
   // break when split across separate chunks by Rollup's default heuristics.
   codemirror: ["@codemirror/", "@lezer/", "codemirror"],
 } as const
+
+const localUxWorkspace = resolve(__dirname, "../../ux")
+const dockerUxWorkspace = "/ux"
+const isVitest = process.env.VITEST === "true" || process.env.NODE_ENV === "test"
+const uxWorkspace = !isVitest && existsSync(resolve(dockerUxWorkspace, "package.json"))
+  ? dockerUxWorkspace
+  : !isVitest && existsSync(resolve(localUxWorkspace, "package.json"))
+    ? localUxWorkspace
+    : null
+
+const uxAliases = uxWorkspace
+  ? [
+      {
+        find: "@tidemark-security/ux/tokens.css",
+        replacement: resolve(uxWorkspace, "src/tokens/index.css"),
+      },
+      {
+        find: "@tidemark-security/ux/ux.css",
+        replacement: resolve(uxWorkspace, "dist/ux.css"),
+      },
+      {
+        find: "@tidemark-security/ux",
+        replacement: resolve(uxWorkspace, "src/index.ts"),
+      },
+    ]
+  : []
 
 function manualChunks(id: string): string | undefined {
   for (const [chunkName, packages] of Object.entries(manualChunkGroups)) {
@@ -62,19 +89,33 @@ export default defineConfig({
     analyzePlugin(),
   ],
   resolve: {
-    alias: {
-      "@": resolve(__dirname, "./src"),
+    alias: [
+      ...uxAliases,
+      { find: "@", replacement: resolve(__dirname, "./src") },
       // Force UX file: linked package to use TMI's copies of React/router
       // to avoid dual-instance issues in tests
-      react: resolve(__dirname, "node_modules/react"),
-      "react-dom": resolve(__dirname, "node_modules/react-dom"),
-      "react/jsx-runtime": resolve(__dirname, "node_modules/react/jsx-runtime"),
-      "react/jsx-dev-runtime": resolve(
-        __dirname,
-        "node_modules/react/jsx-dev-runtime"
-      ),
-      "react-router": resolve(__dirname, "node_modules/react-router"),
-      "react-router-dom": resolve(__dirname, "node_modules/react-router-dom"),
+      { find: "react", replacement: resolve(__dirname, "node_modules/react") },
+      { find: "react-dom", replacement: resolve(__dirname, "node_modules/react-dom") },
+      { find: "react/jsx-runtime", replacement: resolve(__dirname, "node_modules/react/jsx-runtime") },
+      {
+        find: "react/jsx-dev-runtime",
+        replacement: resolve(__dirname, "node_modules/react/jsx-dev-runtime"),
+      },
+      { find: "react-router", replacement: resolve(__dirname, "node_modules/react-router") },
+      { find: "react-router-dom", replacement: resolve(__dirname, "node_modules/react-router-dom") },
+    ],
+  },
+  optimizeDeps: {
+    // UX is linked/mounted during local development. Excluding it prevents Vite
+    // from keeping a stale pre-bundled copy when UX adds or removes exports.
+    exclude: ["@tidemark-security/ux"],
+  },
+  server: {
+    fs: {
+      allow: [resolve(__dirname), localUxWorkspace, dockerUxWorkspace],
+    },
+    watch: {
+      usePolling: process.env.VITE_USE_POLLING === "true",
     },
   },
   build: {

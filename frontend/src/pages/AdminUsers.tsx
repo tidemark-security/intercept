@@ -10,11 +10,11 @@ import { Badge } from "@/components/data-display/Badge";
 import { Button } from "@/components/buttons/Button";
 import { DropdownMenu } from "@/components/overlays/DropdownMenu";
 import { IconButton } from "@/components/buttons/IconButton";
-import { ModalShell } from "@/components/overlays";
+import { FormDrawer, ModalShell } from "@/components/overlays";
 import { Table } from "@/components/data-display/Table";
 import { TextField } from "@/components/forms/TextField";
 import { Toast } from "@/components/feedback/Toast";
-import { ToggleGroup } from "@/components/buttons/ToggleGroup";
+import { ToggleGroup } from "@tidemark-security/ux";
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { AdminPageLayout } from "../components/layout/AdminPageLayout";
 import { DateTimeManager } from "@/components/forms/DateTimeManager";
@@ -69,6 +69,8 @@ interface User {
   email: string;
   description: string;
   accountType: AccountType;
+  assignable: boolean;
+  overrideTimestamps: boolean;
   role: UserRole;
   status: UserStatus;
   mustChangePassword: boolean;
@@ -81,6 +83,8 @@ interface CreateUserFormData {
   username: string;
   email: string;
   role: UserRole;
+  assignable: boolean;
+  overrideTimestamps: boolean;
   // NHI-specific fields
   description: string;
   initialApiKeyName: string;
@@ -114,6 +118,8 @@ const INITIAL_CREATE_FORM_DATA: CreateUserFormData = {
   username: "",
   email: "",
   role: "ANALYST",
+  assignable: false,
+  overrideTimestamps: false,
   description: "",
   initialApiKeyName: "",
   initialApiKeyExpiresAt: "",
@@ -165,6 +171,8 @@ function mapApiUser(raw: Record<string, unknown>): User {
     email: typeof raw.email === "string" ? raw.email : "",
     description: typeof raw.description === "string" ? raw.description : "",
     accountType: normalizeAccountType(raw.accountType ?? raw.account_type),
+    assignable: Boolean(raw.assignable),
+    overrideTimestamps: Boolean(raw.overrideTimestamps ?? raw.override_timestamps),
     role: normalizeUserRole(raw.role),
     status: normalizeUserStatus(raw.status),
     mustChangePassword: Boolean(raw.mustChangePassword),
@@ -399,6 +407,8 @@ function AdminUsers() {
             requestBody: {
               username: createFormData.username,
               role: createFormData.role,
+              assignable: createFormData.assignable,
+              override_timestamps: createFormData.overrideTimestamps,
               description: createFormData.description || undefined,
               initial_api_key_name: createFormData.initialApiKeyName,
               initial_api_key_expires_at:
@@ -429,6 +439,8 @@ function AdminUsers() {
       username: user.username,
       email: user.email,
       role: user.role,
+      assignable: user.assignable,
+      overrideTimestamps: user.overrideTimestamps,
       description: user.description,
       initialApiKeyName: "",
       initialApiKeyExpiresAt: "",
@@ -458,6 +470,12 @@ function AdminUsers() {
               ? editFormData.email.trim() || null
               : undefined,
           role: editFormData.role,
+          assignable:
+            editingUser.accountType === "NHI" ? editFormData.assignable : false,
+          override_timestamps:
+            editingUser.accountType === "NHI"
+              ? editFormData.overrideTimestamps
+              : false,
           description: editFormData.description,
         },
       });
@@ -976,7 +994,7 @@ function AdminUsers() {
   if (!isAdmin) {
     return (
       <DefaultPageLayout >
-        <div className="container max-w-none flex h-full w-full flex-col items-center justify-center gap-4 bg-default-background">
+        <div className="mx-auto flex h-full w-full max-w-[1536px] flex-col items-center justify-center gap-4 bg-default-background px-6 mobile:px-4">
           <AlertCircle className="text-[48px] text-error text-error-500" />
           <span className="text-heading-2 font-heading-2 text-default-font">
             Access Denied
@@ -1185,27 +1203,41 @@ function AdminUsers() {
         )}
       </AdminPageLayout>
 
-      {/* Create User Modal */}
-      {showCreateModal && !createdNhiResponse && !resetLinkModalData && (
-        <ModalShell title="Create New User" description="Create a new user or service account" onClose={closeCreateUserModal}>
-          {/* Modal Header */}
+      {/* Create User Drawer */}
+      <FormDrawer
+        open={showCreateModal && !createdNhiResponse && !resetLinkModalData}
+        title="Create New User"
+        description={
+          createFormData.accountType === "HUMAN"
+            ? "Create a one-time password setup link for the user"
+            : "Create a service account for programmatic API access"
+        }
+        widthClassName="w-[640px]"
+        closeLabel="Close create user drawer"
+        onOpenChange={(open) => {
+          if (!open && !createLoading) {
+            closeCreateUserModal();
+          }
+        }}
+        footer={
           <div className="flex w-full items-center gap-2">
-            <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
-              <span className="text-heading-2 font-heading-2 text-default-font">
-                Create New User
-              </span>
-              <span className="text-body font-body text-subtext-color">
-                {createFormData.accountType === "HUMAN"
-                  ? "Create a one-time password setup link for the user"
-                  : "Create a service account for programmatic API access"}
-              </span>
-            </div>
-            <UserPlus className="text-[24px] text-default-font" />
+            <Button
+              className="flex-1"
+              variant="neutral-secondary"
+              onClick={closeCreateUserModal}
+              disabled={createLoading}
+            >
+              Cancel
+            </Button>
+            <Button className="flex-1" onClick={handleCreateUser} loading={createLoading}>
+              {createFormData.accountType === "HUMAN"
+                ? "Create User"
+                : "Create Service Account"}
+            </Button>
           </div>
-
-          {/* Form */}
-          <div className="flex w-full items-start rounded-md border border-solid border-neutral-border bg-default-background">
-            <div className="flex grow shrink-0 basis-0 flex-col items-start gap-6 px-4 py-4">
+        }
+      >
+            <div className="flex w-full flex-col items-start gap-6">
               {/* Account Type Selection */}
               <div className="flex w-full flex-col items-start gap-2">
                 <span className="text-body-bold font-body-bold text-default-font">
@@ -1304,6 +1336,31 @@ function AdminUsers() {
                     />
                   </TextField>
 
+                  <label className="flex w-full items-center gap-3 rounded-md border border-solid border-neutral-border px-3 py-2 text-body font-body text-default-font">
+                    <input
+                      type="checkbox"
+                      checked={createFormData.assignable}
+                      onChange={(e) =>
+                        updateCreateFormField("assignable", e.target.checked)
+                      }
+                    />
+                    Assignable AI task agent
+                  </label>
+
+                  <label className="flex w-full items-center gap-3 rounded-md border border-solid border-neutral-border px-3 py-2 text-body font-body text-default-font">
+                    <input
+                      type="checkbox"
+                      checked={createFormData.overrideTimestamps}
+                      onChange={(e) =>
+                        updateCreateFormField(
+                          "overrideTimestamps",
+                          e.target.checked,
+                        )
+                      }
+                    />
+                    Override timestamps
+                  </label>
+
                   <TextField
                     className="h-auto w-full flex-none"
                     label="Initial API Key Name"
@@ -1356,49 +1413,42 @@ function AdminUsers() {
                 </div>
               </div>
             </div>
-          </div>
+      </FormDrawer>
 
-          {/* Actions */}
-          <div className="flex w-full items-center justify-end gap-2">
+      {/* Edit User Drawer */}
+      <FormDrawer
+        open={Boolean(editingUser)}
+        title="Edit User"
+        description={
+          editingUser?.accountType === "NHI"
+            ? "Update the service account details and role"
+            : "Update the user account details and role"
+        }
+        widthClassName="w-[640px]"
+        closeLabel="Close edit user drawer"
+        onOpenChange={(open) => {
+          if (!open && !editLoading) {
+            closeEditUserModal();
+          }
+        }}
+        footer={
+          <div className="flex w-full items-center gap-2">
             <Button
+              className="flex-1"
               variant="neutral-secondary"
-              onClick={closeCreateUserModal}
-              disabled={createLoading}
+              onClick={closeEditUserModal}
+              disabled={editLoading}
             >
               Cancel
             </Button>
-            <Button onClick={handleCreateUser} loading={createLoading}>
-              {createFormData.accountType === "HUMAN"
-                ? "Create User"
-                : "Create Service Account"}
+            <Button className="flex-1" onClick={handleEditUser} loading={editLoading}>
+              Save Changes
             </Button>
           </div>
-        </ModalShell>
-      )}
-
-      {/* Edit User Modal */}
-      {editingUser && (
-        <ModalShell title="Edit User" description="Update user account details and role" onClose={closeEditUserModal}>
-          <div className="flex w-full items-center gap-2">
-            <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
-              <span className="text-heading-2 font-heading-2 text-default-font">
-                Edit User
-              </span>
-              <span className="text-body font-body text-subtext-color">
-                {editingUser.accountType === "HUMAN"
-                  ? "Update the user account details and role"
-                  : "Update the service account details and role"}
-              </span>
-            </div>
-            {editingUser.accountType === "NHI" ? (
-              <Bot className="text-[24px] text-default-font" />
-            ) : (
-              <User className="text-[24px] text-default-font" />
-            )}
-          </div>
-
-          <div className="flex w-full items-start rounded-md border border-solid border-neutral-border bg-default-background">
-            <div className="flex grow shrink-0 basis-0 flex-col items-start gap-6 px-4 py-4">
+        }
+      >
+        {editingUser ? (
+            <div className="flex w-full flex-col items-start gap-6">
               <TextField
                 className="h-auto w-full flex-none"
                 label="Username"
@@ -1449,19 +1499,46 @@ function AdminUsers() {
                   </TextField>
                 </>
               ) : (
-                <TextField
-                  className="h-auto w-full flex-none"
-                  label="Description"
-                  helpText="Purpose or description of this service account (optional)"
-                >
-                  <TextField.Input
-                    placeholder="Integration with SIEM platform"
-                    value={editFormData.description}
-                    onChange={(e) =>
-                      updateEditFormField("description", e.target.value)
-                    }
-                  />
-                </TextField>
+                <>
+                  <TextField
+                    className="h-auto w-full flex-none"
+                    label="Description"
+                    helpText="Purpose or description of this service account (optional)"
+                  >
+                    <TextField.Input
+                      placeholder="Integration with SIEM platform"
+                      value={editFormData.description}
+                      onChange={(e) =>
+                        updateEditFormField("description", e.target.value)
+                      }
+                    />
+                  </TextField>
+
+                  <label className="flex w-full items-center gap-3 rounded-md border border-solid border-neutral-border px-3 py-2 text-body font-body text-default-font">
+                    <input
+                      type="checkbox"
+                      checked={editFormData.assignable}
+                      onChange={(e) =>
+                        updateEditFormField("assignable", e.target.checked)
+                      }
+                    />
+                    Assignable AI task agent
+                  </label>
+
+                  <label className="flex w-full items-center gap-3 rounded-md border border-solid border-neutral-border px-3 py-2 text-body font-body text-default-font">
+                    <input
+                      type="checkbox"
+                      checked={editFormData.overrideTimestamps}
+                      onChange={(e) =>
+                        updateEditFormField(
+                          "overrideTimestamps",
+                          e.target.checked,
+                        )
+                      }
+                    />
+                    Override timestamps
+                  </label>
+                </>
               )}
 
               <div className="flex w-full flex-col items-start gap-2">
@@ -1485,38 +1562,51 @@ function AdminUsers() {
                 </div>
               </div>
             </div>
-          </div>
+        ) : null}
+      </FormDrawer>
 
-          <div className="flex w-full items-center justify-end gap-2">
+      {/* Create API Key Drawer */}
+      <FormDrawer
+        open={showCreateApiKeyModal && !newlyCreatedKey}
+        title="Create API Key"
+        description="Generate a new API key for programmatic access"
+        widthClassName="w-[520px]"
+        closeLabel="Close API key drawer"
+        onOpenChange={(open) => {
+          if (!open && !createApiKeyLoading) {
+            closeCreateApiKeyModal();
+          }
+        }}
+        footer={
+          <div className="flex w-full items-center gap-2">
             <Button
+              className="flex-1"
               variant="neutral-secondary"
-              onClick={closeEditUserModal}
-              disabled={editLoading}
+              onClick={closeCreateApiKeyModal}
+              disabled={createApiKeyLoading}
             >
               Cancel
             </Button>
-            <Button onClick={handleEditUser} loading={editLoading}>
-              Save Changes
+            <Button className="flex-1" onClick={handleCreateApiKey} loading={createApiKeyLoading}>
+              Create Key
             </Button>
           </div>
-        </ModalShell>
-      )}
-
-      {/* Create API Key Modal */}
-      {showCreateApiKeyModal && !newlyCreatedKey && (
-        <ModalShell title="Create API Key" description="Generate a new API key for programmatic access" onClose={closeCreateApiKeyModal}>
-          <CreateApiKeyModalContent
-            keyName={createApiKeyFormData.name}
-            expiresAt={createApiKeyFormData.expiresAt}
-            onKeyNameChange={(value) => updateCreateApiKeyField("name", value)}
-            onExpiresAtChange={(value) => updateCreateApiKeyField("expiresAt", value)}
-            onCancel={closeCreateApiKeyModal}
-            onSubmit={handleCreateApiKey}
-            loading={createApiKeyLoading}
-            keyNamePlaceholder="CI/CD Pipeline"
-          />
-        </ModalShell>
-      )}
+        }
+      >
+        <CreateApiKeyModalContent
+          keyName={createApiKeyFormData.name}
+          expiresAt={createApiKeyFormData.expiresAt}
+          onKeyNameChange={(value) => updateCreateApiKeyField("name", value)}
+          onExpiresAtChange={(value) => updateCreateApiKeyField("expiresAt", value)}
+          onCancel={closeCreateApiKeyModal}
+          onSubmit={handleCreateApiKey}
+          loading={createApiKeyLoading}
+          keyNamePlaceholder="CI/CD Pipeline"
+          showHeader={false}
+          showFrame={false}
+          showActions={false}
+        />
+      </FormDrawer>
 
       {/* Unified API Key Created Modal - shown for both NHI and direct key creation */}
       {createdKeyModalData && renderCreatedKeyModal(createdKeyModalData)}

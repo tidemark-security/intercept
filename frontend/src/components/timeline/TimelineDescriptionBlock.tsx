@@ -31,11 +31,37 @@ export function TimelineDescriptionBlock({
     <Tag key={`${tag}-${index}`} tagText={tag} showDelete={false} p="0" />
   )) : null);
   const hasTagContent = !!renderedTagContent;
+  const hasPotentialActionButtons = React.Children.toArray(actionButtons).length > 0;
+  const actionContainerRef = React.useRef<HTMLDivElement>(null);
+  const [hasVisibleActionButtons, setHasVisibleActionButtons] = React.useState(false);
+
+  React.useLayoutEffect(() => {
+    const actionContainer = actionContainerRef.current;
+
+    if (!actionContainer || !hasPotentialActionButtons) {
+      setHasVisibleActionButtons(false);
+      return undefined;
+    }
+
+    const updateVisibleActionButtons = () => {
+      setHasVisibleActionButtons(
+        actionContainer.childElementCount > 0 || actionContainer.textContent?.trim().length > 0,
+      );
+    };
+
+    updateVisibleActionButtons();
+
+    const observer = new MutationObserver(updateVisibleActionButtons);
+    observer.observe(actionContainer, { childList: true, subtree: true, characterData: true });
+
+    return () => observer.disconnect();
+  }, [actionButtons, hasPotentialActionButtons]);
 
   return (
     <div
       className={cn(
-        'border-t border-solid border-neutral-border bg-neutral-500/5 py-3',
+        'border-solid border-neutral-border bg-neutral-500/5 py-3',
+        hasVisibleActionButtons && 'border-t',
         variant === 'timeline'
           ? '-mx-4 -mb-3 w-[calc(100%+2rem)] px-4'
           : '-mx-6 -mb-6 w-[calc(100%+3rem)] px-6 border-x border-x-default-background mobile:-mx-4 mobile:-mb-4 mobile:w-[calc(100%+2rem)] mobile:px-4',
@@ -56,11 +82,12 @@ export function TimelineDescriptionBlock({
             {renderedTagContent}
           </div>
         ) : null}
-        {actionButtons ? (
+        {hasPotentialActionButtons ? (
           <div
+            ref={actionContainerRef}
             className={cn(
               'flex w-full flex-col items-start',
-              (hasDescriptionContent || hasTagContent) && 'border-t border-solid border-neutral-border pt-3',
+              hasVisibleActionButtons && (hasDescriptionContent || hasTagContent) && 'border-t border-solid border-neutral-border pt-3',
             )}
           >
             {actionButtons}

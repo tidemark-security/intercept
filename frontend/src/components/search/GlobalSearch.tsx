@@ -40,12 +40,17 @@ import {
 } from '@/components/search';
 
 import { ArrowRight, Search, X } from 'lucide-react';
+
+const EMPTY_INITIAL_TAGS: string[] = [];
+
 interface GlobalSearchProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  initialTags?: string[];
+  searchRequestKey?: number;
 }
 
-export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
+export function GlobalSearch({ open, onOpenChange, initialTags = EMPTY_INITIAL_TAGS, searchRequestKey = 0 }: GlobalSearchProps) {
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === 'dark';
@@ -98,7 +103,15 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
     limit: 10,
   });
 
-  const isQueryValidShared = isSearchQueryValid(debouncedQuery);
+  const canSearch = isSearchQueryValid(debouncedQuery) || selectedTags.length > 0;
+
+  useEffect(() => {
+    if (searchRequestKey === 0) return;
+
+    clearSearch();
+    setSelectedTags(initialTags);
+    setSelectedIndex(0);
+  }, [searchRequestKey, initialTags, clearSearch]);
 
   // Results are already a flat list sorted by score (from the API)
   const allResults = useMemo(() => results ?? [], [results]);
@@ -144,7 +157,9 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
   // Navigate to search page with current query (for "View more results" link)
   const handleViewMore = useCallback(() => {
     const params = new URLSearchParams();
-    params.set('q', debouncedQuery);
+    if (debouncedQuery) {
+      params.set('q', debouncedQuery);
+    }
     if (selectedEntityType !== 'all') {
       params.set('type', selectedEntityType);
     }
@@ -237,8 +252,8 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
         />
 
         {/* Results */}
-        <div className="flex min-h-0 grow w-full flex-col items-start gap-2 py-4 overflow-auto" role="listbox">
-          {!isQueryValidShared ? (
+        <div className="flex min-h-0 grow w-full flex-col items-start gap-3 overflow-auto p-6 mobile:p-2" role="listbox">
+          {!canSearch ? (
             <SearchPrompt variant="modal" />
           ) : queryResult.isError ? (
             <SearchError 
@@ -255,7 +270,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
           ) : (
             <>
               {/* Flat list of results ranked by score */}
-              <div className="flex w-full flex-col items-start">
+              <div className="flex w-full flex-col items-start gap-3">
                 {allResults.map((item, i) => (
                   <div
                     key={`${item.entity_type}-${item.entity_id}`}
@@ -270,6 +285,7 @@ export function GlobalSearch({ open, onOpenChange }: GlobalSearchProps) {
                       onClick={() => navigateToResult(item)}
                       onMouseEnter={() => setSelectedIndex(i)}
                       searchQuery={debouncedQuery}
+                      selectedTags={selectedTags}
                       role="option"
                     />
                   </div>

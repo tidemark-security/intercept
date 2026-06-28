@@ -11,5 +11,9 @@ export type AlertCreate = {
     description?: (string | null);
     priority?: (Priority | null);
     source?: (string | null);
+    /**
+     * Migration-only override for the alert creation timestamp
+     */
+    created_at?: (string | null);
 };
 

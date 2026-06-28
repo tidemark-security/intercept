@@ -75,6 +75,7 @@ const routePaths = [
   "/alerts/ALT-0000001",
   "/cases",
   "/cases/CAS-0000001",
+  "/case-runbooks",
   "/tasks",
   "/tasks/TSK-0000001",
   "/reports",
@@ -173,6 +174,7 @@ function apiResponse(pathname: string): unknown {
   if (/^\/api\/v1\/alerts\/\d+$/.test(pathname)) return sampleAlert;
   if (pathname === "/api/v1/cases") return emptyPage;
   if (/^\/api\/v1\/cases\/\d+$/.test(pathname)) return sampleCase;
+  if (pathname === "/api/v1/case-runbooks") return emptyPage;
   if (pathname === "/api/v1/tasks") return emptyPage;
   if (/^\/api\/v1\/tasks\/\d+$/.test(pathname)) return sampleTask;
 
@@ -186,11 +188,50 @@ function apiResponse(pathname: string): unknown {
   if (pathname === "/api/v1/admin/audit/event-types") return [];
   if (pathname === "/api/v1/admin/settings") return [];
   if (pathname === "/api/v1/admin/enrichments/maxmind/databases") return [];
+  if (pathname === "/api/v1/admin/enrichments/providers") {
+    return [
+      {
+        provider_id: "entra_id",
+        display_name: "Microsoft Entra ID",
+        settings_prefix: "enrichment.entra_id",
+        enabled: false,
+        supports_bulk_sync: true,
+        item_types: ["internal_actor"],
+        cache_entry_count: 0,
+        alias_count: 0,
+        last_activity_at: null,
+      },
+      {
+        provider_id: "google_workspace",
+        display_name: "Google Workspace",
+        settings_prefix: "enrichment.google_workspace",
+        enabled: false,
+        supports_bulk_sync: true,
+        item_types: ["internal_actor"],
+        cache_entry_count: 0,
+        alias_count: 0,
+        last_activity_at: null,
+      },
+      {
+        provider_id: "ldap",
+        display_name: "LDAP",
+        settings_prefix: "enrichment.ldap",
+        enabled: false,
+        supports_bulk_sync: true,
+        item_types: ["internal_actor"],
+        cache_entry_count: 0,
+        alias_count: 0,
+        last_activity_at: null,
+      },
+    ];
+  }
   if (pathname === "/api/v1/admin/queue/jobs") return emptyPage;
   if (pathname === "/api/v1/admin/queue/stats") return [];
   if (pathname === "/api/v1/admin/queue/entrypoints") return [];
 
   if (pathname === "/api/v1/link-templates") return [];
+  if (pathname === "/api/v1/personal-link-templates") return [];
+  if (pathname === "/api/v1/link-templates/resolve") return [];
   if (pathname === "/api/v1/search") {
     return { results: [], total: 0, limit: 25, offset: 0 };
   }

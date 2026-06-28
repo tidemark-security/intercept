@@ -15,7 +15,7 @@ export type LinkTemplateRead = {
      */
     name: string;
     /**
-     * Icon identifier (e.g., 'FeatherMail', 'VirusTotalIcon')
+     * Lucide or custom icon identifier (e.g., 'Link2', 'VirusTotalIcon')
      */
     icon_name: string;
     /**
@@ -34,6 +34,14 @@ export type LinkTemplateRead = {
      * Object of field/value pairs that must match
      */
     conditions?: (Record<string, any> | null);
+    /**
+     * Single surface where this template can render
+     */
+    surface_scopes?: Array<'entity' | 'timeline_item'>;
+    /**
+     * Entity types this template applies to; empty means all entity types
+     */
+    entity_types?: (Array<'alert' | 'case' | 'task'> | null);
     /**
      * Whether this template is currently active
      */

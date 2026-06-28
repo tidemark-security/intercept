@@ -17,9 +17,10 @@ interface AttachmentImagePreviewProps {
   item: AttachmentItem;
   entityId: number;
   entityType: AttachmentEntityType;
+  variant?: 'default' | 'tiny';
 }
 
-export function AttachmentImagePreview({ item, entityId, entityType }: AttachmentImagePreviewProps) {
+export function AttachmentImagePreview({ item, entityId, entityType, variant = 'default' }: AttachmentImagePreviewProps) {
   const { showToast } = useToast();
   const viewer = useFullscreenViewer();
   const { limits } = useAttachmentLimits();
@@ -33,6 +34,7 @@ export function AttachmentImagePreview({ item, entityId, entityType }: Attachmen
   const itemId = item.id;
   const filename = item.file_name || 'attachment';
   const tooLarge = (item.file_size ?? 0) > limits.max_image_preview_size_bytes;
+  const isTiny = variant === 'tiny';
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['attachment-download', entityType, entityId, itemId],
@@ -63,6 +65,7 @@ export function AttachmentImagePreview({ item, entityId, entityType }: Attachmen
         fileSizeBytes={item.file_size}
         limitBytes={limits.max_image_preview_size_bytes}
         attachmentTypeLabel="image attachment"
+        variant={variant}
       />
     );
   }
@@ -164,7 +167,7 @@ export function AttachmentImagePreview({ item, entityId, entityType }: Attachmen
   };
 
   if (isLoading && !data) {
-    return <div className="h-[180px] w-full animate-pulse rounded-md bg-neutral-100" aria-hidden="true" />;
+    return <div className={isTiny ? "h-12 w-full animate-pulse rounded bg-neutral-100" : "h-[180px] w-full animate-pulse rounded-md bg-neutral-100"} aria-hidden="true" />;
   }
 
   if (!data || imageError) {
@@ -175,14 +178,16 @@ export function AttachmentImagePreview({ item, entityId, entityType }: Attachmen
     <>
       <button
         type="button"
-        className="w-full overflow-hidden rounded-md border border-neutral-border bg-neutral-50 text-left transition hover:border-neutral-400"
+        className={isTiny
+          ? "h-12 w-full overflow-hidden rounded border border-neutral-border bg-neutral-50 text-left transition hover:border-neutral-400"
+          : "w-full overflow-hidden rounded-md border border-neutral-border bg-neutral-50 text-left transition hover:border-neutral-400"}
         onClick={viewer.open}
       >
         <img
           src={data.downloadUrl}
           alt={filename}
-          className="w-full object-contain"
-          style={{ maxHeight: 250 }}
+          className={isTiny ? "h-full w-full object-cover" : "w-full object-contain"}
+          style={isTiny ? undefined : { maxHeight: 250 }}
           onLoad={handleImageLoad}
           onError={handleImageError}
         />

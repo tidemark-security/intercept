@@ -408,6 +408,8 @@ async def test_complete_task_attachment_upload_rejects_oversized_staged_object_b
             max_upload_size_mb=1,
             max_image_preview_size_mb=5,
             max_text_preview_size_mb=1,
+            allowed_file_types=("text/plain",),
+            denied_file_types=(),
         )
 
     async def fake_generate_presigned_upload_url(_storage_key: str, *, expires_minutes: int) -> str:

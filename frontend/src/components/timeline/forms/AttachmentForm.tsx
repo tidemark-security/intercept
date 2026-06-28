@@ -16,6 +16,7 @@ import { TextArea } from "@/components/forms/TextArea";
 import { TagsManager } from "@/components/forms/TagsManager";
 import { DateTimeManager } from "@/components/forms/DateTimeManager";
 import { useFileUpload } from "@/hooks/useFileUpload";
+import { useAttachmentLimits } from "@/hooks/useAttachmentLimits";
 import { useTimelineFormContext } from "@/contexts/TimelineFormContext";
 import { useUpdateTimelineItem } from "@/hooks/useUpdateTimelineItem";
 import { useToast } from "@/contexts/ToastContext";
@@ -96,6 +97,8 @@ export function AddAttachmentForm({ initialData, pendingFiles, onPendingFilesCon
     },
   });
   
+  const { limits } = useAttachmentLimits();
+
   // File upload hook
   const { uploadFile, progress } = useFileUpload({
     alertId,
@@ -328,7 +331,7 @@ export function AddAttachmentForm({ initialData, pendingFiles, onPendingFilesCon
                   Drop files here or click to browse
                 </span>
                 <span className="text-caption font-caption text-subtext-color">
-                  Supports all file types up to 50MB
+                  Supports files up to {limits.max_upload_size_mb}MB
                 </span>
               </div>
             </div>
