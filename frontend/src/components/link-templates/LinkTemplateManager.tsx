@@ -4,12 +4,17 @@ import { IconButton } from "@/components/buttons/IconButton";
 import { Table } from "@/components/data-display/Table";
 import { TextField } from "@/components/forms/TextField";
 import { DropdownMenu } from "@/components/overlays/DropdownMenu";
-import { ModalShell } from "@/components/overlays";
+import { FormDrawer } from "@/components/overlays";
 import { useToast } from "@/contexts/ToastContext";
-import { getAvailableIconNames, getIconComponent } from "@/utils/iconMapping";
+import {
+  FALLBACK_LINK_TEMPLATE_ICON,
+  getAvailableIconNames,
+  getIconComponent,
+  normalizeLinkTemplateIconName,
+} from "@/utils/iconMapping";
 import type { LinkTemplateExportBundle } from "@/types/generated/models/LinkTemplateExportBundle";
 import type { PortableLinkTemplate } from "@/types/generated/models/PortableLinkTemplate";
-import { Checkbox, Switch } from "@tidemark-security/ux";
+import { Checkbox, Switch, ToggleGroup } from "@tidemark-security/ux";
 import {
   Download,
   Edit2,
@@ -46,6 +51,8 @@ type TemplateDraft = {
 export interface LinkTemplateManagerProps<TTemplate extends ManagedLinkTemplate> {
   title?: string;
   description?: string;
+  headerIcon?: React.ReactNode;
+  headerVariant?: "default" | "settings-card";
   templates: TTemplate[];
   isLoading?: boolean;
   createLabel?: string;
@@ -61,7 +68,7 @@ export interface LinkTemplateManagerProps<TTemplate extends ManagedLinkTemplate>
 const EMPTY_DRAFT: TemplateDraft = {
   template_id: "",
   name: "",
-  icon_name: "Link2",
+  icon_name: FALLBACK_LINK_TEMPLATE_ICON,
   tooltip_template: "",
   url_template: "",
   field_names: [],
@@ -101,15 +108,16 @@ function getErrorMessage(error: unknown, fallback: string): string {
 
 function toDraft(template?: ManagedLinkTemplate): TemplateDraft {
   if (!template) return { ...EMPTY_DRAFT };
+  const surface = template.surface_scopes?.includes("entity") ? "entity" : "timeline_item";
   return {
     template_id: template.template_id,
     name: template.name,
-    icon_name: template.icon_name,
+    icon_name: normalizeLinkTemplateIconName(template.icon_name),
     tooltip_template: template.tooltip_template,
     url_template: template.url_template,
     field_names: template.field_names || [],
     conditions: template.conditions || null,
-    surface_scopes: (template.surface_scopes?.length ? template.surface_scopes : ["timeline_item"]) as SurfaceScope[],
+    surface_scopes: [surface],
     entity_types: (template.entity_types || []) as TemplateEntityType[],
     enabled: template.enabled ?? true,
     display_order: template.display_order ?? 100,
@@ -119,9 +127,7 @@ function toDraft(template?: ManagedLinkTemplate): TemplateDraft {
 function formatScopes(template: ManagedLinkTemplate): string {
   const surfaces = template.surface_scopes?.length ? template.surface_scopes : ["timeline_item"];
   const entityTypes = template.entity_types?.length ? template.entity_types.join(", ") : "all entities";
-  const surfaceLabel = surfaces
-    .map((surface) => (surface === "entity" ? "parent" : "timeline"))
-    .join(", ");
+  const surfaceLabel = surfaces.includes("entity") ? "parent" : "timeline";
   return `${surfaceLabel}; ${entityTypes}`;
 }
 
@@ -136,7 +142,7 @@ function buildPayload(draft: TemplateDraft, conditionsInput: string): PortableLi
   if (!draft.template_id.trim() || !draft.name.trim() || !draft.tooltip_template.trim() || !draft.url_template.trim()) {
     return null;
   }
-  if (draft.surface_scopes.length === 0) {
+  if (draft.surface_scopes.length !== 1) {
     return null;
   }
 
@@ -152,7 +158,7 @@ function buildPayload(draft: TemplateDraft, conditionsInput: string): PortableLi
   return {
     template_id: draft.template_id.trim(),
     name: draft.name.trim(),
-    icon_name: draft.icon_name.trim(),
+    icon_name: normalizeLinkTemplateIconName(draft.icon_name.trim()),
     tooltip_template: draft.tooltip_template,
     url_template: draft.url_template,
     field_names: draft.field_names.length > 0 ? draft.field_names : null,
@@ -189,6 +195,8 @@ export function LinkTemplateManager<TTemplate extends ManagedLinkTemplate>({
   onImport,
   onExport,
   onChanged,
+  headerIcon,
+  headerVariant = "default",
 }: LinkTemplateManagerProps<TTemplate>) {
   const { showToast } = useToast();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -262,7 +270,7 @@ export function LinkTemplateManager<TTemplate extends ManagedLinkTemplate>({
     try {
       const payload = buildPayload({ ...draft, field_names: csvToValues(fieldNamesInput) }, conditionsInput);
       if (!payload) {
-        showToast("Validation Error", "Template ID, name, tooltip, URL, and at least one surface are required", "error");
+        showToast("Validation Error", "Template ID, name, tooltip, URL, and one surface are required", "error");
         return;
       }
 
@@ -346,8 +354,24 @@ export function LinkTemplateManager<TTemplate extends ManagedLinkTemplate>({
     setDraft((previous) => ({ ...previous, [key]: value }));
   };
 
+  const actionButtons = (
+    <div className="flex flex-none items-center gap-2">
+      <Button
+        variant="neutral-secondary"
+        icon={<FileUp />}
+        disabled={pendingAction === "import"}
+        onClick={() => fileInputRef.current?.click()}
+      >
+        Import
+      </Button>
+      <Button icon={<Plus />} onClick={openCreateModal}>
+        {createLabel}
+      </Button>
+    </div>
+  );
+
   return (
-    <div className="flex w-full flex-col items-start gap-6 rounded-md border border-solid border-neutral-border bg-neutral-50 px-6 py-6">
+    <div className="flex w-full flex-col items-start gap-6">
       <input
         ref={fileInputRef}
         type="file"
@@ -356,7 +380,24 @@ export function LinkTemplateManager<TTemplate extends ManagedLinkTemplate>({
         onChange={handleImportFile}
       />
 
-      {(title || description) ? (
+      {headerVariant === "settings-card" && title ? (
+        <>
+          <div className="flex w-full flex-wrap items-center gap-3 border-b border-neutral-border pb-4">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              {headerIcon}
+              <h3 className="text-heading-3 font-heading-3 text-default-font">
+                {title}
+              </h3>
+            </div>
+            {actionButtons}
+          </div>
+          {description ? (
+            <span className="text-body font-body text-subtext-color">
+              {description}
+            </span>
+          ) : null}
+        </>
+      ) : (title || description) ? (
         <div className="flex w-full flex-wrap items-start gap-3">
           <div className="flex min-w-0 grow shrink basis-0 flex-col gap-1">
             {title ? (
@@ -366,33 +407,11 @@ export function LinkTemplateManager<TTemplate extends ManagedLinkTemplate>({
               <span className="text-body font-body text-subtext-color">{description}</span>
             ) : null}
           </div>
-          <div className="flex flex-none items-center gap-2">
-            <Button
-              variant="neutral-secondary"
-              icon={<FileUp />}
-              disabled={pendingAction === "import"}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              Import
-            </Button>
-            <Button icon={<Plus />} onClick={openCreateModal}>
-              {createLabel}
-            </Button>
-          </div>
+          {actionButtons}
         </div>
       ) : (
-        <div className="flex w-full items-center justify-end gap-2">
-          <Button
-            variant="neutral-secondary"
-            icon={<FileUp />}
-            disabled={pendingAction === "import"}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            Import
-          </Button>
-          <Button icon={<Plus />} onClick={openCreateModal}>
-            {createLabel}
-          </Button>
+        <div className="flex w-full justify-end">
+          {actionButtons}
         </div>
       )}
 
@@ -496,29 +515,43 @@ export function LinkTemplateManager<TTemplate extends ManagedLinkTemplate>({
         </div>
       )}
 
-      {isModalOpen ? (
-        <ModalShell
-          title={editingTemplate ? "Edit Link Template" : "Create Link Template"}
-          description="Set fields and scope"
-          panelClassName="max-w-3xl max-h-[90vh] overflow-y-auto"
-          onClose={closeModal}
-        >
+      <FormDrawer
+        open={isModalOpen}
+        title={editingTemplate ? "Edit Link Template" : "Create Link Template"}
+        description="Set fields and scope"
+        widthClassName="w-[720px]"
+        closeLabel="Close link template drawer"
+        onOpenChange={(open) => {
+          if (!open) closeModal();
+        }}
+        footer={
           <div className="flex w-full items-center gap-2">
-            <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
-              <span className="text-heading-2 font-heading-2 text-default-font">
-                {editingTemplate ? "Edit Link Template" : "Create Link Template"}
-              </span>
-              <span className="text-body font-body text-subtext-color">
-                {draft.template_id || "New template"}
+            <Button className="flex-1" variant="neutral-secondary" onClick={closeModal} disabled={pendingAction === "save"}>
+              Cancel
+            </Button>
+            <Button className="flex-1" onClick={submitForm} loading={pendingAction === "save"}>
+              {editingTemplate ? "Save Changes" : "Create Template"}
+            </Button>
+          </div>
+        }
+      >
+        {isModalOpen ? (
+          <>
+            <div className="flex w-full items-center gap-2">
+              <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
+                <span className="text-body-bold font-body-bold text-default-font">
+                  {draft.template_id || "New template"}
+                </span>
+                <span className="text-caption font-caption text-subtext-color">
+                  {draft.surface_scopes[0] === "entity" ? "Parent entity" : "Timeline items"}
+                </span>
+              </div>
+              <span className="text-[24px] text-brand-primary">
+                {getIconComponent(draft.icon_name)}
               </span>
             </div>
-            <span className="text-[24px] text-brand-primary">
-              {getIconComponent(draft.icon_name)}
-            </span>
-          </div>
 
-          <div className="flex w-full items-start rounded-md border border-solid border-neutral-border bg-default-background">
-            <div className="grid w-full grid-cols-1 gap-4 px-4 py-4 tablet:grid-cols-2">
+            <div className="grid w-full grid-cols-1 gap-4 tablet:grid-cols-2">
               <TextField className="h-auto w-full flex-none" label="Template ID">
                 <TextField.Input
                   placeholder="virustotal-domain"
@@ -614,27 +647,26 @@ export function LinkTemplateManager<TTemplate extends ManagedLinkTemplate>({
                 />
               </TextField>
 
-              <div className="flex w-full flex-col gap-2">
-                <span className="text-body-bold font-body-bold text-default-font">Surfaces</span>
-                <div className="flex flex-col gap-2 rounded-md border border-neutral-border bg-neutral-50 px-3 py-3">
+              <div className="flex w-full flex-col gap-2 tablet:col-span-2">
+                <span className="text-body-bold font-body-bold text-default-font">Surface</span>
+                <ToggleGroup
+                  className="h-auto w-full"
+                  value={draft.surface_scopes[0] || "timeline_item"}
+                  onValueChange={(value) => {
+                    if (value) setDraftValue("surface_scopes", [value as SurfaceScope]);
+                  }}
+                >
                   {SURFACE_OPTIONS.map((option) => (
-                    <label key={option.value} className="flex items-center gap-2 text-body font-body text-default-font">
-                      <Checkbox
-                        checked={draft.surface_scopes.includes(option.value)}
-                        onCheckedChange={(checked) =>
-                          setDraftValue("surface_scopes", toggleValue(draft.surface_scopes, option.value, Boolean(checked)))
-                        }
-                        size="small"
-                      />
+                    <ToggleGroup.Item key={option.value} className="flex-1" icon={null} value={option.value}>
                       {option.label}
-                    </label>
+                    </ToggleGroup.Item>
                   ))}
-                </div>
+                </ToggleGroup>
               </div>
 
-              <div className="flex w-full flex-col gap-2">
+              <div className="flex w-full flex-col gap-2 tablet:col-span-2">
                 <span className="text-body-bold font-body-bold text-default-font">Entity Types</span>
-                <div className="flex flex-col gap-2 rounded-md border border-neutral-border bg-neutral-50 px-3 py-3">
+                <div className="grid gap-2 rounded-md border border-neutral-border bg-neutral-50 px-3 py-3 tablet:grid-cols-3">
                   {ENTITY_OPTIONS.map((option) => (
                     <label key={option.value} className="flex items-center gap-2 text-body font-body text-default-font">
                       <Checkbox
@@ -647,7 +679,7 @@ export function LinkTemplateManager<TTemplate extends ManagedLinkTemplate>({
                       {option.label}
                     </label>
                   ))}
-                  <span className="text-caption font-caption text-subtext-color">
+                  <span className="text-caption font-caption text-subtext-color tablet:col-span-3">
                     Leave empty to match all entity types.
                   </span>
                 </div>
@@ -656,11 +688,14 @@ export function LinkTemplateManager<TTemplate extends ManagedLinkTemplate>({
               <div className="flex w-full flex-col gap-2 tablet:col-span-2">
                 <label className="text-body-bold font-body-bold text-default-font">Conditions JSON</label>
                 <textarea
+                  aria-label="Conditions JSON"
                   className="min-h-24 w-full rounded-md border border-solid border-neutral-border bg-default-background px-3 py-2 font-monospace-body text-monospace-body text-default-font"
-                  placeholder='{"observable_type": "DOMAIN"}'
                   value={conditionsInput}
                   onChange={(event) => setConditionsInput(event.target.value)}
                 />
+                <span className="text-caption font-caption text-subtext-color">
+                  Must be a JSON object. Example: {`{"observable_type": "DOMAIN"}`}
+                </span>
               </div>
 
               <div className="flex w-full items-center justify-between gap-4 rounded-md border border-neutral-border bg-neutral-50 px-3 py-3 tablet:col-span-2">
@@ -671,18 +706,9 @@ export function LinkTemplateManager<TTemplate extends ManagedLinkTemplate>({
                 <Switch checked={draft.enabled} onCheckedChange={(checked) => setDraftValue("enabled", Boolean(checked))} />
               </div>
             </div>
-          </div>
-
-          <div className="flex w-full items-center justify-end gap-2">
-            <Button variant="neutral-secondary" onClick={closeModal} disabled={pendingAction === "save"}>
-              Cancel
-            </Button>
-            <Button onClick={submitForm} loading={pendingAction === "save"}>
-              {editingTemplate ? "Save Changes" : "Create Template"}
-            </Button>
-          </div>
-        </ModalShell>
-      ) : null}
+          </>
+        ) : null}
+      </FormDrawer>
     </div>
   );
 }

@@ -71,17 +71,16 @@ def _normalize_link_template_surfaces(value: Any) -> List[LinkTemplateSurface]:
         value = _default_link_template_surfaces()
     if isinstance(value, str):
         value = [value]
-    if not isinstance(value, list) or not value:
-        raise ValueError("surface_scopes must contain at least one surface")
+    if not isinstance(value, list):
+        raise ValueError("surface_scopes must be a list")
+    if len(value) != 1:
+        raise ValueError("surface_scopes must contain exactly one surface")
 
     allowed = {"entity", "timeline_item"}
-    normalized: List[LinkTemplateSurface] = []
-    for item in value:
-        if item not in allowed:
-            raise ValueError("surface_scopes may only contain 'entity' or 'timeline_item'")
-        if item not in normalized:
-            normalized.append(item)
-    return normalized
+    item = value[0]
+    if item not in allowed:
+        raise ValueError("surface_scopes may only contain 'entity' or 'timeline_item'")
+    return [item]
 
 
 def _normalize_link_template_entity_types(value: Any) -> Optional[List[LinkTemplateEntityType]]:
@@ -2203,7 +2202,7 @@ class LinkTemplateBase(SQLModel):
     )
     icon_name: str = Field(
         max_length=100,
-        description="Icon identifier (e.g., 'FeatherMail', 'VirusTotalIcon')"
+        description="Lucide or custom icon identifier (e.g., 'Link2', 'VirusTotalIcon')"
     )
     tooltip_template: str = Field(
         description="Tooltip text with {{variable}} placeholders for interpolation"
@@ -2223,8 +2222,10 @@ class LinkTemplateBase(SQLModel):
     )
     surface_scopes: List[LinkTemplateSurface] = Field(
         default_factory=_default_link_template_surfaces,
+        min_length=1,
+        max_length=1,
         sa_column=Column(JSONB),
-        description="Surfaces where this template can render",
+        description="Single surface where this template can render",
     )
     entity_types: Optional[List[LinkTemplateEntityType]] = Field(
         default=None,
@@ -2296,7 +2297,7 @@ class LinkTemplateUpdate(SQLModel):
     url_template: Optional[str] = None
     field_names: Optional[List[str]] = None
     conditions: Optional[Dict[str, Any]] = None
-    surface_scopes: Optional[List[LinkTemplateSurface]] = None
+    surface_scopes: Optional[List[LinkTemplateSurface]] = Field(default=None, min_length=1, max_length=1)
     entity_types: Optional[List[LinkTemplateEntityType]] = None
     enabled: Optional[bool] = None
     display_order: Optional[int] = None
@@ -2352,7 +2353,10 @@ class PersonalLinkTemplateBase(SQLModel):
         description="Unique identifier for this template type",
     )
     name: str = Field(max_length=200, description="Human-readable name of the link template")
-    icon_name: str = Field(max_length=100, description="Icon identifier")
+    icon_name: str = Field(
+        max_length=100,
+        description="Lucide or custom icon identifier (e.g., 'Link2', 'VirusTotalIcon')",
+    )
     tooltip_template: str = Field(description="Tooltip text with {{variable}} placeholders")
     url_template: str = Field(description="URL template with {{variable}} placeholders")
     field_names: Optional[List[str]] = Field(
@@ -2367,8 +2371,10 @@ class PersonalLinkTemplateBase(SQLModel):
     )
     surface_scopes: List[LinkTemplateSurface] = Field(
         default_factory=_default_link_template_surfaces,
+        min_length=1,
+        max_length=1,
         sa_column=Column(JSONB),
-        description="Surfaces where this template can render",
+        description="Single surface where this template can render",
     )
     entity_types: Optional[List[LinkTemplateEntityType]] = Field(
         default=None,
@@ -2440,7 +2446,7 @@ class PersonalLinkTemplateUpdate(SQLModel):
     url_template: Optional[str] = None
     field_names: Optional[List[str]] = None
     conditions: Optional[Dict[str, Any]] = None
-    surface_scopes: Optional[List[LinkTemplateSurface]] = None
+    surface_scopes: Optional[List[LinkTemplateSurface]] = Field(default=None, min_length=1, max_length=1)
     entity_types: Optional[List[LinkTemplateEntityType]] = None
     enabled: Optional[bool] = None
     display_order: Optional[int] = None
@@ -2493,12 +2499,20 @@ class PortableLinkTemplate(SQLModel):
 
     template_id: str = Field(max_length=100)
     name: str = Field(max_length=200)
-    icon_name: str = Field(max_length=100)
+    icon_name: str = Field(
+        max_length=100,
+        description="Lucide or custom icon identifier (e.g., 'Link2', 'VirusTotalIcon')",
+    )
     tooltip_template: str
     url_template: str
     field_names: Optional[List[str]] = None
     conditions: Optional[Dict[str, Any]] = None
-    surface_scopes: List[LinkTemplateSurface] = Field(default_factory=_default_link_template_surfaces)
+    surface_scopes: List[LinkTemplateSurface] = Field(
+        default_factory=_default_link_template_surfaces,
+        min_length=1,
+        max_length=1,
+        description="Single surface where this template can render",
+    )
     entity_types: Optional[List[LinkTemplateEntityType]] = None
     enabled: bool = True
     display_order: int = 0

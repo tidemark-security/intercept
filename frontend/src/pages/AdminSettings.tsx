@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { AdminPageLayout } from "../components/layout/AdminPageLayout";
-import { ModalShell } from "@/components/overlays";
+import { FormDrawer } from "@/components/overlays";
 import { TextField } from "@/components/forms/TextField";
 import { TextArea } from "@/components/forms/TextArea";
 import { Select } from "@/components/forms/Select";
@@ -15,6 +15,7 @@ import { cn } from "@/utils/cn";
 import { Switch } from "@/components/forms/Switch";
 import { LangflowConnectionStatus } from "@/components/admin/LangflowConnectionStatus";
 import { LangflowSetupStatus } from "@/components/admin/LangflowSetupStatus";
+import { SectionNavigation, type SectionNavigationItem } from "@/components/navigation";
 import {
   ServiceNowAdminApi,
   type ServiceNowConfigureRequest,
@@ -105,12 +106,6 @@ const SERVICE_NOW_DEFAULT_CONFIG: ServiceNowConfigureRequest = {
 };
 
 type ServiceNowPreviewItemType = "internal_actor" | "system";
-
-interface SettingsSectionNavItem {
-  id: string;
-  label: string;
-  group: string;
-}
 
 const CUSTOM_KEYS = new Set([
   "storage.max_upload_size_mb",
@@ -1380,8 +1375,8 @@ function AdminSettings() {
     });
   }, [settings]);
 
-  const sectionNavigationItems = useMemo<SettingsSectionNavItem[]>(() => {
-    const items: SettingsSectionNavItem[] = [
+  const sectionNavigationItems = useMemo<SectionNavigationItem[]>(() => {
+    const items: SectionNavigationItem[] = [
       {
         id: "case-closure-settings",
         label: "Case Closure",
@@ -1565,13 +1560,15 @@ function AdminSettings() {
         ) : (
           <div className="flex flex-col gap-6">
             {!showDesktopToc ? (
-              <SettingsTableOfContents
+              <SectionNavigation
                 items={sectionNavigationItems}
                 activeSectionId={activeSectionId}
                 activeSectionLabel={activeSectionLabel}
                 isDarkTheme={isDarkTheme}
                 isCompact
                 isOpen={isCompactTocOpen}
+                ariaLabel="Settings sections"
+                title="Configuration Sections"
                 onToggle={() => setIsCompactTocOpen((open) => !open)}
                 onNavigate={scrollToSection}
               />
@@ -1581,11 +1578,13 @@ function AdminSettings() {
               {showDesktopToc ? (
                 <div className="sticky top-6 w-64 shrink-0 self-start max-h-[calc(100vh-3rem)] overflow-y-auto">
                   <div>
-                    <SettingsTableOfContents
+                    <SectionNavigation
                       items={sectionNavigationItems}
                       activeSectionId={activeSectionId}
                       activeSectionLabel={activeSectionLabel}
                       isDarkTheme={isDarkTheme}
+                      ariaLabel="Settings sections"
+                      title="Configuration Sections"
                       onNavigate={scrollToSection}
                     />
                   </div>
@@ -3365,27 +3364,45 @@ function AdminSettings() {
         )}
       </div>
 
-      {showServiceNowConfigModal && (
-        <ModalShell
-          title="Configure ServiceNow"
-          description="Configure ServiceNow enrichment connection and field mappings"
-          panelClassName="max-w-4xl max-h-[calc(100vh-2rem)] overflow-hidden"
-          contentClassName="h-full min-h-0"
-          onClose={closeServiceNowConfigModal}
-        >
-          <div className="flex w-full items-start justify-between gap-3">
-            <div className="flex grow flex-col gap-1">
-              <span className="text-heading-2 font-heading-2 text-default-font">
-                Configure ServiceNow
-              </span>
-              <span className="text-body font-body text-subtext-color">
-                Save the ServiceNow connection, user mapping, and CMDB mapping.
-              </span>
-            </div>
-            <Workflow className="text-[24px] text-default-font" />
+      <FormDrawer
+        open={showServiceNowConfigModal}
+        title="Configure ServiceNow"
+        description="Save the ServiceNow connection, user mapping, and CMDB mapping."
+        widthClassName="w-[880px]"
+        closeLabel="Close ServiceNow configuration drawer"
+        onOpenChange={(open) => {
+          if (!open) {
+            closeServiceNowConfigModal();
+          }
+        }}
+        footer={
+          <div className="flex w-full items-center gap-2">
+            <Button
+              className="flex-1"
+              variant="neutral-secondary"
+              onClick={closeServiceNowConfigModal}
+              disabled={serviceNowConfigureMutation.isPending}
+            >
+              Close
+            </Button>
+            <Button
+              className="flex-1"
+              variant="brand-primary"
+              onClick={saveServiceNowConfig}
+              loading={serviceNowConfigureMutation.isPending}
+              disabled={
+                !serviceNowDraft.instance_url.trim() ||
+                !serviceNowDraft.username.trim() ||
+                (!serviceNowDraft.password.trim() &&
+                  !getSetting("enrichment.servicenow.password"))
+              }
+              icon={<Save className="text-[16px]" />}
+            >
+              Save Configuration
+            </Button>
           </div>
-
-          <div className="min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-neutral-border bg-default-background p-4">
+        }
+      >
             <div className="flex flex-col gap-6">
               <div className="grid gap-4 md:grid-cols-2">
                 <ServiceNowDraftField
@@ -3571,56 +3588,32 @@ function AdminSettings() {
                 />
               ) : null}
             </div>
-          </div>
+      </FormDrawer>
 
-          <div className="flex w-full items-center justify-end gap-2">
+      <FormDrawer
+        open={showServiceNowPreviewModal}
+        title="ServiceNow Live Preview"
+        description="Query the configured user or CMDB table before analysts see the enrichment on cards."
+        widthClassName="w-[880px]"
+        closeLabel="Close ServiceNow preview drawer"
+        onOpenChange={(open) => {
+          if (!open) {
+            closeServiceNowPreviewModal();
+          }
+        }}
+        footer={
+          <div className="flex w-full items-center gap-2">
             <Button
+              className="w-full"
               variant="neutral-secondary"
-              onClick={closeServiceNowConfigModal}
-              disabled={serviceNowConfigureMutation.isPending}
+              onClick={closeServiceNowPreviewModal}
+              disabled={serviceNowPreviewMutation.isPending}
             >
               Close
             </Button>
-            <Button
-              variant="brand-primary"
-              onClick={saveServiceNowConfig}
-              loading={serviceNowConfigureMutation.isPending}
-              disabled={
-                !serviceNowDraft.instance_url.trim() ||
-                !serviceNowDraft.username.trim() ||
-                (!serviceNowDraft.password.trim() &&
-                  !getSetting("enrichment.servicenow.password"))
-              }
-              icon={<Save className="text-[16px]" />}
-            >
-              Save Configuration
-            </Button>
           </div>
-        </ModalShell>
-      )}
-
-      {showServiceNowPreviewModal && (
-        <ModalShell
-          title="Preview ServiceNow Enrichment"
-          description="Run a live ServiceNow enrichment preview"
-          panelClassName="max-w-4xl max-h-[calc(100vh-2rem)] overflow-hidden"
-          contentClassName="h-full min-h-0"
-          onClose={closeServiceNowPreviewModal}
-        >
-          <div className="flex w-full items-start justify-between gap-3">
-            <div className="flex grow flex-col gap-1">
-              <span className="text-heading-2 font-heading-2 text-default-font">
-                ServiceNow Live Preview
-              </span>
-              <span className="text-body font-body text-subtext-color">
-                Query the configured user or CMDB table before analysts see the
-                enrichment on cards.
-              </span>
-            </div>
-            <Search className="text-[24px] text-default-font" />
-          </div>
-
-          <div className="min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-neutral-border bg-default-background p-4">
+        }
+      >
             <div className="flex flex-col gap-5">
               <div className="grid gap-4 md:grid-cols-[180px_1fr]">
                 <div className="flex flex-col gap-2">
@@ -3698,45 +3691,72 @@ function AdminSettings() {
                 <ServiceNowPreviewResultPanel result={serviceNowPreviewResult} />
               ) : null}
             </div>
-          </div>
+      </FormDrawer>
 
-          <div className="flex w-full items-center justify-end gap-2">
-            <Button
-              variant="neutral-secondary"
-              onClick={closeServiceNowPreviewModal}
-              disabled={serviceNowPreviewMutation.isPending}
-            >
-              Close
-            </Button>
+      <FormDrawer
+        open={showLangflowSetupModal}
+        title="Setup Langflow for Intercept"
+        description={
+          langflowSetupPage === "overview"
+            ? "Here's what the wizard will set up for you."
+            : langflowSetupPage === "configure"
+              ? "Review the setup inputs before provisioning."
+              : "Review the provisioning result and rerun if you need to change anything."
+        }
+        widthClassName="w-[720px]"
+        closeLabel="Close Langflow setup drawer"
+        onOpenChange={(open) => {
+          if (!open) {
+            closeLangflowSetupModal();
+          }
+        }}
+        footer={
+          <div className="flex w-full items-center gap-2">
+            {langflowSetupPage !== "results" && (
+              <Button
+                className="flex-1"
+                variant="neutral-secondary"
+                onClick={closeLangflowSetupModal}
+                disabled={langflowSetupMutation.isPending}
+              >
+                Close
+              </Button>
+            )}
+            {langflowSetupPage === "configure" && (
+              <Button
+                className="flex-1"
+                variant="neutral-secondary"
+                onClick={goToLangflowSetupOverview}
+                disabled={langflowSetupMutation.isPending}
+              >
+                Back
+              </Button>
+            )}
+            {langflowSetupPage === "overview" && (
+              <Button className="flex-1" onClick={goToLangflowSetupConfiguration}>
+                Continue
+              </Button>
+            )}
+            {langflowSetupPage === "configure" && (
+              <Button
+                className="flex-1"
+                onClick={runLangflowSetup}
+                loading={langflowSetupMutation.isPending}
+                disabled={
+                  !langflowSetupUsername.trim() || !langflowSetupMcpUrl.trim()
+                }
+              >
+                Run Setup
+              </Button>
+            )}
+            {langflowSetupPage === "results" && (
+              <Button className="w-full" onClick={closeLangflowSetupModal}>
+                Close
+              </Button>
+            )}
           </div>
-        </ModalShell>
-      )}
-
-      {showLangflowSetupModal && (
-        <ModalShell
-          title="Setup Langflow for Intercept"
-          description="Wizard to configure Langflow integration with Intercept"
-          panelClassName="max-w-3xl max-h-[calc(100vh-2rem)] overflow-hidden"
-          contentClassName="h-full min-h-0"
-          onClose={closeLangflowSetupModal}
-        >
-          <div className="flex w-full items-start justify-between gap-3">
-            <div className="flex grow flex-col gap-1">
-              <span className="text-heading-2 font-heading-2 text-default-font">
-                Setup Langflow for Intercept
-              </span>
-              <span className="text-body font-body text-subtext-color">
-                {langflowSetupPage === "overview"
-                  ? "Here's what the wizard will set up for you."
-                  : langflowSetupPage === "configure"
-                    ? "Review the setup inputs before provisioning."
-                    : "Review the provisioning result and rerun if you need to change anything."}
-              </span>
-            </div>
-            <Sparkles className="text-[24px] text-default-font" />
-          </div>
-
-          <div className="min-h-0 w-full flex-1 overflow-y-auto rounded-md border border-neutral-border bg-default-background p-4">
+        }
+      >
             {langflowSetupPage === "overview" ? (
               <div className="flex w-full flex-col gap-4">
                 <div className="flex flex-col border border-neutral-border">
@@ -3876,64 +3896,9 @@ function AdminSettings() {
                 )}
               </div>
             )}
-          </div>
-
-          <div className="flex w-full items-center justify-end gap-2">
-            {langflowSetupPage !== "results" && (
-              <Button
-                variant="neutral-secondary"
-                onClick={closeLangflowSetupModal}
-                disabled={langflowSetupMutation.isPending}
-              >
-                Close
-              </Button>
-            )}
-            {langflowSetupPage === "configure" && (
-              <Button
-                variant="neutral-secondary"
-                onClick={goToLangflowSetupOverview}
-                disabled={langflowSetupMutation.isPending}
-              >
-                Back
-              </Button>
-            )}
-            {langflowSetupPage === "overview" && (
-              <Button onClick={goToLangflowSetupConfiguration}>
-                Continue
-              </Button>
-            )}
-            {langflowSetupPage === "configure" && (
-              <Button
-                onClick={runLangflowSetup}
-                loading={langflowSetupMutation.isPending}
-                disabled={
-                  !langflowSetupUsername.trim() || !langflowSetupMcpUrl.trim()
-                }
-              >
-                Run Setup
-              </Button>
-            )}
-            {langflowSetupPage === "results" && (
-              <Button onClick={closeLangflowSetupModal}>
-                Close
-              </Button>
-            )}
-          </div>
-        </ModalShell>
-      )}
+      </FormDrawer>
     </AdminPageLayout>
   );
-}
-
-interface SettingsTableOfContentsProps {
-  items: SettingsSectionNavItem[];
-  activeSectionId: string;
-  activeSectionLabel: string;
-  isDarkTheme: boolean;
-  onNavigate: (sectionId: string) => void;
-  isCompact?: boolean;
-  isOpen?: boolean;
-  onToggle?: () => void;
 }
 
 function ServiceNowSummaryField({
@@ -4078,141 +4043,6 @@ function formatPreviewValue(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-function SettingsTableOfContents({
-  items,
-  activeSectionId,
-  activeSectionLabel,
-  isDarkTheme,
-  onNavigate,
-  isCompact = false,
-  isOpen = true,
-  onToggle,
-}: SettingsTableOfContentsProps) {
-  const groupedItems = useMemo(() => {
-    const groups: Array<{ name: string; items: SettingsSectionNavItem[] }> = [];
-
-    items.forEach((item) => {
-      const existingGroup = groups.find((group) => group.name === item.group);
-      if (existingGroup) {
-        existingGroup.items.push(item);
-        return;
-      }
-
-      groups.push({ name: item.group, items: [item] });
-    });
-
-    return groups;
-  }, [items]);
-
-  return (
-    <nav
-      aria-label="Settings sections"
-      className={cn(
-        "rounded-lg border border-neutral-border bg-default-background",
-        isCompact ? "w-full overflow-hidden" : "w-full p-4",
-      )}
-    >
-      {isCompact ? (
-        <>
-          <button
-            type="button"
-            onClick={onToggle}
-            className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
-            aria-expanded={isOpen}
-          >
-            <div className="flex flex-col gap-1">
-              <span className="text-caption font-caption uppercase tracking-[0.12em] text-subtext-color">
-                Jump To Section
-              </span>
-              <span className="text-body-bold font-body-bold text-default-font">
-                {activeSectionLabel}
-              </span>
-            </div>
-            <ChevronDown
-              className={cn(
-                "h-4 w-4 text-subtext-color transition-transform",
-                isOpen && "rotate-180",
-              )}
-            />
-          </button>
-          {isOpen ? (
-            <div className="border-t border-neutral-border px-3 py-3">
-              <div className="flex flex-col gap-4">
-                {groupedItems.map((group) => (
-                  <div key={group.name} className="flex flex-col gap-1">
-                    <span className="px-2 text-caption font-caption uppercase tracking-[0.08em] text-subtext-color">
-                      {group.name}
-                    </span>
-                    {group.items.map((item) => {
-                      const isActive = item.id === activeSectionId;
-                      return (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={() => onNavigate(item.id)}
-                          className={cn(
-                            "flex w-full items-center rounded-md px-2 py-2 text-left text-body transition-colors",
-                            isActive
-                              ? isDarkTheme
-                                ? "bg-brand-1000 text-brand-primary"
-                                : "bg-neutral-100 text-neutral-1000"
-                              : "text-subtext-color hover:bg-neutral-50 hover:text-default-font",
-                          )}
-                        >
-                          {item.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </>
-      ) : (
-        <div className="flex flex-col gap-5">
-          <div className="flex flex-col gap-1 border-b border-neutral-border pb-3">
-            <span className="text-caption font-caption uppercase tracking-[0.12em] text-subtext-color">
-              On This Page
-            </span>
-            <span className="text-body-bold font-body-bold text-default-font">
-              Configuration Sections
-            </span>
-          </div>
-          {groupedItems.map((group) => (
-            <div key={group.name} className="flex flex-col gap-1">
-              <span className="px-2 text-caption font-caption uppercase tracking-[0.08em] text-subtext-color">
-                {group.name}
-              </span>
-              {group.items.map((item) => {
-                const isActive = item.id === activeSectionId;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => onNavigate(item.id)}
-                    className={cn(
-                      "flex w-full items-center rounded-md border px-3 py-2 text-left text-body transition-colors",
-                      isActive
-                        ? isDarkTheme
-                          ? "border-brand-primary bg-brand-1000 text-brand-primary"
-                          : "border-neutral-1000 bg-neutral-100 text-neutral-1000"
-                        : "border-transparent text-subtext-color hover:border-neutral-border hover:bg-neutral-50 hover:text-default-font",
-                    )}
-                    aria-current={isActive ? "location" : undefined}
-                  >
-                    {item.label}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
-        </div>
-      )}
-    </nav>
-  );
 }
 
 interface SettingFieldProps {

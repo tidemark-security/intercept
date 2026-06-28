@@ -10,7 +10,7 @@ import { Badge } from "@/components/data-display/Badge";
 import { Button } from "@/components/buttons/Button";
 import { DropdownMenu } from "@/components/overlays/DropdownMenu";
 import { IconButton } from "@/components/buttons/IconButton";
-import { ModalShell } from "@/components/overlays";
+import { FormDrawer, ModalShell } from "@/components/overlays";
 import { Table } from "@/components/data-display/Table";
 import { TextField } from "@/components/forms/TextField";
 import { Toast } from "@/components/feedback/Toast";
@@ -1192,27 +1192,41 @@ function AdminUsers() {
         )}
       </AdminPageLayout>
 
-      {/* Create User Modal */}
-      {showCreateModal && !createdNhiResponse && !resetLinkModalData && (
-        <ModalShell title="Create New User" description="Create a new user or service account" onClose={closeCreateUserModal}>
-          {/* Modal Header */}
+      {/* Create User Drawer */}
+      <FormDrawer
+        open={showCreateModal && !createdNhiResponse && !resetLinkModalData}
+        title="Create New User"
+        description={
+          createFormData.accountType === "HUMAN"
+            ? "Create a one-time password setup link for the user"
+            : "Create a service account for programmatic API access"
+        }
+        widthClassName="w-[640px]"
+        closeLabel="Close create user drawer"
+        onOpenChange={(open) => {
+          if (!open && !createLoading) {
+            closeCreateUserModal();
+          }
+        }}
+        footer={
           <div className="flex w-full items-center gap-2">
-            <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
-              <span className="text-heading-2 font-heading-2 text-default-font">
-                Create New User
-              </span>
-              <span className="text-body font-body text-subtext-color">
-                {createFormData.accountType === "HUMAN"
-                  ? "Create a one-time password setup link for the user"
-                  : "Create a service account for programmatic API access"}
-              </span>
-            </div>
-            <UserPlus className="text-[24px] text-default-font" />
+            <Button
+              className="flex-1"
+              variant="neutral-secondary"
+              onClick={closeCreateUserModal}
+              disabled={createLoading}
+            >
+              Cancel
+            </Button>
+            <Button className="flex-1" onClick={handleCreateUser} loading={createLoading}>
+              {createFormData.accountType === "HUMAN"
+                ? "Create User"
+                : "Create Service Account"}
+            </Button>
           </div>
-
-          {/* Form */}
-          <div className="flex w-full items-start rounded-md border border-solid border-neutral-border bg-default-background">
-            <div className="flex grow shrink-0 basis-0 flex-col items-start gap-6 px-4 py-4">
+        }
+      >
+            <div className="flex w-full flex-col items-start gap-6">
               {/* Account Type Selection */}
               <div className="flex w-full flex-col items-start gap-2">
                 <span className="text-body-bold font-body-bold text-default-font">
@@ -1374,49 +1388,42 @@ function AdminUsers() {
                 </div>
               </div>
             </div>
-          </div>
+      </FormDrawer>
 
-          {/* Actions */}
-          <div className="flex w-full items-center justify-end gap-2">
+      {/* Edit User Drawer */}
+      <FormDrawer
+        open={Boolean(editingUser)}
+        title="Edit User"
+        description={
+          editingUser?.accountType === "NHI"
+            ? "Update the service account details and role"
+            : "Update the user account details and role"
+        }
+        widthClassName="w-[640px]"
+        closeLabel="Close edit user drawer"
+        onOpenChange={(open) => {
+          if (!open && !editLoading) {
+            closeEditUserModal();
+          }
+        }}
+        footer={
+          <div className="flex w-full items-center gap-2">
             <Button
+              className="flex-1"
               variant="neutral-secondary"
-              onClick={closeCreateUserModal}
-              disabled={createLoading}
+              onClick={closeEditUserModal}
+              disabled={editLoading}
             >
               Cancel
             </Button>
-            <Button onClick={handleCreateUser} loading={createLoading}>
-              {createFormData.accountType === "HUMAN"
-                ? "Create User"
-                : "Create Service Account"}
+            <Button className="flex-1" onClick={handleEditUser} loading={editLoading}>
+              Save Changes
             </Button>
           </div>
-        </ModalShell>
-      )}
-
-      {/* Edit User Modal */}
-      {editingUser && (
-        <ModalShell title="Edit User" description="Update user account details and role" onClose={closeEditUserModal}>
-          <div className="flex w-full items-center gap-2">
-            <div className="flex grow shrink-0 basis-0 flex-col items-start gap-1">
-              <span className="text-heading-2 font-heading-2 text-default-font">
-                Edit User
-              </span>
-              <span className="text-body font-body text-subtext-color">
-                {editingUser.accountType === "HUMAN"
-                  ? "Update the user account details and role"
-                  : "Update the service account details and role"}
-              </span>
-            </div>
-            {editingUser.accountType === "NHI" ? (
-              <Bot className="text-[24px] text-default-font" />
-            ) : (
-              <User className="text-[24px] text-default-font" />
-            )}
-          </div>
-
-          <div className="flex w-full items-start rounded-md border border-solid border-neutral-border bg-default-background">
-            <div className="flex grow shrink-0 basis-0 flex-col items-start gap-6 px-4 py-4">
+        }
+      >
+        {editingUser ? (
+            <div className="flex w-full flex-col items-start gap-6">
               <TextField
                 className="h-auto w-full flex-none"
                 label="Username"
@@ -1516,38 +1523,51 @@ function AdminUsers() {
                 </div>
               </div>
             </div>
-          </div>
+        ) : null}
+      </FormDrawer>
 
-          <div className="flex w-full items-center justify-end gap-2">
+      {/* Create API Key Drawer */}
+      <FormDrawer
+        open={showCreateApiKeyModal && !newlyCreatedKey}
+        title="Create API Key"
+        description="Generate a new API key for programmatic access"
+        widthClassName="w-[520px]"
+        closeLabel="Close API key drawer"
+        onOpenChange={(open) => {
+          if (!open && !createApiKeyLoading) {
+            closeCreateApiKeyModal();
+          }
+        }}
+        footer={
+          <div className="flex w-full items-center gap-2">
             <Button
+              className="flex-1"
               variant="neutral-secondary"
-              onClick={closeEditUserModal}
-              disabled={editLoading}
+              onClick={closeCreateApiKeyModal}
+              disabled={createApiKeyLoading}
             >
               Cancel
             </Button>
-            <Button onClick={handleEditUser} loading={editLoading}>
-              Save Changes
+            <Button className="flex-1" onClick={handleCreateApiKey} loading={createApiKeyLoading}>
+              Create Key
             </Button>
           </div>
-        </ModalShell>
-      )}
-
-      {/* Create API Key Modal */}
-      {showCreateApiKeyModal && !newlyCreatedKey && (
-        <ModalShell title="Create API Key" description="Generate a new API key for programmatic access" onClose={closeCreateApiKeyModal}>
-          <CreateApiKeyModalContent
-            keyName={createApiKeyFormData.name}
-            expiresAt={createApiKeyFormData.expiresAt}
-            onKeyNameChange={(value) => updateCreateApiKeyField("name", value)}
-            onExpiresAtChange={(value) => updateCreateApiKeyField("expiresAt", value)}
-            onCancel={closeCreateApiKeyModal}
-            onSubmit={handleCreateApiKey}
-            loading={createApiKeyLoading}
-            keyNamePlaceholder="CI/CD Pipeline"
-          />
-        </ModalShell>
-      )}
+        }
+      >
+        <CreateApiKeyModalContent
+          keyName={createApiKeyFormData.name}
+          expiresAt={createApiKeyFormData.expiresAt}
+          onKeyNameChange={(value) => updateCreateApiKeyField("name", value)}
+          onExpiresAtChange={(value) => updateCreateApiKeyField("expiresAt", value)}
+          onCancel={closeCreateApiKeyModal}
+          onSubmit={handleCreateApiKey}
+          loading={createApiKeyLoading}
+          keyNamePlaceholder="CI/CD Pipeline"
+          showHeader={false}
+          showFrame={false}
+          showActions={false}
+        />
+      </FormDrawer>
 
       {/* Unified API Key Created Modal - shown for both NHI and direct key creation */}
       {createdKeyModalData && renderCreatedKeyModal(createdKeyModalData)}

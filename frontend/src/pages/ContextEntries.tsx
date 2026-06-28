@@ -11,7 +11,7 @@ import { DateTimeManager } from '@/components/forms/DateTimeManager';
 import { MarkdownInput } from '@/components/forms/MarkdownInput';
 import { TextField } from '@/components/forms/TextField';
 import { DefaultPageLayout } from '@/components/layout/DefaultPageLayout';
-import { Drawer } from '@/components/overlays/Drawer';
+import { FormDrawer } from '@/components/overlays';
 import { useSession } from '@/contexts/sessionContext';
 import { useToast } from '@/contexts/ToastContext';
 import { Switch } from '@tidemark-security/ux';
@@ -328,22 +328,32 @@ export default function ContextEntries() {
         </div>
       </div>
 
-      <Drawer open={drawerMode !== null} onOpenChange={(open) => !open && resetForm()}>
-        <Drawer.Content className="w-[440px] max-w-full p-0 mobile:w-full">
-          <form className="flex h-full w-full flex-col gap-6 p-4" onSubmit={handleSubmit}>
-            <div className="flex w-full items-start gap-3">
-              <div className="flex min-w-0 flex-1 flex-col gap-1">
-                <Drawer.Title className="text-heading-3 font-heading-3 text-default-font">
-                  {drawerTitle}
-                </Drawer.Title>
-                <Drawer.Description className="text-caption font-caption text-subtext-color">
-                  {drawerDescription}
-                </Drawer.Description>
-              </div>
-              <IconButton icon={<X />} aria-label="Close context entry drawer" onClick={resetForm} />
-            </div>
-
-            <div className="flex min-h-0 w-full grow flex-col gap-6 overflow-y-auto border border-neutral-border bg-default-background p-4">
+      <FormDrawer
+        open={drawerMode !== null}
+        title={drawerTitle}
+        description={drawerDescription}
+        widthClassName="w-[520px]"
+        closeLabel="Close context entry drawer"
+        onOpenChange={(open) => !open && resetForm()}
+        footer={
+          <div className="flex w-full items-center gap-2">
+            <Button className="flex-1" type="button" variant="neutral-secondary" icon={<X />} onClick={resetForm}>
+              Cancel
+            </Button>
+            <Button
+              className="flex-1"
+              type="submit"
+              form="context-entry-form"
+              icon={drawerMode === 'edit' ? <Save /> : <Plus />}
+              disabled={!canSave || saveMutation.isPending}
+              loading={saveMutation.isPending}
+            >
+              {drawerMode === 'edit' ? 'Save context entry' : 'Create context entry'}
+            </Button>
+          </div>
+        }
+      >
+          <form id="context-entry-form" className="contents" onSubmit={handleSubmit}>
               <section className="flex w-full flex-col gap-2">
                 <div className="flex flex-col gap-1">
                   <span className="text-caption-bold font-caption-bold text-default-font">Context body</span>
@@ -420,25 +430,8 @@ export default function ContextEntries() {
                   showNowButton={false}
                 />
               </section>
-            </div>
-
-            <div className="flex w-full gap-2">
-              <Button className="flex-1" type="button" variant="neutral-secondary" icon={<X />} onClick={resetForm}>
-                Cancel
-              </Button>
-              <Button
-                className="flex-1"
-                type="submit"
-                icon={drawerMode === 'edit' ? <Save /> : <Plus />}
-                disabled={!canSave || saveMutation.isPending}
-                loading={saveMutation.isPending}
-              >
-                {drawerMode === 'edit' ? 'Save context entry' : 'Create context entry'}
-              </Button>
-            </div>
           </form>
-        </Drawer.Content>
-      </Drawer>
+      </FormDrawer>
     </DefaultPageLayout>
   );
 }

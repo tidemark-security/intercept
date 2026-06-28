@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LinkTemplateManager } from "@/components/link-templates";
 import { resolvedLinkTemplateQueryKey } from "@/hooks/useUserLinkTemplates";
@@ -7,7 +8,15 @@ import type { PortableLinkTemplate } from "@/types/generated/models/PortableLink
 
 const PERSONAL_LINK_TEMPLATE_QUERY_KEY = ["personal-link-templates"] as const;
 
-export function UserLinkTemplatesPanel() {
+export function UserLinkTemplatesPanel({
+  showHeader = true,
+  headerIcon,
+  headerVariant = "default",
+}: {
+  showHeader?: boolean;
+  headerIcon?: ReactNode;
+  headerVariant?: "default" | "settings-card";
+}) {
   const queryClient = useQueryClient();
   const { data: templates = [], isLoading } = useQuery({
     queryKey: PERSONAL_LINK_TEMPLATE_QUERY_KEY,
@@ -25,8 +34,10 @@ export function UserLinkTemplatesPanel() {
 
   return (
     <LinkTemplateManager
-      title="Personal Link Templates"
-      description="Create private contextual action templates for your own workflow."
+      title={showHeader ? "Personal Link Templates" : undefined}
+      description={showHeader ? "Create private contextual action templates for your own workflow." : undefined}
+      headerIcon={headerIcon}
+      headerVariant={headerVariant}
       templates={templates}
       isLoading={isLoading}
       createLabel="Add Personal Template"

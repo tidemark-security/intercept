@@ -95,6 +95,19 @@ def test_portable_link_template_rejects_unsafe_url_templates_on_import():
         )
 
 
+@pytest.mark.parametrize("surface_scopes", [[], ["entity", "timeline_item"], ["entity", "entity"]])
+def test_portable_link_template_rejects_invalid_surface_scope_shapes(surface_scopes):
+    with pytest.raises(ValidationError, match="surface_scopes"):
+        PortableLinkTemplate(
+            template_id="invalid-surface",
+            name="Invalid Surface",
+            icon_name="Link2",
+            tooltip_template="Open {{human_id}}",
+            url_template="https://example/{{human_id}}",
+            surface_scopes=surface_scopes,
+        )
+
+
 def test_with_copy_suffix_uses_incrementing_template_id():
     existing = {"vt-domain", "vt-domain-copy", "vt-domain-copy-2"}
 

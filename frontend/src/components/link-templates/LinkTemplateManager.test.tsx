@@ -56,10 +56,11 @@ function renderManager(overrides: Partial<ManagerProps> = {}) {
 
 describe("LinkTemplateManager", () => {
   it("uses Personal Link Templates copy without the legacy Deep Links label", () => {
-    renderManager();
+    const { container } = renderManager();
 
     expect(screen.getByText("Personal Link Templates")).toBeInTheDocument();
     expect(screen.queryByText(/Deep Links/i)).not.toBeInTheDocument();
+    expect(container.querySelector("[data-variant]")).not.toBeInTheDocument();
   });
 
   it("creates templates with scope and entity type fields", async () => {
@@ -71,7 +72,7 @@ describe("LinkTemplateManager", () => {
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Case Parent" } });
     fireEvent.change(screen.getByLabelText("Tooltip Template"), { target: { value: "Open {{human_id}}" } });
     fireEvent.change(screen.getByLabelText("URL Template"), { target: { value: "https://example/{{human_id}}" } });
-    fireEvent.click(screen.getByRole("checkbox", { name: "Parent entity" }));
+    fireEvent.click(screen.getByText("Parent entity"));
     fireEvent.click(screen.getByRole("checkbox", { name: "Cases" }));
     fireEvent.click(screen.getByRole("button", { name: /Create Template/ }));
 
@@ -79,10 +80,21 @@ describe("LinkTemplateManager", () => {
     expect(onCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         template_id: "case-parent",
-        surface_scopes: ["timeline_item", "entity"],
+        surface_scopes: ["entity"],
         entity_types: ["case"],
       }),
     );
+  });
+
+  it("shows Conditions JSON fine print without placeholder text", () => {
+    renderManager({ templates: [] });
+
+    fireEvent.click(screen.getByRole("button", { name: /Add Template/i }));
+
+    const conditionsInput = screen.getByLabelText("Conditions JSON");
+    expect(conditionsInput).not.toHaveAttribute("placeholder");
+    expect(screen.getByText(/Must be a JSON object/)).toBeInTheDocument();
+    expect(screen.getByText(/observable_type/)).toBeInTheDocument();
   });
 
   it("imports a JSON bundle from the file input", async () => {

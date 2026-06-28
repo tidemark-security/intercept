@@ -70,6 +70,29 @@ beforeEach(() => {
 });
 
 describe("UserLinkTemplatesPanel", () => {
+  it("can render personal link template actions inline with the settings subheader", async () => {
+    renderWithProviders(
+      <UserLinkTemplatesPanel
+        headerIcon={<span data-testid="personal-link-template-icon" />}
+        headerVariant="settings-card"
+      />,
+    );
+
+    const heading = await screen.findByRole("heading", {
+      name: "Personal Link Templates",
+    });
+    const headerRow = heading.closest("div")?.parentElement;
+
+    expect(headerRow).toHaveClass("border-b");
+    expect(within(headerRow as HTMLElement).getByRole("button", { name: /Import/i })).toBeInTheDocument();
+    expect(
+      within(headerRow as HTMLElement).getByRole("button", {
+        name: /Add Personal Template/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("personal-link-template-icon")).toBeInTheDocument();
+  });
+
   it("uses Personal Link Templates copy and personal import/export services", async () => {
     const { container } = renderWithProviders(<UserLinkTemplatesPanel />);
 

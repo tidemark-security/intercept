@@ -217,6 +217,35 @@ async def test_import_accepts_single_template_and_bare_array_payloads(
     assert array_response.json()[0]["template_id"] == "array-console"
 
 
+async def test_public_and_personal_templates_reject_multiple_surface_scopes(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+    analyst_user_factory,
+):
+    admin = admin_user_factory(username="admin_link_surface_scope")
+    analyst = analyst_user_factory(username="analyst_link_surface_scope")
+    async with session_maker() as session:
+        session.add_all([admin, analyst])
+        await session.commit()
+
+    admin_cookies = await _login(client, admin.username)
+    analyst_cookies = await _login(client, analyst.username)
+    payload = _template_payload(surface_scopes=["timeline_item", "entity"])
+
+    public_response = await client.post("/api/v1/link-templates", json=payload, cookies=admin_cookies)
+    personal_response = await client.post("/api/v1/personal-link-templates", json=payload, cookies=analyst_cookies)
+    import_response = await client.post(
+        "/api/v1/link-templates/import",
+        json={"schema_version": 1, "templates": [payload]},
+        cookies=admin_cookies,
+    )
+
+    assert public_response.status_code == 422
+    assert personal_response.status_code == 422
+    assert import_response.status_code == 422
+
+
 async def test_legacy_user_preferences_route_is_removed(
     client: AsyncClient,
     session_maker: async_sessionmaker[AsyncSession],

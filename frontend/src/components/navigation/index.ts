@@ -4,6 +4,8 @@ export { PaginationFooter } from '@/components/navigation/PaginationFooter';
 export { Paginator } from './Paginator';
 export { SidebarRailWithLabels } from './SidebarRailWithLabels';
 export { SidebarWithSections } from './SidebarWithSections';
+export { SectionNavigation } from './SectionNavigation';
+export type { SectionNavigationItem } from './SectionNavigation';
 export { Stepper } from './Stepper';
 export { Tabs } from './Tabs';
 export { VerticalStepper } from './VerticalStepper';

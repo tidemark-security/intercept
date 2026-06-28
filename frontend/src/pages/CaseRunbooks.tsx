@@ -8,6 +8,7 @@ import { Select } from '@/components/forms/Select';
 import { Badge } from '@/components/data-display/Badge';
 import { Tag } from '@/components/data-display/Tag';
 import { PicerlStage } from '@/components/misc/PicerlStage';
+import { FormDrawer } from '@/components/overlays';
 import { useSession } from '@/contexts/sessionContext';
 import {
   useCaseRunbooks,
@@ -155,7 +156,7 @@ export default function CaseRunbooksPage() {
           ) : null}
         </div>
 
-        <div className={cn('grid min-h-[640px] w-full gap-4 mobile:grid-cols-1', isEditing ? 'grid-cols-[minmax(280px,340px)_1fr_minmax(360px,520px)]' : 'grid-cols-[minmax(280px,360px)_1fr]')}>
+        <div className="grid min-h-[640px] w-full grid-cols-[minmax(280px,360px)_1fr] gap-4 mobile:grid-cols-1">
           <div className="flex min-w-0 flex-col gap-3 border border-neutral-border bg-default-background p-3">
             <TextField className="h-auto w-full" label="Search">
               <TextField.Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search runbooks" />
@@ -257,91 +258,90 @@ export default function CaseRunbooksPage() {
             )}
           </div>
 
-          {isEditing ? (
-            <aside className="flex h-full min-h-[640px] min-w-0 flex-col items-center gap-6 border border-neutral-border bg-page-background p-4">
-              <div className="flex w-full items-center gap-2">
-                <Save className="text-neutral-600" />
-                <span className="text-heading-3 font-heading-3 text-neutral-800">
-                  {editorMode === 'create' ? 'New Case Runbook' : 'Edit Case Runbook'}
-                </span>
-                <IconButton className="ml-auto" icon={<X />} onClick={closeEditor} aria-label="Close" />
-              </div>
-
-              <div className="flex min-h-0 w-full grow flex-col items-start gap-6 overflow-auto border border-solid border-neutral-border bg-default-background p-4">
-                <TextField className="h-auto w-full flex-none" label="Runbook Title" helpText="Short response pattern name">
-                  <TextField.Input value={draft.title ?? ''} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} placeholder="Credential theft response" />
-                </TextField>
-
-                <TextArea className="h-auto w-full flex-none" label="Description" helpText="Markdown supported">
-                  <TextArea.Input className="min-h-24" value={draft.description ?? ''} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} placeholder="When to use this runbook and what it covers" />
-                </TextArea>
-
-                <TextField className="h-auto w-full flex-none" label="Case Tags" helpText="Comma-separated tags added to the case">
-                  <TextField.Input value={(draft.case_tags ?? []).join(', ')} onChange={(event) => setDraft((current) => ({ ...current, case_tags: parseTags(event.target.value) }))} placeholder="credential-theft, identity" />
-                </TextField>
-
-                <div className="flex w-full flex-col gap-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-heading-3 font-heading-3 text-default-font">Runbook Tasks</span>
-                    <Button size="small" variant="neutral-secondary" icon={<Plus />} onClick={() => setDraft((current) => ({ ...current, runbook_tasks: [...(current.runbook_tasks ?? []), emptyTask()] }))}>
-                      Add Task
-                    </Button>
-                  </div>
-                  {(draft.runbook_tasks ?? []).map((task, index) => (
-                    <div key={index} className="flex w-full flex-col gap-3 border border-solid border-neutral-border bg-default-background p-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-caption-bold font-caption-bold text-subtext-color">Task {index + 1}</span>
-                        <div className="flex items-center gap-1">
-                          <IconButton aria-label="Move task up" size="small" variant="neutral-tertiary" icon={<ArrowUp />} disabled={index === 0} onClick={() => moveTask(index, -1)} />
-                          <IconButton aria-label="Move task down" size="small" variant="neutral-tertiary" icon={<ArrowDown />} disabled={index === (draft.runbook_tasks ?? []).length - 1} onClick={() => moveTask(index, 1)} />
-                        </div>
-                      </div>
-
-                      <TextField className="h-auto w-full" label="Task Title">
-                        <TextField.Input value={task.title} onChange={(event) => updateTask(index, { title: event.target.value })} placeholder="Review identity provider logs" />
-                      </TextField>
-
-                      <TextArea className="h-auto w-full" label="Task Details">
-                        <TextArea.Input value={task.description ?? ''} onChange={(event) => updateTask(index, { description: event.target.value })} placeholder="Optional task instructions" />
-                      </TextArea>
-
-                      <Select className="h-auto w-full" label="PICERL Stage" value={task.picerl_stage} onValueChange={(stage) => updateTask(index, { picerl_stage: stage as PICERLStage })}>
-                        {PICERL_STAGES.map((stage) => (
-                          <Select.Item key={stage} value={stage}>{PICERL_STAGE_LABELS[stage]}</Select.Item>
-                        ))}
-                      </Select>
-
-                      <Select className="h-auto w-full" label="Priority" value={task.priority ?? PRIORITY_UNSET} onValueChange={(priority) => updateTask(index, { priority: priority === PRIORITY_UNSET ? null : priority as RunbookTaskDefinition['priority'] })}>
-                        <Select.Item value={PRIORITY_UNSET}>Case priority</Select.Item>
-                        {PRIORITIES.map((priority) => <Select.Item key={priority} value={priority}>{priority}</Select.Item>)}
-                      </Select>
-
-                      <TextField className="h-auto w-full" label="Relative Due Seconds">
-                        <TextField.Input type="number" value={task.relative_due_seconds == null ? '' : String(task.relative_due_seconds)} onChange={(event) => updateTask(index, { relative_due_seconds: event.target.value ? Number(event.target.value) : null })} placeholder="86400" />
-                      </TextField>
-
-                      <TextField className="h-auto w-full" label="Task Tags">
-                        <TextField.Input value={(task.tags ?? []).join(', ')} onChange={(event) => updateTask(index, { tags: parseTags(event.target.value) })} placeholder="identity, containment" />
-                      </TextField>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex w-full flex-col items-center gap-2">
-                <div className="flex w-full items-center gap-2">
-                  <Button className="flex-1" variant="neutral-secondary" icon={<X />} onClick={closeEditor} disabled={busy}>
-                    Cancel
-                  </Button>
-                </div>
-                <Button className="w-full" iconRight={<Save />} onClick={save} disabled={busy || !(draft.title ?? '').trim()} loading={busy}>
-                  {editorMode === 'create' ? 'Create Runbook' : 'Save Changes'}
-                </Button>
-              </div>
-            </aside>
-          ) : null}
         </div>
       </div>
+
+      <FormDrawer
+        open={isEditing}
+        title={editorMode === 'create' ? 'New Case Runbook' : 'Edit Case Runbook'}
+        description="Define the case tags and task sequence analysts can apply during response."
+        widthClassName="w-[640px]"
+        closeLabel="Close runbook drawer"
+        onOpenChange={(open) => {
+          if (!open && !busy) {
+            closeEditor();
+          }
+        }}
+        footer={
+          <div className="flex w-full items-center gap-2">
+            <Button className="flex-1" variant="neutral-secondary" icon={<X />} onClick={closeEditor} disabled={busy}>
+              Cancel
+            </Button>
+            <Button className="flex-1" iconRight={<Save />} onClick={save} disabled={busy || !(draft.title ?? '').trim()} loading={busy}>
+              {editorMode === 'create' ? 'Create Runbook' : 'Save Changes'}
+            </Button>
+          </div>
+        }
+      >
+        <TextField className="h-auto w-full flex-none" label="Runbook Title" helpText="Short response pattern name">
+          <TextField.Input value={draft.title ?? ''} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} placeholder="Credential theft response" />
+        </TextField>
+
+        <TextArea className="h-auto w-full flex-none" label="Description" helpText="Markdown supported">
+          <TextArea.Input className="min-h-24" value={draft.description ?? ''} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} placeholder="When to use this runbook and what it covers" />
+        </TextArea>
+
+        <TextField className="h-auto w-full flex-none" label="Case Tags" helpText="Comma-separated tags added to the case">
+          <TextField.Input value={(draft.case_tags ?? []).join(', ')} onChange={(event) => setDraft((current) => ({ ...current, case_tags: parseTags(event.target.value) }))} placeholder="credential-theft, identity" />
+        </TextField>
+
+        <div className="flex w-full flex-col gap-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-heading-3 font-heading-3 text-default-font">Runbook Tasks</span>
+            <Button size="small" variant="neutral-secondary" icon={<Plus />} onClick={() => setDraft((current) => ({ ...current, runbook_tasks: [...(current.runbook_tasks ?? []), emptyTask()] }))}>
+              Add Task
+            </Button>
+          </div>
+          {(draft.runbook_tasks ?? []).map((task, index) => (
+            <div key={index} className="flex w-full flex-col gap-3 border border-solid border-neutral-border bg-default-background p-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-caption-bold font-caption-bold text-subtext-color">Task {index + 1}</span>
+                <div className="flex items-center gap-1">
+                  <IconButton aria-label="Move task up" size="small" variant="neutral-tertiary" icon={<ArrowUp />} disabled={index === 0} onClick={() => moveTask(index, -1)} />
+                  <IconButton aria-label="Move task down" size="small" variant="neutral-tertiary" icon={<ArrowDown />} disabled={index === (draft.runbook_tasks ?? []).length - 1} onClick={() => moveTask(index, 1)} />
+                </div>
+              </div>
+
+              <TextField className="h-auto w-full" label="Task Title">
+                <TextField.Input value={task.title} onChange={(event) => updateTask(index, { title: event.target.value })} placeholder="Review identity provider logs" />
+              </TextField>
+
+              <TextArea className="h-auto w-full" label="Task Details">
+                <TextArea.Input value={task.description ?? ''} onChange={(event) => updateTask(index, { description: event.target.value })} placeholder="Optional task instructions" />
+              </TextArea>
+
+              <Select className="h-auto w-full" label="PICERL Stage" value={task.picerl_stage} onValueChange={(stage) => updateTask(index, { picerl_stage: stage as PICERLStage })}>
+                {PICERL_STAGES.map((stage) => (
+                  <Select.Item key={stage} value={stage}>{PICERL_STAGE_LABELS[stage]}</Select.Item>
+                ))}
+              </Select>
+
+              <Select className="h-auto w-full" label="Priority" value={task.priority ?? PRIORITY_UNSET} onValueChange={(priority) => updateTask(index, { priority: priority === PRIORITY_UNSET ? null : priority as RunbookTaskDefinition['priority'] })}>
+                <Select.Item value={PRIORITY_UNSET}>Case priority</Select.Item>
+                {PRIORITIES.map((priority) => <Select.Item key={priority} value={priority}>{priority}</Select.Item>)}
+              </Select>
+
+              <TextField className="h-auto w-full" label="Relative Due Seconds">
+                <TextField.Input type="number" value={task.relative_due_seconds == null ? '' : String(task.relative_due_seconds)} onChange={(event) => updateTask(index, { relative_due_seconds: event.target.value ? Number(event.target.value) : null })} placeholder="86400" />
+              </TextField>
+
+              <TextField className="h-auto w-full" label="Task Tags">
+                <TextField.Input value={(task.tags ?? []).join(', ')} onChange={(event) => updateTask(index, { tags: parseTags(event.target.value) })} placeholder="identity, containment" />
+              </TextField>
+            </div>
+          ))}
+        </div>
+      </FormDrawer>
     </DefaultPageLayout>
   );
 }

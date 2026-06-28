@@ -49,7 +49,7 @@ function AdminLinkTemplates() {
       subtitle="Manage public contextual action templates"
     >
       <LinkTemplateManager
-        description="Public templates are available to every analyst when their scope and conditions match."
+        description=""
         templates={templates}
         isLoading={isLoading}
         createLabel="Add Public Template"
