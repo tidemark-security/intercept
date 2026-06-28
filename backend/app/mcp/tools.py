@@ -193,7 +193,7 @@ async def record_triage_decision_tool(
     confidence: float,
     reasoning_bullets: list[str] | None = None,
     recommended_actions: list[dict[str, Any]] | None = None,
-    recommended_case_template_id: int | str | None = None,
+    recommended_case_runbook_id: int | str | None = None,
     suggested_status: str | None = None,
     suggested_priority: str | None = None,
     suggested_assignee: str | None = None,
@@ -218,7 +218,7 @@ async def record_triage_decision_tool(
             confidence=confidence,
             reasoning_bullets=reasoning_bullets,
             recommended_actions=recommended_actions,
-            recommended_case_template_id=recommended_case_template_id,
+            recommended_case_runbook_id=recommended_case_runbook_id,
             suggested_status=suggested_status,
             suggested_priority=suggested_priority,
             suggested_assignee=suggested_assignee,
@@ -231,20 +231,20 @@ async def record_triage_decision_tool(
         return result.model_dump()
 
 
-async def search_case_templates_tool(
+async def search_case_runbooks_tool(
     query: str | None = None,
     limit: int = 10,
 ) -> Dict[str, Any]:
-    """Search published Case Templates for triage recommendation planning."""
+    """Search published Case Runbooks for triage recommendation planning."""
     async with async_session_factory() as db:
-        result = await mcp_service.search_case_templates(db=db, query=query, limit=limit)
+        result = await mcp_service.search_case_runbooks(db=db, query=query, limit=limit)
         return result.model_dump()
 
 
-async def get_case_template_tool(id: str) -> Dict[str, Any]:
-    """Get lean detail for a published Case Template."""
+async def get_case_runbook_tool(id: str) -> Dict[str, Any]:
+    """Get lean detail for a published Case Runbook."""
     async with async_session_factory() as db:
-        result = await mcp_service.get_case_template(db=db, id_str=id)
+        result = await mcp_service.get_case_runbook(db=db, id_str=id)
         return result.model_dump()
 
 

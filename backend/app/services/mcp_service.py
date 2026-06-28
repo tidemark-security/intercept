@@ -14,8 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, text, cast, String
 
 from app.core.id_parser import parse_entity_id, format_entity_id, get_prefix_for_kind, ALERT_PREFIX
-from app.models.models import Alert, Case, CaseTemplate, Task, TemplateTaskDefinition
-from app.models.enums import AlertStatus, CaseStatus, CaseTemplateStatus, TaskStatus, Priority, TriageDisposition
+from app.models.models import Alert, Case, CaseRunbook, Task, RunbookTaskDefinition
+from app.models.enums import AlertStatus, CaseStatus, CaseRunbookStatus, TaskStatus, Priority, TriageDisposition
 from app.mcp.schemas import (
     GetSummaryOutput,
     ObjectHeader,
@@ -36,12 +36,12 @@ from app.mcp.schemas import (
     ValidateMermaidOutput,
     WorkItemPreview,
     RelatedMatch,
-    CaseTemplateSearchResult,
-    GetCaseTemplateOutput,
-    LeanTemplateTask,
-    SearchCaseTemplatesOutput,
+    CaseRunbookSearchResult,
+    GetCaseRunbookOutput,
+    LeanRunbookTask,
+    SearchCaseRunbooksOutput,
 )
-from app.services.case_template_service import parse_case_template_id
+from app.services.case_runbook_service import parse_case_runbook_id
 from app.services.observable_service import extract_observables, extract_high_signal_entities
 from app.services.similarity_service import count_similar_alerts
 from app.services.context_service import ContextService
@@ -482,7 +482,7 @@ async def record_triage_decision(
     confidence: float,
     reasoning_bullets: Optional[List[str]] = None,
     recommended_actions: Optional[List[Dict[str, Any]]] = None,
-    recommended_case_template_id: Optional[int | str] = None,
+    recommended_case_runbook_id: Optional[int | str] = None,
     suggested_status: Optional[str] = None,
     suggested_priority: Optional[str] = None,
     suggested_assignee: Optional[str] = None,
@@ -539,20 +539,20 @@ async def record_triage_decision(
         except ValueError:
             normalized_suggested_status = None
 
-    numeric_template_id: int | None = None
-    if recommended_case_template_id is not None:
+    numeric_runbook_id: int | None = None
+    if recommended_case_runbook_id is not None:
         try:
-            numeric_template_id = parse_case_template_id(recommended_case_template_id)
+            numeric_runbook_id = parse_case_runbook_id(recommended_case_runbook_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
-        template = await db.get(CaseTemplate, numeric_template_id)
-        if template is None or template.status != CaseTemplateStatus.PUBLISHED:
-            raise HTTPException(status_code=400, detail="recommended_case_template_id must reference a published Case Template")
+        runbook = await db.get(CaseRunbook, numeric_runbook_id)
+        if runbook is None or runbook.status != CaseRunbookStatus.PUBLISHED:
+            raise HTTPException(status_code=400, detail="recommended_case_runbook_id must reference a published Case Runbook")
 
     _validate_triage_work_recommendation(
         recommended_actions=recommended_actions or [],
-        recommended_case_template_id=numeric_template_id,
+        recommended_case_runbook_id=numeric_runbook_id,
         request_escalate_to_case=request_escalate_to_case,
         suggested_status=normalized_suggested_status,
     )
@@ -618,7 +618,7 @@ async def record_triage_decision(
         "confidence": confidence,
         "reasoning_bullets": reasoning_bullets or [],
         "recommended_actions": recommended_actions or [],
-        "recommended_case_template_id": numeric_template_id,
+        "recommended_case_runbook_id": numeric_runbook_id,
         "suggested_status": normalized_suggested_status,
         "suggested_priority": suggested_priority,
         "suggested_assignee": suggested_assignee,
@@ -652,90 +652,90 @@ async def record_triage_decision(
 def _validate_triage_work_recommendation(
     *,
     recommended_actions: List[Dict[str, Any]],
-    recommended_case_template_id: int | None,
+    recommended_case_runbook_id: int | None,
     request_escalate_to_case: bool,
     suggested_status: str | None,
 ) -> None:
     has_actions = bool(recommended_actions)
-    has_template = recommended_case_template_id is not None
+    has_runbook = recommended_case_runbook_id is not None
 
-    if has_actions and has_template:
-        raise HTTPException(status_code=400, detail="recommended_case_template_id and recommended_actions are mutually exclusive")
-    if (has_actions or has_template) and not request_escalate_to_case:
+    if has_actions and has_runbook:
+        raise HTTPException(status_code=400, detail="recommended_case_runbook_id and recommended_actions are mutually exclusive")
+    if (has_actions or has_runbook) and not request_escalate_to_case:
         raise HTTPException(status_code=400, detail="Work recommendations require request_escalate_to_case=true")
     if request_escalate_to_case and suggested_status not in {None, AlertStatus.ESCALATED.value}:
         raise HTTPException(status_code=400, detail="Escalating recommendations require suggested_status to be omitted or ESCALATED")
 
 
-def _template_tasks(template: CaseTemplate) -> list[TemplateTaskDefinition]:
+def _runbook_tasks(runbook: CaseRunbook) -> list[RunbookTaskDefinition]:
     return [
-        task if isinstance(task, TemplateTaskDefinition) else TemplateTaskDefinition.model_validate(task)
-        for task in (template.template_tasks or [])
+        task if isinstance(task, RunbookTaskDefinition) else RunbookTaskDefinition.model_validate(task)
+        for task in (runbook.runbook_tasks or [])
     ]
 
 
-async def search_case_templates(
+async def search_case_runbooks(
     db: AsyncSession,
     *,
     query: str | None = None,
     limit: int = 10,
-) -> SearchCaseTemplatesOutput:
-    stmt = select(CaseTemplate).where(CaseTemplate.status == CaseTemplateStatus.PUBLISHED)
+) -> SearchCaseRunbooksOutput:
+    stmt = select(CaseRunbook).where(CaseRunbook.status == CaseRunbookStatus.PUBLISHED)
     if query and query.strip():
         pattern = f"%{query.strip()}%"
         stmt = stmt.where(
             func.lower(
                 func.concat(
-                    CaseTemplate.title,
+                    CaseRunbook.title,
                     " ",
-                    CaseTemplate.description,
+                    CaseRunbook.description,
                     " ",
-                    cast(CaseTemplate.template_tasks, String),
+                    cast(CaseRunbook.runbook_tasks, String),
                 )
             ).like(pattern.lower())
         )
-    stmt = stmt.order_by(CaseTemplate.title.asc()).limit(limit)
-    templates = (await db.execute(stmt)).scalars().all()
+    stmt = stmt.order_by(CaseRunbook.title.asc()).limit(limit)
+    runbooks = (await db.execute(stmt)).scalars().all()
 
-    return SearchCaseTemplatesOutput(
+    return SearchCaseRunbooksOutput(
         items=[
-            CaseTemplateSearchResult(
-                id=template.id,  # type: ignore[arg-type]
-                human_id=f"TPL-{template.id:07d}",
-                title=template.title or "",
-                description=template.description,
-                case_tags=template.case_tags or [],
-                template_task_count=len(_template_tasks(template)),
-                picerl_stages=sorted({task.picerl_stage.value for task in _template_tasks(template)}),
+            CaseRunbookSearchResult(
+                id=runbook.id,  # type: ignore[arg-type]
+                human_id=f"RUN-{runbook.id:07d}",
+                title=runbook.title or "",
+                description=runbook.description,
+                case_tags=runbook.case_tags or [],
+                runbook_task_count=len(_runbook_tasks(runbook)),
+                picerl_stages=sorted({task.picerl_stage.value for task in _runbook_tasks(runbook)}),
             )
-            for template in templates
-            if template.id is not None
+            for runbook in runbooks
+            if runbook.id is not None
         ]
     )
 
 
-async def get_case_template(
+async def get_case_runbook(
     db: AsyncSession,
     *,
     id_str: str,
-) -> GetCaseTemplateOutput:
+) -> GetCaseRunbookOutput:
     try:
-        template_id = parse_case_template_id(id_str)
+        runbook_id = parse_case_runbook_id(id_str)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    template = await db.get(CaseTemplate, template_id)
-    if template is None or template.status != CaseTemplateStatus.PUBLISHED:
-        raise HTTPException(status_code=404, detail="Published Case Template not found")
+    runbook = await db.get(CaseRunbook, runbook_id)
+    if runbook is None or runbook.status != CaseRunbookStatus.PUBLISHED:
+        raise HTTPException(status_code=404, detail="Published Case Runbook not found")
 
-    return GetCaseTemplateOutput(
-        id=template.id,  # type: ignore[arg-type]
-        human_id=f"TPL-{template.id:07d}",
-        title=template.title or "",
-        description=template.description,
-        case_tags=template.case_tags or [],
-        template_tasks=[
-            LeanTemplateTask(
+    return GetCaseRunbookOutput(
+        id=runbook.id,  # type: ignore[arg-type]
+        human_id=f"RUN-{runbook.id:07d}",
+        title=runbook.title or "",
+        description=runbook.description,
+        case_tags=runbook.case_tags or [],
+        runbook_tasks=[
+            LeanRunbookTask(
                 title=task.title,
                 description=task.description,
                 picerl_stage=task.picerl_stage.value,
@@ -743,7 +743,7 @@ async def get_case_template(
                 priority=task.priority.value if task.priority else None,
                 tags=task.tags,
             )
-            for task in _template_tasks(template)
+            for task in _runbook_tasks(runbook)
         ],
     )
 

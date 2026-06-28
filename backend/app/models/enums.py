@@ -44,7 +44,7 @@ class TaskStatus(str, Enum):
     DONE = "DONE"
 
 
-class CaseTemplateStatus(str, Enum):
+class CaseRunbookStatus(str, Enum):
     DRAFT = "DRAFT"
     PUBLISHED = "PUBLISHED"
     DISABLED = "DISABLED"

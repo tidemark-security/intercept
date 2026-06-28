@@ -1,5 +1,4 @@
 import { screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { renderWithProviders } from "../../../tests/test-utils";
@@ -14,6 +13,8 @@ vi.mock("@/contexts/WebSocketContext", () => ({
 
 afterEach(() => {
   vi.restoreAllMocks();
+  window.localStorage.clear();
+  window.sessionStorage.clear();
 });
 
 const baseAlert: AlertRead = {
@@ -70,6 +71,13 @@ const caseWithStagedTasks: CaseReadWithAlerts = {
     },
   },
 };
+
+function persistSwimlaneViewForStagedCase() {
+  window.localStorage.setItem(
+    `intercept.timeline-view.case.${caseWithStagedTasks.id}`,
+    "swimlane",
+  );
+}
 
 function renderAlertTimeline(status: AlertStatus) {
   return renderWithProviders(
@@ -144,7 +152,7 @@ describe("UnifiedTimeline", () => {
   });
 
   it("keeps normal center scrolling while bounding the swimlane section height", async () => {
-    const user = userEvent.setup();
+    persistSwimlaneViewForStagedCase();
 
     renderWithProviders(
       <UnifiedTimeline
@@ -160,10 +168,8 @@ describe("UnifiedTimeline", () => {
       />,
     );
 
-    await user.click(await screen.findByRole("button", { name: /swimlane/i }));
-
     const scrollContainer = screen.getByLabelText("case timeline content");
-    const swimlaneContainer = screen.getByLabelText("PICERL swimlane");
+    const swimlaneContainer = await screen.findByLabelText("PICERL swimlane");
 
     expect(scrollContainer).toHaveClass("overflow-auto");
     expect(scrollContainer).not.toHaveClass("overflow-hidden");
@@ -172,7 +178,7 @@ describe("UnifiedTimeline", () => {
   });
 
   it("uses the PICERL carousel when swimlane space is constrained", async () => {
-    const user = userEvent.setup();
+    persistSwimlaneViewForStagedCase();
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
       x: 0,
       y: 0,
@@ -199,8 +205,6 @@ describe("UnifiedTimeline", () => {
       />,
     );
 
-    await user.click(await screen.findByRole("button", { name: /swimlane/i }));
-
     expect(await screen.findByRole("button", { name: /previous PICERL lane/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /next PICERL lane/i })).toBeInTheDocument();
     expect(screen.getByLabelText("PICERL swimlane")).toHaveClass("h-full");
@@ -208,7 +212,7 @@ describe("UnifiedTimeline", () => {
   });
 
   it("shows zero counts for empty PICERL swimlane lanes", async () => {
-    const user = userEvent.setup();
+    persistSwimlaneViewForStagedCase();
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
       x: 0,
       y: 0,
@@ -235,15 +239,13 @@ describe("UnifiedTimeline", () => {
       />,
     );
 
-    await user.click(await screen.findByRole("button", { name: /swimlane/i }));
-
     expect(await screen.findByRole("button", { name: /0\. preparation\s+1/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /1\. identification\s+0/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /2\. containment\s+0/i })).toBeInTheDocument();
   });
 
   it("keeps the swimlane task shell neutral when the task item is highlighted", async () => {
-    const user = userEvent.setup();
+    persistSwimlaneViewForStagedCase();
     const highlightedCase = {
       ...caseWithStagedTasks,
       timeline_items: {
@@ -268,9 +270,7 @@ describe("UnifiedTimeline", () => {
       />,
     );
 
-    await user.click(await screen.findByRole("button", { name: /swimlane/i }));
-
-    const taskShell = screen.getByText("Collect endpoint evidence").closest("button");
+    const taskShell = (await screen.findByText("Collect endpoint evidence")).closest("button");
 
     expect(taskShell).toHaveClass("bg-neutral-0");
     expect(taskShell).not.toHaveClass("bg-warning-1100");

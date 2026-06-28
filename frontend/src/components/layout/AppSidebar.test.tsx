@@ -134,13 +134,48 @@ vi.mock("@tidemark-security/ux", async () => {
           selected?: boolean;
         }
       >(({ children, icon, mobile: _mobile, selected: _selected, ...props }, ref) => (
-        <div ref={ref} data-testid="sidebar-nav-item" {...props}>
-          {icon}
-          <span>{children}</span>
-        </div>
+        <SidebarNavItemMock ref={ref} icon={icon} {...props}>
+          {children}
+        </SidebarNavItemMock>
       )),
     },
   );
+
+  const SidebarNavItemMock = React.forwardRef<
+    HTMLDivElement,
+    React.HTMLAttributes<HTMLDivElement> & { icon?: React.ReactNode }
+  >(({ children, icon, onBlur, onFocus, onMouseEnter, onMouseLeave, ...props }, ref) => {
+    const [tooltipOpen, setTooltipOpen] = React.useState(false);
+    return (
+      <>
+        <div
+          ref={ref}
+          data-testid="sidebar-nav-item"
+          {...props}
+          onBlur={(event) => {
+            onBlur?.(event);
+            setTooltipOpen(false);
+          }}
+          onFocus={(event) => {
+            onFocus?.(event);
+            setTooltipOpen(true);
+          }}
+          onMouseEnter={(event) => {
+            onMouseEnter?.(event);
+            setTooltipOpen(true);
+          }}
+          onMouseLeave={(event) => {
+            onMouseLeave?.(event);
+            setTooltipOpen(false);
+          }}
+        >
+          {icon}
+          <span>{children}</span>
+        </div>
+        {tooltipOpen ? <div role="tooltip">{children}</div> : null}
+      </>
+    );
+  });
 
   const DropdownMenu = {
     Root: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -225,6 +260,8 @@ describe("DesktopSidebar", () => {
       "Tasks",
       "AI Chat",
       "Reports",
+      "Context",
+      "Runbooks",
       "Admin",
       "Timezone (Local)",
       "Profile",
@@ -247,6 +284,8 @@ describe("DesktopSidebar", () => {
       "Tasks",
       "AI Chat",
       "Reports",
+      "Context",
+      "Runbooks",
       "Admin",
       "Timezone (Local)",
       "Profile",

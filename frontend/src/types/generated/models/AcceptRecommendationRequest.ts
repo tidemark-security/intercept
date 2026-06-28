@@ -23,12 +23,12 @@ export type AcceptRecommendationRequest = {
      */
     apply_tags?: boolean;
     /**
-     * Published Case Template ID to apply instead of the recommended template
+     * Published Case Runbook ID to apply instead of the recommended runbook
      */
-    case_template_id?: (number | null);
+    case_runbook_id?: (number | null);
     /**
-     * Continue escalation without applying the recommended Case Template
+     * Continue escalation without applying the recommended Case Runbook
      */
-    skip_case_template?: boolean;
+    skip_case_runbook?: boolean;
 };
 

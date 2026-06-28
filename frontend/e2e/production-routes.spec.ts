@@ -75,6 +75,7 @@ const routePaths = [
   "/alerts/ALT-0000001",
   "/cases",
   "/cases/CAS-0000001",
+  "/case-runbooks",
   "/tasks",
   "/tasks/TSK-0000001",
   "/reports",
@@ -173,6 +174,7 @@ function apiResponse(pathname: string): unknown {
   if (/^\/api\/v1\/alerts\/\d+$/.test(pathname)) return sampleAlert;
   if (pathname === "/api/v1/cases") return emptyPage;
   if (/^\/api\/v1\/cases\/\d+$/.test(pathname)) return sampleCase;
+  if (pathname === "/api/v1/case-runbooks") return emptyPage;
   if (pathname === "/api/v1/tasks") return emptyPage;
   if (/^\/api\/v1\/tasks\/\d+$/.test(pathname)) return sampleTask;
 

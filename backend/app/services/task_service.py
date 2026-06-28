@@ -86,7 +86,7 @@ class TaskService:
                 status=status,
                 assignee=assignee,
                 case_id=task_data.case_id,
-                source_tpl=getattr(task_data, "source_tpl", None),
+                source_runbook=getattr(task_data, "source_runbook", None),
                 linked_at=datetime.now(timezone.utc) if task_data.case_id else None,
                 created_by=created_by,
                 tags=normalize_persisted_tags(task_data.tags),

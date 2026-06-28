@@ -17,7 +17,7 @@ import type { CaseRead } from "@/types/generated/models/CaseRead";
 import type { TaskRead } from "@/types/generated/models/TaskRead";
 import type { Priority } from "@/types/generated/models/Priority";
 import type { TaskStatus } from "@/types/generated/models/TaskStatus";
-import { PICERL_STAGES, PICERL_STAGE_LABELS } from "@/types/caseTemplates";
+import { PICERL_STAGES, PICERL_STAGE_LABELS } from "@/types/caseRunbooks";
 
 import { Check, Edit3 } from 'lucide-react';
 

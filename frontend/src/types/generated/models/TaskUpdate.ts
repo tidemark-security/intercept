@@ -32,7 +32,7 @@ export type TaskUpdate = {
     due_date?: (string | null);
     picerl_stage?: (PICERLStage | null);
     case_id?: (number | null);
-    source_tpl?: (number | null);
+    source_runbook?: (number | null);
     timeline_items?: (Record<string, (DeletedItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AttachmentItem | CaseItem | EmailItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | RegistryChangeItem | SystemItem | TTPItem)> | null);
     tags?: (Array<string> | null);
 };

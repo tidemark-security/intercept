@@ -17,7 +17,7 @@ export type TriageRecommendationRead = {
     confidence: number;
     reasoning_bullets?: Array<string>;
     recommended_actions?: Array<any>;
-    recommended_case_template_id?: (number | null);
+    recommended_case_runbook_id?: (number | null);
     suggested_status?: (AlertStatus | null);
     suggested_priority?: (Priority | null);
     suggested_assignee?: (string | null);

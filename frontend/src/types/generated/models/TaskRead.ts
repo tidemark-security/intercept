@@ -34,7 +34,7 @@ export type TaskRead = {
     assignee?: (string | null);
     created_by: string;
     case_id?: (number | null);
-    source_tpl?: (number | null);
+    source_runbook?: (number | null);
     linked_at?: (string | null);
     created_at: string;
     updated_at: string;

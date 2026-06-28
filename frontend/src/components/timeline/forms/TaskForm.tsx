@@ -9,7 +9,7 @@ import React from "react";
 import type { TaskItem } from '@/types/generated/models/TaskItem';
 import type { TaskStatus } from '@/types/generated/models/TaskStatus';
 import type { Priority } from '@/types/generated/models/Priority';
-import { PICERL_STAGES, PICERL_STAGE_LABELS } from '@/types/caseTemplates';
+import { PICERL_STAGES, PICERL_STAGE_LABELS } from '@/types/caseRunbooks';
 
 import { Select } from "@/components/forms/Select";
 import { TextArea } from "@/components/forms/TextArea";

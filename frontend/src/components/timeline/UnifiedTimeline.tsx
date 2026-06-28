@@ -33,13 +33,13 @@ import { ContextCard } from '@/components/cards/ContextCard';
 import { EntityMetadataCard } from '@/components/cards/EntityMetadataCard';
 import { Button } from '@/components/buttons/Button';
 import { Dialog } from "@/components/overlays/Dialog";
-import { CarouselControl } from "@tidemark-security/ux";
+import { CarouselControl } from "@/components/navigation/CarouselControl";
 import { findTimelineItem } from "@/utils/timelineUtils";
 import { compareTimelineItems, getTimelineItems } from "@/utils/timelineHelpers";
 import { useTheme } from '@/contexts/ThemeContext';
 import { cn } from '@/utils/cn';
 import { formatPresenceText } from '@/utils/presenceText';
-import { PICERL_STAGES, type PICERLStage } from '@/types/caseTemplates';
+import { PICERL_STAGES, type PICERLStage } from '@/types/caseRunbooks';
 import { Badge } from '@/components/data-display/Badge';
 import type { TaskRead } from '@/types/generated/models/TaskRead';
 import type { TaskStatus } from '@/types/generated/models/TaskStatus';
@@ -83,7 +83,7 @@ function timelineTaskItemToTaskRead(item: TimelineItem): TaskRead | null {
     assignee?: string | null;
     due_date?: string | null;
     picerl_stage?: TaskRead['picerl_stage'];
-    source_tpl?: number | null;
+    source_runbook?: number | null;
     case_id?: number | null;
     updated_at?: string | null;
     tags?: string[] | null;
@@ -104,7 +104,7 @@ function timelineTaskItemToTaskRead(item: TimelineItem): TaskRead | null {
     assignee: taskItem.assignee ?? null,
     due_date: taskItem.due_date ?? null,
     picerl_stage: taskItem.picerl_stage ?? null,
-    source_tpl: taskItem.source_tpl ?? null,
+    source_runbook: taskItem.source_runbook ?? null,
     case_id: taskItem.case_id ?? null,
     linked_at: null,
     created_by: taskItem.created_by || 'System',
@@ -986,7 +986,7 @@ function UnifiedTimelineInner({
         'note',
         'attachment',
         'link',
-        'case_template',
+        'case_runbook',
         'task',
         'observable',
         'system',

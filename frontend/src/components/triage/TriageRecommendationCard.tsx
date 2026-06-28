@@ -9,7 +9,7 @@ import { Priority } from '@/components/misc/Priority';
 import { Progress } from '@/components/feedback/Progress';
 import { State } from '@/components/misc/State';
 import { useTheme } from '@/contexts/ThemeContext';
-import { useCaseTemplates } from '@/hooks/useCaseTemplates';
+import { useCaseRunbooks } from '@/hooks/useCaseRunbooks';
 import { cn } from '@/utils/cn';
 import type { TriageRecommendationRead } from '@/types/generated/models/TriageRecommendationRead';
 import type { AcceptRecommendationRequest } from '@/types/generated/models/AcceptRecommendationRequest';
@@ -161,7 +161,7 @@ export function TriageRecommendationCard({
   
   // Collapse/expand state - reviewed recommendations start collapsed by default
   const [isExpanded, setIsExpanded] = useState(isReviewed ? defaultExpanded : true);
-  const [replacementTemplateId, setReplacementTemplateId] = useState<string>('');
+  const [replacementRunbookId, setReplacementRunbookId] = useState<string>('');
   
   // Rejection dialog state
   const [showRejectDialog, setShowRejectDialog] = useState(false);
@@ -203,15 +203,15 @@ export function TriageRecommendationCard({
   // Get inferred action for display
   const recommendedAction = useMemo(() => getRecommendedAction(recommendation), [recommendation]);
   const appliedContextEntries = recommendation.applied_context_entries ?? [];
-  const shouldShowTemplateRecovery = Boolean(
+  const shouldShowRunbookRecovery = Boolean(
     isPending &&
     canReview &&
     recommendation.request_escalate_to_case &&
     acceptError &&
-    acceptError.toLowerCase().includes('template')
+    acceptError.toLowerCase().includes('runbook')
   );
-  const { data: publishedTemplatesData, isLoading: isLoadingTemplates } = useCaseTemplates(['PUBLISHED'], null);
-  const publishedTemplates = publishedTemplatesData?.items ?? [];
+  const { data: publishedRunbooksData, isLoading: isLoadingRunbooks } = useCaseRunbooks(['PUBLISHED'], null);
+  const publishedRunbooks = useMemo(() => publishedRunbooksData?.items ?? [], [publishedRunbooksData?.items]);
   
   useEffect(() => {
     const previousStatus = previousRecommendationStatusRef.current;
@@ -222,11 +222,11 @@ export function TriageRecommendationCard({
   }, [recommendation.status]);
 
   useEffect(() => {
-    if (!shouldShowTemplateRecovery || replacementTemplateId || publishedTemplates.length === 0) {
+    if (!shouldShowRunbookRecovery || replacementRunbookId || publishedRunbooks.length === 0) {
       return;
     }
-    setReplacementTemplateId(String(publishedTemplates[0].id));
-  }, [publishedTemplates, replacementTemplateId, shouldShowTemplateRecovery]);
+    setReplacementRunbookId(String(publishedRunbooks[0].id));
+  }, [publishedRunbooks, replacementRunbookId, shouldShowRunbookRecovery]);
 
   // QUEUED state - show processing indicator
   if (isQueued) {
@@ -610,14 +610,14 @@ export function TriageRecommendationCard({
         </>
       )}
 
-      {shouldShowTemplateRecovery && (
+      {shouldShowRunbookRecovery && (
         <>
           <div className="flex w-full flex-col gap-4 border border-warning-500 bg-warning-100 px-4 py-3">
             <div className="flex items-start gap-3">
               <AlertCircle className="mt-0.5 h-5 w-5 flex-none text-warning-700" />
               <div className="flex min-w-0 flex-1 flex-col gap-1">
                 <span className="text-body-bold font-body-bold text-default-font">
-                  Case Template unavailable
+                  Case Runbook unavailable
                 </span>
                 <span className="text-body font-body text-default-font">
                   {acceptError}
@@ -627,31 +627,31 @@ export function TriageRecommendationCard({
             <div className="grid w-full gap-3 md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-end">
               <Select
                 className="w-full"
-                label="Replacement Template"
-                placeholder={isLoadingTemplates ? 'Loading templates' : 'Choose a published template'}
-                value={replacementTemplateId}
-                onValueChange={setReplacementTemplateId}
+                label="Replacement Runbook"
+                placeholder={isLoadingRunbooks ? 'Loading runbooks' : 'Choose a published runbook'}
+                value={replacementRunbookId}
+                onValueChange={setReplacementRunbookId}
               >
-                {publishedTemplates.map((template) => (
-                  <Select.Item key={template.id} value={String(template.id)}>
-                    {template.title || template.human_id}
+                {publishedRunbooks.map((runbook) => (
+                  <Select.Item key={runbook.id} value={String(runbook.id)}>
+                    {runbook.title || runbook.human_id}
                   </Select.Item>
                 ))}
               </Select>
               <Button
                 variant="brand-secondary"
-                disabled={isAccepting || isRejecting || !replacementTemplateId}
+                disabled={isAccepting || isRejecting || !replacementRunbookId}
                 loading={isAccepting}
-                onClick={() => onAccept(buildAcceptOptions({ case_template_id: Number(replacementTemplateId) }))}
+                onClick={() => onAccept(buildAcceptOptions({ case_runbook_id: Number(replacementRunbookId) }))}
               >
                 Apply Replacement
               </Button>
               <Button
                 variant="neutral-secondary"
                 disabled={isAccepting || isRejecting}
-                onClick={() => onAccept(buildAcceptOptions({ skip_case_template: true }))}
+                onClick={() => onAccept(buildAcceptOptions({ skip_case_runbook: true }))}
               >
-                Continue Without Template
+                Continue Without Runbook
               </Button>
             </div>
           </div>

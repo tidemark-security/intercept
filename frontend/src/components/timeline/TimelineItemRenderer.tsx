@@ -60,20 +60,20 @@ import {
 
 const TIMELINE_ITEM_MAX_WIDTH_CLASS = 'max-w-[1024px]';
 
-type TaskTimelineItemWithTemplateMetadata = TimelineItem & {
+type TaskTimelineItemWithRunbookMetadata = TimelineItem & {
   picerl_stage?: TaskRead['picerl_stage'];
-  source_tpl?: number | null;
+  source_runbook?: number | null;
   case_id?: number | null;
   updated_at?: string;
   source_timeline_items?: TaskRead['timeline_items'];
 };
 
-function getTaskTemplateMetadata(item: TimelineItem): Pick<TaskRead, 'picerl_stage' | 'source_tpl'> {
-  const taskItem = item as TaskTimelineItemWithTemplateMetadata;
+function getTaskRunbookMetadata(item: TimelineItem): Pick<TaskRead, 'picerl_stage' | 'source_runbook'> {
+  const taskItem = item as TaskTimelineItemWithRunbookMetadata;
 
   return {
     picerl_stage: taskItem.picerl_stage ?? null,
-    source_tpl: taskItem.source_tpl ?? null,
+    source_runbook: taskItem.source_runbook ?? null,
   };
 }
 /**
@@ -1003,7 +1003,7 @@ export function TimelineItemRenderer({
       linked_at: null,
       timeline_items: (timelineCurrentItem as TimelineItem & { source_timeline_items?: TaskRead['timeline_items'] }).source_timeline_items ?? null,
       tags: getTimelineTags(timelineCurrentItem),
-      ...getTaskTemplateMetadata(timelineCurrentItem),
+      ...getTaskRunbookMetadata(timelineCurrentItem),
     } : null;
     const linkedTaskEditButton = linkedTaskData && linkedTaskData.id > 0
       ? renderEditLinkedTaskAction(linkedTaskData)
@@ -1127,7 +1127,7 @@ export function TimelineItemRenderer({
         linked_at: null,
         timeline_items: (timelineCurrentItem as TimelineItem & { source_timeline_items?: TaskRead['timeline_items'] }).source_timeline_items ?? null,
         tags: getTimelineTags(timelineCurrentItem),
-        ...getTaskTemplateMetadata(timelineCurrentItem),
+        ...getTaskRunbookMetadata(timelineCurrentItem),
       };
 
       children = withEnrichmentBlocks(timelineCurrentItem, (

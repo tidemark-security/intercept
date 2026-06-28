@@ -12,7 +12,7 @@ import { useTheme } from "@/contexts/ThemeContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
 import { cn } from "@/utils/cn";
-import { Switch } from "@tidemark-security/ux";
+import { Switch } from "@/components/forms/Switch";
 import { LangflowConnectionStatus } from "@/components/admin/LangflowConnectionStatus";
 import { LangflowSetupStatus } from "@/components/admin/LangflowSetupStatus";
 import {

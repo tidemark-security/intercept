@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { ToggleGroup } from '@/components/buttons/ToggleGroup';
 import type { TimelineItem } from '@/types/timeline';
-import { PICERL_STAGES, type PICERLStage } from '@/types/caseTemplates';
+import { PICERL_STAGES, type PICERLStage } from '@/types/caseRunbooks';
 import { getPicerlStageIcon, getPicerlStageLabels } from '@/components/misc/PicerlStage';
 import { AdaptiveToggleLabel } from '@/components/timeline/AdaptiveToggleLabel';
 import { getTimelineItemIcon, getTimelineItemLabel } from '@/utils/timelineMapping';

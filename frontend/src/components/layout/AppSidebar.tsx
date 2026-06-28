@@ -20,7 +20,6 @@ import {
   BarChart2,
   Bell,
   BrainCircuit,
-  BookTemplate,
   CheckSquare,
   Clock,
   Globe,
@@ -33,6 +32,7 @@ import {
   NotebookPen,
   Search,
   Settings,
+  SportShoe,
   Sun,
   User,
 } from "lucide-react";
@@ -102,11 +102,11 @@ const navigationItems: NavigationItem[] = [
     match: (path: string) => path.startsWith("/context-entries"),
   },
   {
-    key: "case-templates",
-    label: "Templates",
-    icon: BookTemplate,
-    to: "/case-templates",
-    match: (path: string) => path.startsWith("/case-templates"),
+    key: "case-runbooks",
+    label: "Runbooks",
+    icon: SportShoe,
+    to: "/case-runbooks",
+    match: (path: string) => path.startsWith("/case-runbooks"),
   },
   {
     key: "admin",
@@ -260,165 +260,165 @@ export function DesktopSidebar() {
 
   return (
     <SidebarRailWithLabels
-        className="mobile:hidden"
-        header={
-          <>
-            <Logo
-              className="flex-none"
-              width="64"
-              height="64"
-              aria-label="TMS Logo"
-            />
-            <SidebarNavItem
-              label="Search"
-              icon={<Search />}
-              role="button"
-              tabIndex={0}
-              onClick={() => handleNavClick("/search")}
-              onKeyDown={(event: React.KeyboardEvent<HTMLDivElement>) =>
-                handleNavKeyDown(event, "/search")
-              }
-              selected={
-                location.pathname === "/search" ||
-                location.pathname.startsWith("/search?")
-              }
-            >
-              Search
-            </SidebarNavItem>
-          </>
-        }
-        footer={
-          <>
-            <DropdownMenu.Root>
-              <DropdownMenu.Trigger asChild>
-                <SidebarRailWithLabels.NavItem
-                  aria-label={timezoneLabel}
-                  icon={<Clock />}
-                  role="button"
-                  tabIndex={0}
+      className="mobile:hidden"
+      header={
+        <>
+          <Logo
+            className="flex-none"
+            width="64"
+            height="64"
+            aria-label="TMS Logo"
+          />
+          <SidebarNavItem
+            label="Search"
+            icon={<Search />}
+            role="button"
+            tabIndex={0}
+            onClick={() => handleNavClick("/search")}
+            onKeyDown={(event: React.KeyboardEvent<HTMLDivElement>) =>
+              handleNavKeyDown(event, "/search")
+            }
+            selected={
+              location.pathname === "/search" ||
+              location.pathname.startsWith("/search?")
+            }
+          >
+            Search
+          </SidebarNavItem>
+        </>
+      }
+      footer={
+        <>
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <SidebarRailWithLabels.NavItem
+                aria-label={timezoneLabel}
+                icon={<Clock />}
+                role="button"
+                tabIndex={0}
+              >
+                {timezoneLabel}
+              </SidebarRailWithLabels.NavItem>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content side="right" align="end" sideOffset={8}>
+              <div className="flex max-w-[256px] flex-col gap-3 px-2 py-2">
+                <span className="text-caption-bold font-caption-bold text-default-font">
+                  Display Timezone
+                </span>
+                <ToggleGroup
+                  type="single"
+                  value={timezonePreference}
+                  onValueChange={(value) => {
+                    if (value === "utc" || value === "local") {
+                      setTimezonePreference(value);
+                    }
+                  }}
+                  className="w-full justify-start"
                 >
-                  {timezoneLabel}
-                </SidebarRailWithLabels.NavItem>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Content side="right" align="end" sideOffset={8}>
-                <div className="flex max-w-[256px] flex-col gap-3 px-2 py-2">
-                  <span className="text-caption-bold font-caption-bold text-default-font">
-                    Display Timezone
-                  </span>
-                  <ToggleGroup
-                    type="single"
-                    value={timezonePreference}
-                    onValueChange={(value) => {
-                      if (value === "utc" || value === "local") {
-                        setTimezonePreference(value);
-                      }
-                    }}
-                    className="w-full justify-start"
+                  <ToggleGroup.Item
+                    value="local"
+                    icon={<MapPin />}
+                    className="flex-1 justify-center"
                   >
-                    <ToggleGroup.Item
-                      value="local"
-                      icon={<MapPin />}
-                      className="flex-1 justify-center"
-                    >
-                      Local
-                    </ToggleGroup.Item>
-                    <ToggleGroup.Item
-                      value="utc"
-                      icon={<Globe />}
-                      className="flex-1 justify-center"
-                    >
-                      UTC
-                    </ToggleGroup.Item>
-                  </ToggleGroup>
-                  <span className="text-caption text-default-font">
-                    Datetime inputs are always in your local timezone regardless of this setting.
-                  </span>
-                  <div className="h-px w-full bg-neutral-border" />
-                  <span className="text-caption-bold font-caption-bold text-default-font">
-                    Display Theme
-                  </span>
-                  <ToggleGroup
-                    type="single"
-                    value={resolvedTheme}
-                    onValueChange={(value) => {
-                      if (value === "dark" || value === "light") {
-                        setThemePreference(value);
-                      }
-                    }}
-                    className="w-full justify-start"
+                    Local
+                  </ToggleGroup.Item>
+                  <ToggleGroup.Item
+                    value="utc"
+                    icon={<Globe />}
+                    className="flex-1 justify-center"
                   >
-                    <ToggleGroup.Item
-                      value="light"
-                      icon={<Sun />}
-                      className="flex-1 justify-center"
-                    >
-                      Light
-                    </ToggleGroup.Item>
-                    <ToggleGroup.Item
-                      value="dark"
-                      icon={<Moon />}
-                      className="flex-1 justify-center"
-                    >
-                      Dark
-                    </ToggleGroup.Item>
-                  </ToggleGroup>
-                </div>
-              </DropdownMenu.Content>
-            </DropdownMenu.Root>
-            <SidebarNavItem
-              label="Profile"
-              icon={<User />}
-              role="button"
-              tabIndex={0}
-              onClick={() => handleNavClick("/profile")}
-              onKeyDown={(event: React.KeyboardEvent<HTMLDivElement>) =>
-                handleNavKeyDown(event, "/profile")
-              }
-            >
-              Profile
-            </SidebarNavItem>
-            <SidebarNavItem
-              label="Logout"
-              icon={<Lock />}
-              role="button"
-              tabIndex={0}
-              onClick={() => handleNavClick("/logout")}
-              onKeyDown={(event: React.KeyboardEvent<HTMLDivElement>) =>
-                handleNavKeyDown(event, "/logout")
-              }
-            >
-              Logout
-            </SidebarNavItem>
-          </>
-        }
-      >
-        {visibleNavigationItems.map((item) => {
-          const Icon = item.icon;
-          const selected = isItemSelected(item);
-          const counts = item.badgeKey ? sidebarBadgeCounts?.[item.badgeKey] : undefined;
-          return (
-            <SidebarNavItem
-              key={item.key}
-              label={item.label}
-              className="relative"
-              icon={<SidebarIconWithBadge icon={<Icon />} counts={counts} />}
-              selected={selected}
-              aria-current={selected ? "page" : undefined}
-              role={item.to ? "button" : undefined}
-              tabIndex={item.to ? 0 : undefined}
-              onClick={item.to ? () => handleNavClick(item) : undefined}
-              onKeyDown={
-                item.to
-                  ? (event: React.KeyboardEvent<HTMLDivElement>) =>
-                      handleNavKeyDown(event, item)
-                  : undefined
-              }
-            >
-              <SidebarNavLabel label={item.label} counts={counts} />
-            </SidebarNavItem>
-          );
-        })}
-      </SidebarRailWithLabels>
+                    UTC
+                  </ToggleGroup.Item>
+                </ToggleGroup>
+                <span className="text-caption text-default-font">
+                  Datetime inputs are always in your local timezone regardless of this setting.
+                </span>
+                <div className="h-px w-full bg-neutral-border" />
+                <span className="text-caption-bold font-caption-bold text-default-font">
+                  Display Theme
+                </span>
+                <ToggleGroup
+                  type="single"
+                  value={resolvedTheme}
+                  onValueChange={(value) => {
+                    if (value === "dark" || value === "light") {
+                      setThemePreference(value);
+                    }
+                  }}
+                  className="w-full justify-start"
+                >
+                  <ToggleGroup.Item
+                    value="light"
+                    icon={<Sun />}
+                    className="flex-1 justify-center"
+                  >
+                    Light
+                  </ToggleGroup.Item>
+                  <ToggleGroup.Item
+                    value="dark"
+                    icon={<Moon />}
+                    className="flex-1 justify-center"
+                  >
+                    Dark
+                  </ToggleGroup.Item>
+                </ToggleGroup>
+              </div>
+            </DropdownMenu.Content>
+          </DropdownMenu.Root>
+          <SidebarNavItem
+            label="Profile"
+            icon={<User />}
+            role="button"
+            tabIndex={0}
+            onClick={() => handleNavClick("/profile")}
+            onKeyDown={(event: React.KeyboardEvent<HTMLDivElement>) =>
+              handleNavKeyDown(event, "/profile")
+            }
+          >
+            Profile
+          </SidebarNavItem>
+          <SidebarNavItem
+            label="Logout"
+            icon={<Lock />}
+            role="button"
+            tabIndex={0}
+            onClick={() => handleNavClick("/logout")}
+            onKeyDown={(event: React.KeyboardEvent<HTMLDivElement>) =>
+              handleNavKeyDown(event, "/logout")
+            }
+          >
+            Logout
+          </SidebarNavItem>
+        </>
+      }
+    >
+      {visibleNavigationItems.map((item) => {
+        const Icon = item.icon;
+        const selected = isItemSelected(item);
+        const counts = item.badgeKey ? sidebarBadgeCounts?.[item.badgeKey] : undefined;
+        return (
+          <SidebarNavItem
+            key={item.key}
+            label={item.label}
+            className="relative"
+            icon={<SidebarIconWithBadge icon={<Icon />} counts={counts} />}
+            selected={selected}
+            aria-current={selected ? "page" : undefined}
+            role={item.to ? "button" : undefined}
+            tabIndex={item.to ? 0 : undefined}
+            onClick={item.to ? () => handleNavClick(item) : undefined}
+            onKeyDown={
+              item.to
+                ? (event: React.KeyboardEvent<HTMLDivElement>) =>
+                  handleNavKeyDown(event, item)
+                : undefined
+            }
+          >
+            <SidebarNavLabel label={item.label} counts={counts} />
+          </SidebarNavItem>
+        );
+      })}
+    </SidebarRailWithLabels>
   );
 }
 
@@ -464,7 +464,7 @@ export function MobileSidebar() {
             onKeyDown={
               item.to
                 ? (event: React.KeyboardEvent<HTMLDivElement>) =>
-                    handleNavKeyDown(event, item)
+                  handleNavKeyDown(event, item)
                 : undefined
             }
           >

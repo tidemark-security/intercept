@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # These should NOT be stored in the timeline JSON (snapshots)
 TASK_SNAPSHOT_FIELDS: Set[str] = {
     "title", "status", "priority", "assignee", "due_date",
-    "task_human_id", "description", "picerl_stage", "source_tpl",
+    "task_human_id", "description", "picerl_stage", "source_runbook",
 }
 
 # Fields that should be preserved in the timeline JSON for task items
@@ -373,7 +373,7 @@ class TimelineService:
                             "entity_description": task.description,
                             "due_date": task.due_date.isoformat() if task.due_date else None,
                             "picerl_stage": task.picerl_stage.value if task.picerl_stage else None,
-                            "source_tpl": task.source_tpl,
+                            "source_runbook": task.source_runbook,
                             "created_at": task.linked_at.isoformat() if task.linked_at else task.created_at.isoformat(),
                             "timestamp": task.linked_at.isoformat() if task.linked_at else task.created_at.isoformat(),
                             "created_by": task.created_by or "system",
@@ -548,7 +548,7 @@ class TimelineService:
         item["assignee"] = task.assignee
         item["due_date"] = task.due_date.isoformat() if task.due_date else None
         item["picerl_stage"] = task.picerl_stage.value if task.picerl_stage else None
-        item["source_tpl"] = task.source_tpl
+        item["source_runbook"] = task.source_runbook
         
         # Use Task's created_at/created_by as the canonical source
         item["created_at"] = task.created_at.isoformat() if task.created_at else item.get("created_at")

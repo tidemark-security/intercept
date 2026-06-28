@@ -6,7 +6,7 @@ import { PaginationFooter } from '@/components/navigation/PaginationFooter';
 import type { EntityListProps } from './EntityList.types';
 import type { FilterState } from '@/types/filters';
 import { useTheme } from '@/contexts/ThemeContext';
-import { Checkbox } from '@tidemark-security/ux';
+import { Checkbox } from '@/components/forms/Checkbox';
 
 /**
  * EntityList - Generic component for displaying paginated list of entities with filtering

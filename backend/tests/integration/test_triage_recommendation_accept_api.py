@@ -7,8 +7,8 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
-from app.models.enums import AlertStatus, CaseStatus, CaseTemplateStatus, PICERLStage, Priority, RecommendationStatus, TriageDisposition
-from app.models.models import Alert, Case, CaseTemplate, Task, TriageRecommendation
+from app.models.enums import AlertStatus, CaseStatus, CaseRunbookStatus, PICERLStage, Priority, RecommendationStatus, TriageDisposition
+from app.models.models import Alert, Case, CaseRunbook, Task, TriageRecommendation
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -394,7 +394,7 @@ async def test_accept_escalation_on_already_linked_alert_reuses_case(
 
 
 @pytest.mark.asyncio
-async def test_accept_recommendation_with_published_case_template_applies_tasks(
+async def test_accept_recommendation_with_published_case_runbook_applies_tasks(
     client: AsyncClient,
     session_maker: Any,
     analyst_user_factory,
@@ -412,13 +412,13 @@ async def test_accept_recommendation_with_published_case_template_applies_tasks(
             updated_at=datetime.now(timezone.utc),
             tags=["dlp"],
         )
-        template = CaseTemplate(
+        runbook = CaseRunbook(
             title="DLP Response",
             title_normalized="dlp response",
             description="DLP response steps",
-            status=CaseTemplateStatus.PUBLISHED,
+            status=CaseRunbookStatus.PUBLISHED,
             case_tags=["exfiltration"],
-            template_tasks=[
+            runbook_tasks=[
                 {
                     "title": "Collect evidence",
                     "picerl_stage": PICERLStage.IDENTIFICATION.value,
@@ -432,10 +432,10 @@ async def test_accept_recommendation_with_published_case_template_applies_tasks(
             created_by="admin",
             updated_by="admin",
         )
-        session.add_all([alert, template])
+        session.add_all([alert, runbook])
         await session.flush()
         assert alert.id is not None
-        assert template.id is not None
+        assert runbook.id is not None
 
         recommendation = TriageRecommendation(
             alert_id=alert.id,
@@ -443,7 +443,7 @@ async def test_accept_recommendation_with_published_case_template_applies_tasks(
             confidence=0.88,
             reasoning_bullets=["Template response is appropriate"],
             recommended_actions=[],
-            recommended_case_template_id=template.id,
+            recommended_case_runbook_id=runbook.id,
             suggested_status=AlertStatus.ESCALATED,
             request_escalate_to_case=True,
             created_by="test-ai",
@@ -453,7 +453,7 @@ async def test_accept_recommendation_with_published_case_template_applies_tasks(
         session.add(recommendation)
         await session.commit()
         alert_id = alert.id
-        template_id = template.id
+        runbook_id = runbook.id
 
     response = await client.post(
         f"/api/v1/alerts/{alert_id}/triage-recommendation/accept",
@@ -478,7 +478,7 @@ async def test_accept_recommendation_with_published_case_template_applies_tasks(
             )
         ).scalars().all()
         assert [task.title for task in tasks] == ["Collect evidence", "Contain account"]
-        assert all(task.source_tpl == template_id for task in tasks)
+        assert all(task.source_runbook == runbook_id for task in tasks)
         assert tasks[0].assignee is None
         assert tasks[0].picerl_stage == PICERLStage.IDENTIFICATION
         assert tasks[1].priority == Priority.CRITICAL
@@ -487,11 +487,11 @@ async def test_accept_recommendation_with_published_case_template_applies_tasks(
         assert case is not None
         assert case.tags == ["dlp", "exfiltration"]
         notes = _timeline_values(case.timeline_items)
-        assert any("Applied Case Template" in (item.get("description") or "") for item in notes)
+        assert any("Applied Case Runbook" in (item.get("description") or "") for item in notes)
 
 
 @pytest.mark.asyncio
-async def test_accept_stale_case_template_recommendation_allows_skip_or_replacement(
+async def test_accept_stale_case_runbook_recommendation_allows_skip_or_replacement(
     client: AsyncClient,
     session_maker: Any,
     analyst_user_factory,
@@ -499,25 +499,25 @@ async def test_accept_stale_case_template_recommendation_allows_skip_or_replacem
     session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
 
     async with session_maker() as session:
-        stale_template = CaseTemplate(
+        stale_runbook = CaseRunbook(
             title="Retired Response",
             title_normalized="retired response",
             description="No longer active",
-            status=CaseTemplateStatus.DISABLED,
+            status=CaseRunbookStatus.DISABLED,
             case_tags=["retired"],
-            template_tasks=[
+            runbook_tasks=[
                 {"title": "Retired task", "picerl_stage": PICERLStage.IDENTIFICATION.value},
             ],
             created_by="admin",
             updated_by="admin",
         )
-        replacement_template = CaseTemplate(
+        replacement_runbook = CaseRunbook(
             title="Replacement Response",
             title_normalized="replacement response",
             description="Active response",
-            status=CaseTemplateStatus.PUBLISHED,
+            status=CaseRunbookStatus.PUBLISHED,
             case_tags=["replacement"],
-            template_tasks=[
+            runbook_tasks=[
                 {"title": "Replacement task", "picerl_stage": PICERLStage.CONTAINMENT.value},
             ],
             created_by="admin",
@@ -525,7 +525,7 @@ async def test_accept_stale_case_template_recommendation_allows_skip_or_replacem
         )
         blocked_alert = Alert(
             title="Blocked stale recommendation",
-            description="Recommended template has been disabled",
+            description="Recommended runbook has been disabled",
             priority=Priority.HIGH,
             source="EDR",
             status=AlertStatus.NEW,
@@ -534,17 +534,17 @@ async def test_accept_stale_case_template_recommendation_allows_skip_or_replacem
         )
         replacement_alert = Alert(
             title="Replacement stale recommendation",
-            description="Analyst selects a different template",
+            description="Analyst selects a different runbook",
             priority=Priority.HIGH,
             source="EDR",
             status=AlertStatus.NEW,
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
         )
-        session.add_all([stale_template, replacement_template, blocked_alert, replacement_alert])
+        session.add_all([stale_runbook, replacement_runbook, blocked_alert, replacement_alert])
         await session.flush()
-        assert stale_template.id is not None
-        assert replacement_template.id is not None
+        assert stale_runbook.id is not None
+        assert replacement_runbook.id is not None
         assert blocked_alert.id is not None
         assert replacement_alert.id is not None
 
@@ -555,7 +555,7 @@ async def test_accept_stale_case_template_recommendation_allows_skip_or_replacem
                 confidence=0.77,
                 reasoning_bullets=["Template was available when recommended"],
                 recommended_actions=[],
-                recommended_case_template_id=stale_template.id,
+                recommended_case_runbook_id=stale_runbook.id,
                 suggested_status=AlertStatus.ESCALATED,
                 request_escalate_to_case=True,
                 created_by="test-ai",
@@ -568,7 +568,7 @@ async def test_accept_stale_case_template_recommendation_allows_skip_or_replacem
                 confidence=0.79,
                 reasoning_bullets=["Template was available when recommended"],
                 recommended_actions=[],
-                recommended_case_template_id=stale_template.id,
+                recommended_case_runbook_id=stale_runbook.id,
                 suggested_status=AlertStatus.ESCALATED,
                 request_escalate_to_case=True,
                 created_by="test-ai",
@@ -579,7 +579,7 @@ async def test_accept_stale_case_template_recommendation_allows_skip_or_replacem
         await session.commit()
         blocked_alert_id = blocked_alert.id
         replacement_alert_id = replacement_alert.id
-        replacement_template_id = replacement_template.id
+        replacement_runbook_id = replacement_runbook.id
 
     blocked_response = await client.post(
         f"/api/v1/alerts/{blocked_alert_id}/triage-recommendation/accept",
@@ -588,11 +588,11 @@ async def test_accept_stale_case_template_recommendation_allows_skip_or_replacem
     )
 
     assert blocked_response.status_code == 409
-    assert "continue without a template" in blocked_response.json()["detail"]
+    assert "continue without a runbook" in blocked_response.json()["detail"]
 
     skip_response = await client.post(
         f"/api/v1/alerts/{blocked_alert_id}/triage-recommendation/accept",
-        json={"skip_case_template": True},
+        json={"skip_case_runbook": True},
         cookies={"intercept_session": session_cookie},
     )
 
@@ -602,7 +602,7 @@ async def test_accept_stale_case_template_recommendation_allows_skip_or_replacem
 
     replacement_response = await client.post(
         f"/api/v1/alerts/{replacement_alert_id}/triage-recommendation/accept",
-        json={"case_template_id": replacement_template_id},
+        json={"case_runbook_id": replacement_runbook_id},
         cookies={"intercept_session": session_cookie},
     )
 
@@ -617,5 +617,5 @@ async def test_accept_stale_case_template_recommendation_allows_skip_or_replacem
             )
         ).scalars().all()
         assert [task.title for task in tasks] == ["Replacement task"]
-        assert tasks[0].source_tpl == replacement_template_id
+        assert tasks[0].source_runbook == replacement_runbook_id
         assert tasks[0].picerl_stage == PICERLStage.CONTAINMENT

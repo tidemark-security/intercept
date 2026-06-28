@@ -23,7 +23,7 @@ import type { TaskStatus } from "@/types/generated/models/TaskStatus";
 import type { TriageRecommendationRead } from "@/types/generated/models/TriageRecommendationRead";
 import type { Priority as PriorityType } from "@/types/generated/models/Priority";
 import type { TimelineItem } from "@/types/timeline";
-import type { PICERLStage } from "@/types/caseTemplates";
+import type { PICERLStage } from "@/types/caseRunbooks";
 import type { GeneratedLink } from "@/utils/linkTemplates";
 import type { UIState } from "@/utils/statusHelpers";
 import { ALERT_STATUS_LABELS } from "@/utils/statusLabels";

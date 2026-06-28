@@ -11,13 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import HTTPException
 
 from app.models.models import (
-    TriageRecommendation, Alert, CaseTemplate, Task, TaskCreate
+    TriageRecommendation, Alert, CaseRunbook, Task, TaskCreate
 )
 from app.models.enums import (
-    RecommendationStatus, TriageDisposition, AlertStatus, CaseTemplateStatus, Priority, TaskStatus,
+    RecommendationStatus, TriageDisposition, AlertStatus, CaseRunbookStatus, Priority, TaskStatus,
     RejectionCategory, RealtimeEventType
 )
-from app.services.case_template_service import case_template_service
+from app.services.case_runbook_service import case_runbook_service
 from app.services.alert_triage_apply_service import (
     apply_triage_state,
     create_case_from_alert,
@@ -45,17 +45,17 @@ DISPOSITION_TO_CLOSED_STATUS: Dict[TriageDisposition, AlertStatus] = {
 
 def validate_recommendation_contract(data: Dict[str, Any]) -> None:
     recommended_actions = data.get("recommended_actions") or []
-    recommended_case_template_id = data.get("recommended_case_template_id")
+    recommended_case_runbook_id = data.get("recommended_case_runbook_id")
     request_escalate_to_case = bool(data.get("request_escalate_to_case", False))
     suggested_status = data.get("suggested_status")
     suggested_status_value = suggested_status.value if hasattr(suggested_status, "value") else suggested_status
 
-    if recommended_actions and recommended_case_template_id is not None:
+    if recommended_actions and recommended_case_runbook_id is not None:
         raise HTTPException(
             status_code=400,
-            detail="recommended_case_template_id and recommended_actions are mutually exclusive",
+            detail="recommended_case_runbook_id and recommended_actions are mutually exclusive",
         )
-    if (recommended_actions or recommended_case_template_id is not None) and not request_escalate_to_case:
+    if (recommended_actions or recommended_case_runbook_id is not None) and not request_escalate_to_case:
         raise HTTPException(
             status_code=400,
             detail="Work recommendations require request_escalate_to_case=true",
@@ -180,7 +180,7 @@ async def create_or_replace_recommendation(
         existing.confidence = float(data.get("confidence", 0.0))
         existing.reasoning_bullets = data.get("reasoning_bullets", [])
         existing.recommended_actions = data.get("recommended_actions", [])
-        existing.recommended_case_template_id = data.get("recommended_case_template_id")
+        existing.recommended_case_runbook_id = data.get("recommended_case_runbook_id")
         existing.suggested_status = AlertStatus(data["suggested_status"]) if data.get("suggested_status") else None
         existing.suggested_priority = Priority(data["suggested_priority"]) if data.get("suggested_priority") else None
         existing.suggested_assignee = data.get("suggested_assignee")
@@ -219,7 +219,7 @@ async def create_or_replace_recommendation(
         confidence=float(data.get("confidence", 0.0)),
         reasoning_bullets=data.get("reasoning_bullets", []),
         recommended_actions=data.get("recommended_actions", []),
-        recommended_case_template_id=data.get("recommended_case_template_id"),
+        recommended_case_runbook_id=data.get("recommended_case_runbook_id"),
         suggested_status=AlertStatus(data["suggested_status"]) if data.get("suggested_status") else None,
         suggested_priority=Priority(data["suggested_priority"]) if data.get("suggested_priority") else None,
         suggested_assignee=data.get("suggested_assignee"),
@@ -448,38 +448,38 @@ async def accept_recommendation(
     tasks_created = 0
     effective_suggested_status = get_effective_suggested_status(recommendation)
 
-    requested_template_id = options.get("case_template_id")
-    skip_case_template = bool(options.get("skip_case_template"))
-    if requested_template_id is not None and skip_case_template:
-        raise HTTPException(status_code=400, detail="case_template_id and skip_case_template are mutually exclusive")
-    if (requested_template_id is not None or skip_case_template) and not recommendation.request_escalate_to_case:
-        raise HTTPException(status_code=400, detail="Case Template overrides require an escalating recommendation")
+    requested_runbook_id = options.get("case_runbook_id")
+    skip_case_runbook = bool(options.get("skip_case_runbook"))
+    if requested_runbook_id is not None and skip_case_runbook:
+        raise HTTPException(status_code=400, detail="case_runbook_id and skip_case_runbook are mutually exclusive")
+    if (requested_runbook_id is not None or skip_case_runbook) and not recommendation.request_escalate_to_case:
+        raise HTTPException(status_code=400, detail="Case Runbook overrides require an escalating recommendation")
 
-    recommended_template: CaseTemplate | None = None
-    effective_template_id = requested_template_id or recommendation.recommended_case_template_id
-    if effective_template_id is not None and not skip_case_template:
-        recommended_template = await db.get(CaseTemplate, effective_template_id)
-        if recommended_template is None or recommended_template.status != CaseTemplateStatus.PUBLISHED:
+    recommended_runbook: CaseRunbook | None = None
+    effective_runbook_id = requested_runbook_id or recommendation.recommended_case_runbook_id
+    if effective_runbook_id is not None and not skip_case_runbook:
+        recommended_runbook = await db.get(CaseRunbook, effective_runbook_id)
+        if recommended_runbook is None or recommended_runbook.status != CaseRunbookStatus.PUBLISHED:
             detail = (
-                "The selected Case Template is no longer published. "
-                "Choose another published template or continue without a template."
-            ) if requested_template_id is not None else (
-                "The recommended Case Template is no longer published. "
-                "Choose another published template or continue without a template."
+                "The selected Case Runbook is no longer published. "
+                "Choose another published runbook or continue without a runbook."
+            ) if requested_runbook_id is not None else (
+                "The recommended Case Runbook is no longer published. "
+                "Choose another published runbook or continue without a runbook."
             )
             raise HTTPException(status_code=409, detail=detail)
-        if requested_template_id is not None and requested_template_id != recommendation.recommended_case_template_id:
+        if requested_runbook_id is not None and requested_runbook_id != recommendation.recommended_case_runbook_id:
             applied_changes.append({
-                "field": "case_template",
-                "action": "replaced_recommended_template",
-                "template_id": requested_template_id,
+                "field": "case_runbook",
+                "action": "replaced_recommended_runbook",
+                "runbook_id": requested_runbook_id,
             })
-    elif skip_case_template and recommendation.recommended_case_template_id is not None:
+    elif skip_case_runbook and recommendation.recommended_case_runbook_id is not None:
         applied_changes.append({
-            "field": "case_template",
+            "field": "case_runbook",
             "action": "skipped",
-            "reason": "Analyst continued without the unavailable recommended Case Template",
-            "template_id": recommendation.recommended_case_template_id,
+            "reason": "Analyst continued without the unavailable recommended Case Runbook",
+            "runbook_id": recommendation.recommended_case_runbook_id,
         })
     
     # Apply suggested changes based on options (default: apply all)
@@ -568,20 +568,20 @@ async def accept_recommendation(
                 "reason": "Alert already linked to case",
                 "case_id": alert.case_id,
             })
-            if recommended_template is not None:
-                apply_response = await case_template_service.apply_template(
+            if recommended_runbook is not None:
+                apply_response = await case_runbook_service.apply_runbook(
                     db,
                     case_id=alert.case_id,
-                    template_id=recommended_template.id,  # type: ignore[arg-type]
+                    runbook_id=recommended_runbook.id,  # type: ignore[arg-type]
                     overrides=[],
                     user=reviewed_by,
                     commit=False,
                 )
                 tasks_created += len(apply_response.created_task_ids)
                 applied_changes.append({
-                    "field": "case_template",
+                    "field": "case_runbook",
                     "action": "applied",
-                    "template_id": recommended_template.id,
+                    "runbook_id": recommended_runbook.id,
                     "created_task_ids": apply_response.created_task_ids,
                 })
         else:
@@ -605,25 +605,25 @@ async def accept_recommendation(
                 "case_id": new_case.id
             })
 
-            if recommended_template is not None and new_case.id is not None:
-                apply_response = await case_template_service.apply_template(
+            if recommended_runbook is not None and new_case.id is not None:
+                apply_response = await case_runbook_service.apply_runbook(
                     db,
                     case_id=new_case.id,
-                    template_id=recommended_template.id,  # type: ignore[arg-type]
+                    runbook_id=recommended_runbook.id,  # type: ignore[arg-type]
                     overrides=[],
                     user=reviewed_by,
                     commit=False,
                 )
                 tasks_created += len(apply_response.created_task_ids)
                 applied_changes.append({
-                    "field": "case_template",
+                    "field": "case_runbook",
                     "action": "applied",
-                    "template_id": recommended_template.id,
+                    "runbook_id": recommended_runbook.id,
                     "created_task_ids": apply_response.created_task_ids,
                 })
             
             # Create tasks from recommended_actions using TaskCreate for validation
-            for action in ([] if recommended_template is not None else recommendation.recommended_actions):
+            for action in ([] if recommended_runbook is not None else recommendation.recommended_actions):
                 # Extract title and description from action object
                 action_title = action.get("title", "") if isinstance(action, dict) else str(action)
                 action_description = action.get("description", "") if isinstance(action, dict) else ""

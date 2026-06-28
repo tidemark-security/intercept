@@ -50,7 +50,7 @@ import {
 } from '@/utils/timelineMapping';
 import type { LinkTemplate } from '@/utils/linkTemplates';
 import { isDeletedItem, type TimelineItem } from '@/types/timeline';
-import type { PICERLStage } from '@/types/caseTemplates';
+import type { PICERLStage } from '@/types/caseRunbooks';
 import type { TimelineGraphOperation } from '@/types/generated/models/TimelineGraphOperation';
 import type { TimelineGraphRead } from '@/types/generated/models/TimelineGraphRead';
 import { ArrowLeft, ArrowLeftRight, ArrowRight, Check, Clock, ClockAlert, ClockPlus, Copy, Flag, GitBranch, Group, Highlighter, IdCard, Magnet, Minus, Pencil, Search, Trash, Trash2, X } from 'lucide-react';

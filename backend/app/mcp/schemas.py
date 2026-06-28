@@ -140,7 +140,7 @@ class RecordTriageDecisionInput(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning_bullets: Optional[List[str]] = None
     recommended_actions: Optional[List[RecommendedAction]] = None
-    recommended_case_template_id: Optional[str | int] = None
+    recommended_case_runbook_id: Optional[str | int] = None
     suggested_status: Optional[str] = None
     suggested_priority: Optional[str] = None
     suggested_assignee: Optional[str] = None
@@ -166,34 +166,34 @@ class RecordTriageDecisionOutput(BaseModel):
     message: str
 
 
-class SearchCaseTemplatesInput(BaseModel):
-    """Input schema for search_case_templates tool."""
+class SearchCaseRunbooksInput(BaseModel):
+    """Input schema for search_case_runbooks tool."""
 
     query: Optional[str] = None
     limit: int = Field(default=10, ge=1, le=25)
 
 
-class CaseTemplateSearchResult(BaseModel):
+class CaseRunbookSearchResult(BaseModel):
     id: int
     human_id: str
     title: str
     description: Optional[str] = None
     case_tags: List[str] = Field(default_factory=list)
-    template_task_count: int
+    runbook_task_count: int
     picerl_stages: List[str] = Field(default_factory=list)
 
 
-class SearchCaseTemplatesOutput(BaseModel):
-    items: List[CaseTemplateSearchResult]
+class SearchCaseRunbooksOutput(BaseModel):
+    items: List[CaseRunbookSearchResult]
 
 
-class GetCaseTemplateInput(BaseModel):
-    """Input schema for get_case_template tool."""
+class GetCaseRunbookInput(BaseModel):
+    """Input schema for get_case_runbook tool."""
 
     id: str
 
 
-class LeanTemplateTask(BaseModel):
+class LeanRunbookTask(BaseModel):
     title: str
     description: Optional[str] = None
     picerl_stage: str
@@ -202,13 +202,13 @@ class LeanTemplateTask(BaseModel):
     tags: List[str] = Field(default_factory=list)
 
 
-class GetCaseTemplateOutput(BaseModel):
+class GetCaseRunbookOutput(BaseModel):
     id: int
     human_id: str
     title: str
     description: Optional[str] = None
     case_tags: List[str] = Field(default_factory=list)
-    template_tasks: List[LeanTemplateTask] = Field(default_factory=list)
+    runbook_tasks: List[LeanRunbookTask] = Field(default_factory=list)
 
 
 # ============================================================================

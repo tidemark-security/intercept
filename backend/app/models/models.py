@@ -12,7 +12,7 @@ from pydantic import EmailStr, computed_field, field_validator, model_validator
 from app.models.enums import (
     CaseStatus,
     Priority,
-    CaseTemplateStatus,
+    CaseRunbookStatus,
     PICERLStage,
     AlertStatus,
     ObservableType,
@@ -536,7 +536,7 @@ class TaskItem(ItemBase):
         sa_column=Column(DateTime(timezone=True))
     )
     picerl_stage: Optional[PICERLStage] = None
-    source_tpl: Optional[int] = None
+    source_runbook: Optional[int] = None
     # Optionally embedded timeline items from the linked task (populated when include_linked_timelines=true)
     source_timeline_items: Optional[TimelineItemStorage] = Field(
         default=None,
@@ -1037,7 +1037,7 @@ class TriageRecommendation(SQLModel, table=True):
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning_bullets: List[str] = Field(default_factory=list, sa_column=Column(JSONB))
     recommended_actions: List[Dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSONB))
-    recommended_case_template_id: Optional[int] = Field(default=None, foreign_key="case_templates.id")
+    recommended_case_runbook_id: Optional[int] = Field(default=None, foreign_key="case_runbooks.id")
     
     # Suggested patches (all optional)
     suggested_status: Optional[AlertStatus] = Field(default=None, sa_column=Column(SAEnum(AlertStatus), nullable=True))
@@ -1087,7 +1087,7 @@ class TriageRecommendationRead(SQLModel):
     confidence: float
     reasoning_bullets: List[str] = []
     recommended_actions: List[Any] = []  # Supports both legacy str and new {title, description} format
-    recommended_case_template_id: Optional[int] = None
+    recommended_case_runbook_id: Optional[int] = None
     suggested_status: Optional[AlertStatus] = None
     suggested_priority: Optional[Priority] = None
     suggested_assignee: Optional[str] = None
@@ -1106,8 +1106,8 @@ class TriageRecommendationRead(SQLModel):
     applied_context_entries: List[Dict[str, Any]] = []
 
 
-class TemplateTaskDefinition(SQLModel):
-    """Task definition stored inside a case template JSONB document."""
+class RunbookTaskDefinition(SQLModel):
+    """Task definition stored inside a case runbook JSONB document."""
 
     title: str = Field(min_length=1, max_length=200)
     description: Optional[str] = None
@@ -1117,8 +1117,8 @@ class TemplateTaskDefinition(SQLModel):
     tags: List[str] = Field(default_factory=list)
 
 
-class TemplateTaskOverride(SQLModel):
-    """Per-task override supplied when applying a case template."""
+class RunbookTaskOverride(SQLModel):
+    """Per-task override supplied when applying a case runbook."""
 
     index: int = Field(ge=0)
     selected: bool = True
@@ -1126,51 +1126,51 @@ class TemplateTaskOverride(SQLModel):
     due_date: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
 
 
-class CaseTemplateBase(SQLModel):
+class CaseRunbookBase(SQLModel):
     title: Optional[str] = Field(default=None, max_length=200)
     description: Optional[str] = None
-    status: CaseTemplateStatus = Field(default=CaseTemplateStatus.DRAFT)
+    status: CaseRunbookStatus = Field(default=CaseRunbookStatus.DRAFT)
     case_tags: List[str] = Field(default_factory=list)
-    template_tasks: List[TemplateTaskDefinition] = Field(default_factory=list)
+    runbook_tasks: List[RunbookTaskDefinition] = Field(default_factory=list)
 
 
-class CaseTemplate(CaseTemplateBase, table=True):
-    """Reusable case work template."""
+class CaseRunbook(CaseRunbookBase, table=True):
+    """Reusable case work runbook."""
 
-    __tablename__ = "case_templates"  # type: ignore
+    __tablename__ = "case_runbooks"  # type: ignore
     __table_args__ = (
-        Index("ix_case_templates_status", "status"),
-        Index("ix_case_templates_title_normalized", "title_normalized"),
+        Index("ix_case_runbooks_status", "status"),
+        Index("ix_case_runbooks_title_normalized", "title_normalized"),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     title: Optional[str] = Field(default=None, sa_column=Column(String(200), nullable=True))
     title_normalized: Optional[str] = Field(default=None, max_length=200)
-    status: CaseTemplateStatus = Field(
-        default=CaseTemplateStatus.DRAFT,
-        sa_column=Column(SAEnum(CaseTemplateStatus, name="casetemplatestatus"), nullable=False),
+    status: CaseRunbookStatus = Field(
+        default=CaseRunbookStatus.DRAFT,
+        sa_column=Column(SAEnum(CaseRunbookStatus, name="caserunbookstatus"), nullable=False),
     )
     case_tags: List[str] = Field(default_factory=list, sa_column=Column(JSONB, nullable=False))
-    template_tasks: List[Dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSONB, nullable=False))
+    runbook_tasks: List[Dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSONB, nullable=False))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
     created_by: str = Field(max_length=100)
     updated_by: str = Field(max_length=100)
 
 
-class CaseTemplateCreate(CaseTemplateBase):
-    status: Optional[CaseTemplateStatus] = None
+class CaseRunbookCreate(CaseRunbookBase):
+    status: Optional[CaseRunbookStatus] = None
 
 
-class CaseTemplateUpdate(SQLModel):
+class CaseRunbookUpdate(SQLModel):
     title: Optional[str] = Field(default=None, max_length=200)
     description: Optional[str] = None
-    status: Optional[CaseTemplateStatus] = None
+    status: Optional[CaseRunbookStatus] = None
     case_tags: Optional[List[str]] = None
-    template_tasks: Optional[List[TemplateTaskDefinition]] = None
+    runbook_tasks: Optional[List[RunbookTaskDefinition]] = None
 
 
-class CaseTemplateRead(CaseTemplateBase):
+class CaseRunbookRead(CaseRunbookBase):
     id: int
     title_normalized: Optional[str] = None
     created_at: datetime
@@ -1181,28 +1181,28 @@ class CaseTemplateRead(CaseTemplateBase):
     @computed_field
     @property
     def human_id(self) -> str:
-        return f"TPL-{self.id:07d}"
+        return f"RUN-{self.id:07d}"
 
 
-class CaseTemplateApplyRequest(SQLModel):
-    task_overrides: List[TemplateTaskOverride] = Field(default_factory=list)
+class CaseRunbookApplyRequest(SQLModel):
+    task_overrides: List[RunbookTaskOverride] = Field(default_factory=list)
 
 
-class CaseTemplateApplyTaskWarning(SQLModel):
+class CaseRunbookApplyTaskWarning(SQLModel):
     index: int
     title: str
     duplicate: bool = False
     reasons: List[str] = Field(default_factory=list)
 
 
-class CaseTemplateApplyResponse(SQLModel):
+class CaseRunbookApplyResponse(SQLModel):
     case_id: int
     case_human_id: str
-    template_id: int
-    template_human_id: str
+    runbook_id: int
+    runbook_human_id: str
     created_task_ids: List[int]
     skipped_task_titles: List[str]
-    duplicate_warnings: List[CaseTemplateApplyTaskWarning] = Field(default_factory=list)
+    duplicate_warnings: List[CaseRunbookApplyTaskWarning] = Field(default_factory=list)
 
 
 class ContextCriterion(SQLModel):
@@ -1410,7 +1410,7 @@ class Task(TaskBase, table=True):
     # Case relationship (optional - tasks can be standalone)
     case_id: Optional[int] = Field(default=None, foreign_key="cases.id")
     case: Optional[Case] = Relationship(back_populates="tasks")
-    source_tpl: Optional[int] = Field(default=None, foreign_key="case_templates.id", index=True)
+    source_runbook: Optional[int] = Field(default=None, foreign_key="case_runbooks.id", index=True)
     linked_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True))
@@ -1459,7 +1459,7 @@ class TaskUpdate(SQLModel):
     due_date: Optional[datetime] = None
     picerl_stage: Optional[PICERLStage] = None
     case_id: Optional[int] = None
-    source_tpl: Optional[int] = None
+    source_runbook: Optional[int] = None
     timeline_items: Optional[Dict[str, TaskTimelineItem]] = None
     tags: Optional[List[str]] = None
 
@@ -1477,7 +1477,7 @@ class TaskRead(TaskBase):
     assignee: Optional[str] = None
     created_by: str
     case_id: Optional[int] = None
-    source_tpl: Optional[int] = None
+    source_runbook: Optional[int] = None
     linked_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime

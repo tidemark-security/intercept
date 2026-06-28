@@ -76,7 +76,7 @@ export type TaskItem = {
     entity_description?: (string | null);
     due_date?: (string | null);
     picerl_stage?: (PICERLStage | null);
-    source_tpl?: (number | null);
+    source_runbook?: (number | null);
     /**
      * Timeline items from the linked task (populated on read with include_linked_timelines=true)
      */

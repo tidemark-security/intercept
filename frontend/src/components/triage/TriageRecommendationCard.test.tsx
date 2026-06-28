@@ -5,17 +5,17 @@ import { renderWithProviders } from '../../../tests/test-utils';
 import type { TriageRecommendationRead } from '@/types/generated/models/TriageRecommendationRead';
 import { TriageRecommendationCard } from './TriageRecommendationCard';
 
-vi.mock('@/hooks/useCaseTemplates', () => ({
-  useCaseTemplates: () => ({
+vi.mock('@/hooks/useCaseRunbooks', () => ({
+  useCaseRunbooks: () => ({
     isLoading: false,
     data: {
       items: [
         {
           id: 17,
-          human_id: 'TPL-0000017',
+          human_id: 'RUN-0000017',
           title: 'Replacement Response',
           status: 'PUBLISHED',
-          template_tasks: [],
+          runbook_tasks: [],
         },
       ],
     },
@@ -40,7 +40,7 @@ function pendingEscalationRecommendation(): TriageRecommendationRead {
 }
 
 describe('TriageRecommendationCard', () => {
-  it('offers stale Case Template recovery actions after an accept error', async () => {
+  it('offers stale Case Runbook recovery actions after an accept error', async () => {
     const onAccept = vi.fn();
 
     renderWithProviders(
@@ -48,17 +48,17 @@ describe('TriageRecommendationCard', () => {
         recommendation={pendingEscalationRecommendation()}
         onAccept={onAccept}
         onReject={vi.fn()}
-        acceptError="The recommended Case Template is no longer published. Choose another published template or continue without a template."
+        acceptError="The recommended Case Runbook is no longer published. Choose another published runbook or continue without a runbook."
       />
     );
 
-    expect(screen.getByText('Case Template unavailable')).toBeInTheDocument();
-    expect(screen.getByText(/continue without a template/i)).toBeInTheDocument();
+    expect(screen.getByText('Case Runbook unavailable')).toBeInTheDocument();
+    expect(screen.getByText(/continue without a runbook/i)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /Continue Without Template/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Continue Without Runbook/ }));
 
     expect(onAccept).toHaveBeenCalledWith(expect.objectContaining({
-      skip_case_template: true,
+      skip_case_runbook: true,
     }));
 
     await waitFor(() => {
@@ -67,7 +67,7 @@ describe('TriageRecommendationCard', () => {
     fireEvent.click(screen.getByRole('button', { name: /Apply Replacement/ }));
 
     expect(onAccept).toHaveBeenCalledWith(expect.objectContaining({
-      case_template_id: 17,
+      case_runbook_id: 17,
     }));
   });
 });

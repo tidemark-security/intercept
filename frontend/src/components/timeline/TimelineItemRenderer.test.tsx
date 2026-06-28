@@ -164,7 +164,7 @@ describe('TimelineItemRenderer enrichments', () => {
       due_date: '2026-03-15T12:00:00Z',
       case_id: 38,
       picerl_stage: 'Containment',
-      source_tpl: 7,
+      source_runbook: 7,
     } as unknown as TimelineItem;
 
     renderWithProviders(
@@ -192,7 +192,7 @@ describe('TimelineItemRenderer enrichments', () => {
       case_id: 38,
       tags: ['containment'],
       picerl_stage: 'Containment',
-      source_tpl: 7,
+      source_runbook: 7,
     }));
   });
 
@@ -218,7 +218,7 @@ describe('TimelineItemRenderer enrichments', () => {
       due_date: null,
       case_id: 38,
       picerl_stage: 'Identification',
-      source_tpl: 12,
+      source_runbook: 12,
     } as unknown as TimelineItem;
 
     renderWithProviders(
@@ -980,14 +980,14 @@ describe('TimelineItemRenderer enrichments', () => {
       created_at: '2026-06-21T14:12:48+10:00',
       updated_at: '2026-06-21T14:12:48+10:00',
       timestamp: '2026-06-21T14:12:48+10:00',
-      description: 'PW Template Task 1782015159977',
+      description: 'PW Runbook Task 1782015159977',
       tags: ['linked-task'],
       flagged: false,
       highlighted: false,
       replies: null,
       task_id: 20,
       task_human_id: 'TSK-0000020',
-      title: 'PW Template Task 1782015159977',
+      title: 'PW Runbook Task 1782015159977',
       status: 'TODO',
       priority: 'CRITICAL',
       assignee: null,
@@ -998,7 +998,7 @@ describe('TimelineItemRenderer enrichments', () => {
       <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="case" />
     );
 
-    expect(screen.getAllByText('PW Template Task 1782015159977', { selector: 'p' })).toHaveLength(1);
+    expect(screen.getAllByText('PW Runbook Task 1782015159977', { selector: 'p' })).toHaveLength(1);
     expect(screen.getByText('linked-task')).toBeInTheDocument();
   });
 

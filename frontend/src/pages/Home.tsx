@@ -8,7 +8,7 @@ import { RelativeTime } from "@/components/data-display/RelativeTime";
 import { Table } from "@/components/data-display/Table";
 import { Priority } from "@/components/misc/Priority";
 import { State } from "@/components/misc/State";
-import { CarouselControl } from "@tidemark-security/ux";
+import { CarouselControl } from "@/components/navigation/CarouselControl";
 
 import { useSession } from "@/contexts/sessionContext";
 import { useTheme } from "@/contexts/ThemeContext";

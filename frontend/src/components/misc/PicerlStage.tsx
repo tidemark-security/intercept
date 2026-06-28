@@ -10,7 +10,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 
-import type { PICERLStage } from "@/types/caseTemplates";
+import type { PICERLStage } from "@/types/caseRunbooks";
 import { cn } from "@/utils/cn";
 
 export type PicerlStageValue =
@@ -89,7 +89,10 @@ const PicerlStageRoot = React.forwardRef<HTMLDivElement, PicerlStageProps>(funct
   const labelRef = React.useRef<HTMLSpanElement | null>(null);
   const measurementRefs = React.useRef<Array<HTMLSpanElement | null>>([]);
   const normalizedStage = normalizePicerlStage(stage);
-  const labels = normalizedStage ? getPicerlStageLabels(normalizedStage) : [String(stage || "N/A")];
+  const labels = React.useMemo(
+    () => normalizedStage ? getPicerlStageLabels(normalizedStage) : [String(stage || "N/A")],
+    [normalizedStage, stage],
+  );
   const Icon = normalizedStage ? getPicerlStageIcon(normalizedStage) : getPicerlStageIcon("Lessons Learned");
   const [visibleLabel, setVisibleLabel] = React.useState(() => labels[0]);
 
