@@ -11,7 +11,7 @@ import { TagsManager } from "@/components/forms/TagsManager";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { cn } from "@/utils/cn";
 import { CLOSED_ALERT_STATUS_OPTIONS } from "@/utils/statusLabels";
-import { Checkbox } from "@/components/forms/Checkbox";
+import { Checkbox } from "@tidemark-security/ux";
 
 import type { AlertStatus } from "@/types/generated/models/AlertStatus";
 import type { ClosedAlertStatus } from "@/utils/statusLabels";
