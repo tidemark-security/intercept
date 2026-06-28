@@ -1,6 +1,6 @@
 """Object storage configuration for file uploads."""
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,15 +15,15 @@ class StorageConfig(BaseSettings):
         validation_alias=AliasChoices("STORAGE_ENDPOINT", "MINIO_ENDPOINT"),
         description="MinIO/S3 endpoint URL"
     )
-    storage_access_key: str = Field(
-        default="minioadmin",
+    storage_access_key: str | None = Field(
+        default=None,
         validation_alias=AliasChoices("STORAGE_ACCESS_KEY", "MINIO_ACCESS_KEY"),
-        description="Storage access key"
+        description="Storage access key. Leave blank to use AWS autodiscovered credentials."
     )
-    storage_secret_key: str = Field(
-        default="minioadmin",
+    storage_secret_key: str | None = Field(
+        default=None,
         validation_alias=AliasChoices("STORAGE_SECRET_KEY", "MINIO_SECRET_KEY"),
-        description="Storage secret key"
+        description="Storage secret key. Leave blank to use AWS autodiscovered credentials."
     )
     storage_bucket: str = Field(
         default="intercept-attachments",
@@ -40,6 +40,19 @@ class StorageConfig(BaseSettings):
         validation_alias=AliasChoices("STORAGE_REGION", "MINIO_REGION"),
         description="Storage region"
     )
+    storage_auto_create_bucket: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("STORAGE_AUTO_CREATE_BUCKET", "MINIO_AUTO_CREATE_BUCKET"),
+        description="Create the storage bucket lazily if it does not exist"
+    )
+
+    @field_validator("storage_access_key", "storage_secret_key", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: object) -> object:
+        """Treat blank credential env vars the same as unset env vars."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
     
     # File validation settings
     # NOTE: allowed/denied MIME types are managed via the settings registry

@@ -14,10 +14,17 @@ from concurrent.futures import ThreadPoolExecutor
 
 from minio import Minio
 from minio.commonconfig import CopySource
+from minio.credentials import (
+    AWSConfigProvider,
+    ChainedProvider,
+    EnvAWSProvider,
+    IamAwsProvider,
+    Provider,
+)
 from minio.error import S3Error
 
 from app.core.filename_safety import sanitize_attachment_filename
-from app.core.storage_config import storage_config
+from app.core.storage_config import StorageConfig, storage_config
 
 logger = logging.getLogger(__name__)
 
@@ -45,21 +52,61 @@ class ObjectMetadata:
 class StorageService:
     """Service for object storage operations using MinIO/S3."""
     
-    def __init__(self):
+    def __init__(self, config: StorageConfig = storage_config):
         """Initialize MinIO client with configuration from environment."""
-        self.client = Minio(
-            storage_config.storage_endpoint,
-            access_key=storage_config.storage_access_key,
-            secret_key=storage_config.storage_secret_key,
-            secure=storage_config.storage_use_ssl,
-            region=storage_config.storage_region
-        )
-        self.bucket_name = storage_config.storage_bucket
+        self.config = config
+        self.client = self._build_client(config)
+        self.bucket_name = config.storage_bucket
+        self._auto_create_bucket = config.storage_auto_create_bucket
         # Don't ensure bucket exists at initialization - do it lazily
         self._bucket_checked = False
+
+    @classmethod
+    def _build_client(cls, config: StorageConfig) -> Minio:
+        """Build a MinIO/S3 client using static or AWS-discovered credentials."""
+        access_key = config.storage_access_key
+        secret_key = config.storage_secret_key
+
+        if bool(access_key) != bool(secret_key):
+            raise ValueError(
+                "STORAGE_ACCESS_KEY and STORAGE_SECRET_KEY must be configured together, "
+                "or both left blank to use AWS autodiscovered credentials."
+            )
+
+        client_kwargs = {
+            "secure": config.storage_use_ssl,
+            "region": config.storage_region,
+        }
+
+        if access_key and secret_key:
+            client_kwargs.update(
+                {
+                    "access_key": access_key,
+                    "secret_key": secret_key,
+                }
+            )
+        else:
+            client_kwargs["credentials"] = cls._aws_credentials_provider(config.storage_region)
+
+        return Minio(config.storage_endpoint, **client_kwargs)
+
+    @staticmethod
+    def _aws_credentials_provider(region: str) -> Provider:
+        """Return AWS credential providers for env, shared config, ECS, EC2, and IRSA."""
+        return ChainedProvider(
+            [
+                EnvAWSProvider(),
+                AWSConfigProvider(),
+                IamAwsProvider(region=region),
+            ]
+        )
     
     def _ensure_bucket_exists(self) -> None:
         """Ensure the storage bucket exists, create if not."""
+        if not self._auto_create_bucket:
+            self._bucket_checked = True
+            return
+
         if self._bucket_checked:
             return
             
