@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from app.models.models import PresignedUploadRequest
 from app.services.storage_service import MIME_SNIFF_BYTES, StorageService, storage_service
 
 
@@ -78,6 +79,31 @@ def test_normalize_mime_type_resolves_windows_zip_aliases() -> None:
     assert StorageService.normalize_mime_type("application/x-compressed") == "application/x-7z-compressed"
     assert StorageService.normalize_mime_type(" Message/RFC822 ") == "message/rfc822"
     assert StorageService.normalize_mime_type(None) == ""
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        (
+            "Build an app in a fraction of the time. Here's where to start..eml",
+            "Build an app in a fraction of the time. Here's where to start..eml",
+        ),
+        ("../../etc/passwd", "etcpasswd"),
+        ("reports\\..\\evidence.msg", "reportsevidence.msg"),
+        ('"\r\n\x00', "attachment"),
+    ],
+)
+def test_sanitize_filename_preserves_extensions_without_path_components(
+    filename: str,
+    expected: str,
+) -> None:
+    assert StorageService.sanitize_filename(filename) == expected
+    request = PresignedUploadRequest(
+        filename=filename,
+        file_size=1,
+        mime_type="application/octet-stream",
+    )
+    assert request.filename == expected
 
 
 @pytest.mark.asyncio

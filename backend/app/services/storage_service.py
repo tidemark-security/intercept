@@ -16,6 +16,7 @@ from minio import Minio
 from minio.commonconfig import CopySource
 from minio.error import S3Error
 
+from app.core.filename_safety import sanitize_attachment_filename
 from app.core.storage_config import storage_config
 
 logger = logging.getLogger(__name__)
@@ -372,12 +373,7 @@ class StorageService:
         Returns:
             Sanitized filename
         """
-        # Remove path separators and dangerous sequences
-        sanitized = filename.replace('/', '').replace('\\', '').replace('..', '')
-        sanitized = sanitized.replace('"', '').replace('\r', '').replace('\n', '').replace('\x00', '')
-        # Remove any remaining directory components
-        sanitized = sanitized.split('/')[-1].split('\\')[-1]
-        return sanitized
+        return sanitize_attachment_filename(filename)
     
     @staticmethod
     def generate_storage_key(parent_id: int, item_id: str, filename: str, parent_type: str = "alerts") -> str:

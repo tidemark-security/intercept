@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
 from app.services.email_evidence_service import (
     build_email_timeline_item,
     is_email_evidence_file,
@@ -39,3 +44,48 @@ def test_parse_eml_extracts_email_timeline_fields() -> None:
     assert item.description == "Click the link immediately."
     assert item.created_by == "analyst"
     assert item.timestamp.year == 2026
+
+
+def test_parse_msg_extracts_email_timeline_fields(monkeypatch) -> None:
+    closed = []
+
+    class FakeMessage:
+        def __init__(self, path: str) -> None:
+            assert Path(path).read_bytes() == b"msg bytes"
+            self.sender = "Attacker <attacker@evil.example>"
+            self.to = "Victim <victim@corp.example>"
+            self.cc = "SOC <soc@corp.example>"
+            self.subject = "Urgent reset\x00"
+            self.messageId = "<abc123@evil.example>"
+            self.date = datetime(2026, 6, 20, 10, 15, tzinfo=timezone.utc)
+            self.body = None
+            self.htmlBody = (
+                b"<p>Click <a href=\"https://evil.example/reset\">"
+                b"the link</a> immediately.</p>\x00"
+                b"<p>Then report it.</p>"
+            )
+
+        def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setitem(sys.modules, "extract_msg", SimpleNamespace(Message=FakeMessage))
+
+    parsed = parse_email_evidence(
+        b"msg bytes",
+        "message.msg",
+        "application/vnd.ms-outlook",
+    )
+    item = build_email_timeline_item(parsed, created_by="analyst")
+
+    assert item.type == "email"
+    assert item.sender == "Attacker <attacker@evil.example>"
+    assert item.recipient == "Victim <victim@corp.example>, SOC <soc@corp.example>"
+    assert item.subject == "Urgent reset"
+    assert item.message_id == "<abc123@evil.example>"
+    assert item.description == (
+        "Click the link [https://evil.example/reset] immediately.\n\n"
+        "Then report it."
+    )
+    assert item.created_by == "analyst"
+    assert item.timestamp.year == 2026
+    assert closed == [True]

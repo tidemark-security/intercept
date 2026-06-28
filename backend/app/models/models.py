@@ -9,6 +9,7 @@ from sqlalchemy import DateTime, UniqueConstraint, String, Enum as SAEnum, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import TypeDecorator
 from pydantic import EmailStr, computed_field, field_validator, model_validator
+from app.core.filename_safety import sanitize_attachment_filename
 from app.models.enums import (
     CaseStatus,
     Priority,
@@ -2078,8 +2079,8 @@ class PresignedUploadRequest(SQLModel):
     @field_validator('filename')
     @classmethod
     def sanitize_filename(cls, v: str) -> str:
-        """Remove path separators for security."""
-        return v.replace('/', '').replace('\\', '').replace('..', '')
+        """Remove path components while preserving legitimate filename dots."""
+        return sanitize_attachment_filename(v)
 
 
 class PresignedUploadResponse(SQLModel):
