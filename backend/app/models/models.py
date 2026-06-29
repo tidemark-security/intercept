@@ -42,7 +42,7 @@ TimelineGraphEdgeMarker = Literal["none", "forward", "reverse", "bidirectional"]
 LinkTemplateSurface = Literal["entity", "timeline_item"]
 LinkTemplateEntityType = Literal["alert", "case", "task"]
 LinkTemplateVisibility = Literal["PUBLIC", "PERSONAL"]
-LINK_TEMPLATE_ALLOWED_URL_SCHEMES = {"http", "https", "mailto", "tel"}
+LINK_TEMPLATE_DENIED_URL_SCHEMES = {"data", "file", "javascript", "vbscript"}
 TimelineGraphOperationType = Literal[
     "add_node",
     "add_group",
@@ -116,8 +116,8 @@ def _validate_link_template_required_string(value: str) -> str:
 def _validate_link_template_url_template(value: str) -> str:
     value = _validate_link_template_required_string(value)
     scheme = value.split(":", 1)[0].lower() if ":" in value else ""
-    if scheme not in LINK_TEMPLATE_ALLOWED_URL_SCHEMES:
-        raise ValueError("url_template must use http, https, mailto, or tel")
+    if not scheme or scheme in LINK_TEMPLATE_DENIED_URL_SCHEMES:
+        raise ValueError("url_template must use an allowed URL scheme")
     return value
 
 
@@ -806,6 +806,10 @@ class CaseCreate(CaseBase):
         default=None,
         description="Migration-only override for the case creation timestamp",
     )
+    closed_at: Optional[datetime] = Field(
+        default=None,
+        description="Migration-only override for the case closure timestamp",
+    )
 
 
 class CaseAlertClosureUpdate(SQLModel):
@@ -835,6 +839,10 @@ class CaseUpdate(SQLModel):
     # impact_assessment: Optional[str] = None
     tags: Optional[List[str]] = None
     timeline_items: Optional[Dict[str, CaseTimelineItem]] = None
+    closed_at: Optional[datetime] = Field(
+        default=None,
+        description="Migration-only override for the case closure timestamp",
+    )
     # Array of per-alert closure status updates to apply when closing the case
     # Only used when status is being set to CLOSED
     alert_closure_updates: Optional[List[CaseAlertClosureUpdate]] = None

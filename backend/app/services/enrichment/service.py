@@ -28,6 +28,7 @@ from app.services.enrichment.registry import enrichment_registry
 from app.services.queue_status_service import QueueStatusService
 from app.services.realtime_service import emit_event
 from app.services.settings_service import SettingsService
+from app.services.tag_filter_utils import normalize_persisted_tags
 from app.services.task_queue_service import get_task_queue_service
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,30 @@ class EnrichmentService:
                 enrichments["system"] = {"error": error_message}
                 changed = True
         return changed
+
+    def _get_ignore_enrichment_tag(self, raw_value: Any) -> str:
+        normalized = normalize_persisted_tags([str(raw_value)]) if raw_value else []
+        return normalized[0] if normalized else ""
+
+    def _item_has_tag(self, item: Dict[str, Any], tag: str) -> bool:
+        if not tag:
+            return False
+        raw_tags = item.get("tags")
+        normalized_tag = tag.lower()
+        return normalized_tag in {
+            item_tag.lower()
+            for item_tag in normalize_persisted_tags(raw_tags if isinstance(raw_tags, list) else [])
+        }
+
+    async def _should_ignore_item_enrichment(
+        self,
+        settings: SettingsService,
+        item: Dict[str, Any],
+    ) -> bool:
+        ignore_tag = self._get_ignore_enrichment_tag(
+            await settings.get("enrichment.ignore_timeline_tag", "migrated")
+        )
+        return self._item_has_tag(item, ignore_tag)
 
     async def _get_provider_signatures(
         self,
@@ -237,6 +262,12 @@ class EnrichmentService:
         entity: Any,
         item: Dict[str, Any],
     ) -> Optional[int]:
+        settings = SettingsService(db)  # type: ignore[arg-type]
+        if await self._should_ignore_item_enrichment(settings, item):
+            if self._clear_item_enrichment_state(item):
+                flag_modified(entity, "timeline_items")
+            return None
+
         provider_item = await self._get_provider_item(db, item)
         providers = await self.get_matching_enabled_providers(db, provider_item)
         if not providers:
@@ -256,6 +287,12 @@ class EnrichmentService:
         previous_item: Dict[str, Any],
         updated_item: Dict[str, Any],
     ) -> Optional[int]:
+        settings = SettingsService(db)  # type: ignore[arg-type]
+        if await self._should_ignore_item_enrichment(settings, updated_item):
+            if self._clear_item_enrichment_state(updated_item):
+                flag_modified(entity, "timeline_items")
+            return None
+
         previous_signatures = await self._get_provider_signatures(
             db,
             previous_item,
@@ -504,6 +541,15 @@ class EnrichmentService:
         item = timeline_service._find_item_by_id(getattr(entity, "timeline_items", None) or [], item_id)
         if item is None:
             raise ValueError(f"Timeline item {item_id} not found")
+        settings = SettingsService(db)  # type: ignore[arg-type]
+        if await self._should_ignore_item_enrichment(settings, item):
+            if self._clear_item_enrichment_state(item):
+                flag_modified(entity, "timeline_items")
+                if hasattr(entity, "updated_at"):
+                    entity.updated_at = datetime.now(timezone.utc)
+                await db.commit()
+            raise ValueError("Timeline item is tagged to skip enrichment")
+
         current_status = str(item.get("enrichment_status") or "").strip().lower()
         if current_status in ACTIVE_ENRICHMENT_STATUSES and item.get("enrichment_task_id"):
             return str(item["enrichment_task_id"])
@@ -695,6 +741,22 @@ class EnrichmentService:
             return
 
         settings = SettingsService(db)  # type: ignore[arg-type]
+        if await self._should_ignore_item_enrichment(settings, item):
+            if self._clear_item_enrichment_state(item):
+                flag_modified(entity, "timeline_items")
+                if hasattr(entity, "updated_at"):
+                    entity.updated_at = datetime.now(timezone.utc)
+                await emit_event(
+                    db,
+                    entity_type=entity_type,
+                    entity_id=entity_id,
+                    event_type=RealtimeEventType.TIMELINE_ITEM_UPDATED,
+                    performed_by="system",
+                    item_id=item_id,
+                )
+                await db.commit()
+            return
+
         await self._configure_hot_cache(settings)
         provider_item = await self._get_provider_item(db, item)
         providers = await self.get_matching_enabled_providers(db, provider_item)

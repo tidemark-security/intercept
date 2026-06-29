@@ -31,15 +31,16 @@ The following create endpoints accept a `migration` query parameter:
 | Endpoint | Backdated field |
 | --- | --- |
 | `POST /api/v1/alerts?migration=true` | Alert `created_at` |
-| `POST /api/v1/cases?migration=true` | Case `created_at` |
+| `POST /api/v1/cases?migration=true` | Case `created_at`, `closed_at` |
 | `POST /api/v1/tasks?migration=true` | Task `created_at` |
+| `PUT /api/v1/cases/{id}?migration=true` | Case `closed_at` |
 | `POST /api/v1/alerts/{id}/timeline?migration=true` | Timeline item `created_at` |
 | `POST /api/v1/cases/{id}/timeline?migration=true` | Timeline item `created_at` |
 | `POST /api/v1/tasks/{id}/timeline?migration=true` | Timeline item `created_at` |
 
-`created_at` is honored only when all of these are true:
+`created_at` and case `closed_at` are honored only when all of these are true:
 
-- `created_at` is supplied in the request body.
+- the timestamp field is supplied in the request body.
 - `migration=true` is supplied in the query string.
 - The caller is authenticated as an NHI account.
 - That NHI account has `override_timestamps=true`.
@@ -51,11 +52,11 @@ Accepted timestamps are normalized to UTC before storage.
 
 | Request | Response |
 | --- | --- |
-| `created_at` supplied without `migration=true` | `400 Bad Request` |
+| `created_at` or case `closed_at` supplied without `migration=true` | `400 Bad Request` |
 | `migration=true` used by a human user | `403 Forbidden` |
 | `migration=true` used by an auditor | `403 Forbidden` |
 | `migration=true` used by an NHI without `override_timestamps` | `403 Forbidden` |
-| Naive `created_at`, such as `2024-01-02T03:04:05` | Validation error |
+| Naive `created_at` or `closed_at`, such as `2024-01-02T03:04:05` | Validation error |
 | Timeline update payload includes `created_at` | `400 Bad Request` |
 
 Timeline item `created_at` is immutable after creation. To preserve import
@@ -65,7 +66,7 @@ retry failed imports idempotently instead of editing creation metadata later.
 ## Preserved Server-Time Semantics
 
 Timestamp override mode only affects the creation timestamp of the target record
-or appended timeline item.
+or appended timeline item, plus the closure timestamp on cases.
 
 The following values remain server-time values:
 

@@ -1,4 +1,4 @@
-import { fireEvent, screen } from '@testing-library/react';
+import { fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import type { NoteItem } from '@/types/generated/models/NoteItem';
@@ -882,6 +882,72 @@ describe('TimelineItemRenderer enrichments', () => {
 
     expect(screen.getByLabelText('Tags')).toBeInTheDocument();
     expect(screen.getAllByText('investigate')).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      type: 'alert',
+      entityType: 'case',
+      markerTag: 'linked-alert',
+      entityTag: 'phishing',
+      fields: {
+        alert_id: 42,
+        title: 'Suspicious login',
+        status: 'NEW',
+        priority: 'MEDIUM',
+      },
+    },
+    {
+      type: 'case',
+      entityType: 'alert',
+      markerTag: 'linked',
+      entityTag: 'executive',
+      fields: {
+        case_id: 7,
+        title: 'Executive phishing cluster',
+        status: 'NEW',
+        priority: 'HIGH',
+      },
+    },
+    {
+      type: 'task',
+      entityType: 'case',
+      markerTag: 'linked-task',
+      entityTag: 'mim',
+      fields: {
+        task_id: 5,
+        task_human_id: 'TSK-0000005',
+        title: 'Contain endpoint',
+        status: 'TODO',
+        priority: 'LOW',
+      },
+    },
+  ] as const)('merges linked $type entity tags into the shared footer tag bar', ({ type, entityType, markerTag, entityTag, fields }) => {
+    const item = {
+      id: `linked-${type}-merged-tags`,
+      type,
+      created_by: 'admin',
+      created_at: '2026-03-14T12:40:11.293811Z',
+      updated_at: '2026-03-14T12:50:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      description: 'Timeline link note',
+      tags: [markerTag, entityTag.toUpperCase()],
+      entity_tags: [entityTag, 'priority-review'],
+      flagged: false,
+      highlighted: false,
+      replies: null,
+      ...fields,
+    } as unknown as TimelineItem;
+
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType={entityType} />
+    );
+
+    const tagRow = screen.getByLabelText('Tags');
+    expect(within(tagRow).getByText(markerTag)).toBeInTheDocument();
+    expect(within(tagRow).getByText(entityTag.toUpperCase())).toBeInTheDocument();
+    expect(within(tagRow).getByText('priority-review')).toBeInTheDocument();
+    expect(screen.getAllByText(new RegExp(`^${entityTag}$`, 'i'))).toHaveLength(1);
   });
 
   it.each([

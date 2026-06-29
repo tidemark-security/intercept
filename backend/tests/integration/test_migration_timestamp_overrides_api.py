@@ -15,6 +15,7 @@ from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
 MIGRATED_CREATED_AT = "2024-01-02T03:04:05+10:00"
+MIGRATED_CLOSED_AT = "2024-01-05T16:30:00+10:00"
 
 
 def _parse_datetime(value: str) -> datetime:
@@ -129,6 +130,54 @@ async def test_authorized_nhi_can_backdate_parent_entity_creates(
 
 
 @pytest.mark.asyncio
+async def test_authorized_nhi_can_set_case_closed_at_on_create(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    raw_key = await _create_nhi_api_key(session_maker, override_timestamps=True)
+
+    response = await client.post(
+        "/api/v1/cases?migration=true",
+        json={
+            "title": "Migrated closed case",
+            "description": "seed",
+            "created_at": MIGRATED_CREATED_AT,
+            "closed_at": MIGRATED_CLOSED_AT,
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert _parse_datetime(body["created_at"]) == _parse_datetime(MIGRATED_CREATED_AT)
+    assert _parse_datetime(body["closed_at"]) == _parse_datetime(MIGRATED_CLOSED_AT)
+
+
+@pytest.mark.asyncio
+async def test_authorized_nhi_can_set_case_closed_at_on_update(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    raw_key = await _create_nhi_api_key(session_maker, override_timestamps=True)
+
+    async with session_maker() as session:
+        case = Case(title="Migrated case update", description="seed", created_by="seed")
+        session.add(case)
+        await session.commit()
+        assert case.id is not None
+        case_id = case.id
+
+    response = await client.put(
+        f"/api/v1/cases/{case_id}?migration=true",
+        json={"closed_at": MIGRATED_CLOSED_AT},
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert _parse_datetime(response.json()["closed_at"]) == _parse_datetime(MIGRATED_CLOSED_AT)
+
+
+@pytest.mark.asyncio
 async def test_created_at_without_migration_flag_is_rejected(
     client: AsyncClient,
     session_maker: async_sessionmaker[AsyncSession],
@@ -142,6 +191,27 @@ async def test_created_at_without_migration_flag_is_rejected(
             "description": "seed",
             "source": "edr",
             "created_at": MIGRATED_CREATED_AT,
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+
+    assert response.status_code == 400
+    assert "migration=true" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_case_closed_at_without_migration_flag_is_rejected(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    raw_key = await _create_nhi_api_key(session_maker, override_timestamps=True)
+
+    response = await client.post(
+        "/api/v1/cases",
+        json={
+            "title": "Rejected closed case",
+            "description": "seed",
+            "closed_at": MIGRATED_CLOSED_AT,
         },
         headers={"Authorization": f"Bearer {raw_key}"},
     )
@@ -200,6 +270,26 @@ async def test_migration_created_at_must_be_timezone_aware(
             "description": "seed",
             "source": "edr",
             "created_at": "2024-01-02T03:04:05",
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_migration_closed_at_must_be_timezone_aware(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    raw_key = await _create_nhi_api_key(session_maker, override_timestamps=True)
+
+    response = await client.post(
+        "/api/v1/cases?migration=true",
+        json={
+            "title": "Naive closed timestamp case",
+            "description": "seed",
+            "closed_at": "2024-01-05T16:30:00",
         },
         headers={"Authorization": f"Bearer {raw_key}"},
     )

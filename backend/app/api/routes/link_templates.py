@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.routes.admin_auth import require_admin_user, require_authenticated_user
 from app.core.database import get_db
+from app.services.settings_service import SettingsService
 from app.models.models import (
     LinkTemplate,
     LinkTemplateCreate,
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 ALLOWED_URL_SCHEMES = {"http", "https", "mailto", "tel"}
+DENIED_URL_SCHEMES = {"data", "file", "javascript", "vbscript"}
 PORTABLE_TEMPLATE_FIELDS = {
     "template_id",
     "name",
@@ -84,11 +86,42 @@ def _interpolate(template: str, item: dict, *, encode_values: bool) -> str | Non
         return None
 
 
-def _is_safe_resolved_url(value: str | None) -> bool:
+def _normalize_extra_url_schemes(value: Any) -> set[str]:
+    if isinstance(value, str):
+        raw_values = [value]
+    elif isinstance(value, list):
+        raw_values = value
+    else:
+        raw_values = []
+
+    schemes: set[str] = set()
+    for raw_value in raw_values:
+        scheme = str(raw_value).strip().lower().rstrip(":")
+        if re.fullmatch(r"[a-z][a-z0-9+.-]*", scheme) and scheme not in DENIED_URL_SCHEMES:
+            schemes.add(scheme)
+    return schemes
+
+
+async def _get_allowed_url_schemes(db: AsyncSession) -> set[str]:
+    settings = SettingsService(db)  # type: ignore[arg-type]
+    return ALLOWED_URL_SCHEMES | _normalize_extra_url_schemes(
+        await settings.get("link_templates.allowed_url_schemes_extra", [])
+    )
+
+
+def _is_safe_resolved_url(value: str | None, allowed_schemes: set[str] | None = None) -> bool:
     if not value:
         return False
     parsed = urlparse(value)
-    return parsed.scheme.lower() in ALLOWED_URL_SCHEMES
+    scheme = parsed.scheme.lower()
+    return scheme in (allowed_schemes or ALLOWED_URL_SCHEMES) and scheme not in DENIED_URL_SCHEMES
+
+
+async def _validate_url_template_allowed(db: AsyncSession, value: str) -> None:
+    parsed = urlparse(value)
+    scheme = parsed.scheme.lower()
+    if scheme not in await _get_allowed_url_schemes(db) or scheme in DENIED_URL_SCHEMES:
+        raise HTTPException(status_code=422, detail=f"url_template uses disallowed URL scheme '{scheme or 'none'}'")
 
 
 def _matches_template(
@@ -181,6 +214,8 @@ async def _import_templates(
     user_id: Any = None,
 ) -> list[LinkTemplateRead] | list[PersonalLinkTemplateRead]:
     portable_templates = _extract_portable_templates(payload)
+    for portable_template in portable_templates:
+        await _validate_url_template_allowed(db, portable_template.url_template)
 
     query = select(model.template_id)
     if model is PersonalLinkTemplate:
@@ -303,6 +338,7 @@ async def resolve_link_templates(
     context["surface"] = request.surface
     if request.entity_type:
         context["entity_type"] = request.entity_type
+    allowed_schemes = await _get_allowed_url_schemes(db)
 
     candidates: list[tuple[LinkTemplate | PersonalLinkTemplate, LinkTemplateVisibility]] = [
         *((template, "PUBLIC") for template in public_result.scalars().all()),
@@ -321,7 +357,7 @@ async def resolve_link_templates(
 
         url = _interpolate(template.url_template, context, encode_values=True)
         tooltip = _interpolate(template.tooltip_template, context, encode_values=False)
-        if not _is_safe_resolved_url(url) or tooltip is None:
+        if not _is_safe_resolved_url(url, allowed_schemes) or tooltip is None:
             continue
 
         resolved_links.append(
@@ -359,6 +395,7 @@ async def create_link_template(
     _: UserAccount = Depends(require_admin_user),
 ):
     """Create a public link template."""
+    await _validate_url_template_allowed(db, template_data.url_template)
     result = await db.execute(select(LinkTemplate).where(LinkTemplate.template_id == template_data.template_id))
     if result.scalar_one_or_none():
         raise HTTPException(
@@ -387,6 +424,8 @@ async def update_link_template(
         raise HTTPException(status_code=404, detail=f"Link template {template_id} not found")
 
     update_dict = template_data.model_dump(exclude_unset=True)
+    if "url_template" in update_dict:
+        await _validate_url_template_allowed(db, update_dict["url_template"])
     for key, value in update_dict.items():
         setattr(template, key, value)
     template.updated_at = datetime.now(timezone.utc)
@@ -491,6 +530,7 @@ async def create_personal_link_template(
     current_user: UserAccount = Depends(require_authenticated_user),
 ):
     """Create a current-user personal link template."""
+    await _validate_url_template_allowed(db, template_data.url_template)
     result = await db.execute(
         select(PersonalLinkTemplate).where(
             PersonalLinkTemplate.user_id == current_user.id,
@@ -527,6 +567,8 @@ async def update_personal_link_template(
     template = await _get_owned_personal_template(template_id, db, current_user)
 
     update_dict = template_data.model_dump(exclude_unset=True)
+    if "url_template" in update_dict:
+        await _validate_url_template_allowed(db, update_dict["url_template"])
     for key, value in update_dict.items():
         setattr(template, key, value)
     template.updated_at = datetime.now(timezone.utc)

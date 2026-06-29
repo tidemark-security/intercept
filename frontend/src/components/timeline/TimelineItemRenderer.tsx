@@ -113,6 +113,31 @@ function getTimelineTags(item: TimelineItem): string[] {
   return Array.isArray(tags) ? tags : [];
 }
 
+function getLinkedEntityTags(item: TimelineItem): string[] {
+  const tags = (item as TimelineItem & { entity_tags?: string[] | null }).entity_tags;
+
+  return Array.isArray(tags) ? tags : [];
+}
+
+function mergeTags(...tagGroups: string[][]): string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+
+  for (const tagGroup of tagGroups) {
+    for (const rawTag of tagGroup) {
+      const tag = rawTag.trim();
+      const key = tag.toLowerCase();
+      if (!tag || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      merged.push(tag);
+    }
+  }
+
+  return merged;
+}
+
 function isAutomationNote(item: TimelineItem): boolean {
   if (!isNoteItem(item)) {
     return false;
@@ -906,7 +931,7 @@ export function TimelineItemRenderer({
       hasText(renderedEntityDescription) &&
       currentDescription.trim() === renderedEntityDescription.trim();
     const hasDescriptionContent = hasText(currentDescription) && !hasDuplicateEntityDescription;
-    const currentTags = getTimelineTags(currentItem);
+    const currentTags = mergeTags(getTimelineTags(currentItem), getLinkedEntityTags(currentItem));
     const href = getItemDetailHref(currentItem);
     const openAction = href ? renderOpenEntityAction(href, `Open ${getSourceEntityDisplayLabel(currentItem)}`) : null;
     const footerActions = existingActionButtons || openAction ? (

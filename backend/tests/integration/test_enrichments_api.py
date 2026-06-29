@@ -642,6 +642,161 @@ async def test_enqueue_item_enrichment_returns_task_id(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("entity_type", "model_cls", "extra_kwargs"),
+    [
+        ("alert", Alert, {"source": "unit-test"}),
+        ("case", Case, {}),
+        ("task", Task, {}),
+    ],
+)
+async def test_migrated_tag_suppresses_item_enrichment_enqueue_for_all_entity_types(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    entity_type: str,
+    model_cls: type[Alert] | type[Case] | type[Task],
+    extra_kwargs: dict[str, object],
+) -> None:
+    analyst = analyst_user_factory(username=f"analyst.skip-enrichment-{entity_type}")
+    item = {
+        "id": f"item-skip-{entity_type}",
+        "type": "internal_actor",
+        "timestamp": "2026-03-14T00:00:00Z",
+        "created_at": "2026-03-14T00:00:00Z",
+        "created_by": analyst.username,
+        "user_id": "alice@example.com",
+        "tags": ["Migrated"],
+    }
+    entity = model_cls(
+        title=f"{entity_type} skip enrichment",
+        description="Test entity",
+        timeline_items=[item],
+        created_by=analyst.username,
+        **extra_kwargs,
+    )
+    register_providers()
+
+    async with session_maker() as session:
+        session.add_all([
+            analyst,
+            entity,
+            AppSetting(
+                key="enrichment.google_workspace.enabled",
+                value="true",
+                value_type=SettingType.BOOLEAN,
+                is_secret=False,
+                description="Enable Google Workspace user enrichment provider",
+                category="enrichment",
+            ),
+        ])
+        await session.commit()
+        await session.refresh(entity)
+        entity_id = entity.id
+
+    class FailingQueue:
+        async def enqueue(self, **_: object) -> str:
+            raise AssertionError("ignored migrated timeline items must not enqueue enrichment jobs")
+
+    monkeypatch.setattr("app.services.enrichment.service.get_task_queue_service", lambda: FailingQueue())
+
+    session_cookie = await _login(client, analyst.username)
+    response = await client.post(
+        f"/api/v1/enrichments/{entity_type}/{entity_id}/items/{item['id']}/enqueue",
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 400
+    assert "skip enrichment" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("entity_type", "model_cls", "extra_kwargs"),
+    [
+        ("alert", Alert, {"source": "unit-test"}),
+        ("case", Case, {}),
+        ("task", Task, {}),
+    ],
+)
+async def test_migrated_tag_suppresses_existing_enrichment_worker_jobs_for_all_entity_types(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    entity_type: str,
+    model_cls: type[Alert] | type[Case] | type[Task],
+    extra_kwargs: dict[str, object],
+) -> None:
+    analyst = analyst_user_factory(username=f"analyst.skip-worker-{entity_type}")
+    item = {
+        "id": f"item-worker-skip-{entity_type}",
+        "type": "internal_actor",
+        "timestamp": "2026-03-14T00:00:00Z",
+        "created_at": "2026-03-14T00:00:00Z",
+        "created_by": analyst.username,
+        "user_id": "alice@example.com",
+        "tags": ["migrated"],
+        "enrichment_status": "pending",
+        "enrichment_task_id": "queued-task-1",
+        "enrichments": {},
+    }
+    entity = model_cls(
+        title=f"{entity_type} skip worker enrichment",
+        description="Test entity",
+        timeline_items=[item],
+        created_by=analyst.username,
+        **extra_kwargs,
+    )
+    register_providers()
+
+    async with session_maker() as session:
+        session.add_all([
+            analyst,
+            entity,
+            AppSetting(
+                key="enrichment.google_workspace.enabled",
+                value="true",
+                value_type=SettingType.BOOLEAN,
+                is_secret=False,
+                description="Enable Google Workspace user enrichment provider",
+                category="enrichment",
+            ),
+        ])
+        await session.commit()
+        await session.refresh(entity)
+        entity_id = entity.id
+
+    async def fail_enrich(**_: object) -> EnrichmentResult:
+        raise AssertionError("ignored migrated timeline items must not call providers")
+
+    monkeypatch.setattr(
+        "app.services.enrichment.providers.google_workspace.google_workspace_provider.enrich",
+        fail_enrich,
+    )
+
+    async with session_maker() as session:
+        await enrichment_service.run_item_enrichment(
+            session,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            item_id=str(item["id"]),
+            task_id="queued-task-1",
+        )
+
+    async with session_maker() as session:
+        refreshed = await session.get(model_cls, entity_id)
+        assert refreshed is not None
+        stored_item = next(
+            item for item in _timeline_values(refreshed.timeline_items) if item.get("id") == f"item-worker-skip-{entity_type}"
+        )
+
+    assert "enrichment_status" not in stored_item
+    assert "enrichment_task_id" not in stored_item
+    assert stored_item["enrichments"] == {}
+
+
+@pytest.mark.asyncio
 async def test_add_internal_actor_auto_enqueues_matching_enrichment(
     client: AsyncClient,
     session_maker: async_sessionmaker[AsyncSession],

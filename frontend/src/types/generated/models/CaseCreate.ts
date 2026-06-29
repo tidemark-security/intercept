@@ -16,5 +16,9 @@ export type CaseCreate = {
      * Migration-only override for the case creation timestamp
      */
     created_at?: (string | null);
+    /**
+     * Migration-only override for the case closure timestamp
+     */
+    closed_at?: (string | null);
 };
 

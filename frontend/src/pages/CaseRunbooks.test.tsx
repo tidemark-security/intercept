@@ -112,6 +112,8 @@ describe("CaseRunbooksPage", () => {
     expect(screen.getAllByText("Credential Theft Response").length).toBeGreaterThan(0);
     expect(screen.getByText("RUN-0000007")).toBeInTheDocument();
     expect(screen.getByText("Review identity provider logs")).toBeInTheDocument();
+    expect(screen.getAllByText("identity").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("credential-theft").length).toBeGreaterThan(0);
     expect(screen.queryByText("Case Templates")).not.toBeInTheDocument();
   });
 

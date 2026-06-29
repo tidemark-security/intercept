@@ -58,6 +58,7 @@ class CaseService:
         case_data: CaseCreate, 
         created_by: str,
         created_at_override: Optional[datetime] = None,
+        closed_at_override: Optional[datetime] = None,
     ) -> Case:
         """Create a new case."""
         try:
@@ -73,6 +74,8 @@ class CaseService:
             }
             if created_at_override is not None:
                 case_kwargs["created_at"] = created_at_override
+            if "closed_at" in case_data.model_fields_set:
+                case_kwargs["closed_at"] = closed_at_override
 
             db_case = Case(**case_kwargs)
             
@@ -297,7 +300,9 @@ class CaseService:
         db: AsyncSession, 
         case_id: int, 
         case_update: CaseUpdate, 
-        updated_by: str
+        updated_by: str,
+        closed_at_override: Optional[datetime] = None,
+        closed_at_override_supplied: bool = False,
     ) -> Optional[Case]:
         """Update a case and create audit logs."""
         try:
@@ -309,6 +314,7 @@ class CaseService:
             # Track changes for audit
             changes = []
             update_data = case_update.model_dump(exclude_unset=True)
+            update_data.pop("closed_at", None)
             
             # Track if status changed to CLOSED and if assignee changed
             status_changed_to_closed = False
@@ -331,7 +337,12 @@ class CaseService:
                             assignee_changed = True
             
             # Handle status change special case
-            if 'status' in update_data and db_case.status == CaseStatus.CLOSED:
+            if closed_at_override_supplied:
+                old_value = db_case.closed_at
+                if old_value != closed_at_override:
+                    changes.append(("closed_at", str(old_value), str(closed_at_override)))
+                    db_case.closed_at = closed_at_override
+            elif 'status' in update_data and db_case.status == CaseStatus.CLOSED:
                 db_case.closed_at = datetime.now(timezone.utc)
             
             # Create audit logs for changes

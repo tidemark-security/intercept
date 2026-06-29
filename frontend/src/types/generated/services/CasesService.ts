@@ -185,15 +185,23 @@ export class CasesService {
     public static updateCaseApiV1CasesCaseIdPut({
         caseId,
         requestBody,
+        migration = false,
     }: {
         caseId: number,
         requestBody: CaseUpdate,
+        /**
+         * Allow authorized NHI migration clients to provide closed_at
+         */
+        migration?: boolean,
     }): CancelablePromise<CaseRead> {
         return __request(OpenAPI, {
             method: 'PUT',
             url: '/api/v1/cases/{case_id}',
             path: {
                 'case_id': caseId,
+            },
+            query: {
+                'migration': migration,
             },
             body: requestBody,
             mediaType: 'application/json',

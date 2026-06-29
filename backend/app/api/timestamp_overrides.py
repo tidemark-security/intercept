@@ -16,11 +16,31 @@ def normalize_created_at_override(
     created_at: Optional[datetime],
 ) -> Optional[datetime]:
     """Validate and normalize a migration-only created_at override."""
+    return normalize_timestamp_override(
+        current_user=current_user,
+        migration=migration,
+        value=created_at,
+        field_name="created_at",
+        supplied=created_at is not None,
+        allow_null=False,
+    )
+
+
+def normalize_timestamp_override(
+    *,
+    current_user: UserAccount,
+    migration: bool,
+    value: Optional[datetime],
+    field_name: str,
+    supplied: bool,
+    allow_null: bool = False,
+) -> Optional[datetime]:
+    """Validate and normalize a migration-only timestamp override."""
     if not migration:
-        if created_at is not None:
+        if supplied:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="created_at can only be supplied when migration=true",
+                detail=f"{field_name} can only be supplied when migration=true",
             )
         return None
 
@@ -30,16 +50,18 @@ def normalize_created_at_override(
             detail="migration timestamp overrides require an NHI account with Override timestamps enabled",
         )
 
-    if created_at is None:
+    if value is None:
+        if supplied and allow_null:
+            return None
         return None
 
-    if created_at.tzinfo is None or created_at.utcoffset() is None:
+    if value.tzinfo is None or value.utcoffset() is None:
         raise HTTPException(
             status_code=422,
-            detail="created_at must include timezone information",
+            detail=f"{field_name} must include timezone information",
         )
 
-    return created_at.astimezone(timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def reject_created_at_update(payload: dict) -> None:

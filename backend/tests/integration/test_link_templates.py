@@ -4,7 +4,8 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.settings_registry import get_local
-from app.models.models import LinkTemplate, PersonalLinkTemplate
+from app.models.enums import SettingType
+from app.models.models import AppSetting, LinkTemplate, PersonalLinkTemplate
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -215,6 +216,91 @@ async def test_import_accepts_single_template_and_bare_array_payloads(
     assert array_response.status_code == 200, array_response.text
     assert single_response.json()[0]["template_id"] == "single-console"
     assert array_response.json()[0]["template_id"] == "array-console"
+
+
+async def test_configured_custom_url_schemes_apply_to_public_and_personal_templates(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+    analyst_user_factory,
+):
+    admin = admin_user_factory(username="admin_link_handlers")
+    analyst = analyst_user_factory(username="analyst_link_handlers")
+    async with session_maker() as session:
+        session.add_all([
+            admin,
+            analyst,
+            AppSetting(
+                key="link_templates.allowed_url_schemes_extra",
+                value='["claude"]',
+                value_type=SettingType.JSON,
+                is_secret=False,
+                description="Extra URL handlers",
+                category="link_templates",
+            ),
+        ])
+        await session.commit()
+
+    admin_cookies = await _login(client, admin.username)
+    analyst_cookies = await _login(client, analyst.username)
+    custom_payload = _template_payload(
+        template_id="claude-case",
+        name="Claude Case",
+        url_template="claude://case/{{human_id}}",
+    )
+
+    public_response = await client.post("/api/v1/link-templates", json=custom_payload, cookies=admin_cookies)
+    personal_response = await client.post(
+        "/api/v1/personal-link-templates",
+        json={**custom_payload, "template_id": "my-claude-case"},
+        cookies=analyst_cookies,
+    )
+
+    assert public_response.status_code == 200, public_response.text
+    assert personal_response.status_code == 200, personal_response.text
+
+    resolve_response = await client.post(
+        "/api/v1/link-templates/resolve",
+        json={
+            "surface": "entity",
+            "entity_type": "case",
+            "item": {"human_id": "CAS-0000123"},
+        },
+        cookies=analyst_cookies,
+    )
+    assert resolve_response.status_code == 200, resolve_response.text
+    assert {
+        (link["visibility"], link["template_id"], link["url"])
+        for link in resolve_response.json()
+    } == {
+        ("PUBLIC", "claude-case", "claude://case/CAS-0000123"),
+        ("PERSONAL", "my-claude-case", "claude://case/CAS-0000123"),
+    }
+
+
+async def test_unconfigured_custom_url_scheme_is_rejected_for_public_and_personal_templates(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+    analyst_user_factory,
+):
+    admin = admin_user_factory(username="admin_link_handlers_rejected")
+    analyst = analyst_user_factory(username="analyst_link_handlers_rejected")
+    async with session_maker() as session:
+        session.add_all([admin, analyst])
+        await session.commit()
+
+    admin_cookies = await _login(client, admin.username)
+    analyst_cookies = await _login(client, analyst.username)
+    custom_payload = _template_payload(url_template="claude://case/{{human_id}}")
+
+    public_response = await client.post("/api/v1/link-templates", json=custom_payload, cookies=admin_cookies)
+    personal_response = await client.post("/api/v1/personal-link-templates", json=custom_payload, cookies=analyst_cookies)
+
+    assert public_response.status_code == 422
+    assert "disallowed URL scheme" in public_response.json()["detail"]
+    assert personal_response.status_code == 422
+    assert "disallowed URL scheme" in personal_response.json()["detail"]
 
 
 async def test_public_and_personal_templates_reject_multiple_surface_scopes(
