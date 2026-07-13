@@ -757,6 +757,13 @@ _register(
         description="Recommended tags for case closure",
         default=None,
     ),
+    _def(
+        "link_templates.allowed_url_schemes_extra",
+        value_type=SettingType.JSON,
+        category="link_templates",
+        description="Additional URL schemes allowed in shared and personal link templates beyond http, https, mailto, and tel",
+        default=[],
+    ),
 )
 
 # ---------------------------------------------------------------------------
@@ -776,6 +783,12 @@ _register(
         category="enrichment",
         description="Maximum number of process-local enrichment cache entries",
         default=1024,
+    ),
+    _def(
+        "enrichment.ignore_timeline_tag",
+        category="enrichment",
+        description="Timeline items with this tag are skipped by all item enrichment providers",
+        default="migrated",
     ),
     _def(
         "enrichment.cross_case_observable.enabled",

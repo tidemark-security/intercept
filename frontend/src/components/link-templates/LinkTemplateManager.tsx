@@ -14,6 +14,7 @@ import {
 } from "@/utils/iconMapping";
 import type { LinkTemplateExportBundle } from "@/types/generated/models/LinkTemplateExportBundle";
 import type { PortableLinkTemplate } from "@/types/generated/models/PortableLinkTemplate";
+import { ApiError } from "@/types/generated/core/ApiError";
 import { Checkbox, Switch, ToggleGroup } from "@tidemark-security/ux";
 import {
   Download,
@@ -102,6 +103,28 @@ function csvToValues(value: string): string[] {
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiError) {
+    if (error.body && typeof error.body === "object" && "detail" in error.body) {
+      const detail = (error.body as { detail?: unknown }).detail;
+      if (typeof detail === "string") {
+        return detail;
+      }
+      if (
+        detail &&
+        typeof detail === "object" &&
+        "message" in detail &&
+        typeof (detail as { message?: unknown }).message === "string"
+      ) {
+        return (detail as { message: string }).message;
+      }
+    }
+    if (error.body && typeof error.body === "object" && "message" in error.body) {
+      const message = (error.body as { message?: unknown }).message;
+      if (typeof message === "string") {
+        return message;
+      }
+    }
+  }
   if (error instanceof Error) return error.message;
   return fallback;
 }

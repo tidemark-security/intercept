@@ -1,4 +1,10 @@
-from app.api.routes.link_templates import _interpolate, _is_safe_resolved_url, _matches_template, _with_copy_suffix
+from app.api.routes.link_templates import (
+    _interpolate,
+    _is_safe_resolved_url,
+    _matches_template,
+    _normalize_extra_url_schemes,
+    _with_copy_suffix,
+)
 import pytest
 from pydantic import ValidationError
 
@@ -79,8 +85,16 @@ def test_safe_resolved_url_allows_expected_schemes_only():
     assert _is_safe_resolved_url("https://example.com")
     assert _is_safe_resolved_url("mailto:analyst@example.com")
     assert _is_safe_resolved_url("tel:+15551212")
+    assert _is_safe_resolved_url("claude://open/case", {"http", "https", "mailto", "tel", "claude"})
     assert not _is_safe_resolved_url("javascript:alert(1)")
     assert not _is_safe_resolved_url("")
+
+
+def test_extra_url_scheme_normalization_drops_invalid_and_dangerous_values():
+    assert _normalize_extra_url_schemes(["Claude:", "foo+bar", "javascript", "", 123]) == {
+        "claude",
+        "foo+bar",
+    }
 
 
 def test_portable_link_template_rejects_unsafe_url_templates_on_import():

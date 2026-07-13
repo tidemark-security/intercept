@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderWithProviders } from "../../../tests/test-utils";
 import { LinkTemplateManager, type ManagedLinkTemplate } from "./LinkTemplateManager";
+import { ApiError } from "@/types/generated/core/ApiError";
 
 const template: ManagedLinkTemplate = {
   id: 1,
@@ -116,6 +117,32 @@ describe("LinkTemplateManager", () => {
         templates: expect.any(Array),
       }),
     );
+  });
+
+  it("shows API detail text when a template action fails", async () => {
+    const onCreate = vi.fn().mockRejectedValue(
+      new ApiError(
+        { method: "POST", url: "/api/v1/personal-link-templates" },
+        {
+          url: "/api/v1/personal-link-templates",
+          ok: false,
+          status: 422,
+          statusText: "Unprocessable Entity",
+          body: { detail: "url_template uses disallowed URL scheme 'claude'" },
+        },
+        "Request failed",
+      ),
+    );
+    renderManager({ templates: [], onCreate });
+
+    fireEvent.click(screen.getByRole("button", { name: /Add Template/i }));
+    fireEvent.change(screen.getByLabelText("Template ID"), { target: { value: "claude-case" } });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Claude Case" } });
+    fireEvent.change(screen.getByLabelText("Tooltip Template"), { target: { value: "Open {{human_id}}" } });
+    fireEvent.change(screen.getByLabelText("URL Template"), { target: { value: "claude://case/{{human_id}}" } });
+    fireEvent.click(screen.getByRole("button", { name: /Create Template/ }));
+
+    expect(await screen.findByText("url_template uses disallowed URL scheme 'claude'")).toBeInTheDocument();
   });
 
   it("exports a selected template as a portable JSON bundle", async () => {

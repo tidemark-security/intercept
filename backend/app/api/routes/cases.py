@@ -32,7 +32,11 @@ from app.api.route_utils import (
     handle_update_attachment_status,
     handle_generate_download_url,
 )
-from app.api.timestamp_overrides import normalize_created_at_override, reject_created_at_update
+from app.api.timestamp_overrides import (
+    normalize_created_at_override,
+    normalize_timestamp_override,
+    reject_created_at_update,
+)
 from app.api.routes.admin_auth import (
     require_authenticated_user,
     require_admin_user,
@@ -72,11 +76,20 @@ async def create_case(
             migration=migration,
             created_at=case_data.created_at,
         )
+        closed_at_override = normalize_timestamp_override(
+            current_user=current_user,
+            migration=migration,
+            value=case_data.closed_at,
+            field_name="closed_at",
+            supplied="closed_at" in case_data.model_fields_set,
+            allow_null=True,
+        )
         db_case = await case_service.create_case(
             db,
             case_data,
             current_user.username,
             created_at_override=created_at_override,
+            closed_at_override=closed_at_override,
         )
         return db_case
     except HTTPException:
@@ -221,13 +234,26 @@ async def update_case(
     case_id: int,
     request: Request,  # pylint: disable=unused-argument
     case_update: CaseUpdate,
+    migration: bool = Query(False, description="Allow authorized NHI migration clients to provide closed_at"),
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     """Update a case."""
     try:
         db_case = await case_service.update_case(
-            db, case_id, case_update, current_user.username
+            db,
+            case_id,
+            case_update,
+            current_user.username,
+            closed_at_override=normalize_timestamp_override(
+                current_user=current_user,
+                migration=migration,
+                value=case_update.closed_at,
+                field_name="closed_at",
+                supplied="closed_at" in case_update.model_fields_set,
+                allow_null=True,
+            ),
+            closed_at_override_supplied="closed_at" in case_update.model_fields_set,
         )
         if not db_case:
             raise HTTPException(status_code=404, detail="Case not found")

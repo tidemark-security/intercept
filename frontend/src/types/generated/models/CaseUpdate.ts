@@ -34,6 +34,10 @@ export type CaseUpdate = {
     assignee?: (string | null);
     tags?: (Array<string> | null);
     timeline_items?: (Record<string, (DeletedItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AlertItem | AttachmentItem | CaseItem | EmailItem | ForensicArtifactItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | RegistryChangeItem | SystemItem | TaskItem | TTPItem)> | null);
+    /**
+     * Migration-only override for the case closure timestamp
+     */
+    closed_at?: (string | null);
     alert_closure_updates?: (Array<CaseAlertClosureUpdate> | null);
     closure_summary?: (string | null);
 };

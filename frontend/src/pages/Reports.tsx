@@ -63,6 +63,7 @@ const PIE_COLORS_DARK = ['#D0FF00', '#00E2C2', '#5F40EB', '#A3A3A3', '#FF0055'];
 const PIE_COLORS_LIGHT = ['rgb(182, 230, 0)', '#5332D0', '#262626', '#009181', '#D70047'];
 const CHART_ANIMATION_DURATION_MS = 300;
 const CHAT_FEEDBACK_PAGE_SIZE = 25;
+const USERNAME_CHART_LABEL_MAX_LENGTH = 18;
 
 /**
  * Format seconds to human-readable duration
@@ -106,6 +107,12 @@ function formatChartLegendLabel(value: string | number | undefined | null): stri
 
 function formatChartTooltipLabel(value: React.ReactNode, name?: string | number): [React.ReactNode, string] {
   return [value, formatChartLegendLabel(name)];
+}
+
+function truncateUsernameChartLabel(value: string | number | undefined | null): string {
+  const label = value === undefined || value === null ? 'Unknown' : String(value);
+  if (label.length <= USERNAME_CHART_LABEL_MAX_LENGTH) return label;
+  return `${label.slice(0, USERNAME_CHART_LABEL_MAX_LENGTH - 3)}...`;
 }
 
 function normalizePercentValue(value: number | null | undefined): number {
@@ -439,7 +446,7 @@ function Reports() {
               { dataKey: 'total_cases_closed', name: 'Cases Closed', color: CHART_COLORS.cases },
             ]}
             xAxisProps={{ type: 'number' }}
-            yAxisProps={{ type: 'category', width: 100, tick: { fontSize: 12 } }}
+            yAxisProps={{ type: 'category', width: 150, tick: { fontSize: 12 }, tickFormatter: truncateUsernameChartLabel }}
             tooltipFormatter={formatChartTooltipLabel}
             legendFormatter={formatChartLegendLabel}
             barRadius={4}

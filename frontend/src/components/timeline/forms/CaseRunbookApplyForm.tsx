@@ -150,7 +150,7 @@ export function CaseRunbookApplyForm() {
       {selectedRunbook ? (
         <div className="flex w-full flex-col gap-3">
           <div className="flex flex-wrap gap-1">
-            {(selectedRunbook.case_tags ?? []).map((tag) => <Tag key={tag}>{tag}</Tag>)}
+            {(selectedRunbook.case_tags ?? []).map((tag) => <Tag key={tag} tagText={tag} searchable={false} />)}
           </div>
           {tasks.map((task, index) => {
             const selected = overrides[index]?.selected !== false;
@@ -195,7 +195,7 @@ export function CaseRunbookApplyForm() {
                   />
                 </div>
                 <div className="flex flex-wrap gap-1">
-                  {(task.tags ?? []).map((tag) => <Tag key={tag}>{tag}</Tag>)}
+                  {(task.tags ?? []).map((tag) => <Tag key={tag} tagText={tag} searchable={false} />)}
                 </div>
               </div>
             );

@@ -233,7 +233,7 @@ export default function CaseRunbooksPage() {
                 ) : null}
 
                 <div className="flex flex-wrap gap-1">
-                  {(selectedRunbook.case_tags ?? []).map((tag) => <Tag key={tag}>{tag}</Tag>)}
+                  {(selectedRunbook.case_tags ?? []).map((tag) => <Tag key={tag} tagText={tag} searchable={false} />)}
                 </div>
 
                 <div className="flex flex-col gap-3">
@@ -247,7 +247,7 @@ export default function CaseRunbooksPage() {
                       </div>
                       {task.description ? <span className="text-caption font-caption text-subtext-color">{task.description}</span> : null}
                       <div className="flex flex-wrap gap-1">
-                        {(task.tags ?? []).map((tag) => <Tag key={tag}>{tag}</Tag>)}
+                        {(task.tags ?? []).map((tag) => <Tag key={tag} tagText={tag} searchable={false} />)}
                       </div>
                     </div>
                   ))}
