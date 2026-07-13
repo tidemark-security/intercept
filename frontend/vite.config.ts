@@ -111,6 +111,13 @@ export default defineConfig({
     exclude: ["@tidemark-security/ux"],
   },
   server: {
+    proxy: {
+      "/api": {
+        target: process.env.VITE_API_PROXY_TARGET || "http://localhost:8000",
+        changeOrigin: true,
+        ws: true,
+      },
+    },
     fs: {
       allow: [resolve(__dirname), localUxWorkspace, dockerUxWorkspace],
     },

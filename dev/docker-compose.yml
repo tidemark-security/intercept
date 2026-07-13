@@ -6,6 +6,10 @@
 # Do not use in production as it contains weak hardcoded secrets, and lacks 
 # proper security measures.
 #
+# Browser traffic enters through the nginx harness on http://localhost:8080.
+# For a tunnel, point the single public hostname at 127.0.0.1:8080 and set
+# INTERCEPT_PUBLIC_ORIGIN to its HTTPS origin before starting Compose.
+#
 # For a single-file quickstart using published images (no repo clone needed),
 # see docs/quickstart/docker-compose.yml
 # =============================================================================
@@ -22,7 +26,8 @@ services:
       LANGFLOW_DB_PASSWORD: langflow_password
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
-      - "5432:5432"
+      # Kept loopback-only for host-run migrations and backend tests.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ../backend/init.sql:/docker-entrypoint-initdb.d/01-init.sql
@@ -46,22 +51,23 @@ services:
       dockerfile: Dockerfile.dev
     extra_hosts:
       - "localhost:host-gateway"
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     environment:
       AUTO_SEED: "true"
-      DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db
-      STORAGE_ENDPOINT: localhost:9000
+      DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@postgres:5432/intercept_case_db
+      STORAGE_ENDPOINT: minio:9000
       STORAGE_ACCESS_KEY: minioadmin
       STORAGE_SECRET_KEY: minioadmin
       STORAGE_BUCKET: intercept-attachments
       STORAGE_USE_SSL: "false"
-      LANGFLOW__BASE_URL: http://localhost:7860/api/v1
+      LANGFLOW__BASE_URL: http://langflow:7860/api/v1
       LANGFLOW__API_KEY: ${LANGFLOW_API_KEY:-dev-langflow-api-key}
       SECRET_KEY: dev-secret-key-change-in-production
-      SESSION_COOKIE_SECURE: "false"
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-dev-initial-admin-password}
-      CORS_ORIGINS: '["http://localhost:5173", "http://localhost:8000"]'
+      CORS_ORIGINS: '["${INTERCEPT_PUBLIC_ORIGIN:-http://localhost:8080}", "http://localhost:8080", "http://127.0.0.1:8080", "http://localhost:5173"]'
+      OIDC_ALLOWED_REDIRECT_ORIGINS: '["${INTERCEPT_PUBLIC_ORIGIN:-http://localhost:8080}", "http://localhost:8080", "http://127.0.0.1:8080", "http://localhost:5173"]'
     volumes:
       - ../backend:/app
     depends_on:
@@ -77,12 +83,12 @@ services:
       additional_contexts:
         ux: ${UX_CONTEXT:-../../ux}
     environment:
-      VITE_API_URL: http://localhost:8000
+      VITE_API_PROXY_TARGET: http://backend:8000
       # Use polling so Vite notices rebuilds in bind-mounted sibling repos,
       # especially on Docker Desktop where native file events can be missed.
       VITE_USE_POLLING: "true"
-    ports:
-      - "5173:5173"
+    expose:
+      - "5173"
     volumes:
       - ../frontend/src:/app/src
       - ../frontend/index.html:/app/index.html
@@ -104,9 +110,9 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
-    ports:
-      - "9000:9000"  # API
-      - "9001:9001"  # Console
+    expose:
+      - "9000"  # API, proxied by nginx at /storage/
+      - "9001"  # Console remains internal-only
     volumes:
       - minio_data:/data
     command: server /data --console-address ":9001"
@@ -154,8 +160,8 @@ services:
       OPIK_WORKSPACE: ${OPIK_WORKSPACE:-}
     extra_hosts:
       - "localhost:host-gateway"
-    ports:
-      - "7860:7860"
+    expose:
+      - "7860"
     volumes:
       - langflow_data:/app/langflow
     depends_on:
@@ -169,18 +175,18 @@ services:
       dockerfile: Dockerfile.dev
     extra_hosts:
       - "localhost:host-gateway"
-    ports:
-      - "8001:8001"
+    expose:
+      - "8001"
     environment:
-      DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@localhost:5432/intercept_case_db
-      STORAGE_ENDPOINT: localhost:9000
+      DATABASE_URL: postgresql+asyncpg://intercept_user:intercept_password@postgres:5432/intercept_case_db
+      STORAGE_ENDPOINT: minio:9000
       STORAGE_ACCESS_KEY: minioadmin
       STORAGE_SECRET_KEY: minioadmin
       STORAGE_BUCKET: intercept-attachments
       STORAGE_USE_SSL: "false"
       SECRET_KEY: dev-secret-key-change-in-production
       SESSION_COOKIE_SECURE: "false"
-      LANGFLOW__BASE_URL: http://localhost:7860/api/v1
+      LANGFLOW__BASE_URL: http://langflow:7860/api/v1
       LANGFLOW__API_KEY: ${LANGFLOW_API_KEY:-dev-langflow-api-key}
       WORKER_CONCURRENCY: "20"
       HEALTH_PORT: "8001"
@@ -196,6 +202,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    restart: unless-stopped
+
+  nginx:
+    image: docker.io/nginx:1.29-alpine
+    ports:
+      - "127.0.0.1:${INTERCEPT_PORT:-8080}:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - backend
+      - minio
     restart: unless-stopped
 
 volumes:
