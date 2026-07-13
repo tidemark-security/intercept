@@ -102,6 +102,7 @@ def create_timeline_converter(timeline_item_types: Dict[str, Any]):
     CLIENT_WRITABLE_ATTACHMENT_FIELDS = {
         "id",
         "type",
+        "description",
         "file_name",
         "mime_type",
         "file_size",
@@ -312,6 +313,7 @@ async def handle_generate_upload_url(
         attachment_item = AttachmentItem(
             id=item_id,
             type="attachment",
+            description=request_data.description,
             file_name=sanitized_filename,
             mime_type=request_data.mime_type,
             file_size=request_data.file_size,
@@ -321,7 +323,8 @@ async def handle_generate_upload_url(
             uploaded_by=current_user.username,
             uploaded_by_user_id=str(current_user.id),
             created_by=current_user.username,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=request_data.timestamp or datetime.now(timezone.utc),
+            tags=request_data.tags or [],
         )
 
         await service.add_timeline_item(

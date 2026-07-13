@@ -2164,6 +2164,18 @@ class PresignedUploadRequest(SQLModel):
         ...,
         description="Client-reported MIME type (validated server-side)"
     )
+    description: Optional[str] = Field(
+        default=None,
+        description="Free text description to store with the attachment",
+    )
+    timestamp: Optional[datetime] = Field(
+        default=None,
+        description="Timestamp when the attachment was created or collected",
+    )
+    tags: Optional[List[str]] = Field(
+        default=None,
+        description="Tags to store with the attachment",
+    )
     
     @field_validator('filename')
     @classmethod

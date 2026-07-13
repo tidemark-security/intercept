@@ -14,8 +14,8 @@ from app.services.realtime_service import emit_event
 from app.services.timeline_service import timeline_service
 
 
-def _dump_timeline_item(timeline_item: Any) -> dict[str, Any]:
-    item_dict = timeline_item.model_dump(mode="json")
+def _dump_timeline_item(timeline_item: Any, *, exclude_unset: bool = False) -> dict[str, Any]:
+    item_dict = timeline_item.model_dump(mode="json", exclude_unset=exclude_unset)
     if item_dict.get("created_at") is None:
         item_dict.pop("created_at", None)
     return item_dict
@@ -132,7 +132,13 @@ async def update_timeline_item_and_commit(
         return None
 
     previous_item = deepcopy(existing_item)
-    item_dict = _dump_timeline_item(timeline_item)
+    item_dict = _dump_timeline_item(
+        timeline_item,
+        # Attachment API conversion strips server-owned storage metadata. Dumping
+        # model defaults here would add those fields back as null/default values
+        # and overwrite the existing attachment during a metadata-only edit.
+        exclude_unset=existing_item.get("type") == "attachment",
+    )
 
     result = await timeline_service.update_timeline_item_with_sync(
         db,

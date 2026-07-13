@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -119,6 +120,9 @@ async def test_generate_task_attachment_upload_url_creates_uploading_timeline_it
             "filename": "report.txt",
             "file_size": 128,
             "mime_type": "text/plain",
+            "description": "Collected from the affected endpoint",
+            "timestamp": "2026-07-12T14:30:00Z",
+            "tags": ["evidence", "endpoint"],
         },
         cookies={"intercept_session": session_cookie},
     )
@@ -142,6 +146,11 @@ async def test_generate_task_attachment_upload_url_creates_uploading_timeline_it
     assert attachment["storage_key"].startswith(f"tasks/{task_id}/")
     assert attachment["upload_storage_key"] == body["storage_key"]
     assert attachment["uploaded_by"] == username
+    assert attachment["description"] == "Collected from the affected endpoint"
+    assert datetime.fromisoformat(attachment["timestamp"].replace("Z", "+00:00")) == datetime(
+        2026, 7, 12, 14, 30, tzinfo=timezone.utc
+    )
+    assert attachment["tags"] == ["evidence", "endpoint"]
 
 
 @pytest.mark.asyncio
@@ -231,6 +240,50 @@ async def test_complete_task_attachment_upload_updates_status_and_hash(
     assert attachment.get("upload_storage_key") is None
     assert copied == [(upload_response.json()["storage_key"], attachment["storage_key"])]
 
+    original_storage_metadata = {
+        key: attachment.get(key)
+        for key in (
+            "file_name",
+            "mime_type",
+            "file_size",
+            "storage_key",
+            "file_hash",
+            "uploaded_by",
+            "uploaded_by_user_id",
+            "upload_status",
+        )
+    }
+    edit_response = await client.put(
+        f"/api/v1/tasks/{task_id}/timeline/{item_id}",
+        json={
+            "id": item_id,
+            "type": "attachment",
+            "description": "Updated analyst context",
+            "timestamp": "2026-07-13T09:45:00Z",
+            "tags": ["evidence", "reviewed"],
+            # Server-owned fields must be ignored rather than overwritten.
+            "storage_key": "tasks/999/attachments/attacker-controlled/file.txt",
+            "upload_status": "FAILED",
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert edit_response.status_code == 200, edit_response.text
+    edited_attachment = next(
+        item
+        for item in _timeline_values(edit_response.json()["timeline_items"])
+        if item["id"] == item_id
+    )
+    assert edited_attachment["description"] == "Updated analyst context"
+    assert datetime.fromisoformat(edited_attachment["timestamp"].replace("Z", "+00:00")) == datetime(
+        2026, 7, 13, 9, 45, tzinfo=timezone.utc
+    )
+    assert edited_attachment["tags"] == ["evidence", "reviewed"]
+    assert {
+        key: edited_attachment.get(key)
+        for key in original_storage_metadata
+    } == original_storage_metadata
+
     async def fake_generate_presigned_download_url(
         storage_key: str,
         *,
@@ -238,7 +291,7 @@ async def test_complete_task_attachment_upload_updates_status_and_hash(
         filename: str | None = None,
         as_attachment: bool = False,
     ) -> str:
-        assert storage_key == attachment["storage_key"]
+        assert storage_key == edited_attachment["storage_key"]
         assert storage_key != upload_response.json()["storage_key"]
         assert expires_minutes > 0
         assert filename == "report.txt"
