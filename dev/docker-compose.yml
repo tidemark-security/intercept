@@ -84,6 +84,8 @@ services:
         ux: ${UX_CONTEXT:-../../ux}
     environment:
       VITE_API_PROXY_TARGET: http://backend:8000
+      # Allow the hostname configured for the nginx/Cloudflare entry point.
+      VITE_PUBLIC_ORIGIN: ${INTERCEPT_PUBLIC_ORIGIN:-http://localhost:8080}
       # Use polling so Vite notices rebuilds in bind-mounted sibling repos,
       # especially on Docker Desktop where native file events can be missed.
       VITE_USE_POLLING: "true"

@@ -29,6 +29,8 @@ const manualChunkGroups = {
 const localUxWorkspace = resolve(__dirname, "../../ux")
 const dockerUxWorkspace = "/ux"
 const isVitest = process.env.VITEST === "true" || process.env.NODE_ENV === "test"
+const publicOrigin = process.env.VITE_PUBLIC_ORIGIN
+const publicHost = publicOrigin ? new URL(publicOrigin).hostname : undefined
 const uxWorkspace = !isVitest && existsSync(resolve(dockerUxWorkspace, "package.json"))
   ? dockerUxWorkspace
   : !isVitest && existsSync(resolve(localUxWorkspace, "package.json"))
@@ -111,6 +113,7 @@ export default defineConfig({
     exclude: ["@tidemark-security/ux"],
   },
   server: {
+    allowedHosts: publicHost ? [publicHost] : undefined,
     proxy: {
       "/api": {
         target: process.env.VITE_API_PROXY_TARGET || "http://localhost:8000",
