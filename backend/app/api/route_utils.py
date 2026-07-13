@@ -561,7 +561,10 @@ async def handle_update_attachment_status(
 
             server_hash = final_metadata.sha256
             timeline_item["file_hash"] = server_hash
-            timeline_item.pop("upload_storage_key", None)
+            # Keep this field explicitly set so attachment updates using
+            # ``exclude_unset`` clear the staged key instead of merging the
+            # previous value back into the completed attachment.
+            timeline_item["upload_storage_key"] = None
             try:
                 await storage_service.delete_file(upload_storage_key)
             except Exception:  # pragma: no cover - best-effort cleanup
