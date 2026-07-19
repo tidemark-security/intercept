@@ -202,8 +202,18 @@ async def authorize(
     except OAuthDisabledError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="MCP OAuth is not enabled")
 
+    # Only redirect to redirect_uri if it matches the resolved client's registered URIs.
+    client_id = params.get("client_id") or ""
+    redirect_uri_is_registered = False
+    if redirect_uri and client_id:
+        try:
+            resolved_client = await mcp_oauth_service.resolve_client(db, client_id)
+            redirect_uri_is_registered = redirect_uri in resolved_client.redirect_uris
+        except OAuthInvalidClientError:
+            redirect_uri_is_registered = False
+
     if params.get("response_type") != "code":
-        if redirect_uri:
+        if redirect_uri_is_registered:
             return RedirectResponse(
                 _with_query(redirect_uri, {"error": "unsupported_response_type", "state": state}),
                 status_code=status.HTTP_302_FOUND,
@@ -216,6 +226,8 @@ async def authorize(
         return _oauth_error_response(OAuthInvalidRequestError(f"Missing required parameter: {', '.join(missing)}"))
 
     if params.get("deny") == "1":
+        if not redirect_uri_is_registered:
+            return _oauth_error_response(OAuthInvalidRequestError("redirect_uri is not registered for this client"))
         return RedirectResponse(
             _with_query(redirect_uri, {"error": "access_denied", "state": state}),
             status_code=status.HTTP_302_FOUND,
