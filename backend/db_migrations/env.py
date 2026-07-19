@@ -53,6 +53,11 @@ def include_object(object, name, type_, reflected, compare_to):
     # Exclude pgqueuer tables
     if type_ == "table" and name.startswith("pgqueuer"):
         return False
+
+    # Managed by the explicit FastMCP storage migration. Its native schema is
+    # intentionally not represented by an application SQLModel.
+    if type_ == "table" and name == "fastmcp_oauth_kv":
+        return False
     
     # Exclude search_vector columns (managed via raw SQL triggers)
     if type_ == "column" and name == "search_vector":

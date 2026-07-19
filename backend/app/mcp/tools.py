@@ -20,12 +20,7 @@ from app.core.database import async_session_factory
 from app.models.enums import UserRole
 from app.api.timestamp_overrides import normalize_created_at_override
 from app.services import mcp_service
-
-# Import FastMCP dependency to access HTTP request for authenticated user
-try:
-    from fastmcp.server.dependencies import get_http_request
-except ImportError:
-    get_http_request = None
+from app.mcp.principal import get_current_mcp_principal
 
 
 _PRUNED = object()
@@ -70,19 +65,10 @@ def _prune_llm_payload(value: Any, *, preserve_empty: bool = False) -> Any:
 
 
 def _get_authenticated_user() -> Any | None:
-    """Get the authenticated user from the MCP request context.
+    """Get the freshly reloaded user bound by native FastMCP middleware."""
 
-    The MCPApiKeyAuthMiddleware stores the authenticated user in scope["mcp_user"].
-    We access it via the Starlette request object.
-    """
-    if get_http_request is None:
-        return None
-
-    try:
-        request = get_http_request()
-        return request.scope.get("mcp_user")
-    except Exception:
-        return None
+    principal = get_current_mcp_principal()
+    return principal.user if principal is not None else None
 
 
 def _get_authenticated_username() -> str:

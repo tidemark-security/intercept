@@ -93,7 +93,7 @@ The API will be available at:
 - **API**: http://localhost:8000
 - **OpenAPI Docs**: http://localhost:8000/docs
 - **ReDoc**: http://localhost:8000/redoc
-- **MCP Server**: http://localhost:8000/mcp
+- **MCP Server**: http://localhost:8000/mcp/streamable/
 
 ### Production Mode
 
@@ -242,106 +242,50 @@ Intercept includes an MCP server that enables AI assistants and automation tools
 
 ### Overview
 
-The MCP server exposes all REST API endpoints as callable tools, allowing:
+The MCP server exposes a small, reviewed set of workflow tools, allowing:
 - **AI Assistants**: ChatGPT, Claude, etc. can interact with Intercept
 - **Automation**: Scripts and workflows can manage cases programmatically
 - **Integrations**: n8n, Zapier, and other platforms can connect via MCP
 
 ### Quick Start
 
-1. **Create an API Key** (via web UI or admin API)
-   ```bash
-   # Create NHI account with API key
-   POST /api/v1/admin/auth/users/nhi
-   {
-     "username": "automation_bot",
-     "role": "ANALYST",
-     "initial_api_key_name": "Bot Key",
-     "initial_api_key_expires_at": "2026-01-01T00:00:00Z"
-   }
-   ```
-
-2. **List Available Tools**
-   ```bash
-   curl -X POST http://localhost:8000/mcp/v1/tools/list \
-     -H "Authorization: Bearer int_your_api_key_here"
-   ```
-
-3. **Call a Tool**
-   ```bash
-   curl -X POST http://localhost:8000/mcp/v1/tools/call \
-     -H "Authorization: Bearer int_your_api_key_here" \
-     -H "Content-Type: application/json" \
-     -d '{
-       "name": "get_cases_api_v1_cases_get",
-       "arguments": {"limit": 5, "status": ["NEW"]}
-     }'
-   ```
+1. Set `MCP_OAUTH_ENABLED=true` and configure the externally reachable
+   `MCP_OAUTH_PUBLIC_BASE_URL`.
+2. Point an OAuth-capable MCP client at
+   `http://localhost:8000/mcp/streamable/` for direct backend development, or
+   at the public reverse-proxy origin in Compose deployments.
+3. Complete browser login. Alternatively, create an Intercept API key for an
+   automation/NHI client and send it as a bearer token.
 
 ### Authentication
 
-MCP endpoints require API key authentication:
+Human-operated clients use OAuth browser authentication. When Intercept OIDC is
+enabled, FastMCP proxies that same Google Workspace, Microsoft Entra, or generic
+OIDC configuration. Otherwise Intercept runs the local FastMCP OAuth provider.
+
+Automation can use API keys:
 - **Header**: `Authorization: Bearer {api_key}` or `X-API-Key: {api_key}`
 - **Format**: `int_{random_string}`
 - **Management**: Create/revoke via Settings → API Keys
 
 ### Available Tools
 
-All REST API endpoints are automatically exposed as MCP tools. Tool names follow the pattern:
-```
-{function_name}_{path_with_underscores}_{http_method}
-```
-
-Examples:
-- `get_cases_api_v1_cases_get` → GET /api/v1/cases
-- `create_case_api_v1_cases_post` → POST /api/v1/cases
-- `update_alert_api_v1_alerts` → PUT /api/v1/alerts/{alert_id}
-
-### Integration Examples
-
-**Python**:
-```python
-import httpx
-
-async def get_cases(api_key: str):
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "http://localhost:8000/mcp/v1/tools/call",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json={
-                "name": "get_cases_api_v1_cases_get",
-                "arguments": {"limit": 10}
-            }
-        )
-        return response.json()
-```
-
-**JavaScript**:
-```javascript
-const response = await fetch('http://localhost:8000/mcp/v1/tools/call', {
-  method: 'POST',
-  headers: {
-    'Authorization': `Bearer ${apiKey}`,
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({
-    name: 'get_cases_api_v1_cases_get',
-    arguments: { limit: 10 }
-  })
-});
-```
+The purpose-built tools are `get_summary`, `list_work`, `find_related`,
+`get_item`, `validate_mermaid`, `record_triage_decision`, and
+`add_timeline_item`. Use a normal MCP SDK/client for initialize, tool discovery,
+and invocation; the removed `/mcp/v1/tools/*` REST shim is not supported.
 
 ### Documentation
 
-- **Integration Guide**: [docs/mcp-integration-guide.md](../docs/mcp-integration-guide.md)
-- **Configuration**: [docs/mcp-configuration.md](../docs/mcp-configuration.md)
-- **Quick Start**: [specs/004-mcp-server-v1/quickstart.md](../specs/004-mcp-server-v1/quickstart.md)
-- **Protocol Contract**: [specs/004-mcp-server-v1/contracts/mcp-protocol.md](../specs/004-mcp-server-v1/contracts/mcp-protocol.md)
+- **Integration Guide**: [docs/mcp/integration-guide.md](../docs/mcp/integration-guide.md)
+- **Configuration**: [docs/mcp/configuration.md](../docs/mcp/configuration.md)
+- **Tool Reference**: [docs/mcp/tool-reference.md](../docs/mcp/tool-reference.md)
 
 ### Security
 
 - API keys are hashed (Argon2id) in the database
 - Keys have expiration dates and can be revoked
+- Local OAuth tokens are opaque and hashed; OIDC proxy state is encrypted
 - All MCP requests are audited with user context
 - Use NHI (Non-Human Identity) accounts for automation
 

@@ -566,7 +566,7 @@ _register(
 )
 
 # ---------------------------------------------------------------------------
-# MCP OAuth 2.1 / PKCE  (hot-swappable)
+# MCP authentication (loaded when the backend starts)
 # ---------------------------------------------------------------------------
 _register(
     _def(
@@ -574,21 +574,21 @@ _register(
         env_var="MCP_OAUTH_ENABLED",
         value_type=SettingType.BOOLEAN,
         category="mcp",
-        description="Enable OAuth 2.1 authorization-code with PKCE for the remote MCP server",
+        description="Enable interactive authentication for the remote MCP server. Backend restart required after changes",
         default=False,
     ),
     _def(
         "mcp.oauth.public_base_url",
         env_var="MCP_OAUTH_PUBLIC_BASE_URL",
         category="mcp",
-        description="Public HTTPS base URL for MCP OAuth issuer and discovery metadata",
+        description="Public Intercept origin for MCP issuer and discovery metadata; HTTPS is required except for loopback. Backend restart required after changes",
         default="",
     ),
     _def(
         "mcp.oauth.login_base_url",
         env_var="MCP_OAUTH_LOGIN_BASE_URL",
         category="mcp",
-        description="Frontend base URL used when an MCP OAuth browser flow needs local Intercept login",
+        description="Public frontend origin used when an MCP browser flow needs local Intercept login. Backend restart required after changes",
         default="",
     ),
     _def(
@@ -596,7 +596,7 @@ _register(
         env_var="MCP_OAUTH_REFRESH_TOKEN_TTL_DAYS",
         value_type=SettingType.NUMBER,
         category="mcp",
-        description="Days before MCP OAuth refresh tokens expire",
+        description="Days before MCP OAuth refresh tokens expire. Backend restart required after changes",
         default=30,
     ),
     _def(
@@ -604,7 +604,7 @@ _register(
         env_var="MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS",
         value_type=SettingType.NUMBER,
         category="mcp",
-        description="Seconds before MCP OAuth access tokens expire",
+        description="Seconds before MCP OAuth access tokens expire. Backend restart required after changes",
         default=3600,
     ),
 )

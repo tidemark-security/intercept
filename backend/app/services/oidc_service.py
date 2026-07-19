@@ -11,6 +11,7 @@ from urllib.parse import urlencode, urlparse
 import httpx
 import jwt
 from jwt.exceptions import ExpiredSignatureError, PyJWTError
+from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +24,7 @@ from app.services.settings_service import SettingsService
 
 
 logger = logging.getLogger(__name__)
+_EMAIL_ADAPTER = TypeAdapter(EmailStr)
 
 
 class OIDCConfigurationError(Exception):
@@ -48,6 +50,23 @@ class OIDCProviderConfiguration:
     client_secret: Optional[str]
     scopes: str
     provider_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class OIDCIdentityPolicy:
+    """Identity behavior captured when an authentication topology is built.
+
+    Web sign-in intentionally leaves this unset and continues resolving the
+    current settings for each login. Long-lived protocols such as MCP pass the
+    worker's startup snapshot so every request handled by that worker applies
+    one coherent account-linking and provisioning policy.
+    """
+
+    jit_provisioning: bool
+    default_role: str
+    role_claim_path: str
+    role_mapping: dict[str, Any]
+    trusted_auto_link_issuers: tuple[str, ...]
 
 
 class OIDCService:
@@ -175,13 +194,20 @@ class OIDCService:
         claims: dict[str, Any],
         issuer: str,
         metadata: Optional[RequestMetadata] = None,
+        identity_policy: OIDCIdentityPolicy | None = None,
     ) -> UserAccount:
         subject = str(claims.get("sub") or "").strip()
         if not subject:
             raise OIDCAuthenticationError("OIDC claims did not include a subject")
 
-        email = str(claims.get("email") or "").strip().lower()
-        if not email:
+        # Microsoft Entra commonly omits the optional `email` claim for member
+        # accounts while providing the sign-in address in
+        # `preferred_username`. Accept that standards-compatible fallback only
+        # when it is a valid email address; web and MCP login share this path.
+        email_claim = claims.get("email") or claims.get("preferred_username")
+        try:
+            email = str(_EMAIL_ADAPTER.validate_python(email_claim)).lower()
+        except (ValidationError, TypeError, ValueError):
             raise OIDCAuthenticationError("OIDC claims did not include an email address")
 
         result = await db.execute(
@@ -199,8 +225,13 @@ class OIDCService:
         result = await db.execute(select(UserAccount).where(cast(Any, UserAccount.email == email)))
         user = result.scalar_one_or_none()
         if user is not None:
-            settings = SettingsService(db)  # type: ignore[arg-type]
-            trusted_issuers = await settings.get("oidc.trusted_auto_link_issuers", default=[])
+            if identity_policy is None:
+                settings = SettingsService(db)  # type: ignore[arg-type]
+                trusted_issuers = await settings.get(
+                    "oidc.trusted_auto_link_issuers", default=[]
+                )
+            else:
+                trusted_issuers = identity_policy.trusted_auto_link_issuers
             if issuer not in {str(item) for item in (trusted_issuers or [])}:
                 raise OIDCAuthenticationError("OIDC account linking requires a trusted issuer")
             if user.status != UserStatus.ACTIVE:
@@ -218,8 +249,13 @@ class OIDCService:
             await db.flush()
             return user
 
-        settings = SettingsService(db)  # type: ignore[arg-type]
-        jit_enabled = bool(await settings.get("oidc.jit_provisioning", default=True))
+        if identity_policy is None:
+            settings = SettingsService(db)  # type: ignore[arg-type]
+            jit_enabled = bool(
+                await settings.get("oidc.jit_provisioning", default=True)
+            )
+        else:
+            jit_enabled = identity_policy.jit_provisioning
         if not jit_enabled:
             raise OIDCAuthenticationError("OIDC sign-in is not enabled for unprovisioned users")
 
@@ -231,7 +267,11 @@ class OIDCService:
         if existing.scalar_one_or_none() is not None:
             raise OIDCAuthenticationError("OIDC username collides with an existing account")
 
-        role = await self.resolve_role(db, claims=claims)
+        role = await self.resolve_role(
+            db,
+            claims=claims,
+            identity_policy=identity_policy,
+        )
         now = datetime.now(timezone.utc)
         user = UserAccount(
             username=username,
@@ -261,13 +301,30 @@ class OIDCService:
         )
         return user
 
-    async def resolve_role(self, db: AsyncSession, *, claims: dict[str, Any]) -> UserRole:
-        settings = SettingsService(db)  # type: ignore[arg-type]
-        default_role = str(await settings.get("oidc.default_role", default=UserRole.ANALYST.value)).upper()
-        role_claim_path = str(await settings.get("oidc.role_claim_path", default="")).strip()
-        role_mapping = await settings.get("oidc.role_mapping", default={})
-        if not isinstance(role_mapping, dict):
-            role_mapping = {}
+    async def resolve_role(
+        self,
+        db: AsyncSession,
+        *,
+        claims: dict[str, Any],
+        identity_policy: OIDCIdentityPolicy | None = None,
+    ) -> UserRole:
+        if identity_policy is None:
+            settings = SettingsService(db)  # type: ignore[arg-type]
+            default_role = str(
+                await settings.get(
+                    "oidc.default_role", default=UserRole.ANALYST.value
+                )
+            ).upper()
+            role_claim_path = str(
+                await settings.get("oidc.role_claim_path", default="")
+            ).strip()
+            role_mapping = await settings.get("oidc.role_mapping", default={})
+            if not isinstance(role_mapping, dict):
+                role_mapping = {}
+        else:
+            default_role = identity_policy.default_role.upper()
+            role_claim_path = identity_policy.role_claim_path.strip()
+            role_mapping = identity_policy.role_mapping
 
         if role_claim_path:
             claim_value = self._extract_claim_path(claims, role_claim_path)
@@ -468,6 +525,7 @@ oidc_service = OIDCService()
 __all__ = [
     "OIDCAuthenticationError",
     "OIDCConfigurationError",
+    "OIDCIdentityPolicy",
     "OIDCStateError",
     "OIDCService",
     "oidc_service",

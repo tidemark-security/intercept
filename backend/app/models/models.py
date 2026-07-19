@@ -2182,6 +2182,27 @@ class MCPOAuthClient(SQLModel, table=True):
     revoked_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
 
 
+class MCPOAuthPendingAuthorization(SQLModel, table=True):
+    """Short-lived browser handoff for a local MCP OAuth authorization request."""
+
+    __tablename__ = "mcp_oauth_pending_authorizations"  # type: ignore
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    client_db_id: UUID = Field(foreign_key="mcp_oauth_clients.id", index=True)
+    state: Optional[str] = Field(default=None, max_length=2048)
+    scopes: List[str] = Field(default_factory=list, sa_column=Column(JSONB, nullable=False))
+    code_challenge: str = Field(max_length=256)
+    redirect_uri: str = Field(max_length=2048)
+    redirect_uri_provided_explicitly: bool = Field(default=True)
+    resource: Optional[str] = Field(default=None, max_length=2048)
+    expires_at: datetime = Field(sa_column=Column(UTCDateTime(), index=True))
+    consumed_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+
+
 class MCPOAuthConsent(SQLModel, table=True):
     """Remembered user authorization for an MCP OAuth client."""
 
@@ -2189,12 +2210,19 @@ class MCPOAuthConsent(SQLModel, table=True):
     __table_args__ = (
         UniqueConstraint("user_id", "client_db_id", "scope", name="uq_mcp_oauth_consent_user_client_scope"),
         Index("ix_mcp_oauth_consents_user", "user_id"),
+        Index(
+            "ix_mcp_oauth_consents_provider_reference",
+            "provider_mode",
+            "provider_reference_hash",
+        ),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
     user_id: UUID = Field(foreign_key="user_accounts.id", index=True)
     client_db_id: UUID = Field(foreign_key="mcp_oauth_clients.id", index=True)
     scope: str = Field(default="mcp:access", max_length=255)
+    provider_mode: str = Field(default="local", max_length=32)
+    provider_reference_hash: Optional[str] = Field(default=None, max_length=128)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(UTCDateTime()),
@@ -2203,6 +2231,34 @@ class MCPOAuthConsent(SQLModel, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(UTCDateTime()),
     )
+    last_used_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    revoked_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+
+
+class MCPOAuthProviderGrantReference(SQLModel, table=True):
+    """Token-free native-provider family reference for one connected client."""
+
+    __tablename__ = "mcp_oauth_provider_grant_references"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint(
+            "provider_reference_hash",
+            name="uq_mcp_oauth_provider_grant_reference_hash",
+        ),
+        Index(
+            "ix_mcp_oauth_provider_grant_references_consent_active",
+            "consent_id",
+            "revoked_at",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    consent_id: UUID = Field(foreign_key="mcp_oauth_consents.id", index=True)
+    provider_reference_hash: str = Field(max_length=128)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+    last_used_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
     revoked_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
 
 

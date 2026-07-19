@@ -140,7 +140,6 @@ def downgrade() -> None:
 
     op.drop_index("ix_mcp_oauth_consents_client_db_id", table_name="mcp_oauth_consents")
     op.drop_index("ix_mcp_oauth_consents_user_id", table_name="mcp_oauth_consents")
-    op.drop_index("ix_mcp_oauth_consents_user", table_name="mcp_oauth_consents")
     op.drop_index("ix_mcp_oauth_consents_id", table_name="mcp_oauth_consents")
     op.drop_table("mcp_oauth_consents")
 

@@ -2,319 +2,170 @@
 
 ## Overview
 
-This guide covers configuration options for the Tidemark Intercept MCP server, including environment variables, deployment options, and security settings.
+Intercept exposes one FastMCP Streamable HTTP resource at
+`/mcp/streamable/`. Human users authenticate through OAuth in the browser;
+automation and non-human identities can continue to use Intercept API keys.
 
-The MCP server provides 7 purpose-built tools for AI agent integration. The preferred transport is Streamable HTTP at `/mcp/streamable/`, with legacy SSE still available at `/mcp/sse`.
+There is no SSE transport and no legacy `/oauth/*` API. OAuth discovery,
+registration, authorization, token exchange, and revocation are served by
+FastMCP's native routes.
 
-Authentication supports two paths:
+## Authentication mode selection
 
-- OAuth 2.1 authorization-code with PKCE for human-operated local agents such as Codex or Claude Code.
-- API keys for machine-to-machine integrations and non-human identity accounts.
+Each backend worker resolves the database-backed Intercept settings once at
+startup and builds an immutable FastMCP authentication topology:
 
-## MCP Server Architecture
+| MCP OAuth | Intercept OIDC | MCP mode |
+|---|---|---|
+| Disabled | Any value | API keys only |
+| Enabled | Disabled | Intercept local OAuth server |
+| Enabled | Enabled and complete | OIDC proxy |
+| Enabled | Enabled but incomplete | Startup/readiness failure |
 
-The MCP server is **not** auto-generated from FastAPI routes. Instead, it provides 7 intentionally designed tools:
+In every OAuth mode, FastMCP `MultiAuth` also accepts Intercept API keys through
+`Authorization: Bearer <key>` or `X-API-Key` when `Authorization` is absent.
+Changing OIDC or MCP OAuth settings requires restarting every backend worker.
 
-| Tool | Purpose | Read-Only |
-|------|---------|-----------|
-| `get_summary` | Bounded context retrieval for alerts/cases/tasks | Yes |
-| `list_work` | Global work discovery with filtering | Yes |
-| `find_related` | Similarity search across entities | Yes |
-| `record_triage_decision` | Record AI triage recommendations | No |
-| `add_timeline_item` | Append notes to timelines | No |
-| `get_item` | Retrieve full content of truncated items | Yes |
-| `validate_mermaid` | Validate Mermaid diagram syntax with Mermaid parser script | Yes |
+## Environment variables
 
-## Mermaid Validation Runtime
+These environment variables seed the corresponding settings. Values changed in
+the Settings UI take precedence through Intercept's normal settings service.
 
-The `validate_mermaid` tool shells out to a local Node-based parser script (`scripts/mermaid-validator/validate_mermaid_syntax.mjs`).
+| Variable | Description | Default |
+|---|---|---|
+| `MCP_OAUTH_ENABLED` | Enable browser OAuth; `false` is the API-key-only kill switch | `false` |
+| `MCP_OAUTH_PUBLIC_BASE_URL` | Externally reachable Intercept origin used for MCP and OAuth | Required when OAuth is enabled |
+| `MCP_OAUTH_LOGIN_BASE_URL` | Public UI origin for local login when it differs from the MCP origin | Public base URL |
+| `MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS` | MCP access-token lifetime | `3600` |
+| `MCP_OAUTH_REFRESH_TOKEN_TTL_DAYS` | MCP refresh-token lifetime | `30` |
 
-- Backend Docker images install Node.js and parser dependencies under `/opt/mermaid-validator`.
-- Non-Docker environments must provide `node` on `PATH` and install validator dependencies from `backend/scripts/mermaid-validator/package.json`.
-- If parser dependencies are unavailable or the script cannot run correctly, the tool returns an operational error instead of a syntax-validation result.
+The public and login values must be origins with no path, query, fragment, or
+credentials. HTTPS is required except for `localhost` and other loopback
+addresses.
 
-## Environment Variables
-
-The MCP server inherits configuration from the main Intercept application.
-
-### Core Settings
-
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `DATABASE_URL` | PostgreSQL connection string | - | Yes |
-| `SECRET_KEY` | Encryption key for secrets | - | Yes |
-| `LOG_LEVEL` | Logging level | `INFO` | No |
-| `CORS_ORIGINS` | Allowed CORS origins | `["*"]` | No |
-
-### MCP OAuth Settings
-
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `MCP_OAUTH_ENABLED` | Enables OAuth 2.1 with PKCE for MCP browser sign-in | `false` | No |
-| `MCP_OAUTH_PUBLIC_BASE_URL` | Public backend base URL used as the OAuth issuer and discovery URL | - | Yes, when OAuth is enabled |
-| `MCP_OAUTH_LOGIN_BASE_URL` | Frontend base URL for local Intercept login during browser authorization | Same as `MCP_OAUTH_PUBLIC_BASE_URL` | No |
-| `MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS` | OAuth access-token lifetime | `3600` | No |
-| `MCP_OAUTH_REFRESH_TOKEN_TTL_DAYS` | OAuth refresh-token lifetime | `30` | No |
-
-### Example `.env` File
+For the development Compose stack, set one public boundary and let Compose share
+it with the backend:
 
 ```bash
-# Core settings
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost/intercept
-SECRET_KEY=your-secret-key-here-minimum-32-chars
-
-# Logging
-LOG_LEVEL=INFO
-
-# CORS (adjust for production)
-CORS_ORIGINS=["http://localhost:3000","http://localhost:8000"]
-
-# MCP OAuth browser auth for human-operated agents
+INTERCEPT_PUBLIC_ORIGIN=http://localhost:8080
 MCP_OAUTH_ENABLED=true
-MCP_OAUTH_PUBLIC_BASE_URL=http://localhost:8000
-MCP_OAUTH_LOGIN_BASE_URL=http://localhost:5173
 ```
 
-## MCP Endpoints
+Then configure the client with:
 
-The MCP server exposes both the preferred streamable transport and the legacy SSE transport:
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/mcp/streamable/` | GET, POST | Preferred Streamable HTTP endpoint for modern MCP clients and Langflow |
-| `/mcp/sse` | GET | Legacy SSE connection endpoint |
-| `/mcp/messages` | POST | Legacy SSE message endpoint |
-
-MCP requests accept either API key authentication via `Authorization: Bearer <key>` or `X-API-Key`, or OAuth bearer tokens issued through the MCP OAuth flow.
-
-When OAuth is enabled and an MCP client sends no credential, Intercept returns a `WWW-Authenticate` challenge with the MCP protected-resource metadata URL. OAuth-capable MCP clients use that metadata to discover the authorization server, open the user's browser, and complete PKCE authorization.
-
-## OAuth Browser Authorization
-
-Use OAuth for human-to-machine access where the MCP client runs locally for a signed-in analyst.
-
-1. Enable `MCP_OAUTH_ENABLED`.
-2. Set `MCP_OAUTH_PUBLIC_BASE_URL` to the externally reachable backend origin, for example `https://intercept.example.com` or `http://localhost:8000` for local development.
-3. Set `MCP_OAUTH_LOGIN_BASE_URL` to the frontend origin if it differs from the backend, for example `http://localhost:5173` in dev or `http://localhost` in quickstart.
-4. Configure the MCP client with the MCP URL, for example `http://localhost:8000/mcp/streamable/`.
-5. The client discovers OAuth metadata, opens the browser, and the user signs in with normal Intercept auth.
-
-Supported OAuth capabilities:
-
-- Dynamic client registration at `/oauth/register`
-- Authorization endpoint at `/oauth/authorize`
-- Token endpoint at `/oauth/token`
-- Revocation endpoint at `/oauth/revoke`
-- Public clients only: `token_endpoint_auth_method=none`
-- Authorization code + PKCE only: `response_type=code`, `code_challenge_method=S256`
-- Scope: `mcp:access`
-- Loopback redirect URIs only, such as `http://127.0.0.1:49152/callback`
-
-Users can review and revoke connected MCP clients from their profile page. Revocation invalidates active access and refresh tokens for that user/client pair.
-
-## Deployment Options
-
-The MCP server deploys alongside the backend app. For OAuth, make sure the public backend URL is stable and HTTPS in production, and that the frontend login URL can redirect back to the backend authorization URL through the `next` parameter.
-
-## API Key Management
-
-### Creating API Keys
-
-#### For Human Users (Web UI)
-
-1. Log in to Tidemark Intercept
-2. Navigate to **Settings** → **API Keys**
-3. Click **Create API Key**
-4. Fill in the details:
-   - **Name**: Descriptive name (e.g., "Claude Desktop", "Automation Script")
-   - **Expiration**: Set an expiration date (recommended: 90 days)
-5. Click **Create**
-6. **Important**: Copy the API key immediately - it won't be shown again!
-
-The API key format is: `int_{random_string}`
-
-#### For NHI Accounts (Admin API)
-
-```bash
-# Create NHI account with API key
-curl -X POST http://localhost:8000/api/v1/admin/auth/users/nhi \
-  -H "Content-Type: application/json" \
-  -H "Cookie: intercept_session=admin-session" \
-  -d '{
-    "username": "automation_service",
-    "role": "ANALYST",
-    "description": "Automated case management",
-    "override_timestamps": false,
-    "initial_api_key_name": "Service Key",
-    "initial_api_key_expires_at": "2027-01-01T00:00:00Z"
-  }'
+```text
+http://localhost:8080/mcp/streamable/
 ```
 
-Set `override_timestamps` to `true` only for dedicated migration NHIs that need
-to call migration timestamp override mode. See
-[`Migration Timestamp Overrides`](../migration-timestamp-overrides.md).
+## Routes
 
-### Key Rotation
+| Purpose | Route |
+|---|---|
+| MCP resource | `/mcp/streamable/` |
+| Authorization | `/mcp/authorize` |
+| Token exchange | `/mcp/token` |
+| Dynamic client registration | `/mcp/register` |
+| Revocation | `/mcp/revoke` |
+| Upstream OIDC callback | `/mcp/auth/callback` |
+| Protected-resource metadata | `/.well-known/oauth-protected-resource/mcp/streamable` |
+| Authorization-server metadata | `/.well-known/oauth-authorization-server/mcp` |
+| Local consent | `/api/v1/mcp/oauth/consent/{request_id}` |
 
-Recommended rotation schedule:
-- **Development**: 30 days
-- **Production**: 90 days
-- **Service accounts**: 90-180 days with monitoring
+The outer ASGI application serves discovery first, mounts FastMCP at `/mcp`,
+and places the existing FastAPI application last. A reverse proxy must likewise
+route `/mcp/` and `/.well-known/` before its SPA fallback. Disable buffering for
+`/mcp/`; discovery responses should use normal buffering.
 
-Rotation process:
-1. Create new API key
-2. Update client configuration
-3. Test new key
-4. Revoke old key
-5. Monitor for errors
+## OIDC proxy mode
 
-### Key Revocation
+When Intercept OIDC is enabled, MCP reuses the same discovery URL, client ID,
+client secret, scopes, account-linking policy, JIT policy, and role mapping as
+web login. Register this additional redirect URI in the same Google Workspace,
+Microsoft Entra, or generic OIDC application:
 
-#### Via API
-
-```bash
-curl -X DELETE http://localhost:8000/api/v1/api-keys/{key_id} \
-  -H "Cookie: intercept_session=admin-session"
+```text
+${MCP_OAUTH_PUBLIC_BASE_URL}/mcp/auth/callback
 ```
 
-#### Emergency Revocation
+The client-facing scope is always `mcp:access`. Intercept translates it to the
+configured upstream OIDC scopes and never sends `mcp:access` to the identity
+provider. Google requests offline consent; Entra includes `offline_access`.
+Upstream tokens are never returned to the MCP client.
 
-If a key is compromised:
+## Local OAuth mode
 
-1. **Immediate**: Revoke via API or database
-2. **Database**: `UPDATE api_keys SET revoked_at = NOW() WHERE id = '{key_id}'`
-3. **Monitor**: Check audit logs for unauthorized usage
-4. **Notify**: Alert security team
+When Intercept OIDC is disabled, FastMCP provides OAuth discovery, dynamic
+client registration, S256 PKCE, token exchange, refresh, and revocation. The
+browser is sent through normal Intercept login and a CSRF-protected consent
+screen. Authorization codes are one-use, refresh tokens rotate, and replay
+revokes the whole token family.
 
-## Monitoring
+Users can review and revoke grants in **Profile → Connected MCP Clients**.
 
-### Logging
+## Native OAuth storage
 
-MCP requests are logged with:
-- User ID
-- Authentication type (API key or OAuth)
-- OAuth client name and ID when applicable
-- Tool name
-- Timestamp
-- Status
+OIDC proxy state is stored by `py-key-value-aio`'s native PostgreSQL backend in
+the Alembic-managed `fastmcp_oauth_kv` table. Payloads are wrapped with native
+Fernet encryption. The runtime uses `auto_create=False`; a missing table or a
+storage encryption-key mismatch fails startup clearly.
 
-**Log Location**: Standard application logs
+JWT signing and storage encryption keys are independently derived from
+`SECRET_KEY`. Every replica therefore needs the same `SECRET_KEY`. Do not query
+or edit the FastMCP JSON payloads as application data; connected-client views
+use a separate token-free relational projection.
 
-**Example Log Entry**:
+## API keys
+
+Create keys in **Settings → API Keys** or create a dedicated NHI account through
+the admin API. Copy a newly created key immediately because it is only shown
+once. Example client configuration:
+
+```json
+{
+  "mcpServers": {
+    "intercept": {
+      "url": "http://localhost:8080/mcp/streamable/",
+      "headers": {
+        "Authorization": "Bearer int_your_api_key_here"
+      }
+    }
+  }
+}
 ```
-2026-01-12 10:30:15 - INFO - MCP auth success: user=automation_bot, user_id=abc-123, path=/mcp/streamable/, ip=10.0.0.1
-```
 
-### Metrics
-
-Key metrics to track:
-
-- **Authentication**:
-  - API key validations per minute
-  - OAuth token validations per minute
-  - Authentication failures
-  - Expired/revoked key or token attempts
-
-- **Tool Usage**:
-  - Tool calls per minute
-  - Most used tools
-  - Average response time
-  - Error rate by tool
-
-- **Performance**:
-  - P50/P95/P99 latency
-  - Database connection pool usage
-
-### Alerts
-
-Recommended alerts:
-
-1. **High Authentication Failure Rate**
-   - Threshold: > 10% of requests in 5 minutes
-   - Action: Check for brute force attacks
-
-2. **High Error Rate**
-   - Threshold: > 5% of tool calls in 5 minutes
-   - Action: Check application logs
-
-3. **Slow Response Times**
-   - Threshold: P95 > 1 second
-   - Action: Check database performance
-
-4. **Expired Key Usage**
-   - Threshold: Any attempt with expired key
-   - Action: Notify key owner
+API-key and OAuth principals both reload the local user on every MCP request.
+Inactive or deleted users are rejected, and auditor write restrictions apply to
+both authentication methods.
 
 ## Troubleshooting
 
-### MCP Server Not Starting
+### Browser or client discovers an internal port
 
-**Symptom**: Backend starts but MCP endpoints return 404
-
-**Checks**:
-1. Verify FastMCP is installed: `pip list | grep fastmcp`
-2. Check logs for MCP initialization errors
-3. Verify `/mcp` mount point in app startup
-
-**Solution**:
-```bash
-# Reinstall dependencies
-cd backend
-pip install -r requirements.txt
-
-# Restart
-uvicorn app.main:app --reload
-```
-
-### Authentication Always Fails
-
-**Symptom**: All API keys or OAuth tokens are rejected with 401
-
-**Checks**:
-1. Verify SECRET_KEY is set correctly
-2. Check database connectivity
-3. Verify API key table exists
-4. Check API key service initialization
-5. If using OAuth, verify `MCP_OAUTH_PUBLIC_BASE_URL` exactly matches the MCP resource URL used by the client
-
-**Solution**:
-```bash
-# Check database
-psql $DATABASE_URL -c "SELECT COUNT(*) FROM api_keys;"
-psql $DATABASE_URL -c "SELECT COUNT(*) FROM mcp_oauth_tokens;"
-
-# Verify encryption service
-# Check logs for "Initializing encryption service..." message
-```
-
-### OAuth Browser Opens the Wrong Login URL
-
-**Symptom**: The MCP client opens a browser, but `/login` is served by the backend or returns 404.
-
-**Checks**:
-1. Confirm `MCP_OAUTH_PUBLIC_BASE_URL` points to the backend/OAuth issuer origin.
-2. Confirm `MCP_OAUTH_LOGIN_BASE_URL` points to the frontend origin.
-3. Confirm the frontend allows redirecting back to the backend origin through the `next` parameter.
-
-**Solution**: Set both URLs explicitly when frontend and backend run on different origins:
+Fetch the advertised metadata through the same origin used by the MCP client:
 
 ```bash
-MCP_OAUTH_PUBLIC_BASE_URL=http://localhost:8000
-MCP_OAUTH_LOGIN_BASE_URL=http://localhost:5173
+curl -i http://localhost:8080/.well-known/oauth-protected-resource/mcp/streamable
 ```
 
-### SSE Connection Drops
+It must return JSON and contain only the external origin. If it returns frontend
+HTML, fix the reverse-proxy route order. If it contains another port, correct
+`INTERCEPT_PUBLIC_ORIGIN`/`MCP_OAUTH_PUBLIC_BASE_URL` and restart all backend
+workers.
 
-**Symptom**: MCP connections disconnect unexpectedly
+### OIDC startup fails
 
-**Checks**:
-1. Verify nginx/proxy SSE configuration
-2. Check `proxy_read_timeout` is high enough
-3. Ensure `proxy_buffering off` is set
+An enabled OIDC configuration must include a valid HTTPS discovery URL, client
+ID, and client secret. Intercept deliberately does not fall back to local auth
+when an enabled OIDC configuration is incomplete. Use
+`MCP_OAUTH_ENABLED=false` as the API-key-only recovery switch, or complete the
+OIDC configuration and restart.
 
-**Solution**: Update proxy/load balancer configuration for SSE support
+### Existing experimental credentials stop working
 
-## Next Steps
+The native-auth migration revokes pre-native MCP authorization codes, tokens,
+and consents. Reconnect the MCP client and complete browser authorization again.
 
-- Review [Integration Guide](./integration-guide.md) for client setup
-- See [Tool Reference](./tool-reference.md) for complete tool documentation
+## Related documentation
+
+- [Integration Guide](./integration-guide.md)
+- [Tool Reference](./tool-reference.md)

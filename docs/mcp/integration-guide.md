@@ -8,7 +8,7 @@ The MCP server provides **7 purpose-built tools** designed for AI agent workflow
 - Read operations: `get_summary`, `list_work`, `find_related`, `get_item`, `validate_mermaid`
 - Write operations: `record_triage_decision`, `add_timeline_item`
 
-**MCP URL**: `http://localhost:8000/mcp/streamable/`
+**MCP URL**: `http://localhost:8080/mcp/streamable/`
 
 ## Prerequisites
 
@@ -23,30 +23,40 @@ The MCP server provides **7 purpose-built tools** designed for AI agent workflow
 
 Use OAuth 2.1 with PKCE when a person is using a local agent and should authenticate with their normal Intercept account.
 
-1. Enable MCP OAuth on the backend:
+1. Enable MCP OAuth and define the public Intercept origin:
 
 ```bash
 MCP_OAUTH_ENABLED=true
-MCP_OAUTH_PUBLIC_BASE_URL=http://localhost:8000
-MCP_OAUTH_LOGIN_BASE_URL=http://localhost:5173
+INTERCEPT_PUBLIC_ORIGIN=http://localhost:8080
 ```
+
+Compose passes that origin to `MCP_OAUTH_PUBLIC_BASE_URL`. Set
+`MCP_OAUTH_LOGIN_BASE_URL` separately only when the public login UI is hosted on
+a different origin.
 
 2. Configure your MCP client with the MCP URL:
 
 ```text
-http://localhost:8000/mcp/streamable/
+http://localhost:8080/mcp/streamable/
 ```
 
 3. Start the MCP client connection.
 4. The client discovers Intercept's OAuth metadata and opens your browser.
-5. Sign in to Intercept as usual and approve the local MCP client.
+5. Sign in to Intercept as usual. Local-auth deployments show an Intercept
+   consent screen; OIDC deployments continue through the configured identity
+   provider.
 6. The browser redirects back to the client's loopback callback so the client can exchange the authorization code for tokens. The client/browser completion page should indicate when the tab can be closed.
 
 For the quickstart Docker Compose setup, OAuth is enabled by default with:
 
-- Backend/OAuth issuer: `http://localhost:8000`
+- Intercept/OAuth origin: `http://localhost`
 - Frontend login: `http://localhost`
-- MCP URL: `http://localhost:8000/mcp/streamable/`
+- MCP URL: `http://localhost/mcp/streamable/`
+
+If Intercept uses Google Workspace, Microsoft Entra, or another OIDC provider,
+also register `${MCP_OAUTH_PUBLIC_BASE_URL}/mcp/auth/callback` in that existing
+OIDC application. MCP and web login share the same identity linking, JIT, and
+role-mapping policy. Auth setting changes require a backend restart.
 
 ### Option B: Machine-to-Machine API Key
 
@@ -70,7 +80,7 @@ The API key format is: `int_{random_string}`
 For NHI (Non-Human Identity) accounts:
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/admin/auth/users/nhi \
+curl -X POST http://localhost:8080/api/v1/admin/auth/users/nhi \
   -H "Content-Type: application/json" \
   -H "Cookie: intercept_session=your-session-cookie" \
   -d '{
@@ -109,7 +119,7 @@ Add to your Claude Desktop configuration:
 {
   "mcpServers": {
     "intercept": {
-      "url": "http://localhost:8000/mcp/streamable/",
+      "url": "http://localhost:8080/mcp/streamable/",
       "headers": {
         "Authorization": "Bearer int_your_api_key_here"
       }
@@ -123,12 +133,12 @@ Restart Claude Desktop after updating the configuration.
 #### Other MCP Clients
 
 Any MCP-compatible client can connect using:
-- **URL**: `http://localhost:8000/mcp/streamable/`
+- **URL**: `http://localhost:8080/mcp/streamable/`
 - **Transport**: Streamable HTTP
 - **Human authentication**: OAuth 2.1 with PKCE, discovered from the MCP protected-resource metadata
 - **Machine authentication**: `Authorization: Bearer <api_key>` header
 
-Legacy SSE clients can continue using `/mcp/sse`.
+Streamable HTTP is the only supported transport.
 
 ## Available Tools
 
@@ -311,7 +321,7 @@ await mcp.call_tool("get_summary", {"kind": "alert", "id": "ALT-123"})
 With OAuth enabled, the response includes a `WWW-Authenticate` header similar to:
 
 ```http
-WWW-Authenticate: Bearer resource_metadata="http://localhost:8000/.well-known/oauth-protected-resource/mcp", scope="mcp:access"
+WWW-Authenticate: Bearer resource_metadata="http://localhost:8080/.well-known/oauth-protected-resource/mcp/streamable", scope="mcp:access"
 ```
 
 **Solution**: Use an OAuth-capable MCP client, or configure an API key for machine-to-machine access.

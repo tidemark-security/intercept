@@ -64,8 +64,8 @@ services:
       LANGFLOW__BASE_URL: http://langflow:7860/api/v1
       LANGFLOW__API_KEY: ${LANGFLOW_API_KEY:-dev-langflow-api-key}
       MCP_OAUTH_ENABLED: "true"
-      MCP_OAUTH_PUBLIC_BASE_URL: http://localhost:8000
-      MCP_OAUTH_LOGIN_BASE_URL: http://localhost:5173
+      MCP_OAUTH_PUBLIC_BASE_URL: ${INTERCEPT_PUBLIC_ORIGIN:-http://localhost:8080}
+      MCP_OAUTH_LOGIN_BASE_URL: ${INTERCEPT_PUBLIC_ORIGIN:-http://localhost:8080}
       SECRET_KEY: dev-secret-key-change-in-production
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-dev-initial-admin-password}

@@ -1,12 +1,70 @@
-import os
-from pathlib import Path
+"""Intercept's HTTP composition and worker startup lifecycle."""
 
-from fastapi import FastAPI, HTTPException
+from __future__ import annotations
+
+import logging
+import os
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.routing import APIRoute
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-import logging
+from fastapi_pagination import add_pagination
+from fastapi_pagination.cursor import CursorParams  # noqa: F401 - pagination model registration
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse
+from starlette.routing import Mount
+from starlette.types import Receive, Scope, Send
+
+from app.api.routes import (
+    admin_auth,
+    alerts,
+    api_keys,
+    audit,
+    auth,
+    case_runbooks,
+    cases,
+    context_entries,
+    dashboard,
+    dummy_data,
+    enrichments,
+    features,
+    langflow,
+    link_templates,
+    mcp_oauth,
+    mitre,
+    oidc,
+    queue_status,
+    search,
+    settings as settings_routes,
+    soc_metrics,
+    tasks,
+    triage_recommendations,
+    validation,
+)
+from app.api.routes import websocket as ws_route
+from app.api.routes.admin_auth import (
+    require_admin_user,
+    require_authenticated_user,
+    require_non_auditor_user,
+)
+from app.core.csrf import CSRFMiddleware
+from app.core.database import async_session_factory, engine, test_db_connection
+from app.core.security import initialize_encryption_service
+from app.core.settings_registry import get_local
+from app.mcp.runtime import build_mcp_runtime, load_mcp_auth_snapshot
+from app.mcp.server import mcp  # schema-only server retained for code/tests importing it
+from app.models import models  # noqa: F401 - register SQLModel metadata
+from app.services.enrichment.providers import register_providers
+from app.services.settings_service import SettingsService
+from app.services.task_queue_service import (
+    initialize_task_queue_service,
+    shutdown_task_queue_service,
+)
+from app.services.tasks import register_task_handlers
 
 
 def _read_version() -> str:
@@ -20,104 +78,62 @@ def _read_version() -> str:
 
 
 APP_VERSION = _read_version()
-from fastapi_pagination import add_pagination
-from fastapi_pagination.cursor import CursorParams
 
-from app.core.settings_registry import get_local
-from app.core.csrf import CSRFMiddleware
-from app.core.database import test_db_connection
-from app.core.database import async_session_factory
-from app.core.security import initialize_encryption_service
-from app.api.routes.admin_auth import (
-    require_admin_user,
-    require_authenticated_user,
-    require_non_auditor_user,
-)
-from app.services.task_queue_service import initialize_task_queue_service, shutdown_task_queue_service
-from app.services.enrichment.providers import register_providers
-from app.services.tasks import register_task_handlers
-from app.api.routes import admin_auth, alerts, audit, auth, cases, case_runbooks, dashboard, dummy_data, link_templates, mitre, tasks, settings as settings_routes, langflow, api_keys, soc_metrics, triage_recommendations, search, validation, features, oidc, enrichments, queue_status, context_entries, mcp_oauth
-from app.api.routes import websocket as ws_route
-# from app.api.routes import admin_auth, alerts, auth, cases, dashboard, dummy_data, link_templates, mitre, soc_metrics, tasks, api_keys
-# Import models to register them with SQLModel
-from app.models import models
-
-# Configure logging
 logging.basicConfig(
     level=getattr(logging, get_local("log_level").upper()),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def app_lifespan(app: FastAPI):
-    """Application lifespan manager."""
-    # Startup
-    logger.info("Starting Tidemark Intercept...")
-    
-    # Initialize encryption service
-    logger.info("Initializing encryption service...")
-    initialize_encryption_service(get_local("secret_key").encode())
-    
-    # Test database connection first
-    logger.info("Testing database connection...")
-    if not await test_db_connection():
-        raise RuntimeError("Database connection failed - see error message above for solutions")
-    
-    # Initialize task queue service (for enqueueing tasks)
-    # Note: The actual worker processing runs in separate worker containers
-    # See worker.py and dev/docker-compose.yml worker service
-    register_providers()
+async def app_lifespan(_app: FastAPI):
+    """Initialize and close Intercept's non-MCP application resources."""
 
-    logger.info("Initializing task queue service...")
+    logger.info("Starting Tidemark Intercept...")
+    initialize_encryption_service(get_local("secret_key").encode())
+    if not await test_db_connection():
+        raise RuntimeError(
+            "Database connection failed - see error message above for solutions"
+        )
+
+    register_providers()
     try:
         await initialize_task_queue_service(get_local("database.url"))
         await register_task_handlers()
-        logger.info("✅ Task queue service initialized (enqueue-only mode)")
-    except Exception as e:
-        logger.warning(f"Task queue service initialization failed: {e}")
-        logger.warning("Continuing without background task support")
-    
-    # Start real-time notification listener (LISTEN/NOTIFY)
+        logger.info("Task queue service initialized (enqueue-only mode)")
+    except Exception as exc:
+        logger.warning("Continuing without background task support: %s", exc)
+
     from app.services.realtime_service import notification_listener
+
     try:
         await notification_listener.start()
-        logger.info("✅ Real-time notification listener started")
-    except Exception as e:
-        logger.warning(f"Notification listener failed to start: {e}")
-        logger.warning("Continuing without real-time notifications")
+        logger.info("Real-time notification listener started")
+    except Exception as exc:
+        logger.warning("Continuing without real-time notifications: %s", exc)
 
-    logger.info("🚀 Tidemark Intercept is ready!")
-    
-    yield
-    
-    # Shutdown
-    logger.info("Shutting down Tidemark Intercept...")
-    
-    # Stop notification listener
     try:
-        await notification_listener.stop()
-        logger.info("✅ Notification listener stopped")
-    except Exception as e:
-        logger.warning(f"Notification listener shutdown error: {e}")
-    
-    # Shutdown task queue
-    try:
-        await shutdown_task_queue_service()
-        logger.info("✅ Task queue service shut down")
-    except Exception as e:
-        logger.warning(f"Task queue shutdown error: {e}")
+        yield
+    finally:
+        logger.info("Shutting down Tidemark Intercept...")
+        try:
+            await notification_listener.stop()
+        except Exception as exc:
+            logger.warning("Notification listener shutdown error: %s", exc)
+        try:
+            await shutdown_task_queue_service()
+        except Exception as exc:
+            logger.warning("Task queue shutdown error: %s", exc)
 
 
-# Create FastAPI application (without lifespan initially - will be set after MCP setup)
-app = FastAPI(
+api_app = FastAPI(
     title="Tidemark Intercept",
     description="Cyber Security Case Management and Alert Triage Platform",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
-    redirect_slashes=True  # Handle trailing slash redirects automatically
+    redirect_slashes=True,
 )
 
 
@@ -128,55 +144,51 @@ AUTH_DEPENDENCIES = {
 }
 
 
-def _has_auth_dependency(dependant) -> bool:
-    for dependency in dependant.dependencies:
-        if dependency.call in AUTH_DEPENDENCIES or _has_auth_dependency(dependency):
-            return True
-    return False
-
-
-def custom_openapi() -> dict:
-    if app.openapi_schema:
-        return app.openapi_schema
-
-    openapi_schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
+def _has_auth_dependency(dependant: Any) -> bool:
+    return any(
+        dependency.call in AUTH_DEPENDENCIES
+        or _has_auth_dependency(dependency)
+        for dependency in dependant.dependencies
     )
 
-    components = openapi_schema.setdefault("components", {})
-    security_schemes = components.setdefault("securitySchemes", {})
-    security_schemes["BearerAuth"] = {
+
+def custom_openapi() -> dict[str, Any]:
+    if api_app.openapi_schema:
+        return api_app.openapi_schema
+
+    schema = get_openapi(
+        title=api_app.title,
+        version=api_app.version,
+        description=api_app.description,
+        routes=api_app.routes,
+    )
+    schema.setdefault("components", {}).setdefault("securitySchemes", {})[
+        "BearerAuth"
+    ] = {
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "API Key",
-        "description": "Enter a Tidemark API key. Swagger will send it as Authorization: Bearer <key>.",
+        "description": (
+            "Enter a Tidemark API key. Swagger sends it as Authorization: Bearer <key>."
+        ),
     }
-
-    for route in app.routes:
+    for route in api_app.routes:
         if not isinstance(route, APIRoute) or not _has_auth_dependency(route.dependant):
             continue
-
-        path_item = openapi_schema.get("paths", {}).get(route.path_format)
+        path_item = schema.get("paths", {}).get(route.path_format)
         if not path_item:
             continue
-
         for method in route.methods:
             operation = path_item.get(method.lower())
-            if operation is None:
-                continue
-            operation["security"] = [{"BearerAuth": []}]
+            if operation is not None:
+                operation["security"] = [{"BearerAuth": []}]
 
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
+    api_app.openapi_schema = schema
+    return schema
 
 
-app.openapi = custom_openapi
-
-# Configure CORS
-app.add_middleware(
+api_app.openapi = custom_openapi
+api_app.add_middleware(
     CORSMiddleware,
     allow_origins=get_local("cors_origins"),
     allow_credentials=True,
@@ -193,340 +205,163 @@ app.add_middleware(
     ],
     expose_headers=["*"],
 )
-
-app.add_middleware(
+api_app.add_middleware(
     CSRFMiddleware,
     session_factory_provider=lambda: async_session_factory,
 )
 
-# Include routers BEFORE MCP generation so routes are available
-app.include_router(cases.router, prefix="/api/v1")
-app.include_router(case_runbooks.router, prefix="/api/v1")
-app.include_router(alerts.router, prefix="/api/v1")
-app.include_router(triage_recommendations.router, prefix="/api/v1")
-app.include_router(context_entries.router, prefix="/api/v1")
-app.include_router(tasks.router, prefix="/api/v1")
-app.include_router(auth.router, prefix="/api/v1")
-app.include_router(oidc.router, prefix="/api/v1")
-app.include_router(mcp_oauth.router)
-app.include_router(admin_auth.authenticated_router, prefix="/api/v1")
-app.include_router(admin_auth.router, prefix="/api/v1")
-app.include_router(audit.router, prefix="/api/v1")
-app.include_router(dummy_data.router, prefix="/api/v1")
-app.include_router(link_templates.router, prefix="/api/v1")
-app.include_router(link_templates.personal_router, prefix="/api/v1")
-app.include_router(mitre.router, prefix="/api/v1")
-app.include_router(dashboard.router, prefix="/api/v1")
-app.include_router(settings_routes.authenticated_router, prefix="/api/v1")
-app.include_router(settings_routes.router, prefix="/api/v1")
-app.include_router(enrichments.router, prefix="/api/v1")
-app.include_router(enrichments.admin_router, prefix="/api/v1")
-app.include_router(queue_status.router, prefix="/api/v1")
-app.include_router(langflow.router, prefix="/api/v1")
-app.include_router(soc_metrics.router, prefix="/api/v1")
-app.include_router(api_keys.router, prefix="/api/v1")
-app.include_router(mcp_oauth.management_router, prefix="/api/v1")
-app.include_router(search.router, prefix="/api/v1")
-app.include_router(validation.router, prefix="/api/v1")
-app.include_router(features.router, prefix="/api/v1")
-app.include_router(ws_route.router, prefix="/api/v1")
-
-# Add pagination support
-add_pagination(app)
-
-# Import and use explicit MCP server (replaces auto-generated from_fastapi)
-# Part of T014 (Phase 2: MCP Server Skeleton)
-from app.mcp.server import mcp
-
-# Create the MCP ASGI apps.
-#
-# SSE remains on the legacy Intercept contract:
-#   - /mcp/sse
-#   - /mcp/messages
-#
-# Streamable HTTP is exposed as a separate explicit mount at:
-#   - /mcp/streamable/
-#
-# Mounting it directly keeps the public path contract simple and avoids
-# custom path rewriting between nested ASGI apps.
-mcp_sse_app = mcp.http_app(path="/sse", transport="sse")
-mcp_streamable_app = mcp.http_app(path="/", transport="streamable-http")
+api_app.include_router(cases.router, prefix="/api/v1")
+api_app.include_router(case_runbooks.router, prefix="/api/v1")
+api_app.include_router(alerts.router, prefix="/api/v1")
+api_app.include_router(triage_recommendations.router, prefix="/api/v1")
+api_app.include_router(context_entries.router, prefix="/api/v1")
+api_app.include_router(tasks.router, prefix="/api/v1")
+api_app.include_router(auth.router, prefix="/api/v1")
+api_app.include_router(oidc.router, prefix="/api/v1")
+api_app.include_router(admin_auth.authenticated_router, prefix="/api/v1")
+api_app.include_router(admin_auth.router, prefix="/api/v1")
+api_app.include_router(audit.router, prefix="/api/v1")
+api_app.include_router(dummy_data.router, prefix="/api/v1")
+api_app.include_router(link_templates.router, prefix="/api/v1")
+api_app.include_router(link_templates.personal_router, prefix="/api/v1")
+api_app.include_router(mitre.router, prefix="/api/v1")
+api_app.include_router(dashboard.router, prefix="/api/v1")
+api_app.include_router(settings_routes.authenticated_router, prefix="/api/v1")
+api_app.include_router(settings_routes.router, prefix="/api/v1")
+api_app.include_router(enrichments.router, prefix="/api/v1")
+api_app.include_router(enrichments.admin_router, prefix="/api/v1")
+api_app.include_router(queue_status.router, prefix="/api/v1")
+api_app.include_router(langflow.router, prefix="/api/v1")
+api_app.include_router(soc_metrics.router, prefix="/api/v1")
+api_app.include_router(api_keys.router, prefix="/api/v1")
+api_app.include_router(mcp_oauth.consent_router, prefix="/api/v1")
+api_app.include_router(mcp_oauth.management_router, prefix="/api/v1")
+api_app.include_router(search.router, prefix="/api/v1")
+api_app.include_router(validation.router, prefix="/api/v1")
+api_app.include_router(features.router, prefix="/api/v1")
+api_app.include_router(ws_route.router, prefix="/api/v1")
+add_pagination(api_app)
 
 
-# ---------------------------------------------------------------------------
-# MCP API Key Authentication Middleware
-# ---------------------------------------------------------------------------
-
-from starlette.requests import Request as StarletteRequest
-from starlette.responses import JSONResponse
-from app.services.api_key_service import (
-    api_key_service,
-    ApiKeyNotFoundError,
-    ApiKeyExpiredError,
-    ApiKeyRevokedError,
-    UserInactiveError,
-    AuditContext,
-)
-from app.services.mcp_oauth_service import (
-    ACCESS_TOKEN_PREFIX,
-    OAuthConfigurationError,
-    OAuthDisabledError,
-    OAuthInactiveUserError,
-    OAuthInvalidClientError,
-    OAuthInvalidTokenError,
-    mcp_oauth_service,
-)
-
-
-def _extract_api_key_from_headers(headers: dict) -> str | None:
-    """Extract API key from request headers."""
-    # Check Authorization header first (Bearer token)
-    auth_header = headers.get(b"authorization", b"").decode()
-    if auth_header:
-        parts = auth_header.split(" ", 1)
-        if len(parts) == 2 and parts[0].lower() == "bearer":
-            return parts[1].strip()
-    
-    # Fall back to X-API-Key header
-    api_key = headers.get(b"x-api-key", b"").decode()
-    if api_key:
-        return api_key.strip()
-    
-    return None
-
-
-class MCPApiKeyAuthMiddleware:
-    """ASGI middleware that accepts API keys or MCP OAuth bearer tokens."""
-    
-    def __init__(self, app):
-        self.app = app
-    
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
-            # Pass through non-HTTP requests (like lifespan)
-            await self.app(scope, receive, send)
-            return
-        
-        # Extract headers as dict
-        headers = dict(scope.get("headers", []))
-        credential = _extract_api_key_from_headers(headers)
-        
-        # Get path for logging
-        path = scope.get("path", "unknown")
-        
-        if not credential:
-            logger.warning(f"MCP auth failed: No credential provided for {path}")
-            await self._send_missing_credential_response(scope, receive, send, path)
-            return
-        
-        # Validate the API key
-        client_host = None
-        
-        try:
-            async with async_session_factory() as db:
-                # Build audit context
-                if scope.get("client"):
-                    client_host = scope["client"][0]
-                user_agent = headers.get(b"user-agent", b"").decode()
-                
-                audit_context = AuditContext(
-                    ip_address=client_host,
-                    user_agent=user_agent,
-                    correlation_id=headers.get(b"x-request-id", b"").decode() or None,
-                )
-                
-                credential_from_x_api_key = b"x-api-key" in headers
-                is_oauth_candidate = credential.startswith(ACCESS_TOKEN_PREFIX)
-                is_api_key_candidate = credential_from_x_api_key or not is_oauth_candidate
-
-                if is_api_key_candidate:
-                    result = await api_key_service.validate_api_key(
-                        db,
-                        raw_key=credential,
-                        context=audit_context,
-                    )
-                    authenticated_user = result.user
-                    auth_type = "api_key"
-                    client_label = None
-                elif is_oauth_candidate:
-                    result = await mcp_oauth_service.validate_access_token(
-                        db,
-                        token=credential,
-                        request_path=path,
-                        context=audit_context,
-                    )
-                    authenticated_user = result.user
-                    auth_type = "oauth"
-                    client_label = result.client.client_name
-                else:
-                    raise ApiKeyNotFoundError()
-
-                await db.commit()
-                
-                # Store user in scope for potential downstream use
-                scope["mcp_user"] = authenticated_user
-                scope["mcp_auth_type"] = auth_type
-                
-                # Log successful authentication
-                logger.info(
-                    f"MCP auth success: user={authenticated_user.username}, "
-                    f"user_id={authenticated_user.id}, auth_type={auth_type}, "
-                    f"client={client_label}, path={path}, ip={client_host}"
-                )
-                
-        except ApiKeyNotFoundError:
-            logger.warning(f"MCP auth failed: Invalid API key for {path}, ip={client_host}")
-            response = JSONResponse(status_code=401, content={"message": "Invalid API key"})
-            await response(scope, receive, send)
-            return
-        except ApiKeyExpiredError:
-            logger.warning(f"MCP auth failed: Expired API key for {path}, ip={client_host}")
-            response = JSONResponse(status_code=401, content={"message": "API key has expired"})
-            await response(scope, receive, send)
-            return
-        except ApiKeyRevokedError:
-            logger.warning(f"MCP auth failed: Revoked API key for {path}, ip={client_host}")
-            response = JSONResponse(status_code=401, content={"message": "API key has been revoked"})
-            await response(scope, receive, send)
-            return
-        except UserInactiveError:
-            logger.warning(f"MCP auth failed: Inactive user for {path}, ip={client_host}")
-            response = JSONResponse(status_code=403, content={"message": "User account is not active"})
-            await response(scope, receive, send)
-            return
-        except OAuthInvalidTokenError as e:
-            logger.warning(f"MCP auth failed: Invalid OAuth token for {path}, ip={client_host}")
-            response = JSONResponse(
-                status_code=401,
-                content={"message": e.description},
-                headers=await self._oauth_challenge_headers(path),
-            )
-            await response(scope, receive, send)
-            return
-        except OAuthDisabledError:
-            logger.warning(f"MCP auth failed: OAuth token used while MCP OAuth disabled for {path}, ip={client_host}")
-            response = JSONResponse(status_code=401, content={"message": "Invalid API key"})
-            await response(scope, receive, send)
-            return
-        except OAuthConfigurationError as e:
-            logger.error(f"MCP OAuth configuration error: {e}, path={path}, ip={client_host}", exc_info=True)
-            response = JSONResponse(status_code=500, content={"message": "MCP OAuth configuration error"})
-            await response(scope, receive, send)
-            return
-        except OAuthInvalidClientError:
-            logger.warning(f"MCP auth failed: Invalid OAuth client for {path}, ip={client_host}")
-            response = JSONResponse(
-                status_code=401,
-                content={"message": "Invalid OAuth client"},
-                headers=await self._oauth_challenge_headers(path),
-            )
-            await response(scope, receive, send)
-            return
-        except OAuthInactiveUserError:
-            logger.warning(f"MCP auth failed: Inactive OAuth user for {path}, ip={client_host}")
-            response = JSONResponse(status_code=403, content={"message": "User account is not active"})
-            await response(scope, receive, send)
-            return
-        except Exception as e:
-            logger.error(f"MCP auth error: {e}, path={path}, ip={client_host}", exc_info=True)
-            response = JSONResponse(status_code=500, content={"message": "Authentication error"})
-            await response(scope, receive, send)
-            return
-        
-        # Auth succeeded, pass through to MCP app
-        await self.app(scope, receive, send)
-
-    async def _send_missing_credential_response(self, scope, receive, send, path: str) -> None:
-        headers = await self._oauth_challenge_headers(path)
-        if headers:
-            response = JSONResponse(
-                status_code=401,
-                content={
-                    "message": "Authentication required. Use an API key or complete MCP OAuth authorization."
-                },
-                headers=headers,
-            )
-        else:
-            response = JSONResponse(
-                status_code=401,
-                content={"message": "API key required. Use Authorization: Bearer <key> or X-API-Key header."},
-            )
-        await response(scope, receive, send)
-
-    async def _oauth_challenge_headers(self, path: str) -> dict[str, str]:
-        try:
-            async with async_session_factory() as db:
-                settings = await mcp_oauth_service.get_settings(db)
-                if not settings.enabled:
-                    return {}
-                metadata_url = mcp_oauth_service.resource_metadata_url_for_path(settings, path)
-        except Exception:
-            return {}
-
-        return {
-            "WWW-Authenticate": (
-                f'Bearer resource_metadata="{metadata_url}", scope="mcp:access"'
-            )
-        }
-
-
-# Wrap MCP transport apps with shared auth middleware
-authenticated_mcp_sse_app = MCPApiKeyAuthMiddleware(mcp_sse_app)
-authenticated_mcp_streamable_app = MCPApiKeyAuthMiddleware(mcp_streamable_app)
-
-
-# Combine app and MCP lifespans
-@asynccontextmanager
-async def combined_lifespan(app: FastAPI):
-    """Combined lifespan manager for app and MCP server."""
-    async with app_lifespan(app):
-        async with mcp_sse_app.lifespan(app):
-            async with mcp_streamable_app.lifespan(app):
-                yield
-
-
-# Set the combined lifespan on the app
-app.router.lifespan_context = combined_lifespan
-
-# Mount the authenticated MCP servers.
-# Mount the more specific streamable endpoint first so it is not shadowed by
-# the broader /mcp SSE mount.
-app.mount("/mcp/streamable", authenticated_mcp_streamable_app)
-app.mount("/mcp", authenticated_mcp_sse_app)
-
-
-@app.get("/")
-async def root():
-    """Root endpoint."""
+@api_app.get("/")
+async def root() -> dict[str, str]:
     return {
         "message": "Tidemark Intercept API",
         "version": APP_VERSION,
         "docs": "/docs",
-        "mcp": "/mcp"
+        "mcp": "/mcp/streamable/",
     }
 
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint."""
+@api_app.get("/health")
+async def health_check() -> dict[str, str]:
     return {
         "status": "healthy",
         "service": "intercept-case-management",
-        "version": APP_VERSION
+        "version": APP_VERSION,
     }
 
 
-@app.options("/{path:path}")
-async def options_handler(path: str):
-    """Handle CORS preflight requests."""
+@api_app.options("/{path:path}")
+async def options_handler(path: str) -> dict[str, str]:
+    _ = path
     return {"message": "OK"}
 
 
-@app.exception_handler(Exception)
-async def global_exception_handler(request, exc):
-    """Global exception handler."""
-    logger.error(f"Unhandled exception: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"},
+@api_app.exception_handler(Exception)
+async def global_exception_handler(request: Any, exc: Exception) -> JSONResponse:
+    _ = request
+    logger.error("Unhandled exception: %s", exc)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
+class RuntimeApplication:
+    """Delegate HTTP to the startup-built composition while owning one lifespan."""
+
+    def __init__(self, fallback_app: Any, lifespan: Any) -> None:
+        self._fallback_app = fallback_app
+        self._http_app = fallback_app
+        self._lifespan_app = Starlette(lifespan=lifespan)
+        self.runtime: Any | None = None
+
+    def install(self, http_app: Any, runtime: Any) -> None:
+        self._http_app = http_app
+        self.runtime = runtime
+
+    def reset(self) -> None:
+        self._http_app = self._fallback_app
+        self.runtime = None
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "lifespan":
+            await self._lifespan_app(scope, receive, send)
+            return
+        await self._http_app(scope, receive, send)
+
+
+def compose_http_app(existing_api_app: FastAPI, runtime: Any) -> Starlette:
+    """Order discovery and MCP routes ahead of the API/SPA application."""
+
+    return Starlette(
+        routes=[
+            *runtime.well_known_routes,
+            Mount("/mcp", app=runtime.mounted_app),
+            Mount("/", app=existing_api_app),
+        ]
     )
+
+
+def _local_provider_factory(snapshot: Any) -> Any:
+    """Late import keeps local provider persistence out of API-only startup."""
+
+    from app.mcp.local_oauth_provider import create_local_oauth_provider
+
+    return create_local_oauth_provider(
+        snapshot=snapshot,
+        session_factory=async_session_factory,
+    )
+
+
+@asynccontextmanager
+async def outer_lifespan(_lifespan_app: Starlette):
+    """Build auth topology before FastMCP captures routes and middleware."""
+
+    async with app_lifespan(api_app):
+        async with async_session_factory() as db:
+            snapshot = await load_mcp_auth_snapshot(SettingsService(db))
+
+        database_url = engine.url.render_as_string(hide_password=False)
+        runtime = await build_mcp_runtime(
+            snapshot=snapshot,
+            database_url=database_url,
+            secret_key=str(get_local("secret_key")),
+            session_factory=async_session_factory,
+            local_provider_factory=_local_provider_factory,
+        )
+        composed = compose_http_app(api_app, runtime)
+        api_app.state.mcp_runtime = runtime
+        app.install(composed, runtime)
+        try:
+            async with runtime.http_app.lifespan(runtime.http_app):
+                logger.info(
+                    "MCP ready: mode=%s resource=%s",
+                    snapshot.mode.value,
+                    snapshot.resource_url,
+                )
+                yield
+        finally:
+            app.reset()
+            api_app.state.mcp_runtime = None
+
+
+app = RuntimeApplication(api_app, outer_lifespan)
+
+
+__all__ = [
+    "api_app",
+    "app",
+    "app_lifespan",
+    "compose_http_app",
+    "mcp",
+    "outer_lifespan",
+]

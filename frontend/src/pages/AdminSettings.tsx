@@ -76,6 +76,9 @@ const EMPTY_TAGS: string[] = [];
 
 const LANGFLOW_SETUP_DEFAULT_USERNAME = "tidemark_ai";
 
+const MCP_AUTH_RESTART_DESCRIPTION =
+  "FastMCP selects its OIDC proxy or local OAuth provider when the backend starts. Restart every backend process after changing OIDC or MCP authentication settings.";
+
 const MAXMIND_DATABASES_QUERY_KEY = ["admin", "maxmind", "databases"] as const;
 const ENRICHMENT_PROVIDER_STATUSES_QUERY_KEY = [
   "admin",
@@ -320,8 +323,6 @@ const deriveBackendApiBaseUrlFromMcpUrl = (
 
     if (normalizedPath.endsWith("/mcp/streamable")) {
       parsed.pathname = normalizedPath.slice(0, -15) || "/";
-    } else if (normalizedPath.endsWith("/mcp/sse")) {
-      parsed.pathname = normalizedPath.slice(0, -8) || "/";
     }
 
     return parsed.toString().replace(/\/$/, "");
@@ -1737,6 +1738,13 @@ function AdminSettings() {
                           ? "OIDC sign-in swaps the external token for the app's normal session cookie."
                           : "Enable OIDC to route sign-in through your external identity provider."
                       }
+                      isDarkTheme={isDarkTheme}
+                    />
+
+                    <StatusCallout
+                      variant="warning"
+                      title="Backend restart required"
+                      description={MCP_AUTH_RESTART_DESCRIPTION}
                       isDarkTheme={isDarkTheme}
                     />
 
@@ -4860,6 +4868,14 @@ function AdvancedCategorySection({
 
       {open && (
         <div className="flex flex-col gap-3 pb-4 pl-6">
+          {category === "mcp" && (
+            <StatusCallout
+              variant="warning"
+              title="Backend restart required"
+              description={MCP_AUTH_RESTART_DESCRIPTION}
+              isDarkTheme={isDarkTheme}
+            />
+          )}
           {catSettings.map((s) => (
             <AdvancedSettingRow key={s.key} setting={s} onSave={onSave} />
           ))}

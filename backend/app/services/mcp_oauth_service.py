@@ -10,14 +10,12 @@ import hashlib
 import hmac
 import ipaddress
 import secrets
-import socket
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, cast
 from urllib.parse import quote, urlencode, urlparse
 
-import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import UserStatus
@@ -26,6 +24,7 @@ from app.models.models import (
     MCPOAuthClient,
     MCPOAuthClientRead,
     MCPOAuthConsent,
+    MCPOAuthProviderGrantReference,
     MCPOAuthToken,
     UserAccount,
 )
@@ -38,7 +37,6 @@ ACCESS_TOKEN_PREFIX = "tmoa_"
 REFRESH_TOKEN_PREFIX = "tmor_"
 AUTH_CODE_PREFIX = "tmoc_"
 CODE_TTL_SECONDS = 300
-CLIENT_ID_PREFIX = "mcp_client_"
 MIN_CODE_VERIFIER_LENGTH = 43
 MAX_CODE_VERIFIER_LENGTH = 128
 
@@ -161,11 +159,6 @@ class MCPOAuthService:
             return f"{settings.public_base_url}/mcp/streamable/"
         return f"{settings.public_base_url}/mcp"
 
-    def resource_metadata_url_for_path(self, settings: MCPOAuthSettings, path: str) -> str:
-        if path.startswith("/mcp/streamable"):
-            return f"{settings.public_base_url}/.well-known/oauth-protected-resource/mcp/streamable"
-        return f"{settings.public_base_url}/.well-known/oauth-protected-resource/mcp"
-
     def allowed_resource_urls(self, settings: MCPOAuthSettings) -> set[str]:
         base = settings.public_base_url
         return {
@@ -175,61 +168,6 @@ class MCPOAuthService:
             f"{base}/mcp/streamable/",
         }
 
-    async def protected_resource_metadata(self, db: AsyncSession, path: str) -> dict[str, Any]:
-        settings = await self.get_enabled_settings(db)
-        resource = self.resource_url_for_path(settings, path)
-        return {
-            "resource": resource,
-            "authorization_servers": [settings.public_base_url],
-            "scopes_supported": [MCP_OAUTH_SCOPE],
-            "bearer_methods_supported": ["header"],
-            "resource_name": "Tidemark Intercept MCP",
-            "resource_documentation": f"{settings.public_base_url}/docs",
-        }
-
-    async def authorization_server_metadata(self, db: AsyncSession) -> dict[str, Any]:
-        settings = await self.get_enabled_settings(db)
-        base = settings.public_base_url
-        return {
-            "issuer": base,
-            "authorization_endpoint": f"{base}/oauth/authorize",
-            "token_endpoint": f"{base}/oauth/token",
-            "registration_endpoint": f"{base}/oauth/register",
-            "revocation_endpoint": f"{base}/oauth/revoke",
-            "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code", "refresh_token"],
-            "code_challenge_methods_supported": ["S256"],
-            "token_endpoint_auth_methods_supported": ["none"],
-            "scopes_supported": [MCP_OAUTH_SCOPE],
-        }
-
-    async def register_dynamic_client(
-        self,
-        db: AsyncSession,
-        *,
-        payload: dict[str, Any],
-        context: Optional[AuditContext] = None,
-    ) -> MCPOAuthClient:
-        await self.get_enabled_settings(db)
-        client = await self._upsert_client_from_metadata(
-            db,
-            metadata=payload,
-            client_id=f"{CLIENT_ID_PREFIX}{secrets.token_urlsafe(24)}",
-        )
-        await get_audit_service(db).log_event(
-            event_type="auth.mcp_oauth.client_registered",
-            entity_type="mcp_oauth_client",
-            entity_id=str(client.id),
-            description="MCP OAuth client registered",
-            new_value={
-                "client_id": client.client_id,
-                "client_name": client.client_name,
-                "redirect_uris": client.redirect_uris,
-            },
-            context=context,
-        )
-        return client
-
     async def resolve_client(self, db: AsyncSession, client_id: str) -> MCPOAuthClient:
         result = await db.execute(
             select(MCPOAuthClient).where(cast(Any, MCPOAuthClient.client_id == client_id))
@@ -237,14 +175,6 @@ class MCPOAuthService:
         client = result.scalar_one_or_none()
         if client and client.revoked_at is None:
             return client
-
-        parsed = urlparse(client_id)
-        if parsed.scheme == "https" and parsed.netloc:
-            metadata = await self._fetch_client_metadata(client_id)
-            if metadata.get("client_id") != client_id:
-                raise OAuthInvalidClientError()
-            return await self._upsert_client_from_metadata(db, metadata=metadata, client_id=client_id)
-
         raise OAuthInvalidClientError()
 
     async def create_authorization_code(
@@ -484,7 +414,9 @@ class MCPOAuthService:
         await self.get_enabled_settings(db)
         token_hash = self._hash_secret(token)
         result = await db.execute(
-            select(MCPOAuthToken).where(cast(Any, MCPOAuthToken.token_hash == token_hash))
+            select(MCPOAuthToken)
+            .where(cast(Any, MCPOAuthToken.token_hash == token_hash))
+            .with_for_update()
         )
         oauth_token = result.scalar_one_or_none()
         if oauth_token is None:
@@ -495,8 +427,17 @@ class MCPOAuthService:
                 raise OAuthInvalidClientError()
         now = datetime.now(timezone.utc)
         oauth_token.revoked_at = now
-        if oauth_token.token_type == "refresh":
-            await self._revoke_refresh_family(db, refresh_token_id=oauth_token.id, now=now)
+        refresh_token_id = (
+            oauth_token.id
+            if oauth_token.token_type == "refresh"
+            else oauth_token.refresh_token_id
+        )
+        if refresh_token_id is not None:
+            await self._revoke_refresh_family(
+                db,
+                refresh_token_id=refresh_token_id,
+                now=now,
+            )
         await get_audit_service(db).log_event(
             event_type="auth.mcp_oauth.token_revoked",
             entity_type="mcp_oauth_token",
@@ -522,7 +463,11 @@ class MCPOAuthService:
         rows = result.all()
         connected: list[MCPOAuthClientRead] = []
         for consent, client in rows:
-            last_used = await self._last_used_at(db, user=user, client=client)
+            last_used = (
+                consent.last_used_at
+                if consent.provider_mode == "oidc"
+                else await self._last_used_at(db, user=user, client=client)
+            )
             connected.append(
                 MCPOAuthClientRead(
                     id=consent.id,
@@ -546,19 +491,27 @@ class MCPOAuthService:
         consent_id: Any,
         context: Optional[AuditContext] = None,
     ) -> None:
-        result = await db.execute(
-            select(MCPOAuthConsent, MCPOAuthClient)
-            .join(MCPOAuthClient, cast(Any, MCPOAuthClient.id == MCPOAuthConsent.client_db_id))
-            .where(cast(Any, MCPOAuthConsent.id == consent_id))
-            .where(cast(Any, MCPOAuthConsent.user_id == user.id))
+        consent, client = await self.resolve_connected_client(
+            db,
+            user=user,
+            consent_id=consent_id,
         )
-        row = result.first()
-        if row is None:
-            raise OAuthInvalidRequestError("Connected MCP client not found")
-        consent, client = row
         now = datetime.now(timezone.utc)
         consent.revoked_at = now
-        await self._revoke_user_client_tokens(db, user=user, client=client, now=now)
+        if consent.provider_mode == "local":
+            await self._revoke_user_client_tokens(
+                db,
+                user=user,
+                client=client,
+                now=now,
+            )
+        else:
+            references = await self.list_active_provider_grant_references(
+                db,
+                consent_id=consent.id,
+            )
+            for reference in references:
+                reference.revoked_at = now
         await get_audit_service(db).log_event(
             event_type="auth.mcp_oauth.client_revoked",
             entity_type="mcp_oauth_client",
@@ -568,6 +521,53 @@ class MCPOAuthService:
             performed_by=user.username,
             context=context,
         )
+
+    async def resolve_connected_client(
+        self,
+        db: AsyncSession,
+        *,
+        user: UserAccount,
+        consent_id: Any,
+    ) -> tuple[MCPOAuthConsent, MCPOAuthClient]:
+        """Load a user-owned connected-client projection for provider actions."""
+
+        result = await db.execute(
+            select(MCPOAuthConsent, MCPOAuthClient)
+            .join(MCPOAuthClient, cast(Any, MCPOAuthClient.id == MCPOAuthConsent.client_db_id))
+            .where(cast(Any, MCPOAuthConsent.id == consent_id))
+            .where(cast(Any, MCPOAuthConsent.user_id == user.id))
+        )
+        row = result.first()
+        if row is None:
+            raise OAuthInvalidRequestError("Connected MCP client not found")
+        return row[0], row[1]
+
+    async def list_active_provider_grant_references(
+        self,
+        db: AsyncSession,
+        *,
+        consent_id: Any,
+    ) -> list[MCPOAuthProviderGrantReference]:
+        """Lock active native-provider family references for user revocation."""
+
+        result = await db.execute(
+            select(MCPOAuthProviderGrantReference)
+            .where(
+                cast(
+                    Any,
+                    MCPOAuthProviderGrantReference.consent_id == consent_id,
+                )
+            )
+            .where(
+                cast(
+                    Any,
+                    MCPOAuthProviderGrantReference.revoked_at == None,  # noqa: E711
+                )
+            )
+            .order_by(cast(Any, MCPOAuthProviderGrantReference.created_at))
+            .with_for_update()
+        )
+        return list(result.scalars().all())
 
     async def _issue_token_pair(
         self,
@@ -657,6 +657,14 @@ class MCPOAuthService:
         else:
             consent.revoked_at = None
             consent.last_authorized_at = now
+            consent.provider_mode = "local"
+            consent.provider_reference_hash = None
+            references = await self.list_active_provider_grant_references(
+                db,
+                consent_id=consent.id,
+            )
+            for reference in references:
+                reference.revoked_at = now
         return consent
 
     async def _get_consent(
@@ -696,8 +704,72 @@ class MCPOAuthService:
         refresh_token_id: Any,
         now: datetime,
     ) -> None:
+        """Revoke a complete rotated refresh-token family and its access tokens."""
+
         result = await db.execute(
-            select(MCPOAuthToken).where(cast(Any, MCPOAuthToken.refresh_token_id == refresh_token_id))
+            select(MCPOAuthToken)
+            .where(cast(Any, MCPOAuthToken.id == refresh_token_id))
+            .with_for_update()
+        )
+        refresh = result.scalar_one_or_none()
+        if refresh is None or refresh.token_type != "refresh":
+            return
+
+        family_ids = {refresh.id}
+        ancestor = refresh
+        while (
+            ancestor.rotated_from_token_id is not None
+            and ancestor.rotated_from_token_id not in family_ids
+        ):
+            result = await db.execute(
+                select(MCPOAuthToken)
+                .where(
+                    cast(
+                        Any,
+                        MCPOAuthToken.id == ancestor.rotated_from_token_id,
+                    )
+                )
+                .with_for_update()
+            )
+            parent = result.scalar_one_or_none()
+            if parent is None or parent.token_type != "refresh":
+                break
+            family_ids.add(parent.id)
+            ancestor = parent
+
+        frontier = set(family_ids)
+        while frontier:
+            result = await db.execute(
+                select(MCPOAuthToken)
+                .where(cast(Any, MCPOAuthToken.token_type == "refresh"))
+                .where(
+                    cast(
+                        Any,
+                        MCPOAuthToken.rotated_from_token_id.in_(frontier),
+                    )
+                )
+                .with_for_update()
+            )
+            descendants = [
+                token
+                for token in result.scalars().all()
+                if token.id not in family_ids
+            ]
+            frontier = {token.id for token in descendants}
+            family_ids.update(frontier)
+
+        result = await db.execute(
+            select(MCPOAuthToken)
+            .where(
+                cast(
+                    Any,
+                    or_(
+                        MCPOAuthToken.id.in_(family_ids),
+                        MCPOAuthToken.refresh_token_id.in_(family_ids),
+                    ),
+                )
+            )
+            .with_for_update()
         )
         for token in result.scalars().all():
             token.revoked_at = now
@@ -731,7 +803,20 @@ class MCPOAuthService:
             raise OAuthInvalidClientError()
         normalized_redirect_uris = [self._validate_redirect_uri(uri) for uri in redirect_uris]
         token_auth_method = str(metadata.get("token_endpoint_auth_method") or "none")
-        if token_auth_method != "none":
+        if token_auth_method not in {"none", "private_key_jwt"}:
+            raise OAuthInvalidClientError()
+        if token_auth_method == "private_key_jwt":
+            parsed_client_id = urlparse(client_id)
+            has_embedded_jwks = isinstance(metadata.get("jwks"), dict)
+            has_jwks_uri = bool(self._optional_string(metadata.get("jwks_uri")))
+            if (
+                parsed_client_id.scheme != "https"
+                or not parsed_client_id.netloc
+                or not (has_embedded_jwks or has_jwks_uri)
+            ):
+                raise OAuthInvalidClientError()
+
+        if any("*" in uri for uri in normalized_redirect_uris):
             raise OAuthInvalidClientError()
 
         result = await db.execute(
@@ -747,9 +832,10 @@ class MCPOAuthService:
                 logo_uri=self._optional_string(metadata.get("logo_uri")),
                 redirect_uris=normalized_redirect_uris,
                 scope=MCP_OAUTH_SCOPE,
-                grant_types=self._string_list(metadata.get("grant_types")) or ["authorization_code", "refresh_token"],
+                grant_types=self._string_list(metadata.get("grant_types"))
+                or ["authorization_code", "refresh_token"],
                 response_types=self._string_list(metadata.get("response_types")) or ["code"],
-                token_endpoint_auth_method="none",
+                token_endpoint_auth_method=token_auth_method,
                 contacts=self._string_list(metadata.get("contacts")),
                 jwks_uri=self._optional_string(metadata.get("jwks_uri")),
                 client_metadata=metadata,
@@ -760,9 +846,12 @@ class MCPOAuthService:
             client.client_uri = self._optional_string(metadata.get("client_uri"))
             client.logo_uri = self._optional_string(metadata.get("logo_uri"))
             client.redirect_uris = normalized_redirect_uris
-            client.grant_types = self._string_list(metadata.get("grant_types")) or ["authorization_code", "refresh_token"]
+            client.grant_types = self._string_list(metadata.get("grant_types")) or [
+                "authorization_code",
+                "refresh_token",
+            ]
             client.response_types = self._string_list(metadata.get("response_types")) or ["code"]
-            client.token_endpoint_auth_method = "none"
+            client.token_endpoint_auth_method = token_auth_method
             client.contacts = self._string_list(metadata.get("contacts"))
             client.jwks_uri = self._optional_string(metadata.get("jwks_uri"))
             client.client_metadata = metadata
@@ -770,29 +859,6 @@ class MCPOAuthService:
             client.revoked_at = None
         await db.flush()
         return client
-
-    async def _fetch_client_metadata(self, client_id: str) -> dict[str, Any]:
-        parsed = urlparse(client_id)
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise OAuthInvalidClientError()
-        self._assert_public_hostname(parsed.hostname)
-
-        async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
-            response = await client.get(
-                client_id,
-                headers={"Accept": "application/json"},
-            )
-        if response.status_code != 200:
-            raise OAuthInvalidClientError()
-        content_type = response.headers.get("content-type", "")
-        if "json" not in content_type:
-            raise OAuthInvalidClientError()
-        if len(response.content) > 64_000:
-            raise OAuthInvalidClientError()
-        payload = response.json()
-        if not isinstance(payload, dict):
-            raise OAuthInvalidClientError()
-        return payload
 
     def _validate_authorization_request(
         self,
@@ -833,25 +899,20 @@ class MCPOAuthService:
             raise OAuthInvalidClientError()
         parsed = urlparse(redirect_uri)
         hostname = parsed.hostname or ""
-        if parsed.scheme != "http":
+        if not parsed.netloc or parsed.username is not None or parsed.password is not None:
             raise OAuthInvalidClientError()
-        if hostname not in {"localhost"} and not self._is_loopback_ip(hostname):
+        is_loopback = hostname == "localhost" or self._is_loopback_ip(hostname)
+        if parsed.scheme != "https" and not (parsed.scheme == "http" and is_loopback):
             raise OAuthInvalidClientError()
         if not parsed.path:
             raise OAuthInvalidClientError()
         if parsed.fragment:
             raise OAuthInvalidClientError()
-        return redirect_uri
-
-    def _assert_public_hostname(self, hostname: str) -> None:
         try:
-            addresses = socket.getaddrinfo(hostname, None)
-        except socket.gaierror as exc:
+            _ = parsed.port
+        except ValueError as exc:
             raise OAuthInvalidClientError() from exc
-        for *_, sockaddr in addresses:
-            ip_value = sockaddr[0]
-            if not self._is_public_ip(ip_value):
-                raise OAuthInvalidClientError()
+        return redirect_uri
 
     @staticmethod
     def _is_loopback_ip(hostname: str) -> bool:
@@ -859,21 +920,6 @@ class MCPOAuthService:
             return ipaddress.ip_address(hostname).is_loopback
         except ValueError:
             return False
-
-    @staticmethod
-    def _is_public_ip(value: str) -> bool:
-        try:
-            ip = ipaddress.ip_address(value)
-        except ValueError:
-            return False
-        return not (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-            or ip.is_unspecified
-        )
 
     @staticmethod
     def _hash_secret(secret: str) -> str:

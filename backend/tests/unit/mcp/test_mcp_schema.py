@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from unittest.mock import Mock, patch
 
-from app.main import app, mcp
+from app.main import api_app, mcp
 
 
 class TestMCPToolSchemaGeneration:
@@ -19,7 +19,7 @@ class TestMCPToolSchemaGeneration:
         """Test that all API endpoints are exposed as MCP tools."""
         # Get all FastAPI routes
         routes = []
-        for route in app.routes:
+        for route in api_app.routes:
             if hasattr(route, 'methods') and hasattr(route, 'path'):
                 # Exclude non-API routes
                 if route.path.startswith('/api/v1/'):

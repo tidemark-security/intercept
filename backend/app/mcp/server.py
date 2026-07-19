@@ -4,9 +4,10 @@ Replaces the auto-generated FastMCP.from_fastapi() with intentionally designed t
 Part of T013-T014 (Phase 2: MCP Server Skeleton).
 """
 
-from typing import Any
+from typing import Any, Callable
 
 from fastmcp import FastMCP
+from fastmcp.server.auth import AuthProvider
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from mcp import McpError
 from mcp.types import ErrorData
@@ -22,6 +23,8 @@ from app.mcp.tools import (
     get_item_tool,
     validate_mermaid_tool,
 )
+from app.core.database import async_session_factory
+from app.mcp.principal import MCPPrincipalMiddleware
 
 
 _GET_ITEM_OLD_CONTRACT_MESSAGE = (
@@ -328,5 +331,38 @@ async def validate_mermaid(
     return await validate_mermaid_tool(diagram)
 
 
-# Export MCP server instance
-__all__ = ["mcp"]
+_TOOL_REGISTRATIONS: tuple[tuple[Callable[..., Any], dict[str, Any] | None], ...] = (
+    (get_summary, {"readOnlyHint": True}),
+    (list_work, {"readOnlyHint": True}),
+    (find_related, {"readOnlyHint": True}),
+    (search_case_runbooks, {"readOnlyHint": True}),
+    (get_case_runbook, {"readOnlyHint": True}),
+    (record_triage_decision, None),
+    (add_timeline_item, None),
+    (get_item, {"readOnlyHint": True}),
+    (validate_mermaid, {"readOnlyHint": True}),
+)
+
+
+def create_mcp_server(
+    *,
+    auth: AuthProvider,
+    lifespan: Any,
+    session_factory: Callable[..., Any] = async_session_factory,
+) -> FastMCP:
+    """Build the authenticated server before its HTTP application is captured."""
+
+    server = FastMCP(
+        "Tidemark Intercept MCP",
+        auth=auth,
+        lifespan=lifespan,
+    )
+    server.add_middleware(MCPPrincipalMiddleware(session_factory=session_factory))
+    server.add_middleware(GetItemContractGuidanceMiddleware())
+    for tool_function, annotations in _TOOL_REGISTRATIONS:
+        server.tool(annotations=annotations)(tool_function)
+    return server
+
+
+# Export the schema-only server plus the runtime factory.
+__all__ = ["create_mcp_server", "mcp"]

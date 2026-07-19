@@ -22,7 +22,8 @@ from sqlalchemy.pool import NullPool
 from sqlmodel import SQLModel
 
 from app.core.database import get_db
-from app.main import app
+from app.main import api_app, app, compose_http_app
+from app.mcp.runtime import MCPAuthMode, MCPAuthSnapshot, build_mcp_runtime
 import app.main as app_main_module
 
 pytest_plugins = ["tests.fixtures.auth"]
@@ -314,13 +315,13 @@ async def client(
     async_engine: AsyncEngine,
     session_maker: async_sessionmaker[AsyncSession],
 ) -> AsyncGenerator[AsyncClient, None]:
-    original_lifespan = app.router.lifespan_context
+    original_lifespan = api_app.router.lifespan_context
 
     @asynccontextmanager
     async def _test_lifespan(app_instance):
         yield
 
-    app.router.lifespan_context = _test_lifespan  # type: ignore[assignment]
+    api_app.router.lifespan_context = _test_lifespan  # type: ignore[assignment]
     original_mcp_session_factory = app_main_module.async_session_factory
     app_main_module.async_session_factory = session_maker  # type: ignore[assignment]
 
@@ -333,11 +334,29 @@ async def client(
                 await session.rollback()
                 raise
 
-    app.dependency_overrides[get_db] = override_get_db
+    api_app.dependency_overrides[get_db] = override_get_db
+    runtime = await build_mcp_runtime(
+        snapshot=MCPAuthSnapshot(
+            mode=MCPAuthMode.API_KEY_ONLY,
+            oauth_enabled=False,
+            public_origin="http://localhost:8000",
+            login_origin="http://localhost:8000",
+            access_token_ttl_seconds=3600,
+            refresh_token_ttl_days=30,
+            oidc=None,
+        ),
+        database_url=TEST_DATABASE_URL,
+        secret_key="test-fastmcp-secret-key",
+        session_factory=session_maker,
+    )
+    app.install(compose_http_app(api_app, runtime), runtime)
+    api_app.state.mcp_runtime = runtime
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as async_client:
         yield async_client
 
-    app.dependency_overrides.pop(get_db, None)
+    app.reset()
+    api_app.state.mcp_runtime = None
+    api_app.dependency_overrides.pop(get_db, None)
     app_main_module.async_session_factory = original_mcp_session_factory  # type: ignore[assignment]
-    app.router.lifespan_context = original_lifespan
+    api_app.router.lifespan_context = original_lifespan
