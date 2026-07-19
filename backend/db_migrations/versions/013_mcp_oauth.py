@@ -64,7 +64,6 @@ def upgrade() -> None:
             sa.UniqueConstraint("user_id", "client_db_id", "scope", name="uq_mcp_oauth_consent_user_client_scope"),
         )
         op.create_index("ix_mcp_oauth_consents_id", "mcp_oauth_consents", ["id"], unique=False)
-        op.create_index("ix_mcp_oauth_consents_user", "mcp_oauth_consents", ["user_id"], unique=False)
         op.create_index("ix_mcp_oauth_consents_user_id", "mcp_oauth_consents", ["user_id"], unique=False)
         op.create_index("ix_mcp_oauth_consents_client_db_id", "mcp_oauth_consents", ["client_db_id"], unique=False)
 
