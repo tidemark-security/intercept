@@ -19,7 +19,7 @@ type, default value, category, and whether it is local-only.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from app.models.enums import SettingType
@@ -96,6 +96,17 @@ SETTINGS_REGISTRY: Dict[str, SettingDefinition] = {}
 
 
 def _register(*defs: SettingDefinition) -> None:
+    seen_keys = set(SETTINGS_REGISTRY)
+    duplicate_keys: set[str] = set()
+    for d in defs:
+        if d.key in seen_keys:
+            duplicate_keys.add(d.key)
+        seen_keys.add(d.key)
+
+    if duplicate_keys:
+        duplicates = ", ".join(sorted(duplicate_keys))
+        raise ValueError(f"Duplicate setting definition(s): {duplicates}")
+
     for d in defs:
         SETTINGS_REGISTRY[d.key] = d
 
@@ -1120,7 +1131,7 @@ _register(
     _def(
         "enrichment.servicenow.lookup_query_template",
         category="enrichment",
-        description="ServiceNow encoded query template for single-user lookups; use {value} as the escaped identifier",
+        description="Legacy compatibility mirror derived from the ServiceNow user lookup fields",
         default="email={value}^ORuser_name={value}^ORname={value}",
     ),
     _def(
@@ -1337,6 +1348,24 @@ def _load_dotenv() -> Dict[str, str]:
     return _dotenv_values
 
 
+def get_environment_value(env_var: str) -> Optional[str]:
+    """Resolve one environment name from the process, then the cached .env."""
+    import os
+
+    value = os.getenv(env_var)
+    if value is not None:
+        return value
+    return _load_dotenv().get(env_var)
+
+
+def get_setting_default(key: str) -> Any:
+    """Return a registered setting's canonical default."""
+    try:
+        return SETTINGS_REGISTRY[key].default
+    except KeyError:
+        raise KeyError(f"Unknown setting key: {key!r}") from None
+
+
 def get_local(key: str, default: Any = _SENTINEL) -> Any:
     """Read a setting value from environment / .env only (no database).
 
@@ -1352,24 +1381,16 @@ def get_local(key: str, default: Any = _SENTINEL) -> Any:
     Raises ``KeyError`` if the key is not in the registry and no *default*
     is supplied.
     """
-    import os
-
     defn = SETTINGS_REGISTRY.get(key)
     if defn is None:
         if default is _SENTINEL:
             raise KeyError(f"Unknown setting key: {key!r}")
         return default
 
-    # 1. Real environment variable
-    raw = os.getenv(defn.env_var)
+    # 1–2. Real environment variable, then .env file.
+    raw = get_environment_value(defn.env_var)
     if raw is not None:
-        return _coerce(raw, defn.value_type)
-
-    # 2. .env file
-    dotenv = _load_dotenv()
-    raw = dotenv.get(defn.env_var)
-    if raw is not None:
-        return _coerce(raw, defn.value_type)
+        return coerce_setting_value(raw, defn.value_type)
 
     # 3. Registry default
     if defn.default is not None:
@@ -1382,7 +1403,7 @@ def get_local(key: str, default: Any = _SENTINEL) -> Any:
     return defn.default  # may be None
 
 
-def _coerce(raw: str, value_type: SettingType) -> Any:
+def coerce_setting_value(raw: str, value_type: SettingType) -> Any:
     """Coerce a raw string value based on SettingType."""
     import json
 

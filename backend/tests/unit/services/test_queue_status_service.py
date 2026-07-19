@@ -7,7 +7,55 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.services.queue_status_service import QueueStatusService
+from app.services.queue_status_service import (
+    QueueStatusService,
+    _parse_payload,
+    _safe_failure_summary,
+)
+
+
+def test_failure_summary_does_not_expose_traceback_or_exception_message() -> None:
+    raw = json.dumps(
+        {
+            "exception_type": "sqlalchemy.exc.OperationalError",
+            "exception_message": "password=super-secret",
+            "traceback": "/srv/app/private.py:42 password=super-secret",
+        }
+    )
+
+    summary = _safe_failure_summary(raw)
+
+    assert summary == "Task failed (sqlalchemy.exc.OperationalError)"
+    assert summary is not None
+    assert "super-secret" not in summary
+
+
+def test_failure_summary_handles_unstructured_traceback() -> None:
+    assert _safe_failure_summary("not-json /srv/private.py") == "Task failed"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"[]",
+        b"null",
+        '"scalar"',
+        "not-json",
+    ],
+)
+def test_parse_payload_returns_only_json_objects(raw: bytes | str) -> None:
+    assert _parse_payload(raw) is None
+
+
+@pytest.mark.asyncio
+async def test_get_jobs_rejects_invalid_date_before_querying_database() -> None:
+    mock_db = AsyncMock()
+    service = QueueStatusService(mock_db)
+
+    with pytest.raises(ValueError):
+        await service.get_jobs(start_date="not-a-date")
+
+    mock_db.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -54,6 +102,7 @@ async def test_get_jobs_excludes_collapsed_log_rows_for_active_job_ids() -> None
     assert "FROM collapsed_log log" in data_sql
     assert "WHERE NOT EXISTS" in data_sql
     assert "WHERE active.id = log.id" in data_sql
+    assert ")) * 1000)::int AS duration_ms" in data_sql
 
 
 @pytest.mark.asyncio

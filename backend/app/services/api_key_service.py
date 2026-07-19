@@ -6,7 +6,6 @@ the permissions of that user. Keys are hashed using BLAKE2b before storage.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import secrets
 from dataclasses import dataclass
@@ -18,9 +17,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.security import hash_opaque_token
 from app.models.enums import UserStatus
 from app.models.models import ApiKey, UserAccount
-from app.services.audit_service import AuditContext, get_audit_service
+from app.services.audit_service import (
+    AuditContext,
+    AuditSessionFactory,
+    get_audit_service,
+    persist_api_key_auth_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +59,14 @@ class ApiKeyExpiredError(Exception):
     """Raised when an API key has expired."""
 
 
+class ApiKeyExpirationError(ValueError):
+    """Raised when a new API key expiration is not in the future."""
+
+
+class ApiKeyUserNotFoundError(ValueError):
+    """Raised when an API key is requested for a missing user."""
+
+
 class ApiKeyRevokedError(Exception):
     """Raised when an API key has been revoked."""
 
@@ -70,8 +83,39 @@ class UserInactiveError(Exception):
 class ApiKeyService:
     """Business logic for API key management and authentication."""
 
-    def __init__(self) -> None:
-        pass
+    def __init__(self, *, audit_session_factory: Optional[AuditSessionFactory] = None) -> None:
+        self._audit_session_factory = audit_session_factory
+
+    async def _persist_auth_failure(
+        self,
+        db: AsyncSession,
+        *,
+        reason: str,
+        api_key_prefix: Optional[str],
+        context: Optional[AuditContext],
+    ) -> None:
+        await persist_api_key_auth_failure(
+            db,
+            reason=reason,
+            api_key_prefix=api_key_prefix,
+            context=context,
+            session_factory=self._audit_session_factory,
+        )
+
+    @staticmethod
+    def _normalize_expiration(expires_at: datetime) -> datetime:
+        """Return an expiration timestamp as an aware UTC datetime."""
+        if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+            return expires_at.replace(tzinfo=timezone.utc)
+        return expires_at.astimezone(timezone.utc)
+
+    @classmethod
+    def _require_future_expiration(cls, expires_at: datetime) -> datetime:
+        """Normalize an expiration timestamp and require it to be future-dated."""
+        normalized = cls._normalize_expiration(expires_at)
+        if normalized <= datetime.now(timezone.utc):
+            raise ApiKeyExpirationError("Expiration date must be in the future")
+        return normalized
 
     # ------------------------------------------------------------------
     # Key generation and hashing
@@ -88,13 +132,8 @@ class ApiKeyService:
         random_part = secrets.token_urlsafe(API_KEY_RANDOM_BYTES)
         full_key = f"{API_KEY_PREFIX}{random_part}"
         prefix = full_key[:API_KEY_DISPLAY_PREFIX_LENGTH]
-        key_hash = ApiKeyService._hash_api_key(full_key)
+        key_hash = hash_opaque_token(full_key)
         return full_key, prefix, key_hash
-
-    @staticmethod
-    def _hash_api_key(key: str) -> str:
-        """Hash an API key using BLAKE2b."""
-        return hashlib.blake2b(key.encode("utf-8"), digest_size=32).hexdigest()
 
     # ------------------------------------------------------------------
     # API Key CRUD operations
@@ -124,10 +163,12 @@ class ApiKeyService:
         Returns:
             Tuple of (ApiKey object, raw_key) - raw_key is only returned once
         """
+        expires_at = self._require_future_expiration(expires_at)
+
         # Verify user exists and is active
         user = await db.get(UserAccount, user_id)
         if not user:
-            raise ValueError(f"User {user_id} not found")
+            raise ApiKeyUserNotFoundError(f"User {user_id} not found")
 
         # Generate key
         full_key, prefix, key_hash = self.generate_api_key()
@@ -290,7 +331,7 @@ class ApiKeyService:
         prefix = raw_key[:API_KEY_DISPLAY_PREFIX_LENGTH] if len(raw_key) >= API_KEY_DISPLAY_PREFIX_LENGTH else raw_key
 
         # Hash the key
-        key_hash = self._hash_api_key(raw_key)
+        key_hash = hash_opaque_token(raw_key)
 
         # Look up the key
         result = await db.execute(
@@ -301,7 +342,8 @@ class ApiKeyService:
         api_key = result.scalar_one_or_none()
 
         if not api_key:
-            await get_audit_service(db).api_key_auth_failure(
+            await self._persist_auth_failure(
+                db,
                 reason="key_not_found",
                 api_key_prefix=prefix,
                 context=context,
@@ -312,7 +354,8 @@ class ApiKeyService:
 
         # Check if revoked
         if api_key.revoked_at is not None:
-            await get_audit_service(db).api_key_auth_failure(
+            await self._persist_auth_failure(
+                db,
                 reason="key_revoked",
                 api_key_prefix=api_key.prefix,
                 context=context,
@@ -320,8 +363,10 @@ class ApiKeyService:
             raise ApiKeyRevokedError()
 
         # Check if expired
+        api_key.expires_at = self._normalize_expiration(api_key.expires_at)
         if api_key.expires_at <= now:
-            await get_audit_service(db).api_key_auth_failure(
+            await self._persist_auth_failure(
+                db,
                 reason="key_expired",
                 api_key_prefix=api_key.prefix,
                 context=context,
@@ -330,7 +375,8 @@ class ApiKeyService:
 
         # Check user status
         if api_key.user is None or api_key.user.status != UserStatus.ACTIVE:
-            await get_audit_service(db).api_key_auth_failure(
+            await self._persist_auth_failure(
+                db,
                 reason="user_inactive",
                 api_key_prefix=api_key.prefix,
                 context=context,
@@ -361,6 +407,7 @@ __all__ = [
     "ApiKeyResult",
     "ApiKeyNotFoundError",
     "ApiKeyExpiredError",
+    "ApiKeyExpirationError",
     "ApiKeyRevokedError",
     "UserInactiveError",
     "api_key_service",

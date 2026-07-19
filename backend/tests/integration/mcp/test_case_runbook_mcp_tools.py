@@ -4,11 +4,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pytest
-from fastapi import HTTPException
 
 from app.models.enums import AlertStatus, CaseRunbookStatus, PICERLStage, Priority
 from app.models.models import Alert, CaseRunbook, TriageRecommendation
 from app.services import mcp_service
+from app.services.mcp_errors import McpNotFoundError, McpValidationError
 
 
 @pytest.mark.asyncio
@@ -101,13 +101,12 @@ async def test_get_case_runbook_returns_lean_published_payload_and_rejects_draft
         await session.commit()
 
         result = await mcp_service.get_case_runbook(session, id_str=f"RUN-{published_id:07d}")
-        with pytest.raises(HTTPException) as exc:
+        with pytest.raises(McpNotFoundError):
             await mcp_service.get_case_runbook(session, id_str=f"RUN-{draft_id:07d}")
 
     assert result.title == "Credential Theft"
     assert result.runbook_tasks[0].title == "Reset password"
     assert result.runbook_tasks[0].picerl_stage == PICERLStage.CONTAINMENT.value
-    assert exc.value.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -198,7 +197,7 @@ async def test_record_triage_decision_runbook_contracts(
         assert alert.id is not None
         assert runbook.id is not None
 
-        with pytest.raises(HTTPException) as dismissal_runbook:
+        with pytest.raises(McpValidationError) as dismissal_runbook:
             await mcp_service.record_triage_decision(
                 session,
                 alert_id_str=f"ALT-{alert.id:07d}",
@@ -209,7 +208,7 @@ async def test_record_triage_decision_runbook_contracts(
                 commit=True,
             )
 
-        with pytest.raises(HTTPException) as dismissal_actions:
+        with pytest.raises(McpValidationError) as dismissal_actions:
             await mcp_service.record_triage_decision(
                 session,
                 alert_id_str=f"ALT-{alert.id:07d}",
@@ -220,7 +219,7 @@ async def test_record_triage_decision_runbook_contracts(
                 commit=True,
             )
 
-        with pytest.raises(HTTPException) as mutually_exclusive:
+        with pytest.raises(McpValidationError) as mutually_exclusive:
             await mcp_service.record_triage_decision(
                 session,
                 alert_id_str=f"ALT-{alert.id:07d}",
@@ -243,8 +242,8 @@ async def test_record_triage_decision_runbook_contracts(
             created_by="mcp-test",
         )
 
-    assert dismissal_runbook.value.status_code == 400
-    assert dismissal_actions.value.status_code == 400
-    assert mutually_exclusive.value.status_code == 400
+    assert "Dismissal recommendations" in str(dismissal_runbook.value)
+    assert "Dismissal recommendations" in str(dismissal_actions.value)
+    assert "mutually exclusive" in str(mutually_exclusive.value)
     assert result.recommendation_id is not None
     assert result.suggested_patches[0].new_value == AlertStatus.ESCALATED.value

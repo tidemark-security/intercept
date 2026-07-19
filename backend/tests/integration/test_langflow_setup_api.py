@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import AsyncClient
@@ -10,9 +11,10 @@ from sqlmodel import select, col
 import app.api.routes.langflow as langflow_routes
 from app.core.settings_registry import get_local
 from app.models.enums import AccountType, SettingType, UserRole
-from app.models.models import AppSetting, UserAccount
+from app.models.models import ApiKey, AppSetting, UserAccount
 from app.services.langflow_service import (
     LangFlowCheckResult,
+    LangFlowError,
     LangFlowProvisioningResult,
     LangFlowService,
     LangFlowSummaryResult,
@@ -360,6 +362,75 @@ async def test_langflow_setup_endpoint_creates_missing_flow_settings(
         ).scalars().all()
 
     assert {setting.key: setting.value for setting in settings} == payload["flow_assignments"]
+
+
+@pytest.mark.asyncio
+async def test_langflow_setup_rolls_back_all_database_changes_on_provisioning_failure(
+    client: AsyncClient,
+    session_maker: Any,
+    admin_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, admin_user_factory)
+    await _seed_langflow_settings(session_maker)
+    fake_service = FakeLangFlowSetupService()
+    create_flow = fake_service.create_flow
+
+    async def fail_after_first_flow(payload: dict[str, Any]) -> dict[str, Any]:
+        if fake_service.created_flows:
+            raise LangFlowError("flow provisioning failed")
+        return await create_flow(payload)
+
+    fake_service.create_flow = AsyncMock(side_effect=fail_after_first_flow)
+
+    async def fake_get_langflow_service(_db):
+        return fake_service
+
+    monkeypatch.setattr(langflow_routes, "get_langflow_service", fake_get_langflow_service)
+
+    response = await client.post(
+        "/api/v1/langflow/admin/setup-intercept-mcp",
+        json={"backend_api_base_url": "http://localhost:8000/api/v1"},
+        cookies={get_local("auth.session.cookie_name"): session_cookie},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["message"] == "flow provisioning failed"
+    assert payload["nhi_user_id"] is None
+    assert payload["api_key"] is None
+    assert payload["flow_assignments"] == {}
+
+    async with session_maker() as session:
+        nhi_user = (
+            await session.execute(
+                select(UserAccount).where(col(UserAccount.username) == "tidemark_ai")
+            )
+        ).scalar_one_or_none()
+        setup_keys = (
+            await session.execute(
+                select(ApiKey).where(ApiKey.name == "Intercept Langflow MCP")
+            )
+        ).scalars().all()
+        settings = (
+            await session.execute(
+                select(AppSetting).where(
+                    AppSetting.key.in_(
+                        [
+                            "langflow.default_flow_id",
+                            "langflow.case_detail_flow_id",
+                            "langflow.task_detail_flow_id",
+                            "langflow.alert_triage_flow_id",
+                        ]
+                    )
+                )
+            )
+        ).scalars().all()
+
+    assert nhi_user is None
+    assert setup_keys == []
+    assert all(setting.value is None for setting in settings)
 
 
 @pytest.mark.asyncio

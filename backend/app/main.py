@@ -6,8 +6,9 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
+import asyncpg
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -87,50 +88,68 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def app_lifespan(_app: FastAPI):
+async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Initialize and close Intercept's non-MCP application resources."""
-
-    logger.info("Starting Tidemark Intercept...")
-    initialize_encryption_service(get_local("secret_key").encode())
-    if not await test_db_connection():
-        raise RuntimeError(
-            "Database connection failed - see error message above for solutions"
-        )
-
-    register_providers()
-    try:
-        await initialize_task_queue_service(get_local("database.url"))
-        await register_task_handlers()
-        logger.info("Task queue service initialized (enqueue-only mode)")
-    except Exception as exc:
-        logger.warning("Continuing without background task support: %s", exc)
-
+    from app.services.maxmind_service import maxmind_service
     from app.services.realtime_service import notification_listener
 
     try:
-        await notification_listener.start()
-        logger.info("Real-time notification listener started")
-    except Exception as exc:
-        logger.warning("Continuing without real-time notifications: %s", exc)
+        logger.info("Starting Tidemark Intercept...")
+        logger.info("Initializing encryption service...")
+        initialize_encryption_service(get_local("secret_key").encode())
 
-    try:
+        logger.info("Testing database connection...")
+        if not await test_db_connection():
+            raise RuntimeError(
+                "Database connection failed - see error message above for solutions"
+            )
+
+        # The API process only enqueues jobs; the worker process executes them.
+        register_providers()
+        logger.info("Initializing task queue service...")
+        try:
+            await initialize_task_queue_service(get_local("database.url"))
+        except (asyncpg.PostgresError, OSError, TimeoutError) as exc:
+            logger.warning("Task queue service initialization failed: %s", exc)
+            logger.warning("Continuing without background task support")
+        else:
+            # Handler registration is application code. Let programming and
+            # configuration defects fail startup instead of silently degrading.
+            await register_task_handlers()
+            logger.info("✅ Task queue service initialized (enqueue-only mode)")
+
+        if await notification_listener.start():
+            logger.info("✅ Real-time notification listener started")
+        else:
+            logger.warning("Continuing without real-time notifications")
+
+        logger.info("🚀 Tidemark Intercept is ready!")
         yield
     finally:
         logger.info("Shutting down Tidemark Intercept...")
         try:
             await notification_listener.stop()
-        except Exception as exc:
-            logger.warning("Notification listener shutdown error: %s", exc)
+            logger.info("✅ Notification listener stopped")
+        except Exception:
+            logger.exception("Notification listener shutdown error")
+
         try:
             await shutdown_task_queue_service()
-        except Exception as exc:
-            logger.warning("Task queue shutdown error: %s", exc)
+            logger.info("✅ Task queue service shut down")
+        except Exception:
+            logger.exception("Task queue shutdown error")
+
+        try:
+            await maxmind_service.close_readers()
+            logger.info("✅ MaxMind readers closed")
+        except Exception:
+            logger.exception("MaxMind reader shutdown error")
 
 
 api_app = FastAPI(
     title="Tidemark Intercept",
     description="Cyber Security Case Management and Alert Triage Platform",
-    version="1.0.0",
+    version=APP_VERSION,
     docs_url="/docs",
     redoc_url="/redoc",
     redirect_slashes=True,
@@ -270,9 +289,17 @@ async def options_handler(path: str) -> dict[str, str]:
 
 @api_app.exception_handler(Exception)
 async def global_exception_handler(request: Any, exc: Exception) -> JSONResponse:
-    _ = request
-    logger.error("Unhandled exception: %s", exc)
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+    """Log unexpected failures while keeping internal details out of responses."""
+    logger.error(
+        "Unhandled exception while handling %s %s",
+        request.method,
+        request.url.path,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
 
 
 class RuntimeApplication:

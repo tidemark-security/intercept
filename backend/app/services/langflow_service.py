@@ -60,6 +60,10 @@ class LangFlowConfigurationError(LangFlowError):
     pass
 
 
+class LangFlowSetupConfigurationError(LangFlowConfigurationError):
+    """Raised for setup input or bundled-asset validation safe to show to admins."""
+
+
 class LangFlowService:
     """
     Service for interacting with LangFlow API.
@@ -102,6 +106,31 @@ class LangFlowService:
     async def close(self):
         """Close the HTTP client."""
         await self.client.aclose()
+
+    @staticmethod
+    def _transport_failure(message: str, exc: Exception) -> LangFlowError:
+        """Log transport details while returning a user-safe domain error."""
+        logger.warning(
+            "%s",
+            message,
+            extra={"transport_error_type": type(exc).__name__},
+        )
+        return LangFlowError(message)
+
+    @staticmethod
+    def _decode_response_json(response: httpx.Response, operation: str) -> Any:
+        """Decode an upstream response without exposing malformed body content."""
+        try:
+            return response.json()
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            logger.warning(
+                "%s response is not valid JSON",
+                operation,
+                extra={"status_code": response.status_code},
+            )
+            raise LangFlowError(
+                f"{operation} returned an invalid JSON response"
+            ) from exc
 
     def _get_api_root(self) -> str:
         """Return the scheme/host prefix for versioned LangFlow API routes."""
@@ -149,68 +178,81 @@ class LangFlowService:
             LangFlowConnectionError: If unable to connect to LangFlow
             LangFlowError: For other LangFlow-related errors
         """
+        # LangFlow SimplifiedAPIRequest format
+        payload = {
+            "input_value": message,
+            "input_type": "chat",
+            "output_type": "chat",
+        }
+
+        if session_id:
+            payload["session_id"] = str(session_id)
+
+        if context:
+            payload["tweaks"] = context
+
+        logger.info(
+            "Sending message to LangFlow",
+            extra={
+                "flow_id": flow_id,
+                "session_id": str(session_id) if session_id else None,
+                "message_length": len(message),
+            },
+        )
+
         try:
-            # LangFlow SimplifiedAPIRequest format
-            payload = {
-                "input_value": message,
-                "input_type": "chat",
-                "output_type": "chat",
-            }
-            
-            if session_id:
-                payload["session_id"] = str(session_id)
-            
-            if context:
-                payload["tweaks"] = context
-            
-            logger.info(
-                f"Sending message to LangFlow",
-                extra={
-                    "flow_id": flow_id,
-                    "session_id": str(session_id) if session_id else None,
-                    "message_length": len(message),
-                }
-            )
-            
-            # Flow ID is part of the URL path
+            # Flow ID is part of the URL path.
             response = await self.client.post(
                 f"/run/{flow_id}",
                 json=payload,
             )
             response.raise_for_status()
-            
-            data = response.json()
-            
-            logger.info(
-                f"Received response from LangFlow",
-                extra={
-                    "flow_id": flow_id,
-                    "session_id": str(session_id) if session_id else None,
-                    "response_keys": list(data.keys()) if isinstance(data, dict) else None,
-                }
+        except httpx.ConnectError as exc:
+            logger.error(
+                "Failed to connect to LangFlow",
+                extra={"transport_error_type": type(exc).__name__},
             )
-            
-            return data
-            
-        except httpx.ConnectError as e:
-            logger.error(f"Failed to connect to LangFlow: {e}")
             raise LangFlowConnectionError(
                 f"Unable to connect to LangFlow at {self.base_url}. "
                 "Please check your LangFlow configuration."
-            ) from e
-        except httpx.HTTPStatusError as e:
-            logger.error(f"LangFlow API error: {e.response.status_code} - {e.response.text}")
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "LangFlow message request returned an HTTP error",
+                extra={"status_code": exc.response.status_code},
+            )
             raise LangFlowError(
-                f"LangFlow API returned error {e.response.status_code}"
-            ) from e
-        except httpx.TimeoutException as e:
-            logger.error(f"LangFlow request timed out: {e}")
+                f"LangFlow API returned error {exc.response.status_code}"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            logger.error(
+                "LangFlow message request timed out",
+                extra={"transport_error_type": type(exc).__name__},
+            )
             raise LangFlowError(
                 f"LangFlow request timed out after {self.timeout} seconds"
-            ) from e
-        except Exception as e:
-            logger.error(f"Unexpected error communicating with LangFlow: {e}")
-            raise LangFlowError(f"Unexpected error: {str(e)}") from e
+            ) from exc
+        except httpx.RequestError as exc:
+            raise self._transport_failure(
+                "Unable to communicate with LangFlow",
+                exc,
+            ) from exc
+
+        data = self._decode_response_json(response, "LangFlow API")
+
+        if not isinstance(data, dict):
+            raise LangFlowError("LangFlow API returned an unexpected response body")
+
+        logger.info(
+            "Received response from LangFlow",
+            extra={
+                "flow_id": flow_id,
+                "session_id": str(session_id) if session_id else None,
+                "response_field_count": len(data),
+            },
+        )
+
+        return data
     
     async def run_flow_streaming(
         self,
@@ -299,14 +341,22 @@ class LangFlowService:
                     try:
                         event = json.loads(parse_target)
                     except json.JSONDecodeError:
-                        logger.debug("Skipping non-JSON SSE line: %s", line[:100])
+                        logger.debug(
+                            "Skipping non-JSON LangFlow stream line",
+                            extra={"line_length": len(line)},
+                        )
                         continue
 
+                    if not isinstance(event, dict):
+                        raise LangFlowError(
+                            "LangFlow stream returned an unexpected event body"
+                        )
+
                     event_count += 1
-                    event_name = event.get("event") if isinstance(event, dict) else None
+                    event_name = event.get("event")
 
                     if event_name == "end":
-                        data_field = event.get("data") if isinstance(event, dict) else None
+                        data_field = event.get("data")
                         if isinstance(data_field, dict):
                             result = data_field.get("result")
                             if isinstance(result, dict):
@@ -314,34 +364,45 @@ class LangFlowService:
                         break
 
                     if event_name == "error":
-                        # Surface server-side errors emitted as events
-                        raise LangFlowError(
-                            f"LangFlow flow emitted error event: {event.get('data')!r}"
+                        logger.warning(
+                            "LangFlow flow emitted an error event",
+                            extra={"event_data_type": type(event.get("data")).__name__},
                         )
+                        raise LangFlowError("LangFlow flow emitted an error event")
 
-        except httpx.ReadTimeout as e:
+        except httpx.ReadTimeout as exc:
             logger.error("LangFlow stream stalled (no events for %ss)", per_read_timeout)
             raise LangFlowError(
                 f"LangFlow stream stalled — no events received in {per_read_timeout}s"
-            ) from e
-        except httpx.ConnectError as e:
-            logger.error("Failed to connect to LangFlow stream: %s", e)
+            ) from exc
+        except httpx.ConnectError as exc:
+            logger.error(
+                "Failed to connect to LangFlow stream",
+                extra={"transport_error_type": type(exc).__name__},
+            )
             raise LangFlowConnectionError(
                 f"Unable to connect to LangFlow at {self.base_url}"
-            ) from e
-        except httpx.HTTPStatusError as e:
+            ) from exc
+        except httpx.HTTPStatusError as exc:
             logger.error(
                 "LangFlow stream returned HTTP %s",
-                e.response.status_code,
+                exc.response.status_code,
             )
             raise LangFlowError(
-                f"LangFlow API returned error {e.response.status_code}"
-            ) from e
+                f"LangFlow API returned error {exc.response.status_code}"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise self._transport_failure(
+                "LangFlow streaming request timed out",
+                exc,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise self._transport_failure(
+                "Unable to communicate with the LangFlow stream",
+                exc,
+            ) from exc
         except LangFlowError:
             raise
-        except Exception as e:
-            logger.error("Unexpected error streaming from LangFlow: %s", e)
-            raise LangFlowError(f"Unexpected error: {str(e)}") from e
 
         if end_result is None:
             raise LangFlowError(
@@ -383,136 +444,178 @@ class LangFlowService:
             LangFlowConnectionError: If unable to connect to LangFlow
             LangFlowError: For other LangFlow-related errors
         """
+        # LangFlow SimplifiedAPIRequest format
+        payload = {
+            "input_value": message,
+            "input_type": "chat",
+            "output_type": "chat",
+        }
+
+        if session_id:
+            payload["session_id"] = str(session_id)
+
+        if context:
+            payload["tweaks"] = context
+
+        logger.info(
+            "Starting streaming message to LangFlow",
+            extra={
+                "flow_id": flow_id,
+                "session_id": str(session_id) if session_id else None,
+                "message_length": len(message),
+            },
+        )
+
         try:
-            # LangFlow SimplifiedAPIRequest format
-            payload = {
-                "input_value": message,
-                "input_type": "chat",
-                "output_type": "chat",
-            }
-            
-            if session_id:
-                payload["session_id"] = str(session_id)
-            
-            if context:
-                payload["tweaks"] = context
-            
-            logger.info(
-                f"Starting streaming message to LangFlow",
-                extra={
-                    "flow_id": flow_id,
-                    "session_id": str(session_id) if session_id else None,
-                    "message_length": len(message),
-                }
-            )
-            
             # Flow ID is part of URL path, stream is a query param
             async with self.client.stream("POST", f"/run/{flow_id}?stream=true", json=payload) as response:
                 response.raise_for_status()
-                
+
                 async for line in response.aiter_lines():
-                    logger.debug(f"LangFlow stream line: {line[:200] if len(line) > 200 else line}")
                     if line.startswith("data: "):
                         # Parse SSE data format
                         data_str = line[6:].strip()
                         if data_str and data_str != "[DONE]":
                             try:
                                 data = json.loads(data_str)
-                                logger.info(f"LangFlow SSE data keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+                                if not isinstance(data, dict):
+                                    raise LangFlowError(
+                                        "LangFlow stream returned an unexpected event body"
+                                    )
+                                logger.debug(
+                                    "Parsed LangFlow SSE data",
+                                    extra={
+                                        "payload_type": type(data).__name__,
+                                        "payload_length": len(data_str),
+                                    },
+                                )
                                 yield data
                             except json.JSONDecodeError:
-                                logger.warning(f"Failed to parse SSE data: {data_str}")
+                                logger.warning(
+                                    "Failed to parse LangFlow SSE data",
+                                    extra={"payload_length": len(data_str)},
+                                )
                                 continue
                     elif line.strip():
                         # Handle other line formats - might be raw JSON
                         try:
                             data = json.loads(line)
-                            logger.info(f"LangFlow raw JSON keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+                            if not isinstance(data, dict):
+                                raise LangFlowError(
+                                    "LangFlow stream returned an unexpected event body"
+                                )
+                            logger.debug(
+                                "Parsed raw LangFlow stream data",
+                                extra={
+                                    "payload_type": type(data).__name__,
+                                    "payload_length": len(line),
+                                },
+                            )
                             yield data
                         except json.JSONDecodeError:
-                            logger.debug(f"Received non-JSON SSE line: {line[:100]}")
-            
+                            logger.debug(
+                                "Received non-JSON LangFlow stream line",
+                                extra={"line_length": len(line)},
+                            )
+
             logger.info(
-                f"Finished streaming from LangFlow",
+                "Finished streaming from LangFlow",
                 extra={
                     "flow_id": flow_id,
                     "session_id": str(session_id) if session_id else None,
-                }
+                },
             )
-            
-        except httpx.ConnectError as e:
-            logger.error(f"Failed to connect to LangFlow: {e}")
+
+        except httpx.ConnectError as exc:
+            logger.error(
+                "Failed to connect to LangFlow",
+                extra={"transport_error_type": type(exc).__name__},
+            )
             raise LangFlowConnectionError(
                 f"Unable to connect to LangFlow at {self.base_url}"
-            ) from e
-        except httpx.HTTPStatusError as e:
-            logger.error(f"LangFlow API error: {e.response.status_code}")
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "LangFlow streaming request returned an HTTP error",
+                extra={"status_code": exc.response.status_code},
+            )
             raise LangFlowError(
-                f"LangFlow API returned error {e.response.status_code}"
-            ) from e
-        except Exception as e:
-            logger.error(f"Unexpected error streaming from LangFlow: {e}")
-            raise LangFlowError(f"Unexpected error: {str(e)}") from e
+                f"LangFlow API returned error {exc.response.status_code}"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise self._transport_failure(
+                "LangFlow streaming request timed out",
+                exc,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise self._transport_failure(
+                "Unable to communicate with the LangFlow stream",
+                exc,
+            ) from exc
     
-    async def test_connection(self) -> bool:
-        """
-        Test connection to LangFlow.
-        
-        Returns:
-            True if connection successful, False otherwise
-        """
-        result = await self.run_connectivity_check()
-        return result.success
-
     async def run_connectivity_check(self) -> LangFlowCheckResult:
         """Validate basic network connectivity to the LangFlow health endpoint."""
+        health_url = self._get_health_url()
         try:
-            health_url = self._get_health_url()
-            response = await self.client.get(health_url)            
-            # Validate both status code and response content
-            # LangFlow returns {"status":"ok"} for health endpoint
-            # Invalid endpoints may redirect to home page with 200 status
-            if response.status_code != 200:
-                return LangFlowCheckResult(
-                    check_id="connectivity",
-                    label="Connectivity",
-                    success=False,
-                    message=f"LangFlow health endpoint returned HTTP {response.status_code}",
-                )
-            
-            try:
-                data = response.json()
-                if data.get("status") == "ok":
-                    return LangFlowCheckResult(
-                        check_id="connectivity",
-                        label="Connectivity",
-                        success=True,
-                        message="Connected to the LangFlow health endpoint",
-                    )
-
-                return LangFlowCheckResult(
-                    check_id="connectivity",
-                    label="Connectivity",
-                    success=False,
-                    message="LangFlow health endpoint did not return the expected status payload",
-                )
-            except Exception:
-                # Response is not valid JSON or doesn't have expected format
-                logger.warning("LangFlow health response is not valid JSON: %s", response.text[:100])
-                return LangFlowCheckResult(
-                    check_id="connectivity",
-                    label="Connectivity",
-                    success=False,
-                    message="LangFlow health endpoint returned an unexpected response body",
-                )
-        except Exception as e:
-            logger.warning(f"LangFlow health check failed: {e}")
+            response = await self.client.get(health_url)
+        except httpx.RequestError as exc:
+            logger.warning(
+                "LangFlow health check request failed",
+                extra={"transport_error_type": type(exc).__name__},
+            )
             return LangFlowCheckResult(
                 check_id="connectivity",
                 label="Connectivity",
                 success=False,
-                message=f"LangFlow health check failed: {str(e)}",
+                message="Unable to complete the LangFlow health check",
             )
+
+        # LangFlow returns {"status":"ok"}; invalid endpoints may return an
+        # HTML home page with a successful status.
+        if response.status_code != 200:
+            return LangFlowCheckResult(
+                check_id="connectivity",
+                label="Connectivity",
+                success=False,
+                message=f"LangFlow health endpoint returned HTTP {response.status_code}",
+            )
+
+        try:
+            data = response.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            logger.warning(
+                "LangFlow health response is not valid JSON",
+                extra={"status_code": response.status_code},
+            )
+            return LangFlowCheckResult(
+                check_id="connectivity",
+                label="Connectivity",
+                success=False,
+                message="LangFlow health endpoint returned an unexpected response body",
+            )
+
+        if not isinstance(data, dict):
+            return LangFlowCheckResult(
+                check_id="connectivity",
+                label="Connectivity",
+                success=False,
+                message="LangFlow health endpoint returned an unexpected response body",
+            )
+
+        if data.get("status") == "ok":
+            return LangFlowCheckResult(
+                check_id="connectivity",
+                label="Connectivity",
+                success=True,
+                message="Connected to the LangFlow health endpoint",
+            )
+
+        return LangFlowCheckResult(
+            check_id="connectivity",
+            label="Connectivity",
+            success=False,
+            message="LangFlow health endpoint did not return the expected status payload",
+        )
 
     def _extract_flow_items(self, payload: Any) -> Optional[list[dict[str, Any]]]:
         """Normalize LangFlow flow-list payloads across supported response shapes."""
@@ -585,9 +688,12 @@ class LangFlowService:
                 f"LangFlow variables API returned error {e.response.status_code}"
             ) from e
         except httpx.HTTPError as e:
-            raise LangFlowError(f"Unable to query LangFlow variables API: {str(e)}") from e
+            raise self._transport_failure(
+                "Unable to query the LangFlow variables API",
+                e,
+            ) from e
 
-        payload = response.json()
+        payload = self._decode_response_json(response, "LangFlow variables API")
         if not isinstance(payload, list):
             raise LangFlowError("LangFlow variables API returned an unexpected response body")
 
@@ -615,6 +721,7 @@ class LangFlowService:
             "default_fields": [],
         }
 
+        action: str
         try:
             if existing is None:
                 response = await self.client.post(
@@ -622,22 +729,40 @@ class LangFlowService:
                     json=payload,
                 )
                 response.raise_for_status()
-                return LangFlowProvisioningResult(action="created", payload=response.json())
+                action = "created"
+            else:
+                variable_id = existing.get("id")
+                if not isinstance(variable_id, str) or not variable_id.strip():
+                    raise LangFlowError(
+                        "Existing LangFlow credential variable did not return a usable id"
+                    )
 
-            variable_id = existing.get("id")
-            payload["id"] = variable_id
-            response = await self.client.patch(
-                self._build_versioned_url("v1", f"/variables/{variable_id}"),
-                json=payload,
-            )
-            response.raise_for_status()
-            return LangFlowProvisioningResult(action="updated", payload=response.json())
+                payload["id"] = variable_id
+                response = await self.client.patch(
+                    self._build_versioned_url("v1", f"/variables/{variable_id}"),
+                    json=payload,
+                )
+                response.raise_for_status()
+                action = "updated"
         except httpx.HTTPStatusError as e:
             raise LangFlowError(
                 f"LangFlow variable upsert returned error {e.response.status_code}"
             ) from e
         except httpx.HTTPError as e:
-            raise LangFlowError(f"Unable to upsert LangFlow variable '{name}': {str(e)}") from e
+            raise self._transport_failure(
+                "Unable to update the LangFlow credential variable",
+                e,
+            ) from e
+
+        result_payload = self._decode_response_json(
+            response,
+            "LangFlow variable upsert",
+        )
+        if not isinstance(result_payload, dict):
+            raise LangFlowError(
+                "LangFlow variable upsert returned an unexpected response body"
+            )
+        return LangFlowProvisioningResult(action=action, payload=result_payload)
 
     async def get_mcp_server(self, server_name: str) -> Optional[dict[str, Any]]:
         """Return an MCP server config by name, if it exists."""
@@ -646,8 +771,9 @@ class LangFlowService:
                 self._build_versioned_url("v2", f"/mcp/servers/{server_name}")
             )
         except httpx.HTTPError as e:
-            raise LangFlowError(
-                f"Unable to query LangFlow MCP server '{server_name}': {str(e)}"
+            raise self._transport_failure(
+                "Unable to query the LangFlow MCP server",
+                e,
             ) from e
 
         if response.status_code == 404:
@@ -660,7 +786,7 @@ class LangFlowService:
                 f"LangFlow MCP server lookup returned error {e.response.status_code}"
             ) from e
 
-        payload = response.json()
+        payload = self._decode_response_json(response, "LangFlow MCP server lookup")
         if payload is None:
             return None
 
@@ -701,6 +827,7 @@ class LangFlowService:
         if existing is not None and self._mcp_server_matches_expected(existing, desired_payload):
             return LangFlowProvisioningResult(action="reused", payload=existing)
 
+        action: str
         try:
             if existing is None:
                 response = await self.client.post(
@@ -708,22 +835,34 @@ class LangFlowService:
                     json=desired_payload,
                 )
                 response.raise_for_status()
-                return LangFlowProvisioningResult(action="created", payload=response.json())
+                action = "created"
+            else:
+                response = await self.client.patch(
+                    self._build_versioned_url("v2", f"/mcp/servers/{server_name}"),
+                    json=desired_payload,
+                )
+                response.raise_for_status()
+                action = "updated"
 
-            response = await self.client.patch(
-                self._build_versioned_url("v2", f"/mcp/servers/{server_name}"),
-                json=desired_payload,
-            )
-            response.raise_for_status()
-            return LangFlowProvisioningResult(action="updated", payload=response.json())
         except httpx.HTTPStatusError as e:
             raise LangFlowError(
                 f"LangFlow MCP server upsert returned error {e.response.status_code}"
             ) from e
         except httpx.HTTPError as e:
-            raise LangFlowError(
-                f"Unable to upsert LangFlow MCP server '{server_name}': {str(e)}"
+            raise self._transport_failure(
+                "Unable to update the LangFlow MCP server",
+                e,
             ) from e
+
+        result_payload = self._decode_response_json(
+            response,
+            "LangFlow MCP server upsert",
+        )
+        if not isinstance(result_payload, dict):
+            raise LangFlowError(
+                "LangFlow MCP server upsert returned an unexpected response body"
+            )
+        return LangFlowProvisioningResult(action=action, payload=result_payload)
 
     async def create_flow(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Create a new flow from a sanitized flow payload."""
@@ -738,9 +877,9 @@ class LangFlowService:
                 f"LangFlow flow creation returned error {e.response.status_code}"
             ) from e
         except httpx.HTTPError as e:
-            raise LangFlowError(f"Unable to create LangFlow flow: {str(e)}") from e
+            raise self._transport_failure("Unable to create the LangFlow flow", e) from e
 
-        created_flow = response.json()
+        created_flow = self._decode_response_json(response, "LangFlow flow creation")
         if not isinstance(created_flow, dict):
             raise LangFlowError("LangFlow flow creation returned an unexpected response body")
 
@@ -759,9 +898,9 @@ class LangFlowService:
                 f"LangFlow flow update returned error {e.response.status_code}"
             ) from e
         except httpx.HTTPError as e:
-            raise LangFlowError(f"Unable to update LangFlow flow '{flow_id}': {str(e)}") from e
+            raise self._transport_failure("Unable to update the LangFlow flow", e) from e
 
-        updated_flow = response.json()
+        updated_flow = self._decode_response_json(response, "LangFlow flow update")
         if not isinstance(updated_flow, dict):
             raise LangFlowError("LangFlow flow update returned an unexpected response body")
 
@@ -777,9 +916,12 @@ class LangFlowService:
                 f"LangFlow projects API returned error {e.response.status_code}"
             ) from e
         except httpx.HTTPError as e:
-            raise LangFlowError(f"Unable to query LangFlow projects API: {str(e)}") from e
+            raise self._transport_failure(
+                "Unable to query the LangFlow projects API",
+                e,
+            ) from e
 
-        payload = response.json()
+        payload = self._decode_response_json(response, "LangFlow projects API")
         if not isinstance(payload, list):
             raise LangFlowError("LangFlow projects API returned an unexpected response body")
 
@@ -807,9 +949,12 @@ class LangFlowService:
                 f"LangFlow project creation returned error {e.response.status_code}"
             ) from e
         except httpx.HTTPError as e:
-            raise LangFlowError(f"Unable to create LangFlow project '{name}': {str(e)}") from e
+            raise self._transport_failure("Unable to create the LangFlow project", e) from e
 
-        created_project = response.json()
+        created_project = self._decode_response_json(
+            response,
+            "LangFlow project creation",
+        )
         if not isinstance(created_project, dict):
             raise LangFlowError("LangFlow project creation returned an unexpected response body")
 
@@ -867,63 +1012,25 @@ class LangFlowService:
                     "size": 100,
                 },
             )
-            if response.status_code == 200:
-                payload = response.json()
-                flows = self._extract_flow_items(payload)
-                if not isinstance(flows, list):
-                    return LangFlowSummaryResult(
-                        check_result=LangFlowCheckResult(
-                            check_id="flow_listing",
-                            label="Authenticated flow listing",
-                            success=False,
-                            message="LangFlow flow listing returned an unexpected response body",
-                        ),
-                        flows=[],
-                    )
-
-                return LangFlowSummaryResult(
-                    check_result=LangFlowCheckResult(
-                        check_id="flow_listing",
-                        label="Authenticated flow listing",
-                        success=True,
-                        message=f"Authenticated LangFlow API returned {len(flows)} flows",
-                    ),
-                    flows=flows,
-                )
-
-            if response.status_code in {401, 403}:
-                return LangFlowSummaryResult(
-                    check_result=LangFlowCheckResult(
-                        check_id="flow_listing",
-                        label="Authenticated flow listing",
-                        success=False,
-                        message="LangFlow rejected the configured API key",
-                    ),
-                    flows=[],
-                )
-
+        except httpx.ConnectError as exc:
+            logger.warning(
+                "LangFlow flow listing failed to connect",
+                extra={"transport_error_type": type(exc).__name__},
+            )
             return LangFlowSummaryResult(
                 check_result=LangFlowCheckResult(
                     check_id="flow_listing",
                     label="Authenticated flow listing",
                     success=False,
-                    message=f"LangFlow flow listing returned HTTP {response.status_code}",
+                    message="Unable to connect to the LangFlow flows API",
                 ),
                 flows=[],
             )
-        except httpx.ConnectError as e:
-            logger.warning("LangFlow flow listing failed to connect: %s", e)
-            return LangFlowSummaryResult(
-                check_result=LangFlowCheckResult(
-                    check_id="flow_listing",
-                    label="Authenticated flow listing",
-                    success=False,
-                    message=f"Unable to connect to LangFlow flows API: {str(e)}",
-                ),
-                flows=[],
+        except httpx.TimeoutException as exc:
+            logger.warning(
+                "LangFlow flow listing timed out",
+                extra={"transport_error_type": type(exc).__name__},
             )
-        except httpx.TimeoutException as e:
-            logger.warning("LangFlow flow listing timed out: %s", e)
             return LangFlowSummaryResult(
                 check_result=LangFlowCheckResult(
                     check_id="flow_listing",
@@ -933,17 +1040,81 @@ class LangFlowService:
                 ),
                 flows=[],
             )
-        except Exception as e:
-            logger.warning("LangFlow flow listing failed: %s", e)
+        except httpx.RequestError as exc:
+            logger.warning(
+                "LangFlow flow listing request failed",
+                extra={"transport_error_type": type(exc).__name__},
+            )
             return LangFlowSummaryResult(
                 check_result=LangFlowCheckResult(
                     check_id="flow_listing",
                     label="Authenticated flow listing",
                     success=False,
-                    message=f"LangFlow flow listing failed: {str(e)}",
+                    message="Unable to list LangFlow flows",
                 ),
                 flows=[],
             )
+
+        if response.status_code == 200:
+            try:
+                payload = response.json()
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                logger.warning(
+                    "LangFlow flow listing response is not valid JSON",
+                    extra={"status_code": response.status_code},
+                )
+                return LangFlowSummaryResult(
+                    check_result=LangFlowCheckResult(
+                        check_id="flow_listing",
+                        label="Authenticated flow listing",
+                        success=False,
+                        message="LangFlow flow listing returned an unexpected response body",
+                    ),
+                    flows=[],
+                )
+
+            flows = self._extract_flow_items(payload)
+            if not isinstance(flows, list):
+                return LangFlowSummaryResult(
+                    check_result=LangFlowCheckResult(
+                        check_id="flow_listing",
+                        label="Authenticated flow listing",
+                        success=False,
+                        message="LangFlow flow listing returned an unexpected response body",
+                    ),
+                    flows=[],
+                )
+
+            return LangFlowSummaryResult(
+                check_result=LangFlowCheckResult(
+                    check_id="flow_listing",
+                    label="Authenticated flow listing",
+                    success=True,
+                    message=f"Authenticated LangFlow API returned {len(flows)} flows",
+                ),
+                flows=flows,
+            )
+
+        if response.status_code in {401, 403}:
+            return LangFlowSummaryResult(
+                check_result=LangFlowCheckResult(
+                    check_id="flow_listing",
+                    label="Authenticated flow listing",
+                    success=False,
+                    message="LangFlow rejected the configured API key",
+                ),
+                flows=[],
+            )
+
+        return LangFlowSummaryResult(
+            check_result=LangFlowCheckResult(
+                check_id="flow_listing",
+                label="Authenticated flow listing",
+                success=False,
+                message=f"LangFlow flow listing returned HTTP {response.status_code}",
+            ),
+            flows=[],
+        )
 
     def validate_configured_flows(
         self,
@@ -1001,18 +1172,30 @@ class LangFlowService:
         Raises:
             LangFlowConfigurationError: If required settings are missing
         """
-        base_url = await settings_service.get_typed_value("langflow.base_url")
+        base_url = await settings_service.get("langflow.base_url")
         if not base_url:
             raise LangFlowConfigurationError(
                 "LangFlow base URL not configured. "
                 "Please set 'langflow.base_url' in settings or LANGFLOW__BASE_URL environment variable."
             )
         
-        api_key = await settings_service.get_typed_value("langflow.api_key")
-        timeout = await settings_service.get_typed_value("langflow.timeout", default=300.0)
-        
-        return LangFlowService(
-            base_url=base_url,
-            api_key=api_key,
-            timeout=float(timeout),
-        )
+        api_key = await settings_service.get("langflow.api_key")
+        timeout = await settings_service.get("langflow.timeout", default=300.0)
+
+        try:
+            timeout_seconds = float(timeout)
+        except (TypeError, ValueError) as exc:
+            raise LangFlowConfigurationError(
+                "LangFlow timeout must be a number"
+            ) from exc
+
+        try:
+            return LangFlowService(
+                base_url=base_url,
+                api_key=api_key,
+                timeout=timeout_seconds,
+            )
+        except httpx.InvalidURL as exc:
+            raise LangFlowConfigurationError(
+                "LangFlow base URL must be a valid absolute URL"
+            ) from exc

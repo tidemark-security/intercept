@@ -1,7 +1,15 @@
 """Unit tests for the MITRE ATT&CK service."""
 
+from pathlib import Path
+
 import pytest
-from app.services.mitre_service import mitre_service, MitreService
+
+from app.services import mitre_service as mitre_module
+from app.services.mitre_service import (
+    MitreDataUnavailableError,
+    MitreService,
+    mitre_service,
+)
 
 
 class TestMitreServiceLookups:
@@ -72,10 +80,16 @@ class TestMitreServiceLookups:
         result = mitre_service.get_attack_object("INVALID")
         assert result is None
     
-    def test_validate_attack_id(self):
-        """Test ATT&CK ID validation."""
-        assert mitre_service.validate_attack_id("T1059") is True
-        assert mitre_service.validate_attack_id("T9999") is False
+    @pytest.mark.parametrize(
+        "attack_id",
+        ["T1059", "T1059.001", "TA0001", "G0001", "S0001", "M1036", "DS0001", "C0001"],
+    )
+    def test_attack_id_format_accepts_supported_external_ids(self, attack_id):
+        assert mitre_service.is_attack_id_format(attack_id) is True
+
+    @pytest.mark.parametrize("attack_id", ["T999", "T1059.01", "TA001", "INVALID", "T1059 extra"])
+    def test_attack_id_format_rejects_malformed_external_ids(self, attack_id):
+        assert mitre_service.is_attack_id_format(attack_id) is False
 
 
 class TestMitreServiceCaching:
@@ -126,3 +140,75 @@ class TestConvenienceMethods:
         result = mitre_service.get_software("S0001")
         assert result is not None
         assert result["object_type"] == "software"
+
+
+class TestMitreSearchHelpers:
+    def test_search_types_expand_software_and_preserve_order(self):
+        assert MitreService._search_stix_types(
+            ["group", "software", "group", "unknown"]
+        ) == ["intrusion-set", "tool", "malware"]
+
+    @pytest.mark.parametrize(
+        ("query", "attack_id", "name", "expected"),
+        [
+            ("T1059", "T1059.001", "PowerShell", 90),
+            ("powershell", "T1059.001", "PowerShell", 80),
+            ("power", "T1059.001", "PowerShell", 70),
+            ("shell", "T1059.001", "PowerShell", 60),
+            ("unrelated", "T1059.001", "PowerShell", 0),
+        ],
+    )
+    def test_search_match_score_encodes_search_precedence(
+        self,
+        query,
+        attack_id,
+        name,
+        expected,
+    ):
+        assert MitreService._search_match_score(
+            query_upper=query.upper(),
+            query_lower=query.lower(),
+            attack_id=attack_id,
+            name=name,
+        ) == expected
+
+    def test_add_search_result_skips_objects_without_external_id(self):
+        class MissingExternalIdData:
+            @staticmethod
+            def get_attack_id(_stix_id):
+                return None
+
+        results = {}
+
+        MitreService._add_search_result(
+            MissingExternalIdData(),
+            results,
+            {"id": "attack-pattern--without-external-id"},
+            "attack-pattern",
+            60,
+        )
+
+        assert results == {}
+
+
+def test_missing_bundle_has_explicit_unavailable_failure(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(mitre_module, "_mitre_data", None)
+    monkeypatch.setattr(
+        mitre_module,
+        "_get_stix_path",
+        lambda: tmp_path / "missing.json",
+    )
+
+    with pytest.raises(MitreDataUnavailableError, match="file is unavailable"):
+        MitreService.get_attack_object("T1059")
+
+
+def test_lookup_does_not_hide_unexpected_parser_defects(monkeypatch) -> None:
+    class BrokenMitreData:
+        def get_object_by_attack_id(self, *_args):
+            raise RuntimeError("programming defect")
+
+    monkeypatch.setattr(mitre_module, "_mitre_data", BrokenMitreData())
+
+    with pytest.raises(RuntimeError, match="programming defect"):
+        MitreService.get_attack_object("T1059")

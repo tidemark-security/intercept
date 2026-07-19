@@ -10,6 +10,14 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import TypeDecorator
 from pydantic import EmailStr, computed_field, field_validator, model_validator
 from app.core.filename_safety import sanitize_attachment_filename
+from app.core.entity_ids import (
+    ALERT_PREFIX,
+    CASE_PREFIX,
+    RUNBOOK_PREFIX,
+    TASK_PREFIX,
+    format_entity_id,
+)
+from app.core.password_policy import validate_password_policy
 from app.models.enums import (
     CaseStatus,
     Priority,
@@ -33,7 +41,6 @@ from app.models.enums import (
     TriageDisposition,
     RejectionCategory,
     MessageFeedback,
-    RealtimeEventType,
     ContextCriterionType,
 )
 
@@ -171,9 +178,6 @@ class TimelineGraphConflictRead(SQLModel):
 
 
 USERNAME_REGEX = re.compile(r"^[a-z0-9._@-]{3,1024}$")
-PASSWORD_POLICY_REGEX = re.compile(
-    r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{12,}$"
-)
 
 
 class InetType(TypeDecorator):
@@ -263,7 +267,7 @@ def _coerce_timeline_item_storage(value: Any, *, depth: int = 0) -> TimelineItem
 class ItemBase(SQLModel):
     """Base class for all timeline items."""
 
-    id: str = Field(default=None, description="Unique identifier for timeline item")
+    id: Optional[str] = Field(default=None, description="Unique identifier for timeline item")
     type: str = Field(description="Type of timeline item")
     description: Optional[str] = Field(default=None, description="Free text description of the timeline item")
     created_at: datetime = Field(
@@ -276,7 +280,7 @@ class ItemBase(SQLModel):
         description="Timestamp when event occurred",
         sa_column=Column(DateTime(timezone=True))
     )
-    created_by: str = Field(default=None, description="User who created this timeline item")
+    created_by: Optional[str] = Field(default=None, description="User who created this timeline item")
     tags: Optional[List[str]] = Field(default_factory=list)
     flagged: bool = Field(default=False, description="Whether this item is flagged as significant")
     highlighted: bool = Field(default=False, description="Whether this item is highlighted for attention")
@@ -415,26 +419,30 @@ class SystemItem(ItemBase):
     is_privileged: bool = Field(default=False, description="System with elevated privileges/access")
 
 
-class InternalActorItem(ItemBase):
-    """Timeline item for tracking internal actors (employees, contractors)."""
+class ActorItemBase(ItemBase):
+    """Fields shared by normalized actor timeline items."""
 
-    type: Literal["internal_actor"] = "internal_actor"  # type: ignore
-    # Normalized reference to Actor table (database PK)
-    # Optional for inbound API requests - if missing, an id is created on first sighting
+    # Optional for inbound API requests; identifying fields are used to create an
+    # actor on first sighting when the normalized database reference is absent.
     actor_id: Optional[int] = None
-    # Optional content hash to pin the timeline entry to a historical view of the actor
+    # Optional content hash pins the timeline entry to a historical actor view.
     snapshot_hash: Optional[str] = None
-    
-    # Internal actor specific fields
-    user_id: Optional[str] = None  # UPN, samaccountname, etc.
-    manager_id: Optional[int] = None  # Reference to another internal actor
-    
-    # Optional denormalized fields for client contract (server normalizes on write)
+
+    # Denormalized response fields (the server normalizes them on write).
     name: Optional[str] = None
     title: Optional[str] = None
     org: Optional[str] = None
     contact_phone: Optional[str] = None
     contact_email: Optional[str] = None
+
+
+class InternalActorItem(ActorItemBase):
+    """Timeline item for tracking internal actors (employees, contractors)."""
+
+    type: Literal["internal_actor"] = "internal_actor"  # type: ignore
+    # Internal actor specific fields
+    user_id: Optional[str] = None  # UPN, samaccountname, etc.
+    manager_id: Optional[int] = None  # Reference to another internal actor
     
     # Actor characterization flags
     is_vip: bool = Field(default=False, description="High-profile individual (executive, board member)")
@@ -454,23 +462,10 @@ class InternalActorItem(ItemBase):
         return self
 
 
-class ExternalActorItem(ItemBase):
+class ExternalActorItem(ActorItemBase):
     """Timeline item for tracking external actors (customers, vendors, partners)."""
 
     type: Literal["external_actor"] = "external_actor"  # type: ignore
-    # Normalized reference to Actor table (database PK)
-    # Optional for inbound API requests - if missing, an id is created on first sighting
-    actor_id: Optional[int] = None
-    # Optional content hash to pin the timeline entry to a historical view of the actor
-    snapshot_hash: Optional[str] = None
-    
-    # Optional denormalized fields for client contract (server normalizes on write)
-    name: Optional[str] = None
-    title: Optional[str] = None
-    org: Optional[str] = None
-    contact_phone: Optional[str] = None
-    contact_email: Optional[str] = None
-
     @model_validator(mode='after')
     def validate_identity(self) -> 'ExternalActorItem':
         """Ensure either actor_id or name is provided for external actors."""
@@ -482,26 +477,13 @@ class ExternalActorItem(ItemBase):
         return self
 
 
-class ThreatActorItem(ItemBase):
+class ThreatActorItem(ActorItemBase):
     """Timeline item for tracking threat actors (malicious external entities)."""
 
     type: Literal["threat_actor"] = "threat_actor"  # type: ignore
-    # Normalized reference to Actor table (database PK)
-    # Optional for inbound API requests - if missing, an id is created on first sighting
-    actor_id: Optional[int] = None
-    # Optional content hash to pin the timeline entry to a historical view of the actor
-    snapshot_hash: Optional[str] = None
-    
     # Threat actor specific fields
     tag_id: Optional[str] = None  # Threat intelligence tag/identifier
     confidence: Optional[int] = None  # 0-100 confidence in identity
-    
-    # Optional denormalized fields for client contract (server normalizes on write)
-    name: Optional[str] = None
-    title: Optional[str] = None
-    org: Optional[str] = None
-    contact_phone: Optional[str] = None
-    contact_email: Optional[str] = None
 
     @model_validator(mode='after')
     def validate_identity(self) -> 'ThreatActorItem':
@@ -531,92 +513,63 @@ class LinkItem(ItemBase):
     url: Optional[str] = None
 
 
-class AlertItem(ItemBase):
+class LinkedTimelineItemBase(ItemBase):
+    """Fields shared by timeline links to first-class entities."""
+
+    title: Optional[str] = None
+    priority: Optional[Priority] = None
+    assignee: Optional[str] = None
+    entity_description: Optional[str] = Field(
+        default=None,
+        description="Description from the linked entity; distinct from the timeline link description",
+    )
+    source_timeline_items: Optional[TimelineItemStorage] = Field(
+        default=None,
+        description=(
+            "Timeline items from the linked entity "
+            "(populated on read with include_linked_timelines=true)"
+        ),
+    )
+
+    @field_validator("source_timeline_items", mode="before")
+    @classmethod
+    def coerce_source_timeline_items(cls, value: Any) -> TimelineItemStorage:
+        return _coerce_timeline_item_storage(value)
+
+
+class AlertItem(LinkedTimelineItemBase):
     """Timeline item for alerts linked to the case."""
 
     type: Literal["alert"] = "alert"  # type: ignore
     # Alert-specific fields
     # Use alert primary key (alerts.id)
     alert_id: Optional[int] = None
-    # Optional denormalized fields for client contract (server normalizes on write)
-    title: Optional[str] = None
     status: Optional[AlertStatus] = None
-    priority: Optional[Priority] = None
-    assignee: Optional[str] = None  # unified field for assignee
-    entity_description: Optional[str] = Field(
-        default=None,
-        description="Description from the linked alert entity; distinct from the timeline link description",
-    )
-    # Optionally embedded timeline items from the linked alert (populated when include_linked_timelines=true)
-    source_timeline_items: Optional[TimelineItemStorage] = Field(
-        default=None,
-        description="Timeline items from the linked alert (populated on read with include_linked_timelines=true)"
-    )
-
-    @field_validator("source_timeline_items", mode="before")
-    @classmethod
-    def coerce_source_timeline_items(cls, value: Any) -> TimelineItemStorage:
-        return _coerce_timeline_item_storage(value)
 
 
-class CaseItem(ItemBase):
+class CaseItem(LinkedTimelineItemBase):
     """Timeline item for linking to another case."""
 
     type: Literal["case"] = "case"  # type: ignore
     # Case-specific fields
     case_id: int
-    # Optional denormalized fields for client contract (server normalizes on write)
-    title: Optional[str] = None
     status: Optional[CaseStatus] = None
-    priority: Optional[Priority] = None
-    assignee: Optional[str] = None  # unified field for assignee
-    entity_description: Optional[str] = Field(
-        default=None,
-        description="Description from the linked case entity; distinct from the timeline link description",
-    )
-    # Optionally embedded timeline items from the linked case (populated when include_linked_timelines=true)
-    source_timeline_items: Optional[TimelineItemStorage] = Field(
-        default=None,
-        description="Timeline items from the linked case (populated on read with include_linked_timelines=true)"
-    )
-
-    @field_validator("source_timeline_items", mode="before")
-    @classmethod
-    def coerce_source_timeline_items(cls, value: Any) -> TimelineItemStorage:
-        return _coerce_timeline_item_storage(value)
 
 
-class TaskItem(ItemBase):
+class TaskItem(LinkedTimelineItemBase):
     """Timeline item for tasks."""
 
     type: Literal["task"] = "task"  # type: ignore
     # Task-specific fields
     task_id: Optional[int] = None
     task_human_id: Optional[str] = None
-    title: Optional[str] = None
     status: Optional[TaskStatus] = None
-    priority: Optional[Priority] = None
-    assignee: Optional[str] = None
-    entity_description: Optional[str] = Field(
-        default=None,
-        description="Description from the linked task entity; distinct from the timeline link description",
-    )
     due_date: Optional[datetime] = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True))
     )
     picerl_stage: Optional[PICERLStage] = None
     source_runbook: Optional[int] = None
-    # Optionally embedded timeline items from the linked task (populated when include_linked_timelines=true)
-    source_timeline_items: Optional[TimelineItemStorage] = Field(
-        default=None,
-        description="Timeline items from the linked task (populated on read with include_linked_timelines=true)"
-    )
-
-    @field_validator("source_timeline_items", mode="before")
-    @classmethod
-    def coerce_source_timeline_items(cls, value: Any) -> TimelineItemStorage:
-        return _coerce_timeline_item_storage(value)
 
 
 class ForensicArtifactItem(ItemBase):
@@ -881,7 +834,7 @@ class CaseRead(CaseBase):
     @computed_field
     @property
     def human_id(self) -> str:
-        return f"CAS-{self.id:07d}"
+        return format_entity_id(self.id, CASE_PREFIX)
 
 class TimelineGraph(SQLModel, table=True):
     """Shared timeline graph layout and link state for cases and tasks."""
@@ -978,7 +931,7 @@ class AlertCreate(AlertBase):
 class AlertUpdate(SQLModel):
     """Schema for updating an alert."""
 
-    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    title: Optional[str] = Field(None, min_length=1, max_length=500)
     description: Optional[str] = None
     status: Optional[AlertStatus] = None
     priority: Optional[Priority] = None
@@ -1112,7 +1065,7 @@ class AlertRead(AlertBase):
     @computed_field
     @property
     def human_id(self) -> str:
-        return f"ALT-{self.id:07d}"
+        return format_entity_id(self.id, ALERT_PREFIX)
 
 
 # Triage Recommendation model
@@ -1181,14 +1134,16 @@ class TriageRecommendationRead(SQLModel):
     alert_id: int
     disposition: TriageDisposition
     confidence: float
-    reasoning_bullets: List[str] = []
-    recommended_actions: List[Any] = []  # Supports both legacy str and new {title, description} format
+    reasoning_bullets: List[str] = Field(default_factory=list)
+    recommended_actions: List[Any] = Field(
+        default_factory=list
+    )  # Supports both legacy str and new {title, description} format
     recommended_case_runbook_id: Optional[int] = None
     suggested_status: Optional[AlertStatus] = None
     suggested_priority: Optional[Priority] = None
     suggested_assignee: Optional[str] = None
-    suggested_tags_add: List[str] = []
-    suggested_tags_remove: List[str] = []
+    suggested_tags_add: List[str] = Field(default_factory=list)
+    suggested_tags_remove: List[str] = Field(default_factory=list)
     request_escalate_to_case: bool = False
     created_by: str
     created_at: datetime
@@ -1197,9 +1152,9 @@ class TriageRecommendationRead(SQLModel):
     reviewed_at: Optional[datetime] = None
     rejection_category: Optional[RejectionCategory] = None
     rejection_reason: Optional[str] = None
-    applied_changes: List[Dict[str, Any]] = []
+    applied_changes: List[Dict[str, Any]] = Field(default_factory=list)
     error_message: Optional[str] = None
-    applied_context_entries: List[Dict[str, Any]] = []
+    applied_context_entries: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class RunbookTaskDefinition(SQLModel):
@@ -1237,6 +1192,12 @@ class CaseRunbook(CaseRunbookBase, table=True):
     __table_args__ = (
         Index("ix_case_runbooks_status", "status"),
         Index("ix_case_runbooks_title_normalized", "title_normalized"),
+        Index(
+            "uq_case_runbooks_active_title_normalized",
+            "title_normalized",
+            unique=True,
+            postgresql_where=text("status != 'DELETED' AND title_normalized IS NOT NULL"),
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -1291,7 +1252,7 @@ class CaseRunbookRead(CaseRunbookBase):
     @computed_field
     @property
     def human_id(self) -> str:
-        return f"RUN-{self.id:07d}"
+        return format_entity_id(self.id, RUNBOOK_PREFIX)
 
 
 class CaseRunbookApplyRequest(SQLModel):
@@ -1382,7 +1343,24 @@ class ContextEntryRead(SQLModel):
     expired_at: Optional[datetime] = None
 
 
-class AuditLog(SQLModel, table=True):
+class AuditLogBase(SQLModel):
+    """Fields shared by persisted audit records and their read schema."""
+
+    event_type: str = Field(max_length=200)
+    entity_type: Optional[str] = Field(default=None, max_length=100)
+    entity_id: Optional[str] = Field(default=None, max_length=255)
+    item_id: Optional[str] = Field(default=None, max_length=255)
+    description: Optional[str] = None
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+    performed_by: Optional[str] = Field(default=None, max_length=100)
+    performed_at: datetime
+    ip_address: Optional[str] = Field(default=None, max_length=100)
+    user_agent: Optional[str] = None
+    correlation_id: Optional[str] = Field(default=None, max_length=255)
+
+
+class AuditLog(AuditLogBase, table=True):
     """Unified persisted audit log for all event categories."""
 
     __tablename__ = "audit_logs"  # type: ignore
@@ -1401,39 +1379,16 @@ class AuditLog(SQLModel, table=True):
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    event_type: str = Field(max_length=200)
-    entity_type: Optional[str] = Field(default=None, max_length=100)
-    entity_id: Optional[str] = Field(default=None, max_length=255)
-    item_id: Optional[str] = Field(default=None, max_length=255)
-    description: Optional[str] = None
-    old_value: Optional[str] = None
-    new_value: Optional[str] = None
-    performed_by: Optional[str] = Field(default=None, max_length=100)
     performed_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True), index=True)
     )
-    ip_address: Optional[str] = Field(default=None, max_length=100)
-    user_agent: Optional[str] = None
-    correlation_id: Optional[str] = Field(default=None, max_length=255)
 
 
-class AuditLogRead(SQLModel):
+class AuditLogRead(AuditLogBase):
     """Schema for reading persisted audit logs."""
 
     id: int
-    event_type: str
-    entity_type: Optional[str] = None
-    entity_id: Optional[str] = None
-    item_id: Optional[str] = None
-    description: Optional[str] = None
-    old_value: Optional[str] = None
-    new_value: Optional[str] = None
-    performed_by: Optional[str] = None
-    performed_at: datetime
-    ip_address: Optional[str] = None
-    user_agent: Optional[str] = None
-    correlation_id: Optional[str] = None
 
     @staticmethod
     def compute_changes(old_value: Optional[str], new_value: Optional[str]) -> List[Dict[str, Any]]:
@@ -1469,7 +1424,7 @@ class AuditLogRead(SQLModel):
 class CaseReadWithAlerts(CaseRead):
     """Case with alerts."""
 
-    alerts: List[AlertRead] = []
+    alerts: List[AlertRead] = Field(default_factory=list)
 
 
 class AlertReadWithCase(AlertRead):
@@ -1606,7 +1561,7 @@ class TaskRead(TaskBase):
     @computed_field
     @property
     def human_id(self) -> str:
-        return f"TSK-{self.id:07d}"
+        return format_entity_id(self.id, TASK_PREFIX)
 
 
 # Normalized Actor models with versioned snapshots
@@ -1819,68 +1774,6 @@ class UserAccount(UserAccountBase, table=True):
         return self
 
 
-class HumanUserAccountBase(UserAccountBase):
-    """Base fields for human user accounts including email."""
-    email: Optional[EmailStr] = Field(
-        default=None,
-        description="Optional unique email used for contact metadata",
-    )
-
-    @field_validator("email", mode="before")
-    @classmethod
-    def _normalize_email(cls, value: Optional[EmailStr]) -> Optional[str]:
-        if value is None:
-            return None
-        return str(value).strip().lower()
-
-
-class UserAccountRead(UserAccountBase):
-    """Read schema for user accounts (both human and NHI)."""
-    id: UUID
-    account_type: AccountType
-    email: Optional[EmailStr] = None
-    oidc_subject: Optional[str] = None
-    oidc_issuer: Optional[str] = None
-    status: UserStatus
-    assignable: bool = False
-    override_timestamps: bool = False
-    must_change_password: bool
-    failed_login_attempts: int
-    lockout_expires_at: Optional[datetime]
-    last_login_at: Optional[datetime]
-    created_at: datetime
-    updated_at: datetime
-
-
-class UserAccountCreate(HumanUserAccountBase):
-    """Schema for creating a human user account."""
-    password: str = Field(min_length=12, description="Plain text password used during provisioning")
-
-    @field_validator("password")
-    @classmethod
-    def _validate_password(cls, value: str) -> str:
-        candidate = value.strip()
-        if not PASSWORD_POLICY_REGEX.match(candidate):
-            raise ValueError(
-                "Password must be at least 12 characters and include upper, lower, number, and symbol"
-            )
-        return candidate
-
-
-class NHIAccountCreate(UserAccountBase):
-    """Schema for creating a Non-Human Identity (NHI) account."""
-    assignable: bool = Field(default=False, description="Whether this NHI can be assigned tasks")
-    override_timestamps: bool = Field(default=False, description="Whether this NHI can override created_at during migration imports")
-    initial_api_key_name: str = Field(
-        min_length=1,
-        max_length=100,
-        description="Name for the initial API key",
-    )
-    initial_api_key_expires_at: datetime = Field(
-        description="Expiration date for the initial API key (required)",
-    )
-
-
 class AuthSessionBase(SQLModel):
     user_id: UUID = Field(foreign_key="user_accounts.id")
     issued_at: datetime = Field(sa_column=Column(UTCDateTime()))
@@ -1906,11 +1799,6 @@ class AuthSession(AuthSessionBase, table=True):
     )
 
     user: Optional[UserAccount] = Relationship(back_populates="sessions")
-
-
-class AuthSessionRead(AuthSessionBase):
-    id: UUID
-    revoked_reason: Optional[SessionRevokedReason] = None
 
 
 class PasskeyCredentialBase(SQLModel):
@@ -1960,20 +1848,6 @@ class PasskeyCredential(PasskeyCredentialBase, table=True):
         back_populates="passkey_credentials",
         sa_relationship_kwargs={"foreign_keys": "PasskeyCredential.user_id"},
     )
-
-
-class PasskeyCredentialRead(SQLModel):
-    id: UUID
-    user_id: UUID
-    name: str
-    credential_id: str
-    transports: List[str]
-    aaguid: Optional[str]
-    is_backup_eligible: bool
-    is_backed_up: bool
-    last_used_at: Optional[datetime]
-    revoked_at: Optional[datetime]
-    created_at: datetime
 
 
 class WebAuthnChallenge(SQLModel, table=True):
@@ -2042,10 +1916,6 @@ class AdminResetRequest(AdminResetRequestBase, table=True):
     )
 
 
-class AdminResetRequestRead(AdminResetRequestBase):
-    id: UUID
-
-
 class PasswordChangeRequest(SQLModel):
     current_password: str = Field(min_length=1)
     new_password: str = Field(min_length=12)
@@ -2053,12 +1923,7 @@ class PasswordChangeRequest(SQLModel):
     @field_validator("new_password")
     @classmethod
     def _validate_new_password(cls, value: str) -> str:
-        candidate = value.strip()
-        if not PASSWORD_POLICY_REGEX.match(candidate):
-            raise ValueError(
-                "Password must be at least 12 characters and include upper, lower, number, and symbol"
-            )
-        return candidate
+        return validate_password_policy(value)
 
 
 # ---------------------------------------------------------------------------
@@ -2114,18 +1979,6 @@ class ApiKey(ApiKeyBase, table=True):
     )
 
     user: Optional[UserAccount] = Relationship(back_populates="api_keys")
-
-class ApiKeyCreate(SQLModel):
-    """Schema for creating an API key."""
-    name: str = Field(
-        min_length=1,
-        max_length=100,
-        description="User-defined name for this API key",
-    )
-    expires_at: datetime = Field(
-        description="Expiration date (required)",
-    )
-
 
 class ApiKeyRead(ApiKeyBase):
     """Schema for reading API key metadata (never includes the actual key)."""
@@ -2403,8 +2256,8 @@ class PresignedDownloadResponse(SQLModel):
 
 
 # Link Template Models
-class LinkTemplateBase(SQLModel):
-    """Base model for link templates."""
+class LinkTemplateDefinition(SQLModel):
+    """Portable definition shared by public and personal link templates."""
     
     template_id: str = Field(
         index=True,
@@ -2427,24 +2280,20 @@ class LinkTemplateBase(SQLModel):
     )
     field_names: Optional[List[str]] = Field(
         default=None,
-        sa_column=Column(JSONB),
         description="Array of field names this template applies to"
     )
     conditions: Optional[Dict[str, Any]] = Field(
         default=None,
-        sa_column=Column(JSONB),
         description="Object of field/value pairs that must match"
     )
     surface_scopes: List[LinkTemplateSurface] = Field(
         default_factory=_default_link_template_surfaces,
         min_length=1,
         max_length=1,
-        sa_column=Column(JSONB),
         description="Single surface where this template can render",
     )
     entity_types: Optional[List[LinkTemplateEntityType]] = Field(
         default=None,
-        sa_column=Column(JSONB),
         description="Entity types this template applies to; empty means all entity types",
     )
     enabled: bool = Field(
@@ -2482,12 +2331,38 @@ class LinkTemplateBase(SQLModel):
         return _normalize_link_template_entity_types(value)
 
 
+class LinkTemplateBase(LinkTemplateDefinition):
+    """Base schema for public link templates."""
+
+
 class LinkTemplate(LinkTemplateBase, table=True):
     """Link template configuration stored in database."""
     
     __tablename__ = "link_templates"  # type: ignore
     
     id: Optional[int] = Field(default=None, primary_key=True)
+    field_names: Optional[List[str]] = Field(
+        default=None,
+        sa_column=Column(JSONB),
+        description="Array of field names this template applies to",
+    )
+    conditions: Optional[Dict[str, Any]] = Field(
+        default=None,
+        sa_column=Column(JSONB),
+        description="Object of field/value pairs that must match",
+    )
+    surface_scopes: List[LinkTemplateSurface] = Field(
+        default_factory=_default_link_template_surfaces,
+        min_length=1,
+        max_length=1,
+        sa_column=Column(JSONB),
+        description="Single surface where this template can render",
+    )
+    entity_types: Optional[List[LinkTemplateEntityType]] = Field(
+        default=None,
+        sa_column=Column(JSONB),
+        description="Entity types this template applies to; empty means all entity types",
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(UTCDateTime)
@@ -2559,21 +2434,20 @@ class LinkTemplateRead(LinkTemplateBase):
     updated_at: datetime
 
 
-class PersonalLinkTemplateBase(SQLModel):
-    """Base model for user-owned personal link templates."""
+class PersonalLinkTemplateBase(LinkTemplateDefinition):
+    """Base schema for user-owned personal link templates."""
 
-    template_id: str = Field(
-        index=True,
-        max_length=100,
-        description="Unique identifier for this template type",
+
+class PersonalLinkTemplate(PersonalLinkTemplateBase, table=True):
+    """User-owned private link template configuration."""
+
+    __tablename__ = "personal_link_templates"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint("user_id", "template_id", name="uq_personal_link_template_user_template_id"),
     )
-    name: str = Field(max_length=200, description="Human-readable name of the link template")
-    icon_name: str = Field(
-        max_length=100,
-        description="Lucide or custom icon identifier (e.g., 'Link2', 'VirusTotalIcon')",
-    )
-    tooltip_template: str = Field(description="Tooltip text with {{variable}} placeholders")
-    url_template: str = Field(description="URL template with {{variable}} placeholders")
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: UUID = Field(foreign_key="user_accounts.id", index=True)
     field_names: Optional[List[str]] = Field(
         default=None,
         sa_column=Column(JSONB),
@@ -2596,45 +2470,6 @@ class PersonalLinkTemplateBase(SQLModel):
         sa_column=Column(JSONB),
         description="Entity types this template applies to; empty means all entity types",
     )
-    enabled: bool = Field(default=True, description="Whether this template is currently active")
-    display_order: int = Field(default=0, description="Sort order for display")
-
-    @field_validator("template_id", "name", "tooltip_template")
-    @classmethod
-    def validate_required_text(cls, value: str) -> str:
-        return _validate_link_template_required_string(value)
-
-    @field_validator("icon_name")
-    @classmethod
-    def validate_icon_name(cls, value: str) -> str:
-        return _validate_link_template_icon_name(value)
-
-    @field_validator("url_template")
-    @classmethod
-    def validate_url_template(cls, value: str) -> str:
-        return _validate_link_template_url_template(value)
-
-    @field_validator("surface_scopes", mode="before")
-    @classmethod
-    def validate_surface_scopes(cls, value: Any) -> List[LinkTemplateSurface]:
-        return _normalize_link_template_surfaces(value)
-
-    @field_validator("entity_types", mode="before")
-    @classmethod
-    def validate_entity_types(cls, value: Any) -> Optional[List[LinkTemplateEntityType]]:
-        return _normalize_link_template_entity_types(value)
-
-
-class PersonalLinkTemplate(PersonalLinkTemplateBase, table=True):
-    """User-owned private link template configuration."""
-
-    __tablename__ = "personal_link_templates"  # type: ignore
-    __table_args__ = (
-        UniqueConstraint("user_id", "template_id", name="uq_personal_link_template_user_template_id"),
-    )
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: UUID = Field(foreign_key="user_accounts.id", index=True)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(UTCDateTime)
@@ -2652,52 +2487,8 @@ class PersonalLinkTemplateCreate(PersonalLinkTemplateBase):
     pass
 
 
-class PersonalLinkTemplateUpdate(SQLModel):
+class PersonalLinkTemplateUpdate(LinkTemplateUpdate):
     """Schema for updating a personal link template."""
-
-    name: Optional[str] = Field(default=None, max_length=200)
-    icon_name: Optional[str] = Field(default=None, max_length=100)
-    tooltip_template: Optional[str] = None
-    url_template: Optional[str] = None
-    field_names: Optional[List[str]] = None
-    conditions: Optional[Dict[str, Any]] = None
-    surface_scopes: Optional[List[LinkTemplateSurface]] = Field(default=None, min_length=1, max_length=1)
-    entity_types: Optional[List[LinkTemplateEntityType]] = None
-    enabled: Optional[bool] = None
-    display_order: Optional[int] = None
-
-    @field_validator("name", "tooltip_template")
-    @classmethod
-    def validate_required_text(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return value
-        return _validate_link_template_required_string(value)
-
-    @field_validator("icon_name")
-    @classmethod
-    def validate_icon_name(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return value
-        return _validate_link_template_icon_name(value)
-
-    @field_validator("url_template")
-    @classmethod
-    def validate_url_template(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return value
-        return _validate_link_template_url_template(value)
-
-    @field_validator("surface_scopes", mode="before")
-    @classmethod
-    def validate_surface_scopes(cls, value: Any) -> Optional[List[LinkTemplateSurface]]:
-        if value is None:
-            return None
-        return _normalize_link_template_surfaces(value)
-
-    @field_validator("entity_types", mode="before")
-    @classmethod
-    def validate_entity_types(cls, value: Any) -> Optional[List[LinkTemplateEntityType]]:
-        return _normalize_link_template_entity_types(value)
 
 
 class PersonalLinkTemplateRead(PersonalLinkTemplateBase):
@@ -2709,53 +2500,8 @@ class PersonalLinkTemplateRead(PersonalLinkTemplateBase):
     updated_at: datetime
 
 
-class PortableLinkTemplate(SQLModel):
+class PortableLinkTemplate(LinkTemplateDefinition):
     """Portable JSON representation shared by public and personal templates."""
-
-    template_id: str = Field(max_length=100)
-    name: str = Field(max_length=200)
-    icon_name: str = Field(
-        max_length=100,
-        description="Lucide or custom icon identifier (e.g., 'Link2', 'VirusTotalIcon')",
-    )
-    tooltip_template: str
-    url_template: str
-    field_names: Optional[List[str]] = None
-    conditions: Optional[Dict[str, Any]] = None
-    surface_scopes: List[LinkTemplateSurface] = Field(
-        default_factory=_default_link_template_surfaces,
-        min_length=1,
-        max_length=1,
-        description="Single surface where this template can render",
-    )
-    entity_types: Optional[List[LinkTemplateEntityType]] = None
-    enabled: bool = True
-    display_order: int = 0
-
-    @field_validator("template_id", "name", "tooltip_template")
-    @classmethod
-    def validate_required_text(cls, value: str) -> str:
-        return _validate_link_template_required_string(value)
-
-    @field_validator("icon_name")
-    @classmethod
-    def validate_icon_name(cls, value: str) -> str:
-        return _validate_link_template_icon_name(value)
-
-    @field_validator("url_template")
-    @classmethod
-    def validate_url_template(cls, value: str) -> str:
-        return _validate_link_template_url_template(value)
-
-    @field_validator("surface_scopes", mode="before")
-    @classmethod
-    def validate_surface_scopes(cls, value: Any) -> List[LinkTemplateSurface]:
-        return _normalize_link_template_surfaces(value)
-
-    @field_validator("entity_types", mode="before")
-    @classmethod
-    def validate_entity_types(cls, value: Any) -> Optional[List[LinkTemplateEntityType]]:
-        return _normalize_link_template_entity_types(value)
 
 
 class LinkTemplateExportBundle(SQLModel):
@@ -3139,12 +2885,6 @@ class LangFlowMessage(LangFlowMessageBase, table=True):
     
     # Relationships
     session: LangFlowSession = Relationship(back_populates="messages")
-
-
-class LangFlowMessageCreate(LangFlowMessageBase):
-    """Schema for creating a message."""
-    
-    session_id: UUID
 
 
 class LangFlowMessageRead(LangFlowMessageBase):
@@ -3543,26 +3283,6 @@ class ChatFeedbackDrillDownResponse(SQLModel):
 
 
 # ---------------------------------------------------------------------------
-# Real-time WebSocket schemas
-# ---------------------------------------------------------------------------
-
-
-class RealtimeEventPayload(SQLModel):
-    """Payload for real-time WebSocket notifications via LISTEN/NOTIFY."""
-    entity_type: str = Field(description="Entity type: alert, case, or task")
-    entity_id: int = Field(description="Numeric ID of the entity")
-    event_type: RealtimeEventType = Field(description="Type of event that occurred")
-    item_id: Optional[str] = Field(default=None, description="Timeline item ID if applicable")
-    performed_by: str = Field(description="Username who performed the action")
-
-
-class WebSocketMessage(SQLModel):
-    """Message format for WebSocket communication."""
-    type: str = Field(description="Message type: event, subscribed, unsubscribed, ping, pong")
-    payload: Optional[Dict[str, Any]] = Field(default=None, description="Message payload")
-
-
-# ---------------------------------------------------------------------------
 # Queue status (read-only schemas for pgqueuer tables)
 # ---------------------------------------------------------------------------
 
@@ -3593,7 +3313,7 @@ class QueueStatsRead(SQLModel):
 class QueueJobsPage(SQLModel):
     """Paginated response for queue jobs."""
 
-    items: List[QueueJobRead] = []
+    items: List[QueueJobRead] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     size: int = 25

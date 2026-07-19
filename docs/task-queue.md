@@ -127,18 +127,14 @@ Each worker exposes HTTP endpoints on the configured `HEALTH_PORT`:
 #### Metrics Available (Prometheus format)
 
 ```prometheus
+# Worker identity
+worker_info{worker_id="container-id"} 1
+
 # Worker uptime
 worker_uptime_seconds 3600.00
 
-# Task counters
-worker_tasks_processed_total 1542
-worker_tasks_failed_total 23
-
 # Queue status
 worker_queue_size 15
-
-# Last activity
-worker_last_task_timestamp_seconds 1703875200
 ```
 
 ## Configuration
@@ -594,7 +590,6 @@ If you see "connection is closed" errors:
 | `enqueue(task_name, payload, priority, schedule_at)` | Add a task to the queue |
 | `register_handler(task_name, handler, max_retries, on_terminal_failure=None)` | Register a task handler with retry/backoff behavior |
 | `start_worker(concurrency)` | Start processing tasks |
-| `stop_worker()` | Stop processing tasks |
 
 ### Global Functions
 

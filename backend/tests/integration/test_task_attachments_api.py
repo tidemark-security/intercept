@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import AsyncClient
@@ -154,6 +155,59 @@ async def test_generate_task_attachment_upload_url_creates_uploading_timeline_it
 
 
 @pytest.mark.asyncio
+async def test_presigned_url_failure_does_not_create_orphan_attachment(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_cookie, _username = await _login_and_get_session_cookie(
+        client,
+        session_maker,
+        analyst_user_factory,
+    )
+    task_id = await _create_task(client, session_cookie)
+    _patch_task_attachment_keys(monkeypatch, task_id)
+
+    async def fail_generate_presigned_upload_url(
+        _storage_key: str,
+        *,
+        expires_minutes: int,
+    ) -> str:
+        assert expires_minutes > 0
+        raise RuntimeError("sensitive storage failure")
+
+    monkeypatch.setattr(
+        storage_service,
+        "generate_presigned_upload_url",
+        fail_generate_presigned_upload_url,
+    )
+
+    response = await client.post(
+        f"/api/v1/tasks/{task_id}/timeline/attachments/upload-url",
+        json={
+            "filename": "report.txt",
+            "file_size": 128,
+            "mime_type": "text/plain",
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Failed to generate upload URL"
+
+    task_response = await client.get(
+        f"/api/v1/tasks/{task_id}",
+        cookies={"intercept_session": session_cookie},
+    )
+    assert task_response.status_code == 200
+    assert not any(
+        item.get("type") == "attachment"
+        for item in _timeline_values(task_response.json()["timeline_items"])
+    )
+
+
+@pytest.mark.asyncio
 async def test_complete_task_attachment_upload_updates_status_and_hash(
     client: AsyncClient,
     session_maker: Any,
@@ -295,7 +349,7 @@ async def test_complete_task_attachment_upload_updates_status_and_hash(
         assert storage_key != upload_response.json()["storage_key"]
         assert expires_minutes > 0
         assert filename == "report.txt"
-        assert as_attachment is True
+        assert as_attachment is False
         return "https://downloads.example.test/presigned"
 
     monkeypatch.setattr(storage_service, "generate_presigned_download_url", fake_generate_presigned_download_url)
@@ -307,6 +361,96 @@ async def test_complete_task_attachment_upload_updates_status_and_hash(
 
     assert download_response.status_code == 200
     assert download_response.json()["download_url"] == "https://downloads.example.test/presigned"
+
+
+@pytest.mark.asyncio
+async def test_failed_attachment_commit_keeps_staged_object_and_uploading_status(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_cookie, _username = await _login_and_get_session_cookie(
+        client,
+        session_maker,
+        analyst_user_factory,
+    )
+    task_id = await _create_task(client, session_cookie)
+    _patch_task_attachment_keys(monkeypatch, task_id)
+    expected_hash = hashlib.sha256(b"attachment bytes").hexdigest()
+    deleted: list[str] = []
+
+    async def fake_generate_presigned_upload_url(
+        _storage_key: str,
+        *,
+        expires_minutes: int,
+    ) -> str:
+        assert expires_minutes > 0
+        return "https://uploads.example.test/presigned"
+
+    async def fake_verify_file_exists(_storage_key: str) -> bool:
+        return True
+
+    async def fake_get_object_metadata(
+        _storage_key: str,
+        *,
+        require_checksum: bool = False,
+    ) -> ObjectMetadata:
+        return ObjectMetadata(
+            size=128,
+            content_type="text/plain",
+            sha256=expected_hash if require_checksum else None,
+        )
+
+    async def fake_copy_object(_source_key: str, _destination_key: str) -> None:
+        return None
+
+    async def fake_detect_mime_type(_storage_key: str) -> str:
+        return "text/plain"
+
+    async def fake_delete_file(storage_key: str) -> None:
+        deleted.append(storage_key)
+
+    monkeypatch.setattr(
+        storage_service,
+        "generate_presigned_upload_url",
+        fake_generate_presigned_upload_url,
+    )
+    monkeypatch.setattr(storage_service, "verify_file_exists", fake_verify_file_exists)
+    monkeypatch.setattr(storage_service, "get_object_metadata", fake_get_object_metadata)
+    monkeypatch.setattr(storage_service, "copy_object", fake_copy_object)
+    monkeypatch.setattr(storage_service, "detect_mime_type", fake_detect_mime_type)
+    monkeypatch.setattr(storage_service, "delete_file", fake_delete_file)
+
+    upload_body = await _create_uploading_attachment(client, task_id, session_cookie)
+    staged_storage_key = upload_body["storage_key"]
+    monkeypatch.setattr(
+        "app.services.timeline_add_service.emit_event",
+        AsyncMock(side_effect=RuntimeError("sensitive event-store failure")),
+    )
+
+    status_response = await client.patch(
+        f"/api/v1/tasks/{task_id}/timeline/items/{upload_body['item_id']}/status",
+        json={"status": "COMPLETE"},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert status_response.status_code == 500
+    assert status_response.json()["detail"] == "Failed to update attachment status"
+    assert staged_storage_key not in deleted
+
+    task_response = await client.get(
+        f"/api/v1/tasks/{task_id}",
+        cookies={"intercept_session": session_cookie},
+    )
+    assert task_response.status_code == 200
+    attachment = next(
+        item
+        for item in _timeline_values(task_response.json()["timeline_items"])
+        if item["id"] == upload_body["item_id"]
+    )
+    assert attachment["upload_status"] == "UPLOADING"
+    assert attachment["upload_storage_key"] == staged_storage_key
 
 
 @pytest.mark.asyncio
@@ -392,6 +536,7 @@ async def test_other_analyst_can_download_completed_task_attachment(
 
     download_response = await client.get(
         f"/api/v1/tasks/{task_id}/timeline/items/{item_id}/download-url",
+        params={"download": True},
         cookies={"intercept_session": downloader_cookie},
     )
 

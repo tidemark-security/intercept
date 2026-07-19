@@ -34,9 +34,26 @@ def normalize_persisted_tags(tags: Optional[List[Any]]) -> List[str]:
     return normalized
 
 
-def merge_persisted_tags(existing_tags: Optional[List[Any]], new_tags: Optional[List[Any]]) -> List[str]:
+def merge_persisted_tags(
+    existing_tags: Optional[List[Any]],
+    new_tags: Optional[List[Any]],
+) -> List[str]:
     """Merge tag collections through the persisted-tag normalizer."""
     return normalize_persisted_tags([*(existing_tags or []), *(new_tags or [])])
+
+
+def persisted_tag_delta(
+    before: Optional[List[Any]],
+    after: Optional[List[Any]],
+) -> tuple[List[str], List[str]]:
+    """Return case-insensitive persisted tag additions and removals."""
+    before_by_key = {tag.lower(): tag for tag in normalize_persisted_tags(before)}
+    after_by_key = {tag.lower(): tag for tag in normalize_persisted_tags(after)}
+    added = [after_by_key[key] for key in sorted(after_by_key.keys() - before_by_key)]
+    removed = [
+        before_by_key[key] for key in sorted(before_by_key.keys() - after_by_key)
+    ]
+    return added, removed
 
 
 def append_tag_filters(

@@ -6,10 +6,9 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from app.core.settings_registry import get_local
 from app.models.enums import UserRole, UserStatus
 from app.models.models import UserAccount
-from app.services.security.password_hasher import Argon2Parameters, PasswordHasher
+from app.services.security.password_hasher import PasswordHasher
 
 DEFAULT_TEST_PASSWORD = "ValidTestPass123!"
 
@@ -18,16 +17,7 @@ DEFAULT_TEST_PASSWORD = "ValidTestPass123!"
 def password_hasher() -> PasswordHasher:
     """Return a PasswordHasher configured with runtime settings."""
 
-    return PasswordHasher(
-        Argon2Parameters(
-            time_cost=get_local("auth.argon2.time_cost"),
-            memory_cost=get_local("auth.argon2.memory_cost_kib"),
-            parallelism=get_local("auth.argon2.parallelism"),
-            hash_len=get_local("auth.argon2.hash_len"),
-            salt_len=get_local("auth.argon2.salt_len"),
-            encoding=get_local("auth.argon2.encoding"),
-        )
-    )
+    return PasswordHasher.from_local_settings()
 
 
 @pytest.fixture

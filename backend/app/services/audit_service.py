@@ -1,9 +1,10 @@
-from __future__ import annotations
-
 """Persisted audit logging helpers."""
 
+from __future__ import annotations
+
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 import json
 import logging
 from typing import Any, Optional
@@ -12,13 +13,17 @@ from uuid import UUID
 from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import apaginate
 from sqlalchemy import String, and_, cast, or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import col
 
-from app.models.models import AuditLog, AuditLogRead
+from app.models.enums import SessionRevokedReason, UserRole, UserStatus
+from app.models.models import AuditLog
+from app.services.date_filter_utils import parse_datetime_filter
 
 
 logger = logging.getLogger("app.audit")
+
+AuditSessionFactory = Callable[[], AsyncSession]
 
 
 @dataclass(slots=True)
@@ -40,24 +45,24 @@ class AuditContext:
         return payload
 
 
+def _json_default(item: Any) -> Any:
+    if isinstance(item, datetime):
+        return item.isoformat()
+    if isinstance(item, UUID):
+        return str(item)
+    if hasattr(item, "value"):
+        return item.value
+    if hasattr(item, "model_dump"):
+        return item.model_dump(mode="json")
+    return str(item)
+
+
 def _serialize_value(value: Any) -> Optional[str]:
     if value is None:
         return None
     if isinstance(value, str):
         return value
-
-    def default_serializer(item: Any) -> Any:
-        if isinstance(item, datetime):
-            return item.isoformat()
-        if isinstance(item, UUID):
-            return str(item)
-        if hasattr(item, "value"):
-            return item.value
-        if hasattr(item, "model_dump"):
-            return item.model_dump(mode="json")
-        return str(item)
-
-    return json.dumps(value, default=default_serializer, sort_keys=True)
+    return json.dumps(value, default=_json_default, sort_keys=True)
 
 
 class AuditService:
@@ -66,10 +71,6 @@ class AuditService:
     def __init__(self, db: AsyncSession, *, logger_: Optional[logging.Logger] = None) -> None:
         self._db = db
         self._logger = logger_ or logger
-
-    @staticmethod
-    def compute_changes(old_value: Optional[str], new_value: Optional[str]) -> list[dict[str, Any]]:
-        return AuditLogRead.compute_changes(old_value, new_value)
 
     async def get_audit_logs(
         self,
@@ -99,19 +100,19 @@ class AuditService:
         if performed_by:
             filters.append(col(AuditLog.performed_by) == performed_by)
 
-        if start_date:
-            try:
-                start_dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
-                filters.append(col(AuditLog.performed_at) >= start_dt)
-            except ValueError:
-                logger.warning("Invalid audit log start_date format: %s", start_date)
+        start_dt = parse_datetime_filter(
+            start_date,
+            parameter="audit log start_date",
+        )
+        if start_dt is not None:
+            filters.append(col(AuditLog.performed_at) >= start_dt)
 
-        if end_date:
-            try:
-                end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
-                filters.append(col(AuditLog.performed_at) <= end_dt)
-            except ValueError:
-                logger.warning("Invalid audit log end_date format: %s", end_date)
+        end_dt = parse_datetime_filter(
+            end_date,
+            parameter="audit log end_date",
+        )
+        if end_dt is not None:
+            filters.append(col(AuditLog.performed_at) <= end_dt)
 
         if search:
             search_pattern = f"%{search}%"
@@ -286,286 +287,426 @@ class AuditService:
             extra_payload={"item_type": item_type},
         )
 
-    async def login_success(self, **kwargs: Any) -> AuditLog:
+    async def login_success(
+        self,
+        *,
+        user_id: UUID,
+        username: str,
+        role: UserRole | str,
+        session_id: UUID,
+        issued_at: datetime,
+        expires_at: datetime,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.login.success",
             entity_type="user",
-            entity_id=str(kwargs["user_id"]),
+            entity_id=str(user_id),
             description="User login succeeded",
             new_value={
-                "username": kwargs["username"],
-                "role": getattr(kwargs["role"], "value", kwargs["role"]),
-                "session_id": str(kwargs["session_id"]),
-                "issued_at": kwargs["issued_at"],
-                "expires_at": kwargs["expires_at"],
+                "username": username,
+                "role": getattr(role, "value", role),
+                "session_id": str(session_id),
+                "issued_at": issued_at,
+                "expires_at": expires_at,
             },
-            performed_by=kwargs["username"],
-            context=kwargs.get("context"),
+            performed_by=username,
+            context=context,
         )
 
-    async def login_failure(self, **kwargs: Any) -> AuditLog:
+    async def login_failure(
+        self,
+        *,
+        username: str,
+        reason: str,
+        role: Optional[UserRole | str] = None,
+        attempts_remaining: Optional[int] = None,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.login.failure",
             entity_type="user",
             description="User login failed",
             new_value={
-                "username": kwargs["username"],
-                "role": getattr(kwargs.get("role"), "value", kwargs.get("role")),
-                "reason": kwargs["reason"],
-                "attempts_remaining": kwargs.get("attempts_remaining"),
+                "username": username,
+                "role": getattr(role, "value", role),
+                "reason": reason,
+                "attempts_remaining": attempts_remaining,
             },
-            performed_by=kwargs["username"],
-            context=kwargs.get("context"),
+            performed_by=username,
+            context=context,
         )
 
-    async def logout(self, **kwargs: Any) -> AuditLog:
+    async def logout(
+        self,
+        *,
+        user_id: UUID,
+        session_id: UUID,
+        reason: SessionRevokedReason | str,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.logout",
             entity_type="user",
-            entity_id=str(kwargs["user_id"]),
+            entity_id=str(user_id),
             description="User logged out",
             new_value={
-                "session_id": str(kwargs["session_id"]),
-                "reason": getattr(kwargs["reason"], "value", kwargs["reason"]),
+                "session_id": str(session_id),
+                "reason": getattr(reason, "value", reason),
             },
-            context=kwargs.get("context"),
+            context=context,
         )
 
-    async def oidc_login_success(self, **kwargs: Any) -> AuditLog:
+    async def oidc_login_success(
+        self,
+        *,
+        user_id: UUID,
+        username: str,
+        role: UserRole | str,
+        oidc_issuer: str,
+        oidc_subject: str,
+        session_id: UUID,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.oidc.login.success",
             entity_type="user",
-            entity_id=str(kwargs["user_id"]),
+            entity_id=str(user_id),
             description="OIDC login succeeded",
             new_value={
-                "username": kwargs["username"],
-                "role": getattr(kwargs["role"], "value", kwargs["role"]),
-                "oidc_issuer": kwargs["oidc_issuer"],
-                "oidc_subject": kwargs["oidc_subject"],
-                "session_id": str(kwargs["session_id"]),
+                "username": username,
+                "role": getattr(role, "value", role),
+                "oidc_issuer": oidc_issuer,
+                "oidc_subject": oidc_subject,
+                "session_id": str(session_id),
             },
-            performed_by=kwargs["username"],
-            context=kwargs.get("context"),
+            performed_by=username,
+            context=context,
         )
 
-    async def oidc_login_failure(self, **kwargs: Any) -> AuditLog:
+    async def oidc_login_failure(
+        self,
+        *,
+        reason: str,
+        oidc_issuer: Optional[str] = None,
+        username: Optional[str] = None,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.oidc.login.failure",
             entity_type="user",
             description="OIDC login failed",
             new_value={
-                "reason": kwargs["reason"],
-                "oidc_issuer": kwargs.get("oidc_issuer"),
-                "username": kwargs.get("username"),
+                "reason": reason,
+                "oidc_issuer": oidc_issuer,
+                "username": username,
             },
-            performed_by=kwargs.get("username"),
-            context=kwargs.get("context"),
+            performed_by=username,
+            context=context,
         )
 
-    async def oidc_account_linked(self, **kwargs: Any) -> AuditLog:
+    async def oidc_account_linked(
+        self,
+        *,
+        user_id: UUID,
+        username: str,
+        oidc_issuer: str,
+        oidc_subject: str,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.oidc.account_linked",
             entity_type="user",
-            entity_id=str(kwargs["user_id"]),
+            entity_id=str(user_id),
             description="OIDC account linked",
             new_value={
-                "username": kwargs["username"],
-                "oidc_issuer": kwargs["oidc_issuer"],
-                "oidc_subject": kwargs["oidc_subject"],
+                "username": username,
+                "oidc_issuer": oidc_issuer,
+                "oidc_subject": oidc_subject,
             },
-            performed_by=kwargs["username"],
-            context=kwargs.get("context"),
+            performed_by=username,
+            context=context,
         )
 
-    async def oidc_account_provisioned(self, **kwargs: Any) -> AuditLog:
+    async def oidc_account_provisioned(
+        self,
+        *,
+        user_id: UUID,
+        username: str,
+        role: UserRole | str,
+        oidc_issuer: str,
+        oidc_subject: str,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.oidc.account_provisioned",
             entity_type="user",
-            entity_id=str(kwargs["user_id"]),
+            entity_id=str(user_id),
             description="OIDC account provisioned",
             new_value={
-                "username": kwargs["username"],
-                "role": getattr(kwargs["role"], "value", kwargs["role"]),
-                "oidc_issuer": kwargs["oidc_issuer"],
-                "oidc_subject": kwargs["oidc_subject"],
+                "username": username,
+                "role": getattr(role, "value", role),
+                "oidc_issuer": oidc_issuer,
+                "oidc_subject": oidc_subject,
             },
-            performed_by=kwargs["username"],
-            context=kwargs.get("context"),
+            performed_by=username,
+            context=context,
         )
 
-    async def account_locked(self, **kwargs: Any) -> AuditLog:
+    async def account_locked(
+        self,
+        *,
+        user_id: UUID,
+        username: str,
+        role: UserRole | str,
+        lockout_expires_at: datetime,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.lockout",
             entity_type="user",
-            entity_id=str(kwargs["user_id"]),
+            entity_id=str(user_id),
             description="Account locked",
             new_value={
-                "username": kwargs["username"],
-                "role": getattr(kwargs["role"], "value", kwargs["role"]),
-                "lockout_expires_at": kwargs["lockout_expires_at"],
+                "username": username,
+                "role": getattr(role, "value", role),
+                "lockout_expires_at": lockout_expires_at,
             },
-            performed_by=kwargs["username"],
-            context=kwargs.get("context"),
+            performed_by=username,
+            context=context,
         )
 
-    async def user_created(self, **kwargs: Any) -> AuditLog:
+    async def user_created(
+        self,
+        *,
+        admin_user_id: UUID,
+        target_user_id: UUID,
+        username: str,
+        email: Optional[str],
+        role: UserRole | str,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.admin.user_created",
             entity_type="user",
-            entity_id=str(kwargs["target_user_id"]),
+            entity_id=str(target_user_id),
             description="Admin created user",
             new_value={
-                "admin_user_id": str(kwargs["admin_user_id"]),
-                "username": kwargs["username"],
-                "email": kwargs["email"],
-                "role": getattr(kwargs["role"], "value", kwargs["role"]),
+                "admin_user_id": str(admin_user_id),
+                "username": username,
+                "email": email,
+                "role": getattr(role, "value", role),
             },
-            performed_by=str(kwargs["admin_user_id"]),
-            context=kwargs.get("context"),
+            performed_by=str(admin_user_id),
+            context=context,
         )
 
-    async def user_status_changed(self, **kwargs: Any) -> AuditLog:
+    async def user_status_changed(
+        self,
+        *,
+        admin_user_id: UUID,
+        target_user_id: UUID,
+        old_status: UserStatus | str,
+        new_status: UserStatus | str,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.admin.user_status_changed",
             entity_type="user",
-            entity_id=str(kwargs["target_user_id"]),
+            entity_id=str(target_user_id),
             description="Admin changed user status",
-            old_value={"status": getattr(kwargs["old_status"], "value", kwargs["old_status"])},
-            new_value={"status": getattr(kwargs["new_status"], "value", kwargs["new_status"])},
-            performed_by=str(kwargs["admin_user_id"]),
-            context=kwargs.get("context"),
+            old_value={"status": getattr(old_status, "value", old_status)},
+            new_value={"status": getattr(new_status, "value", new_status)},
+            performed_by=str(admin_user_id),
+            context=context,
         )
 
-    async def user_updated(self, **kwargs: Any) -> AuditLog:
+    async def user_updated(
+        self,
+        *,
+        admin_user_id: UUID,
+        target_user_id: UUID,
+        old_value: dict[str, Any],
+        new_value: dict[str, Any],
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.admin.user_updated",
             entity_type="user",
-            entity_id=str(kwargs["target_user_id"]),
+            entity_id=str(target_user_id),
             description="Admin updated user",
-            old_value=kwargs["old_value"],
-            new_value=kwargs["new_value"],
-            performed_by=str(kwargs["admin_user_id"]),
-            context=kwargs.get("context"),
+            old_value=old_value,
+            new_value=new_value,
+            performed_by=str(admin_user_id),
+            context=context,
         )
 
-    async def password_reset_issued(self, **kwargs: Any) -> AuditLog:
+    async def password_reset_issued(
+        self,
+        *,
+        admin_user_id: UUID,
+        target_user_id: UUID,
+        reset_request_id: UUID,
+        expires_at: datetime,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.admin.password_reset_issued",
             entity_type="user",
-            entity_id=str(kwargs["target_user_id"]),
+            entity_id=str(target_user_id),
             description="Admin issued password reset",
             new_value={
-                "admin_user_id": str(kwargs["admin_user_id"]),
-                "reset_request_id": str(kwargs["reset_request_id"]),
-                "expires_at": kwargs["expires_at"],
+                "admin_user_id": str(admin_user_id),
+                "reset_request_id": str(reset_request_id),
+                "expires_at": expires_at,
             },
-            performed_by=str(kwargs["admin_user_id"]),
-            context=kwargs.get("context"),
+            performed_by=str(admin_user_id),
+            context=context,
         )
 
-    async def admin_reset_issued(self, **kwargs: Any) -> AuditLog:
-        return await self.log_event(
-            event_type="auth.admin.reset_issued",
-            entity_type="user",
-            entity_id=str(kwargs["target_user_id"]),
-            description="Admin reset issued",
-            new_value={
-                "admin_id": str(kwargs["admin_id"]),
-                "admin_username": kwargs["admin_username"],
-                "target_username": kwargs["target_username"],
-                "reset_request_id": str(kwargs["reset_request_id"]),
-                "expires_at": kwargs["expires_at"],
-            },
-            performed_by=kwargs["admin_username"],
-            context=kwargs.get("context"),
-        )
-
-    async def password_changed(self, **kwargs: Any) -> AuditLog:
+    async def password_changed(
+        self,
+        *,
+        user_id: UUID,
+        username: str,
+        was_forced: bool,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.password_changed",
             entity_type="user",
-            entity_id=str(kwargs["user_id"]),
+            entity_id=str(user_id),
             description="User password changed",
-            new_value={"username": kwargs["username"], "was_forced": kwargs["was_forced"]},
-            performed_by=kwargs["username"],
-            context=kwargs.get("context"),
+            new_value={"username": username, "was_forced": was_forced},
+            performed_by=username,
+            context=context,
         )
 
-    async def api_key_created(self, **kwargs: Any) -> AuditLog:
+    async def api_key_created(
+        self,
+        *,
+        user_id: UUID,
+        username: str,
+        api_key_id: UUID,
+        api_key_name: str,
+        api_key_prefix: str,
+        expires_at: datetime,
+        created_by_user_id: Optional[UUID] = None,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.api_key.created",
             entity_type="api_key",
-            entity_id=str(kwargs["api_key_id"]),
+            entity_id=str(api_key_id),
             description="API key created",
             new_value={
-                "user_id": str(kwargs["user_id"]),
-                "username": kwargs["username"],
-                "api_key_name": kwargs["api_key_name"],
-                "api_key_prefix": kwargs["api_key_prefix"],
-                "expires_at": kwargs["expires_at"],
-                "created_by_user_id": str(kwargs["created_by_user_id"]) if kwargs.get("created_by_user_id") else None,
+                "user_id": str(user_id),
+                "username": username,
+                "api_key_name": api_key_name,
+                "api_key_prefix": api_key_prefix,
+                "expires_at": expires_at,
+                "created_by_user_id": (
+                    str(created_by_user_id) if created_by_user_id else None
+                ),
             },
-            performed_by=kwargs["username"],
-            context=kwargs.get("context"),
+            performed_by=username,
+            context=context,
         )
 
-    async def api_key_revoked(self, **kwargs: Any) -> AuditLog:
+    async def api_key_revoked(
+        self,
+        *,
+        user_id: UUID,
+        username: str,
+        api_key_id: UUID,
+        api_key_name: str,
+        api_key_prefix: str,
+        revoked_by_user_id: Optional[UUID] = None,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.api_key.revoked",
             entity_type="api_key",
-            entity_id=str(kwargs["api_key_id"]),
+            entity_id=str(api_key_id),
             description="API key revoked",
             new_value={
-                "user_id": str(kwargs["user_id"]),
-                "username": kwargs["username"],
-                "api_key_name": kwargs["api_key_name"],
-                "api_key_prefix": kwargs["api_key_prefix"],
-                "revoked_by_user_id": str(kwargs["revoked_by_user_id"]) if kwargs.get("revoked_by_user_id") else None,
+                "user_id": str(user_id),
+                "username": username,
+                "api_key_name": api_key_name,
+                "api_key_prefix": api_key_prefix,
+                "revoked_by_user_id": (
+                    str(revoked_by_user_id) if revoked_by_user_id else None
+                ),
             },
-            performed_by=kwargs["username"],
-            context=kwargs.get("context"),
+            performed_by=username,
+            context=context,
         )
 
-    async def api_key_auth_success(self, **kwargs: Any) -> AuditLog:
+    async def api_key_auth_success(
+        self,
+        *,
+        user_id: UUID,
+        username: str,
+        api_key_id: UUID,
+        api_key_prefix: str,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.api_key.auth_success",
             entity_type="api_key",
-            entity_id=str(kwargs["api_key_id"]),
+            entity_id=str(api_key_id),
             description="API key authenticated successfully",
             new_value={
-                "user_id": str(kwargs["user_id"]),
-                "username": kwargs["username"],
-                "api_key_prefix": kwargs["api_key_prefix"],
+                "user_id": str(user_id),
+                "username": username,
+                "api_key_prefix": api_key_prefix,
             },
-            performed_by=kwargs["username"],
-            context=kwargs.get("context"),
+            performed_by=username,
+            context=context,
         )
 
-    async def api_key_auth_failure(self, **kwargs: Any) -> AuditLog:
+    async def api_key_auth_failure(
+        self,
+        *,
+        reason: str,
+        api_key_prefix: Optional[str] = None,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.api_key.auth_failure",
             entity_type="api_key",
             description="API key authentication failed",
-            new_value={"reason": kwargs["reason"], "api_key_prefix": kwargs.get("api_key_prefix")},
-            context=kwargs.get("context"),
+            new_value={"reason": reason, "api_key_prefix": api_key_prefix},
+            context=context,
         )
 
-    async def nhi_account_created(self, **kwargs: Any) -> AuditLog:
+    async def nhi_account_created(
+        self,
+        *,
+        admin_user_id: UUID,
+        admin_username: str,
+        nhi_user_id: UUID,
+        nhi_username: str,
+        role: UserRole | str,
+        initial_api_key_id: UUID,
+        initial_api_key_prefix: str,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
         return await self.log_event(
             event_type="auth.nhi.account_created",
             entity_type="user",
-            entity_id=str(kwargs["nhi_user_id"]),
+            entity_id=str(nhi_user_id),
             description="NHI account created",
             new_value={
-                "admin_user_id": str(kwargs["admin_user_id"]),
-                "admin_username": kwargs["admin_username"],
-                "nhi_username": kwargs["nhi_username"],
-                "role": kwargs["role"],
-                "initial_api_key_id": str(kwargs["initial_api_key_id"]),
-                "initial_api_key_prefix": kwargs["initial_api_key_prefix"],
+                "admin_user_id": str(admin_user_id),
+                "admin_username": admin_username,
+                "nhi_username": nhi_username,
+                "role": getattr(role, "value", role),
+                "initial_api_key_id": str(initial_api_key_id),
+                "initial_api_key_prefix": initial_api_key_prefix,
             },
-            performed_by=kwargs["admin_username"],
-            context=kwargs.get("context"),
+            performed_by=admin_username,
+            context=context,
         )
 
 
@@ -573,4 +714,46 @@ def get_audit_service(db: AsyncSession) -> AuditService:
     return AuditService(db)
 
 
-__all__ = ["AuditContext", "AuditService", "get_audit_service"]
+async def persist_api_key_auth_failure(
+    source_db: AsyncSession,
+    *,
+    reason: str,
+    api_key_prefix: Optional[str],
+    context: Optional[AuditContext],
+    session_factory: Optional[AuditSessionFactory] = None,
+) -> AuditLog:
+    """Persist an authentication failure after ending the rejected request transaction.
+
+    API-key validation performs a lookup before it can reject a credential, so the
+    source session already owns a connection. Release that connection before opening
+    the independent audit transaction; otherwise concurrent rejections can exhaust a
+    bounded pool while every request waits for a second connection.
+    """
+    if session_factory is None:
+        if source_db.bind is None:
+            raise RuntimeError("Cannot persist API key audit without a database bind")
+        session_factory = async_sessionmaker(
+            bind=source_db.bind,
+            class_=AsyncSession,
+            expire_on_commit=False,
+        )
+
+    await source_db.rollback()
+
+    async with session_factory() as audit_db:
+        audit_log = await get_audit_service(audit_db).api_key_auth_failure(
+            reason=reason,
+            api_key_prefix=api_key_prefix,
+            context=context,
+        )
+        await audit_db.commit()
+        return audit_log
+
+
+__all__ = [
+    "AuditContext",
+    "AuditService",
+    "AuditSessionFactory",
+    "get_audit_service",
+    "persist_api_key_auth_failure",
+]

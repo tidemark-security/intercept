@@ -54,14 +54,6 @@ class StorageConfig(BaseSettings):
             return None
         return value
     
-    # File validation settings
-    # NOTE: allowed/denied MIME types are managed via the settings registry
-    # (storage.allowed_file_types / storage.denied_file_types), not here.
-    max_upload_size_mb: int = Field(
-        default=50,
-        description="Maximum upload size in megabytes"
-    )
-    
     # URL expiration settings
     upload_timeout_minutes: int = Field(
         default=15,

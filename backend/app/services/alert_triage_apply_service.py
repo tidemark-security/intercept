@@ -13,14 +13,15 @@ from app.models.enums import AlertStatus, CaseStatus, Priority
 from app.models.models import Alert, Case
 from app.services.tag_filter_utils import normalize_persisted_tags
 
-TRIAGE_COMPLETION_STATUSES = {
-    AlertStatus.ESCALATED,
+CLOSED_ALERT_STATUSES = frozenset({
     AlertStatus.CLOSED_TP,
     AlertStatus.CLOSED_BP,
     AlertStatus.CLOSED_FP,
     AlertStatus.CLOSED_UNRESOLVED,
     AlertStatus.CLOSED_DUPLICATE,
-}
+})
+
+TRIAGE_COMPLETION_STATUSES = CLOSED_ALERT_STATUSES | {AlertStatus.ESCALATED}
 
 
 def is_triage_completion_status(status: Optional[AlertStatus]) -> bool:

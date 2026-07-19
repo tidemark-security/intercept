@@ -3,10 +3,12 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Any, Dict, List, Optional
 from fastapi_pagination import Page
-import logging
 
 from app.core.database import get_db
-from app.services.case_service import case_service
+from app.core.entity_ids import CASE_PREFIX
+from app.api.id_parsing import parse_entity_id_or_400
+from app.services.case_service import CaseValidationError, case_service
+from app.services.timeline_add_service import TimelineItemConflict
 from app.models.models import (
     CaseCreate,
     CaseUpdate,
@@ -35,7 +37,8 @@ from app.api.route_utils import (
 from app.api.timestamp_overrides import (
     normalize_created_at_override,
     normalize_timestamp_override,
-    reject_created_at_update,
+    prepare_timeline_item_create,
+    prepare_timeline_item_update,
 )
 from app.api.routes.admin_auth import (
     require_authenticated_user,
@@ -44,12 +47,11 @@ from app.api.routes.admin_auth import (
 )
 from app.services.timeline_graph_service import (
     TimelineGraphConflict,
+    TimelineGraphEntityNotFoundError,
+    TimelineGraphValidationError,
     timeline_graph_service,
 )
 
-logger = logging.getLogger(__name__)
-
-ID_PREFIX = "CAS-"
 router = APIRouter(
     prefix="/cases", tags=["cases"], dependencies=[Depends(require_authenticated_user)]
 )
@@ -59,7 +61,7 @@ TIMELINE_ITEM_TYPES = get_timeline_item_types(CaseTimelineItem)
 convert_timeline_item = create_timeline_converter(TIMELINE_ITEM_TYPES)
 
 # Human ID decorator configured for cases
-handle_human_id = create_human_id_decorator(ID_PREFIX, "case_id")
+handle_human_id = create_human_id_decorator(CASE_PREFIX, "case_id")
 
 
 @router.post("", response_model=CaseRead)
@@ -70,38 +72,30 @@ async def create_case(
     current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     """Create a new case."""
-    try:
-        created_at_override = normalize_created_at_override(
-            current_user=current_user,
-            migration=migration,
-            created_at=case_data.created_at,
-        )
-        closed_at_override = normalize_timestamp_override(
-            current_user=current_user,
-            migration=migration,
-            value=case_data.closed_at,
-            field_name="closed_at",
-            supplied="closed_at" in case_data.model_fields_set,
-            allow_null=True,
-        )
-        db_case = await case_service.create_case(
-            db,
-            case_data,
-            current_user.username,
-            created_at_override=created_at_override,
-            closed_at_override=closed_at_override,
-        )
-        return db_case
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error creating case: {str(e)}")
+    created_at_override = normalize_created_at_override(
+        current_user=current_user,
+        migration=migration,
+        created_at=case_data.created_at,
+    )
+    closed_at_override = normalize_timestamp_override(
+        current_user=current_user,
+        migration=migration,
+        value=case_data.closed_at,
+        field_name="closed_at",
+        supplied="closed_at" in case_data.model_fields_set,
+        allow_null=True,
+    )
+    return await case_service.create_case(
+        db,
+        case_data,
+        current_user.username,
+        created_at_override=created_at_override,
+        closed_at_override=closed_at_override,
+    )
 
 
 @router.get("", response_model=Page[CaseRead])
 async def get_cases(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, le=1000),
     status: Optional[List[CaseStatus]] = Query(
         None, description="Filter by multiple case statuses"
     ),
@@ -132,10 +126,8 @@ async def get_cases(
     Cases are filtered by created_at timestamp.
     """
     try:
-        cases = await case_service.get_cases(
+        return await case_service.get_cases(
             db,
-            skip=skip,
-            limit=limit,
             status=status,
             assignee=assignee,
             include_tags=include_tags,
@@ -146,9 +138,8 @@ async def get_cases(
             sort_by=sort_by,
             sort_order=sort_order,
         )
-        return cases
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching cases: {str(e)}")
+    except CaseValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{case_id}", response_model=CaseReadWithAlerts)
@@ -167,17 +158,12 @@ async def get_case(
     When include_linked_timelines=true, alert and task timeline items will include
     a source_timeline_items field containing the timeline from the linked entity.
     """
-    try:
-        db_case = await case_service.get_case(
-            db, case_id, include_linked_timelines=include_linked_timelines
-        )
-        if not db_case:
-            raise HTTPException(status_code=404, detail="Case not found")
-        return db_case
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching case: {str(e)}")
+    db_case = await case_service.get_case(
+        db, case_id, include_linked_timelines=include_linked_timelines
+    )
+    if not db_case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return db_case
 
 
 @router.get("/{case_id}/timeline-graph", response_model=TimelineGraphRead)
@@ -190,14 +176,8 @@ async def get_timeline_graph(
     """Get the shared timeline graph document for a case."""
     try:
         return await timeline_graph_service.get_graph(db, "case", case_id)
-    except LookupError:
+    except TimelineGraphEntityNotFoundError:
         raise HTTPException(status_code=404, detail="Case not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error fetching timeline graph: {str(e)}"
-        )
 
 
 @router.patch("/{case_id}/timeline-graph", response_model=TimelineGraphRead)
@@ -216,16 +196,10 @@ async def patch_timeline_graph(
         )
     except TimelineGraphConflict as conflict:
         raise HTTPException(status_code=409, detail=jsonable_encoder(conflict.conflict))
-    except LookupError:
+    except TimelineGraphEntityNotFoundError:
         raise HTTPException(status_code=404, detail="Case not found")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error patching timeline graph: {str(e)}"
-        )
+    except TimelineGraphValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.put("/{case_id}", response_model=CaseRead)
@@ -255,13 +229,11 @@ async def update_case(
             ),
             closed_at_override_supplied="closed_at" in case_update.model_fields_set,
         )
-        if not db_case:
-            raise HTTPException(status_code=404, detail="Case not found")
-        return db_case
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error updating case: {str(e)}")
+    except CaseValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not db_case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return db_case
 
 
 @router.post("/{case_id}/resolve-linked-alerts", response_model=AlertBulkActionResponse)
@@ -281,14 +253,8 @@ async def resolve_linked_alerts(
         if response is None:
             raise HTTPException(status_code=404, detail="Case not found")
         return response
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error resolving linked alerts: {str(e)}"
-        )
+    except CaseValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/{case_id}")
@@ -300,15 +266,10 @@ async def delete_case(
     current_user: UserAccount = Depends(require_admin_user),
 ):
     """Permanently delete a case. Restricted to admins."""
-    try:
-        success = await case_service.delete_case(db, case_id, current_user.username)
-        if not success:
-            raise HTTPException(status_code=404, detail="Case not found")
-        return {"message": "Case deleted successfully"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error deleting case: {str(e)}")
+    success = await case_service.delete_case(db, case_id, current_user.username)
+    if not success:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return {"message": "Case deleted successfully"}
 
 
 # Timeline endpoints
@@ -324,15 +285,12 @@ async def add_timeline_item(
 ):
     """Add a timeline item to a case."""
     try:
-        has_created_at = "created_at" in timeline_item
-        typed_item = convert_timeline_item(timeline_item)
-        created_at_override = normalize_created_at_override(
+        typed_item, created_at_override = prepare_timeline_item_create(
+            timeline_item,
+            converter=convert_timeline_item,
             current_user=current_user,
             migration=migration,
-            created_at=typed_item.created_at if has_created_at else None,
         )
-        if created_at_override is not None:
-            typed_item.created_at = created_at_override
         db_case = await case_service.add_timeline_item(
             db,
             case_id,
@@ -343,14 +301,8 @@ async def add_timeline_item(
         if not db_case:
             raise HTTPException(status_code=404, detail="Case not found")
         return db_case
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error adding timeline item: {str(e)}"
-        )
+    except CaseValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.put("/{case_id}/timeline/{item_id}", response_model=CaseRead)
@@ -365,8 +317,10 @@ async def update_timeline_item(
 ):
     """Update a timeline item in a case."""
     try:
-        reject_created_at_update(timeline_item)
-        typed_item = convert_timeline_item(timeline_item)
+        typed_item = prepare_timeline_item_update(
+            timeline_item,
+            converter=convert_timeline_item,
+        )
         db_case = await case_service.update_timeline_item(
             db, case_id, item_id, typed_item, current_user.username
         )
@@ -375,14 +329,8 @@ async def update_timeline_item(
                 status_code=404, detail="Case or timeline item not found"
             )
         return db_case
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error updating timeline item: {str(e)}"
-        )
+    except (CaseValidationError, TimelineItemConflict) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/{case_id}/timeline/{item_id}", response_model=CaseRead)
@@ -404,14 +352,8 @@ async def remove_timeline_item(
                 status_code=404, detail="Case or timeline item not found"
             )
         return db_case
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error removing timeline item: {str(e)}"
-        )
+    except CaseValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +367,7 @@ async def remove_timeline_item(
 @handle_human_id()
 async def generate_upload_url(
     case_id: int,
+    http_request: Request,  # pylint: disable=unused-argument
     request_data: PresignedUploadRequest,
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user),
@@ -448,6 +391,7 @@ async def generate_upload_url(
 async def update_attachment_status(
     case_id: int,
     item_id: str,
+    http_request: Request,  # pylint: disable=unused-argument
     update_data: AttachmentStatusUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user),
@@ -476,6 +420,7 @@ async def update_attachment_status(
 async def generate_download_url(
     case_id: int,
     item_id: str,
+    http_request: Request,  # pylint: disable=unused-argument
     download: bool = Query(False, description="Generate a forced-download URL"),
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_authenticated_user),
@@ -502,29 +447,13 @@ async def bulk_update_cases(
     current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     """Bulk update multiple cases."""
-    try:
-        updated_cases = []
-        for case_id_str in case_ids:
-            # Convert human ID to numeric if needed
-            if isinstance(case_id_str, str) and case_id_str.startswith(ID_PREFIX):
-                try:
-                    case_id = int(case_id_str[len(ID_PREFIX) :])
-                except ValueError:
-                    raise HTTPException(
-                        status_code=400, detail=f"Invalid case ID format: {case_id_str}"
-                    )
-            else:
-                case_id = int(case_id_str)
+    updated_cases = []
+    for case_id_str in case_ids:
+        case_id, _ = parse_entity_id_or_400(case_id_str, "case")
 
-            db_case = await case_service.update_case(
-                db, case_id, case_update, current_user.username
-            )
-            if db_case:
-                updated_cases.append(db_case)
-        return updated_cases
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Error bulk updating cases: {str(e)}"
+        db_case = await case_service.update_case(
+            db, case_id, case_update, current_user.username
         )
+        if db_case:
+            updated_cases.append(db_case)
+    return updated_cases

@@ -6,13 +6,15 @@ from typing import Any
 from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import apaginate
 from sqlalchemy import and_, cast, or_, select, String
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlmodel import col
 
+from app.core.entity_ids import CASE_PREFIX, RUNBOOK_PREFIX, format_entity_id
+from app.core.id_parser import EntityIdParseError, parse_entity_id
 from app.models.enums import CaseRunbookStatus, TaskStatus
 from app.models.models import (
-    AuditLog,
     Case,
     CaseRunbook,
     CaseRunbookApplyResponse,
@@ -28,6 +30,7 @@ from app.services.audit_service import get_audit_service
 from app.services.case_runbook_planner import plan_case_runbook_application
 from app.services.case_runbook_validation import (
     CaseRunbookValidationError,
+    coerce_runbook_tasks,
     normalize_runbook_title,
     validate_case_runbook_payload,
 )
@@ -35,15 +38,20 @@ from app.services.tag_filter_utils import normalize_persisted_tags
 from app.services.timeline_service import timeline_service
 
 
+_TITLE_UNIQUE_INDEX = "uq_case_runbooks_active_title_normalized"
+_TITLE_UNIQUE_MESSAGE = "Case Runbook titles must be unique among non-deleted runbooks"
+
+
 def parse_case_runbook_id(raw: int | str) -> int:
     if isinstance(raw, int):
         return raw
-    value = str(raw).strip()
-    if value.isdigit():
-        return int(value)
-    if value.upper().startswith("RUN-") and value[4:].isdigit():
-        return int(value[4:])
-    raise ValueError("Invalid Case Runbook ID. Expected 123 or RUN-0000123")
+    try:
+        numeric_id, _ = parse_entity_id(str(raw), "runbook")
+        return numeric_id
+    except EntityIdParseError as exc:
+        raise ValueError(
+            f"Invalid Case Runbook ID. Expected 123 or {RUNBOOK_PREFIX}-0000123"
+        ) from exc
 
 
 class CaseRunbookService:
@@ -65,13 +73,16 @@ class CaseRunbookService:
             filters.append(CaseRunbook.id != exclude_id)
         result = await db.execute(select(CaseRunbook.id).where(and_(*filters)).limit(1))
         if result.scalar_one_or_none() is not None:
-            raise CaseRunbookValidationError("Case Runbook titles must be unique among non-deleted runbooks")
+            raise CaseRunbookValidationError(_TITLE_UNIQUE_MESSAGE)
 
-    def _to_task_definitions(self, raw_tasks: list[Any] | None) -> list[RunbookTaskDefinition]:
-        return [
-            task if isinstance(task, RunbookTaskDefinition) else RunbookTaskDefinition.model_validate(task)
-            for task in (raw_tasks or [])
-        ]
+    async def _flush_with_title_conflict_translation(self, db: AsyncSession) -> None:
+        try:
+            await db.flush()
+        except IntegrityError as exc:
+            await db.rollback()
+            if _TITLE_UNIQUE_INDEX in str(exc.orig):
+                raise CaseRunbookValidationError(_TITLE_UNIQUE_MESSAGE) from exc
+            raise
 
     def _task_json(self, tasks: list[RunbookTaskDefinition]) -> list[dict[str, Any]]:
         return [task.model_dump(mode="json", exclude_none=True) for task in tasks]
@@ -81,9 +92,9 @@ class CaseRunbookService:
         db: AsyncSession,
         payload: CaseRunbookCreate,
         user: str,
-    ) -> CaseRunbook:
+    ) -> CaseRunbookRead:
         status = payload.status or CaseRunbookStatus.DRAFT
-        tasks = self._to_task_definitions(payload.runbook_tasks)
+        tasks = coerce_runbook_tasks(payload.runbook_tasks)
         validate_case_runbook_payload(
             status=status,
             title=payload.title,
@@ -103,7 +114,7 @@ class CaseRunbookService:
             updated_by=user,
         )
         db.add(runbook)
-        await db.flush()
+        await self._flush_with_title_conflict_translation(db)
         await get_audit_service(db).log_event(
             event_type="case_runbook.created",
             entity_type="case_runbook",
@@ -112,9 +123,9 @@ class CaseRunbookService:
             new_value=runbook,
             performed_by=user,
         )
+        response = CaseRunbookRead.model_validate(runbook)
         await db.commit()
-        await db.refresh(runbook)
-        return runbook
+        return response
 
     async def list_runbooks(
         self,
@@ -147,7 +158,7 @@ class CaseRunbookService:
         runbook_id: int,
         payload: CaseRunbookUpdate,
         user: str,
-    ) -> CaseRunbook | None:
+    ) -> CaseRunbookRead | None:
         runbook = await self.get_runbook(db, runbook_id)
         if runbook is None:
             return None
@@ -160,7 +171,7 @@ class CaseRunbookService:
         next_status = data.get("status", runbook.status)
         next_title = data.get("title", runbook.title)
         next_description = data.get("description", runbook.description)
-        next_tasks = self._to_task_definitions(data.get("runbook_tasks", runbook.runbook_tasks))
+        next_tasks = coerce_runbook_tasks(data.get("runbook_tasks", runbook.runbook_tasks))
 
         validate_case_runbook_payload(
             status=next_status,
@@ -183,6 +194,7 @@ class CaseRunbookService:
             runbook.runbook_tasks = self._task_json(next_tasks)
         runbook.updated_by = user
         runbook.updated_at = datetime.now(timezone.utc)
+        await self._flush_with_title_conflict_translation(db)
 
         status_changed = "status" in data and runbook.status != old_status
         event_type = (
@@ -202,11 +214,16 @@ class CaseRunbookService:
             new_value=CaseRunbookRead.model_validate(runbook).model_dump(mode="json"),
             performed_by=user,
         )
+        response = CaseRunbookRead.model_validate(runbook)
         await db.commit()
-        await db.refresh(runbook)
-        return runbook
+        return response
 
-    async def delete_runbook(self, db: AsyncSession, runbook_id: int, user: str) -> CaseRunbook | None:
+    async def delete_runbook(
+        self,
+        db: AsyncSession,
+        runbook_id: int,
+        user: str,
+    ) -> CaseRunbookRead | None:
         runbook = await self.get_runbook(db, runbook_id)
         if runbook is None:
             return None
@@ -228,9 +245,9 @@ class CaseRunbookService:
             new_value={"id": runbook.id, "status": runbook.status},
             performed_by=user,
         )
+        response = CaseRunbookRead.model_validate(runbook)
         await db.commit()
-        await db.refresh(runbook)
-        return runbook
+        return response
 
     async def _get_case_for_application(self, db: AsyncSession, case_id: int) -> Case | None:
         result = await db.execute(
@@ -296,16 +313,13 @@ class CaseRunbookService:
         case.tags = plan.case_tags_after
         timeline_service.add_timeline_item(
             case,
-            {
-                "type": "note",
-                "description": plan.audit_note,
-                "created_at": now,
-                "timestamp": now,
-                "created_by": "system",
-                "tags": ["case-runbook", "system"],
-                "flagged": False,
-                "highlighted": False,
-            },
+            timeline_service.build_note_item(
+                description=plan.audit_note,
+                created_by="system",
+                created_at=now,
+                timestamp=now,
+                tags=["case-runbook", "system"],
+            ),
             created_by="system",
         )
 
@@ -321,16 +335,11 @@ class CaseRunbookService:
             },
             performed_by=user,
         )
-        if commit:
-            await db.commit()
-        else:
-            await db.flush()
-
-        return CaseRunbookApplyResponse(
+        response = CaseRunbookApplyResponse(
             case_id=case_id,
-            case_human_id=f"CAS-{case_id:07d}",
+            case_human_id=format_entity_id(case_id, CASE_PREFIX),
             runbook_id=runbook_id,
-            runbook_human_id=f"RUN-{runbook_id:07d}",
+            runbook_human_id=format_entity_id(runbook_id, RUNBOOK_PREFIX),
             created_task_ids=created_task_ids,
             skipped_task_titles=plan.skipped_task_titles,
             duplicate_warnings=[
@@ -338,6 +347,12 @@ class CaseRunbookService:
                 for warning in plan.duplicate_warnings
             ],
         )
+        if commit:
+            await db.commit()
+        else:
+            await db.flush()
+
+        return response
 
 
 case_runbook_service = CaseRunbookService()

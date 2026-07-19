@@ -14,7 +14,8 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.route_utils import read_session_cookie
-from app.api.routes.admin_auth import _build_audit_context, require_authenticated_user
+from app.api.request_metadata import build_audit_context
+from app.api.routes.admin_auth import require_authenticated_user
 from app.core.database import get_db
 from app.core.settings_registry import get_local
 from app.mcp.local_oauth_provider import PendingAuthorizationUnavailableError
@@ -259,7 +260,7 @@ async def decide_consent(
             request_id,
             user=current_user,
             approved=decision.decision == "approve",
-            context=_build_audit_context(request),
+            context=build_audit_context(request),
         )
     except PendingAuthorizationUnavailableError as exc:
         raise HTTPException(
@@ -349,7 +350,7 @@ async def revoke_connected_mcp_client(
             db,
             user=current_user,
             consent_id=consent_id,
-            context=_build_audit_context(request),
+            context=build_audit_context(request),
         )
         await db.commit()
     except OAuthInvalidRequestError:

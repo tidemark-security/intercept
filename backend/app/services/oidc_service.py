@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import hashlib
 import logging
 import secrets
 from typing import Any, Optional, cast
@@ -15,11 +14,12 @@ from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import hash_opaque_token
 from app.core.settings_registry import get_local
 from app.models.enums import AccountType, UserRole, UserStatus
 from app.models.models import OIDCAuthRequest, USERNAME_REGEX, UserAccount
 from app.services import get_audit_service
-from app.services.auth_service import RequestMetadata
+from app.services.audit_service import AuditContext
 from app.services.settings_service import SettingsService
 
 
@@ -70,9 +70,6 @@ class OIDCIdentityPolicy:
 
 
 class OIDCService:
-    def __init__(self) -> None:
-        pass
-
     async def get_public_config(self, db: AsyncSession) -> dict[str, Any]:
         settings = SettingsService(db)  # type: ignore[arg-type]
         enabled = bool(await settings.get("oidc.enabled", default=False))
@@ -107,7 +104,7 @@ class OIDCService:
         auth_request = OIDCAuthRequest(
             state=state,
             nonce=nonce,
-            browser_binding_hash=self._hash_browser_binding_token(browser_binding_token),
+            browser_binding_hash=hash_opaque_token(browser_binding_token),
             redirect_to=redirect_to,
             expires_at=expires_at,
         )
@@ -193,7 +190,7 @@ class OIDCService:
         *,
         claims: dict[str, Any],
         issuer: str,
-        metadata: Optional[RequestMetadata] = None,
+        metadata: Optional[AuditContext] = None,
         identity_policy: OIDCIdentityPolicy | None = None,
     ) -> UserAccount:
         subject = str(claims.get("sub") or "").strip()
@@ -244,7 +241,7 @@ class OIDCService:
                 username=user.username,
                 oidc_issuer=issuer,
                 oidc_subject=subject,
-                context=metadata.to_audit_context() if metadata else None,
+                context=metadata,
             )
             await db.flush()
             return user
@@ -297,7 +294,7 @@ class OIDCService:
             role=user.role,
             oidc_issuer=issuer,
             oidc_subject=subject,
-            context=metadata.to_audit_context() if metadata else None,
+            context=metadata,
         )
         return user
 
@@ -390,17 +387,16 @@ class OIDCService:
             raise OIDCStateError("OIDC state is invalid or expired")
         if not browser_binding_token:
             raise OIDCStateError("OIDC browser binding cookie is missing")
-        if self._hash_browser_binding_token(browser_binding_token) != auth_request.browser_binding_hash:
+        if not secrets.compare_digest(
+            hash_opaque_token(browser_binding_token),
+            auth_request.browser_binding_hash,
+        ):
             raise OIDCStateError("OIDC browser binding is invalid")
 
         auth_request.consumed_at = now
         await db.flush()
         await db.commit()
         return auth_request
-
-    @staticmethod
-    def _hash_browser_binding_token(token: str) -> str:
-        return hashlib.blake2b(token.encode("utf-8"), digest_size=32).hexdigest()
 
     def _validate_id_token(
         self,

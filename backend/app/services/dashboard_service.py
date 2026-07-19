@@ -3,35 +3,126 @@ Dashboard Service
 
 Provides aggregated statistics for the dashboard homepage.
 """
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+
+from sqlalchemy import case as sql_case
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, union_all, literal
 from sqlmodel import col
-from typing import Optional, List, Dict, Any
-from datetime import datetime, timezone, timedelta
-import logging
 
-from app.models.models import Alert, Case, Task
+from app.core.entity_ids import ALERT_PREFIX, CASE_PREFIX, TASK_PREFIX, format_entity_id
 from app.models.enums import AlertStatus, CaseStatus, TaskStatus, Priority
+from app.models.models import Alert, Case, Task
 
-logger = logging.getLogger(__name__)
+
+_DASHBOARD_ITEM_METADATA = {
+    Alert: (ALERT_PREFIX, "alert", "NEW"),
+    Case: (CASE_PREFIX, "case", "NEW"),
+    Task: (TASK_PREFIX, "task", "TODO"),
+}
+
+_OPEN_ITEM_STATUSES = {
+    Alert: (AlertStatus.NEW, AlertStatus.IN_PROGRESS),
+    Case: (CaseStatus.NEW, CaseStatus.IN_PROGRESS),
+    Task: (TaskStatus.TODO, TaskStatus.IN_PROGRESS),
+}
+
+_PRIORITY_ORDER = {
+    Priority.EXTREME: 5,
+    Priority.CRITICAL: 4,
+    Priority.HIGH: 3,
+    Priority.MEDIUM: 2,
+    Priority.LOW: 1,
+    Priority.INFO: 0,
+}
+
+_ITEM_TYPE_ORDER = {
+    "alert": 0,
+    "task": 1,
+    "case": 2,
+}
 
 
+def _serialize_dashboard_item(item: Alert | Case | Task) -> Dict[str, Any]:
+    """Map a work item to the shared dashboard response shape."""
+    prefix, item_type, default_status = _DASHBOARD_ITEM_METADATA[type(item)]
+    return {
+        "id": item.id,
+        "human_id": format_entity_id(item.id, prefix),
+        "title": item.title,
+        "item_type": item_type,
+        "priority": item.priority,
+        "status": item.status.value if item.status else default_status,
+        "updated_at": item.updated_at,
+    }
+
+
+async def _count_entities(
+    db: AsyncSession,
+    model: type[Alert] | type[Case] | type[Task],
+    *criteria: Any,
+) -> int:
+    """Count entities matching the supplied SQL criteria."""
+    result = await db.execute(select(func.count(model.id)).where(*criteria))
+    return result.scalar() or 0
+
+
+async def _fetch_dashboard_items(
+    db: AsyncSession,
+    model: type[Alert] | type[Case] | type[Task],
+    *,
+    criteria: tuple[Any, ...] = (),
+    order_by: tuple[Any, ...],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """Fetch and serialize one bounded entity partition."""
+    query = (
+        select(model)
+        .where(*criteria)
+        .order_by(*order_by)
+        .limit(limit)
+    )
+    result = await db.execute(query)
+    return [_serialize_dashboard_item(item) for item in result.scalars().all()]
+
+
+def _priority_query_order(
+    model: type[Alert] | type[Case] | type[Task],
+) -> tuple[Any, ...]:
+    """Return the per-entity ordering required for a correct global top-N."""
+    priority_rank = sql_case(
+        _PRIORITY_ORDER,
+        value=model.priority,
+        else_=0,
+    )
+    return (
+        priority_rank.desc(),
+        col(model.updated_at).desc().nulls_last(),
+    )
+
+
+def _priority_sort_key(item: Dict[str, Any]) -> tuple[int, int, float]:
+    """Apply the dashboard's public priority, type, and recency ordering."""
+    priority = item["priority"]
+    updated_at = item["updated_at"]
+    return (
+        -_PRIORITY_ORDER.get(priority, 0) if priority else 0,
+        _ITEM_TYPE_ORDER.get(item["item_type"], 99),
+        -updated_at.timestamp() if updated_at else 0,
+    )
+
+
+@dataclass(slots=True)
 class DashboardStats:
     """Dashboard statistics container."""
-    
-    def __init__(
-        self,
-        unacknowledged_alerts: int = 0,
-        open_tasks: int = 0,
-        assigned_cases: int = 0,
-        tasks_due_today: int = 0,
-        critical_cases: int = 0,
-    ):
-        self.unacknowledged_alerts = unacknowledged_alerts
-        self.open_tasks = open_tasks
-        self.assigned_cases = assigned_cases
-        self.tasks_due_today = tasks_due_today
-        self.critical_cases = critical_cases
+
+    unacknowledged_alerts: int = 0
+    open_tasks: int = 0
+    assigned_cases: int = 0
+    tasks_due_today: int = 0
+    critical_cases: int = 0
 
 
 class DashboardService:
@@ -39,14 +130,6 @@ class DashboardService:
 
     async def get_sidebar_badge_counts(self, db: AsyncSession) -> Dict[str, Dict[str, int]]:
         """Get open and unassigned counts for sidebar badges."""
-
-        async def count(model: Any, statuses: list[Any], *, unassigned: bool = False) -> int:
-            query = select(func.count(model.id)).where(col(model.status).in_(statuses))
-            if unassigned:
-                query = query.where(model.assignee.is_(None))
-            result = await db.execute(query)
-            return result.scalar() or 0
-
         alert_open_statuses = [
             AlertStatus.NEW,
             AlertStatus.IN_PROGRESS,
@@ -56,16 +139,43 @@ class DashboardService:
 
         return {
             "alerts": {
-                "open": await count(Alert, alert_open_statuses),
-                "unassigned": await count(Alert, alert_open_statuses, unassigned=True),
+                "open": await _count_entities(
+                    db,
+                    Alert,
+                    col(Alert.status).in_(alert_open_statuses),
+                ),
+                "unassigned": await _count_entities(
+                    db,
+                    Alert,
+                    col(Alert.status).in_(alert_open_statuses),
+                    Alert.assignee.is_(None),
+                ),
             },
             "cases": {
-                "open": await count(Case, case_open_statuses),
-                "unassigned": await count(Case, case_open_statuses, unassigned=True),
+                "open": await _count_entities(
+                    db,
+                    Case,
+                    col(Case.status).in_(case_open_statuses),
+                ),
+                "unassigned": await _count_entities(
+                    db,
+                    Case,
+                    col(Case.status).in_(case_open_statuses),
+                    Case.assignee.is_(None),
+                ),
             },
             "tasks": {
-                "open": await count(Task, task_open_statuses),
-                "unassigned": await count(Task, task_open_statuses, unassigned=True),
+                "open": await _count_entities(
+                    db,
+                    Task,
+                    col(Task.status).in_(task_open_statuses),
+                ),
+                "unassigned": await _count_entities(
+                    db,
+                    Task,
+                    col(Task.status).in_(task_open_statuses),
+                    Task.assignee.is_(None),
+                ),
             },
         }
     
@@ -80,76 +190,53 @@ class DashboardService:
             db: Database session
             username: If provided, filter stats to this user's assignments
         """
-        try:
-            # Count unacknowledged alerts (NEW status, no assignee)
-            # These are alerts awaiting triage - not filtered by username
-            unack_alerts_query = select(func.count(Alert.id)).where(
-                Alert.status == AlertStatus.NEW
-            )
-            result = await db.execute(unack_alerts_query)
-            unacknowledged_alerts = result.scalar() or 0
-            
-            # Count open tasks (TODO or IN_PROGRESS)
-            open_tasks_query = select(func.count(Task.id)).where(
-                col(Task.status).in_([TaskStatus.TODO, TaskStatus.IN_PROGRESS])
-            )
-            if username:
-                open_tasks_query = open_tasks_query.where(
-                    Task.assignee == username
-                )
-            result = await db.execute(open_tasks_query)
-            open_tasks = result.scalar() or 0
-            
-            # Count assigned cases (NEW or IN_PROGRESS)
-            cases_query = select(func.count(Case.id)).where(
-                col(Case.status).in_([CaseStatus.NEW, CaseStatus.IN_PROGRESS])
-            )
-            if username:
-                cases_query = cases_query.where(
-                    Case.assignee == username
-                )
-            result = await db.execute(cases_query)
-            assigned_cases = result.scalar() or 0
-            
-            # Count tasks due today
-            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-            today_end = today_start + timedelta(days=1)
-            
-            tasks_due_today_query = select(func.count(Task.id)).where(
-                col(Task.status).in_([TaskStatus.TODO, TaskStatus.IN_PROGRESS]),
+        assignee_criteria = (Task.assignee == username,) if username else ()
+        case_assignee_criteria = (Case.assignee == username,) if username else ()
+        task_open = col(Task.status).in_(_OPEN_ITEM_STATUSES[Task])
+        case_open = col(Case.status).in_(_OPEN_ITEM_STATUSES[Case])
+        today_start = datetime.now(timezone.utc).replace(
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        today_end = today_start + timedelta(days=1)
+
+        return DashboardStats(
+            # NEW alerts are awaiting triage and are not user-filtered.
+            unacknowledged_alerts=await _count_entities(
+                db,
+                Alert,
+                Alert.status == AlertStatus.NEW,
+            ),
+            open_tasks=await _count_entities(
+                db,
+                Task,
+                task_open,
+                *assignee_criteria,
+            ),
+            assigned_cases=await _count_entities(
+                db,
+                Case,
+                case_open,
+                *case_assignee_criteria,
+            ),
+            tasks_due_today=await _count_entities(
+                db,
+                Task,
+                task_open,
                 col(Task.due_date) >= today_start,
-                col(Task.due_date) < today_end
-            )
-            if username:
-                tasks_due_today_query = tasks_due_today_query.where(
-                    Task.assignee == username
-                )
-            result = await db.execute(tasks_due_today_query)
-            tasks_due_today = result.scalar() or 0
-            
-            # Count critical cases (CRITICAL or EXTREME priority, not closed)
-            critical_cases_query = select(func.count(Case.id)).where(
-                col(Case.status).in_([CaseStatus.NEW, CaseStatus.IN_PROGRESS]),
-                col(Case.priority).in_([Priority.CRITICAL, Priority.EXTREME])
-            )
-            if username:
-                critical_cases_query = critical_cases_query.where(
-                    Case.assignee == username
-                )
-            result = await db.execute(critical_cases_query)
-            critical_cases = result.scalar() or 0
-            
-            return DashboardStats(
-                unacknowledged_alerts=unacknowledged_alerts,
-                open_tasks=open_tasks,
-                assigned_cases=assigned_cases,
-                tasks_due_today=tasks_due_today,
-                critical_cases=critical_cases,
-            )
-            
-        except Exception as e:
-            logger.error(f"Error fetching dashboard stats: {e}")
-            raise
+                col(Task.due_date) < today_end,
+                *assignee_criteria,
+            ),
+            critical_cases=await _count_entities(
+                db,
+                Case,
+                case_open,
+                col(Case.priority).in_([Priority.CRITICAL, Priority.EXTREME]),
+                *case_assignee_criteria,
+            ),
+        )
 
     async def get_recent_items(
         self,
@@ -164,64 +251,21 @@ class DashboardService:
             username: If provided, filter to this user's assignments
             limit: Maximum number of items to return
         """
-        try:
-            items = []
-            
-            # Fetch recent alerts
-            alerts_query = select(Alert).order_by(col(Alert.updated_at).desc()).limit(limit)
-            if username:
-                alerts_query = alerts_query.where(Alert.assignee == username)
-            result = await db.execute(alerts_query)
-            for alert in result.scalars().all():
-                items.append({
-                    "id": alert.id,
-                    "human_id": f"ALT-{alert.id:07d}",
-                    "title": alert.title,
-                    "item_type": "alert",
-                    "priority": alert.priority,
-                    "status": alert.status.value if alert.status else "NEW",
-                    "updated_at": alert.updated_at,
-                })
-            
-            # Fetch recent cases
-            cases_query = select(Case).order_by(col(Case.updated_at).desc()).limit(limit)
-            if username:
-                cases_query = cases_query.where(Case.assignee == username)
-            result = await db.execute(cases_query)
-            for case in result.scalars().all():
-                items.append({
-                    "id": case.id,
-                    "human_id": f"CAS-{case.id:07d}",
-                    "title": case.title,
-                    "item_type": "case",
-                    "priority": case.priority,
-                    "status": case.status.value if case.status else "NEW",
-                    "updated_at": case.updated_at,
-                })
-            
-            # Fetch recent tasks
-            tasks_query = select(Task).order_by(col(Task.updated_at).desc()).limit(limit)
-            if username:
-                tasks_query = tasks_query.where(Task.assignee == username)
-            result = await db.execute(tasks_query)
-            for task in result.scalars().all():
-                items.append({
-                    "id": task.id,
-                    "human_id": f"TSK-{task.id:07d}",
-                    "title": task.title,
-                    "item_type": "task",
-                    "priority": task.priority,
-                    "status": task.status.value if task.status else "TODO",
-                    "updated_at": task.updated_at,
-                })
-            
-            # Sort all items by updated_at descending and take top N
-            items.sort(key=lambda x: x["updated_at"], reverse=True)
-            return items[:limit]
-            
-        except Exception as e:
-            logger.error(f"Error fetching recent items: {e}")
-            raise
+        items: List[Dict[str, Any]] = []
+        for model in (Alert, Case, Task):
+            criteria = (model.assignee == username,) if username else ()
+            items.extend(
+                await _fetch_dashboard_items(
+                    db,
+                    model,
+                    criteria=criteria,
+                    order_by=(col(model.updated_at).desc().nulls_last(),),
+                    limit=limit,
+                )
+            )
+
+        items.sort(key=lambda item: item["updated_at"], reverse=True)
+        return items[:limit]
 
     async def get_priority_items(
         self,
@@ -239,96 +283,26 @@ class DashboardService:
         Returns:
             Tuple of (items list, truncated flag)
         """
-        try:
-            items = []
-            
-            # Priority order for sorting (higher = more urgent)
-            priority_order = {
-                Priority.EXTREME: 5,
-                Priority.CRITICAL: 4,
-                Priority.HIGH: 3,
-                Priority.MEDIUM: 2,
-                Priority.LOW: 1,
-                Priority.INFO: 0,
-            }
-            
-            # Item type order for sorting (alerts first, then tasks, then cases)
-            type_order = {
-                "alert": 0,
-                "task": 1,
-                "case": 2,
-            }
-            
-            # Fetch open alerts assigned to user (NEW or IN_PROGRESS)
-            # Fetch limit+1 to detect if results are truncated
-            alerts_query = select(Alert).where(
-                Alert.assignee == username,
-                col(Alert.status).in_([AlertStatus.NEW, AlertStatus.IN_PROGRESS])
-            ).order_by(col(Alert.updated_at).desc()).limit(limit + 1)
-            result = await db.execute(alerts_query)
-            for alert in result.scalars().all():
-                items.append({
-                    "id": alert.id,
-                    "human_id": f"ALT-{alert.id:07d}",
-                    "title": alert.title,
-                    "item_type": "alert",
-                    "priority": alert.priority,
-                    "status": alert.status.value if alert.status else "NEW",
-                    "updated_at": alert.updated_at,
-                })
-            
-            # Fetch open cases assigned to user (NEW or IN_PROGRESS)
-            cases_query = select(Case).where(
-                Case.assignee == username,
-                col(Case.status).in_([CaseStatus.NEW, CaseStatus.IN_PROGRESS])
-            ).order_by(col(Case.updated_at).desc()).limit(limit + 1)
-            result = await db.execute(cases_query)
-            for case in result.scalars().all():
-                items.append({
-                    "id": case.id,
-                    "human_id": f"CAS-{case.id:07d}",
-                    "title": case.title,
-                    "item_type": "case",
-                    "priority": case.priority,
-                    "status": case.status.value if case.status else "NEW",
-                    "updated_at": case.updated_at,
-                })
-            
-            # Fetch open tasks assigned to user (TODO or IN_PROGRESS)
-            tasks_query = select(Task).where(
-                Task.assignee == username,
-                col(Task.status).in_([TaskStatus.TODO, TaskStatus.IN_PROGRESS])
-            ).order_by(col(Task.updated_at).desc()).limit(limit + 1)
-            result = await db.execute(tasks_query)
-            for task in result.scalars().all():
-                items.append({
-                    "id": task.id,
-                    "human_id": f"TSK-{task.id:07d}",
-                    "title": task.title,
-                    "item_type": "task",
-                    "priority": task.priority,
-                    "status": task.status.value if task.status else "TODO",
-                    "updated_at": task.updated_at,
-                })
-            
-            # Sort by priority (highest first), then by item type (alerts, tasks, cases)
-            items.sort(
-                key=lambda x: (
-                    -priority_order.get(x["priority"], 0) if x["priority"] else 0,
-                    type_order.get(x["item_type"], 99),
-                    -x["updated_at"].timestamp() if x["updated_at"] else 0
+        items: List[Dict[str, Any]] = []
+        # A global top-N can contain at most N items from any one entity type.
+        # Fetching N+1 from each correctly ordered partition is therefore enough
+        # both to build the result and to detect truncation.
+        for model in (Alert, Case, Task):
+            items.extend(
+                await _fetch_dashboard_items(
+                    db,
+                    model,
+                    criteria=(
+                        model.assignee == username,
+                        col(model.status).in_(_OPEN_ITEM_STATUSES[model]),
+                    ),
+                    order_by=_priority_query_order(model),
+                    limit=limit + 1,
                 )
             )
-            
-            # Check if results are truncated
-            total_count = len(items)
-            truncated = total_count > limit
-            
-            return items[:limit], truncated
-            
-        except Exception as e:
-            logger.error(f"Error fetching priority items: {e}")
-            raise
+
+        items.sort(key=_priority_sort_key)
+        return items[:limit], len(items) > limit
 
 
 dashboard_service = DashboardService()

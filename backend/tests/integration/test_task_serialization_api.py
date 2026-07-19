@@ -5,9 +5,10 @@ from typing import Any, cast
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 
 from app.models.enums import AccountType, UserRole, UserStatus
-from app.models.models import Task, UserAccount
+from app.models.models import AuditLog, Task, UserAccount
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -113,6 +114,90 @@ async def test_update_task_serializes_response_after_reload(
     assert payload["title"] == "Updated task title"
     assert payload["tags"] == ["Review", "escalated"]
     assert payload["human_id"].startswith("TSK-")
+
+    async with session_maker() as session:
+        audit = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.entity_type == "task",
+                    AuditLog.entity_id == str(task_id),
+                    AuditLog.event_type == "entity.updated",
+                )
+            )
+        ).scalar_one()
+        assert audit.old_value is not None
+        assert audit.new_value is not None
+
+
+@pytest.mark.asyncio
+async def test_update_task_rolls_back_when_audit_cannot_be_written(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        task = Task(title="Atomic update", created_by="seed-user")
+        session.add(task)
+        await session.commit()
+        assert task.id is not None
+        task_id = task.id
+
+    async def fail_audit(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(
+        "app.services.audit_service.AuditService.log_entity_updated",
+        fail_audit,
+    )
+
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        await client.put(
+            f"/api/v1/tasks/{task_id}",
+            json={"title": "Must roll back"},
+            cookies={"intercept_session": session_cookie},
+        )
+
+    async with session_maker() as session:
+        task = await session.get(Task, task_id)
+        assert task is not None
+        assert task.title == "Atomic update"
+
+
+@pytest.mark.asyncio
+async def test_delete_task_rolls_back_when_audit_cannot_be_written(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    async with session_maker() as session:
+        task = Task(title="Atomic delete", created_by="seed-user")
+        session.add(task)
+        await session.commit()
+        assert task.id is not None
+        task_id = task.id
+
+    async def fail_audit(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(
+        "app.services.audit_service.AuditService.log_entity_deleted",
+        fail_audit,
+    )
+
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        await client.delete(
+            f"/api/v1/tasks/{task_id}",
+            cookies={"intercept_session": session_cookie},
+        )
+
+    async with session_maker() as session:
+        assert await session.get(Task, task_id) is not None
 
 
 @pytest.mark.asyncio
@@ -258,6 +343,52 @@ async def test_update_task_does_not_enqueue_autonomous_execution_for_human_assig
     )
 
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_update_task_remains_successful_when_autonomous_enqueue_fails(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+
+    class FailingQueue:
+        async def enqueue(self, **_: object) -> str:
+            raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr(
+        "app.services.task_queue_service.get_task_queue_service",
+        lambda: FailingQueue(),
+    )
+
+    async with session_maker() as session:
+        agent = UserAccount(
+            username="offline-agent",
+            display_name="Offline Agent",
+            role=UserRole.ANALYST,
+            account_type=AccountType.NHI,
+            status=UserStatus.ACTIVE,
+            assignable=True,
+        )
+        task = Task(title="Queue failure", created_by="seed-user")
+        session.add_all([agent, task])
+        await session.commit()
+        assert task.id is not None
+        task_id = task.id
+
+    response = await client.put(
+        f"/api/v1/tasks/{task_id}",
+        json={"assignee": "offline-agent"},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200
+    async with session_maker() as session:
+        task = await session.get(Task, task_id)
+        assert task is not None
+        assert task.assignee == "offline-agent"
 
 
 @pytest.mark.asyncio

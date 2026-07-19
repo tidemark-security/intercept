@@ -10,7 +10,8 @@ from unittest.mock import patch
 import pytest
 
 from app.models.enums import SessionRevokedReason, UserRole, UserStatus
-from app.models.models import PASSWORD_POLICY_REGEX, UserAccount
+from app.core.password_policy import PASSWORD_POLICY_REGEX
+from app.models.models import UserAccount
 from app.services import AuditContext
 
 
@@ -83,7 +84,7 @@ class TestAuditLogging:
                 admin_user_id=admin_id,
                 target_user_id=target_user_id,
                 reset_request_id=reset_request_id,
-                expires_at=expires_at.isoformat(),
+                expires_at=expires_at,
                 context=context,
             )
 

@@ -11,6 +11,9 @@ class StubSettings:
     async def get(self, key: str, default: object = None) -> object:
         return self._values.get(key, default)
 
+    async def get_many(self, defaults: dict[str, object]) -> dict[str, object]:
+        return {key: self._values.get(key, default) for key, default in defaults.items()}
+
 
 class FakeResponse:
     def __init__(self, status_code: int, payload: dict[str, object]):
@@ -333,3 +336,89 @@ async def test_bulk_sync_uses_configured_timeout_page_size_and_max_records(
     bulk_client = PagedBulkSyncAsyncClient.instances[-1]
     assert len(bulk_client.get_urls) == 2
     assert "$top=2" in bulk_client.get_urls[0]
+
+
+@pytest.mark.asyncio
+async def test_bulk_sync_skips_only_malformed_provider_records(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class MixedRecordAsyncClient(FakeAsyncClient):
+        async def get(
+            self,
+            url: str,
+            headers: dict[str, str] | None = None,
+            params: dict[str, object] | None = None,
+        ):
+            assert headers == {"Authorization": "Bearer entra-token"}
+            return FakeResponse(
+                200,
+                {
+                    "value": [
+                        {
+                            "id": "sensitive-malformed-entra-id",
+                            "userPrincipalName": ["not-a-string"],
+                        },
+                        {
+                            "id": "entra-user-valid",
+                            "displayName": "Valid User",
+                            "userPrincipalName": "valid@example.com",
+                            "accountEnabled": True,
+                        },
+                    ]
+                },
+            )
+
+    monkeypatch.setattr(
+        "app.services.enrichment.providers.entra_id.httpx.AsyncClient",
+        MixedRecordAsyncClient,
+    )
+    provider = entra_id_provider.__class__()
+
+    results = await provider.bulk_sync(
+        db=None,  # type: ignore[arg-type]
+        settings=StubSettings(
+            {
+                "enrichment.entra_id.tenant_id": "tenant-id",
+                "enrichment.entra_id.client_id": "client-id",
+                "enrichment.entra_id.client_secret": "client-secret",
+            }
+        ),  # type: ignore[arg-type]
+    )
+
+    assert [result.cache_key for result in results] == ["user:valid@example.com"]
+    assert (
+        "Entra ID bulk sync skipped malformed user records (count=1)"
+        in caplog.messages
+    )
+    assert "sensitive-malformed-entra-id" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [RuntimeError, TypeError, AttributeError])
+async def test_bulk_sync_propagates_unexpected_record_processing_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
+) -> None:
+    monkeypatch.setattr(
+        "app.services.enrichment.providers.entra_id.httpx.AsyncClient",
+        FakeAsyncClient,
+    )
+    provider = entra_id_provider.__class__()
+
+    def raise_defect(*args, **kwargs):
+        raise error_type("record processing defect")
+
+    monkeypatch.setattr(provider, "_build_result", raise_defect)
+
+    with pytest.raises(error_type, match="record processing defect"):
+        await provider.bulk_sync(
+            db=None,  # type: ignore[arg-type]
+            settings=StubSettings(
+                {
+                    "enrichment.entra_id.tenant_id": "tenant-id",
+                    "enrichment.entra_id.client_id": "client-id",
+                    "enrichment.entra_id.client_secret": "client-secret",
+                }
+            ),  # type: ignore[arg-type]
+        )

@@ -11,6 +11,7 @@ from sqlmodel import select
 from app.core.settings_registry import get_local
 from app.models.enums import MessageRole
 from app.models.models import LangFlowMessage, LangFlowSession
+from app.services.langflow_service import LangFlowError
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -293,7 +294,8 @@ async def test_stream_endpoint_creates_messages_via_post(
     assert response.status_code == 200
     assert "event: message" in response.text
     assert "Hello" in response.text
-    assert "event: complete" in response.text
+    assert response.text.count("event: complete") == 1
+    assert "event: error" not in response.text
 
     async with session_maker() as session:
         result = await session.execute(
@@ -308,3 +310,57 @@ async def test_stream_endpoint_creates_messages_via_post(
     assert stored_messages[0].content == "hello stream"
     assert stored_messages[1].role == MessageRole.ASSISTANT
     assert stored_messages[1].content == "Hello world"
+
+
+@pytest.mark.asyncio
+async def test_stream_endpoint_emits_error_without_completion(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.routes.langflow as langflow_routes
+
+    session_cookie, csrf_cookie, _username, user_id = await _login_and_get_auth_cookies(
+        client,
+        session_maker,
+        analyst_user_factory,
+    )
+
+    async with session_maker() as session:
+        chat_session = LangFlowSession(
+            flow_id="general_flow",
+            user_id=user_id,
+            title="Failing Streaming Chat",
+        )
+        session.add(chat_session)
+        await session.commit()
+        await session.refresh(chat_session)
+        session_id = chat_session.id
+
+    class FailingLangFlowService:
+        async def stream_message(self, **_kwargs):
+            raise LangFlowError("upstream failed")
+            yield
+
+        async def close(self) -> None:
+            return None
+
+    async def fake_get_langflow_service(_db):
+        return FailingLangFlowService()
+
+    monkeypatch.setattr(langflow_routes, "get_langflow_service", fake_get_langflow_service)
+
+    response = await client.post(
+        f"/api/v1/langflow/stream/{session_id}",
+        json={"message": "hello stream"},
+        cookies={
+            get_local("auth.session.cookie_name"): session_cookie,
+            get_local("auth.csrf.cookie_name"): csrf_cookie,
+        },
+        headers={get_local("auth.csrf.header_name"): csrf_cookie},
+    )
+
+    assert response.status_code == 200
+    assert response.text.count("event: error") == 1
+    assert "event: complete" not in response.text

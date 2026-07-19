@@ -6,6 +6,12 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from typing import Optional
 import base64
+import hashlib
+
+
+def hash_opaque_token(token: str) -> str:
+    """Return the canonical non-reversible digest for opaque credentials."""
+    return hashlib.blake2b(token.encode("utf-8"), digest_size=32).hexdigest()
 
 
 class EncryptionService:

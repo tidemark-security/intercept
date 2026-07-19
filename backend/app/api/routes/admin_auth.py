@@ -2,31 +2,35 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, NoReturn, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.error_schemas import ValidationErrorResponse
+from app.api.request_metadata import build_audit_context
 from app.api.route_utils import read_session_cookie
-from app.core.csrf import API_KEY_AUTH_RESULT_SCOPE_KEY
+from app.core.csrf import API_KEY_AUTH_RESULT_SCOPE_KEY, extract_api_key
 from app.core.database import get_db
 from app.models.enums import AccountType, UserRole, UserStatus
-from app.models.models import UserAccount, ApiKeyCreateResponse
-from app.services.auth_service import (
-    RequestMetadata,
-    SessionNotFoundError,
-    auth_service,
+from app.models.models import ApiKeyCreateResponse, ApiKeyRead, UserAccount
+from app.services.admin_auth_service import (
+    AdminAuthError,
+    AdminAuthNotFoundError,
+    admin_auth_service,
 )
 from app.services.api_key_service import (
+    ApiKeyExpirationError,
     ApiKeyExpiredError,
     ApiKeyNotFoundError,
     ApiKeyRevokedError,
     UserInactiveError,
     api_key_service,
 )
-from app.services.audit_service import AuditContext, get_audit_service
+from app.services.audit_service import get_audit_service
+from app.services.auth_service import SessionNotFoundError, auth_service
 from app.services.passkey_service import (
     PasskeyCredentialNotFoundError,
     PasskeyOwnershipError,
@@ -133,16 +137,6 @@ class UserSummary(BaseModel):
 
 
 
-class ValidationField(BaseModel):
-    field: str
-    error: str
-
-
-class ValidationErrorResponse(BaseModel):
-    message: str
-    fields: List[ValidationField] = []
-
-
 class AdminCreateNHIRequest(BaseModel):
     """Request to create a Non-Human Identity (NHI) account."""
 
@@ -192,41 +186,6 @@ class AdminPasskeyRead(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _build_audit_context(request: Request) -> AuditContext:
-    """Build audit context from request metadata."""
-    client_host: Optional[str] = None
-    if request.client:
-        client_host = request.client.host
-    return AuditContext(
-        ip_address=client_host,
-        user_agent=request.headers.get("user-agent"),
-        correlation_id=request.headers.get("x-request-id"),
-    )
-
-
-def _extract_api_key(request: Request) -> Optional[str]:
-    """
-    Extract API key from request headers.
-    
-    Supports:
-    - Authorization: Bearer <key>
-    - X-API-Key: <key>
-    """
-    # Check Authorization header first
-    auth_header = request.headers.get("authorization")
-    if auth_header:
-        parts = auth_header.split(" ", 1)
-        if len(parts) == 2 and parts[0].lower() == "bearer":
-            return parts[1].strip()
-    
-    # Fall back to X-API-Key header
-    api_key = request.headers.get("x-api-key")
-    if api_key:
-        return api_key.strip()
-    
-    return None
-
-
 async def _authenticate_from_request(
     request: Request,
     db: AsyncSession,
@@ -244,14 +203,14 @@ async def _authenticate_from_request(
     Raises:
         HTTPException: 401 if not authenticated
     """
-    audit_context = _build_audit_context(request)
+    audit_context = build_audit_context(request)
     
     # Try API key authentication first
     cached_api_key_result = request.scope.get(API_KEY_AUTH_RESULT_SCOPE_KEY)
     if cached_api_key_result is not None:
         return cached_api_key_result.user
 
-    api_key = _extract_api_key(request)
+    api_key = extract_api_key(request.headers)
     if api_key:
         try:
             result = await api_key_service.validate_api_key(
@@ -312,58 +271,6 @@ async def _authenticate_from_request(
         )
 
 
-async def require_admin_user(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-) -> UserAccount:
-    """
-    Dependency that validates the current user has admin role.
-    
-    Supports both API key and session cookie authentication.
-    
-    Raises:
-        HTTPException: 401 if not authenticated, 403 if not admin
-    """
-    user = await _authenticate_from_request(request, db)
-    
-    if user.role != UserRole.ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=ValidationErrorResponse(
-                message="Admin role required for this operation",
-                fields=[],
-            ).model_dump(),
-        )
-    
-    return user
-
-
-async def require_non_auditor_user(
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-) -> UserAccount:
-    """
-    Dependency that validates the current user is authenticated and not an auditor.
-
-    Supports both API key and session cookie authentication.
-
-    Raises:
-        HTTPException: 401 if not authenticated, 403 if auditor
-    """
-    user = await _authenticate_from_request(request, db)
-
-    if user.role == UserRole.AUDITOR:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=ValidationErrorResponse(
-                message="Auditor accounts have read-only access",
-                fields=[],
-            ).model_dump(),
-        )
-
-    return user
-
-
 async def require_authenticated_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
@@ -377,6 +284,52 @@ async def require_authenticated_user(
         HTTPException: 401 if not authenticated
     """
     return await _authenticate_from_request(request, db)
+
+
+async def require_admin_user(
+    user: UserAccount = Depends(require_authenticated_user),
+) -> UserAccount:
+    """
+    Dependency that validates the current user has admin role.
+
+    Supports both API key and session cookie authentication.
+
+    Raises:
+        HTTPException: 401 if not authenticated, 403 if not admin
+    """
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ValidationErrorResponse(
+                message="Admin role required for this operation",
+                fields=[],
+            ).model_dump(),
+        )
+    
+    return user
+
+
+async def require_non_auditor_user(
+    user: UserAccount = Depends(require_authenticated_user),
+) -> UserAccount:
+    """
+    Dependency that validates the current user is authenticated and not an auditor.
+
+    Supports both API key and session cookie authentication.
+
+    Raises:
+        HTTPException: 401 if not authenticated, 403 if auditor
+    """
+    if user.role == UserRole.AUDITOR:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ValidationErrorResponse(
+                message="Auditor accounts have read-only access",
+                fields=[],
+            ).model_dump(),
+        )
+
+    return user
 
 
 # Authenticated router for lightweight user-discovery endpoints.
@@ -395,15 +348,20 @@ router = APIRouter(
 )
 
 
-
-
-def _extract_request_metadata(request: Request) -> RequestMetadata:
-    """Extract request metadata for audit logging."""
-    return RequestMetadata(
-        ip_address=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-        correlation_id=request.headers.get("x-correlation-id"),
+def _raise_admin_auth_http_error(error: AdminAuthError) -> NoReturn:
+    """Translate an expected admin-auth failure at the HTTP seam."""
+    status_code = (
+        status.HTTP_404_NOT_FOUND
+        if isinstance(error, AdminAuthNotFoundError)
+        else status.HTTP_400_BAD_REQUEST
     )
+    raise HTTPException(
+        status_code=status_code,
+        detail=ValidationErrorResponse(
+            message=str(error),
+            fields=[],
+        ).model_dump(),
+    ) from error
 
 
 # ---------------------------------------------------------------------------
@@ -427,11 +385,8 @@ async def create_user(
     """
     Create a new user account with a one-time password setup link.
     """
-    # Import here to avoid circular dependency
-    from app.services.admin_auth_service import admin_auth_service
-
     try:
-        metadata = _extract_request_metadata(request)
+        metadata = build_audit_context(request)
         result = await admin_auth_service.create_user(
             admin_user_id=admin_user.id,
             username=payload.username,
@@ -448,22 +403,8 @@ async def create_user(
             resetToken=result.reset_token,
         )
 
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ValidationErrorResponse(
-                message=str(e),
-                fields=[],
-            ).model_dump(),
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=ValidationErrorResponse(
-                message="Internal server error",
-                fields=[],
-            ).model_dump(),
-        )
+    except AdminAuthError as error:
+        _raise_admin_auth_http_error(error)
 
 
 @router.patch(
@@ -485,11 +426,8 @@ async def update_user_status(
     
     Disabling a user will revoke all their active sessions.
     """
-    # Import here to avoid circular dependency
-    from app.services.admin_auth_service import admin_auth_service
-
     try:
-        metadata = _extract_request_metadata(request)
+        metadata = build_audit_context(request)
         await admin_auth_service.update_user_status(
             admin_user_id=admin_user.id,
             target_user_id=user_id,
@@ -498,30 +436,8 @@ async def update_user_status(
             db=db,
         )
 
-    except ValueError as e:
-        if "not found" in str(e).lower():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ValidationErrorResponse(
-                    message=str(e),
-                    fields=[],
-                ).model_dump(),
-            )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ValidationErrorResponse(
-                message=str(e),
-                fields=[],
-            ).model_dump(),
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=ValidationErrorResponse(
-                message="Internal server error",
-                fields=[],
-            ).model_dump(),
-        )
+    except AdminAuthError as error:
+        _raise_admin_auth_http_error(error)
 
 
 @router.patch(
@@ -538,10 +454,8 @@ async def update_user(
     db: AsyncSession = Depends(get_db),
     admin_user: UserAccount = Depends(require_admin_user),
 ) -> None:
-    from app.services.admin_auth_service import admin_auth_service
-
     try:
-        metadata = _extract_request_metadata(request)
+        metadata = build_audit_context(request)
         await admin_auth_service.update_user(
             admin_user_id=admin_user.id,
             target_user_id=user_id,
@@ -556,30 +470,8 @@ async def update_user(
             db=db,
         )
 
-    except ValueError as e:
-        if "not found" in str(e).lower():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ValidationErrorResponse(
-                    message=str(e),
-                    fields=[],
-                ).model_dump(),
-            )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ValidationErrorResponse(
-                message=str(e),
-                fields=[],
-            ).model_dump(),
-        )
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=ValidationErrorResponse(
-                message="Internal server error",
-                fields=[],
-            ).model_dump(),
-        )
+    except AdminAuthError as error:
+        _raise_admin_auth_http_error(error)
 
 
 @router.get(
@@ -663,11 +555,8 @@ async def issue_password_reset(
     """
     Issue an admin-initiated password reset for a user.
     """
-    # Import here to avoid circular dependency
-    from app.services.admin_auth_service import admin_auth_service
-
     try:
-        metadata = _extract_request_metadata(request)
+        metadata = build_audit_context(request)
         result = await admin_auth_service.issue_password_reset(
             admin_user_id=admin_user.id,
             target_user_id=payload.userId,
@@ -681,30 +570,8 @@ async def issue_password_reset(
             resetToken=result.reset_token,
         )
 
-    except ValueError as e:
-        if "not found" in str(e).lower():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=ValidationErrorResponse(
-                    message=str(e),
-                    fields=[],
-                ).model_dump(),
-            )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ValidationErrorResponse(
-                message=str(e),
-                fields=[],
-            ).model_dump(),
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=ValidationErrorResponse(
-                message="Internal server error",
-                fields=[],
-            ).model_dump(),
-        )
+    except AdminAuthError as error:
+        _raise_admin_auth_http_error(error)
 
 
 @authenticated_router.get(
@@ -729,43 +596,31 @@ async def get_users_summary(
     
     Returns lightweight user summaries without sensitive information.
     """
-    from app.services.admin_auth_service import admin_auth_service
+    users = await admin_auth_service.get_users(
+        db=db,
+        status=user_status,
+        role=role,
+        account_type=account_type,
+    )
+    users = [
+        user for user in users
+        if user.account_type == AccountType.HUMAN or user.assignable
+    ]
 
-    try:
-        users = await admin_auth_service.get_users(
-            db=db,
-            status=user_status,
-            role=role,
-            account_type=account_type,
+    return [
+        UserSummary(
+            userId=user.id,
+            username=user.username,
+            email=user.email,
+            role=user.role,
+            accountType=user.account_type,
+            assignable=user.assignable,
+            overrideTimestamps=user.override_timestamps,
+            oidcIssuer=user.oidc_issuer,
+            oidcSubject=user.oidc_subject,
         )
-        users = [
-            user for user in users
-            if user.account_type == AccountType.HUMAN or user.assignable
-        ]
-
-        return [
-            UserSummary(
-                userId=user.id,
-                username=user.username,
-                email=user.email,
-                role=user.role,
-                accountType=user.account_type,
-                assignable=user.assignable,
-                overrideTimestamps=user.override_timestamps,
-                oidcIssuer=user.oidc_issuer,
-                oidcSubject=user.oidc_subject,
-            )
-            for user in users
-        ]
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=ValidationErrorResponse(
-                message="Failed to retrieve users",
-                fields=[],
-            ).model_dump(),
-        )
+        for user in users
+    ]
 
 
 @router.get(
@@ -837,18 +692,10 @@ async def create_nhi_account(
     from uuid import uuid4
     from sqlmodel import select
     
-    audit_context = _build_audit_context(request)
+    audit_context = build_audit_context(request)
     
-    # Validate expiration is in the future
     now = datetime.now(timezone.utc)
-    if payload.initial_api_key_expires_at <= now:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ValidationErrorResponse(
-                message="API key expiration date must be in the future",
-            ).model_dump(),
-        )
-    
+
     # Check username uniqueness
     normalized_username = payload.username.strip().lower()
     result = await db.execute(
@@ -884,14 +731,22 @@ async def create_nhi_account(
     await db.flush()
     
     # Create the initial API key
-    api_key, raw_key = await api_key_service.create_api_key(
-        db,
-        user_id=nhi_account.id,
-        name=payload.initial_api_key_name,
-        expires_at=payload.initial_api_key_expires_at,
-        created_by_user_id=admin_user.id,
-        context=audit_context,
-    )
+    try:
+        api_key, raw_key = await api_key_service.create_api_key(
+            db,
+            user_id=nhi_account.id,
+            name=payload.initial_api_key_name,
+            expires_at=payload.initial_api_key_expires_at,
+            created_by_user_id=admin_user.id,
+            context=audit_context,
+        )
+    except ApiKeyExpirationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ValidationErrorResponse(
+                message="API key expiration date must be in the future",
+            ).model_dump(),
+        ) from exc
     
     # Audit log for NHI creation
     await get_audit_service(db).nhi_account_created(
@@ -910,14 +765,7 @@ async def create_nhi_account(
         username=nhi_account.username,
         role=nhi_account.role,
         apiKey=ApiKeyCreateResponse(
-            id=api_key.id,
-            user_id=api_key.user_id,
-            name=api_key.name,
-            prefix=api_key.prefix,
-            expires_at=api_key.expires_at,
-            last_used_at=api_key.last_used_at,
-            revoked_at=api_key.revoked_at,
-            created_at=api_key.created_at,
+            **ApiKeyRead.model_validate(api_key).model_dump(),
             key=raw_key,
         ),
     )

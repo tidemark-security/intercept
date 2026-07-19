@@ -1,7 +1,7 @@
 """API key management routes."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
@@ -9,25 +9,20 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.error_schemas import ValidationErrorResponse
+from app.api.request_metadata import build_audit_context
 from app.api.routes.admin_auth import (
-    ValidationErrorResponse,
     require_authenticated_user,
-    require_admin_user,
-    _build_audit_context,
-    _extract_api_key,
 )
+from app.core.csrf import extract_api_key
 from app.core.database import get_db
-from app.models.models import (
-    ApiKey,
-    ApiKeyCreate,
-    ApiKeyCreateResponse,
-    ApiKeyRead,
-    UserAccount,
-)
+from app.models.models import ApiKeyCreateResponse, ApiKeyRead, UserAccount
 from app.models.enums import AccountType
 from app.services.api_key_service import (
+    ApiKeyExpirationError,
     ApiKeyNotFoundError,
     ApiKeyRevokedError,
+    ApiKeyUserNotFoundError,
     api_key_service,
 )
 
@@ -81,8 +76,8 @@ async def create_api_key(
     
     **Returns**: The created API key with the full key value (one-time only)
     """
-    audit_context = _build_audit_context(request)
-    if _extract_api_key(request):
+    audit_context = build_audit_context(request)
+    if extract_api_key(request.headers):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=ValidationErrorResponse(
@@ -120,15 +115,6 @@ async def create_api_key(
                 ).model_dump(),
             )
     
-    # Validate expiration is in the future
-    if body.expires_at <= datetime.now(timezone.utc):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ValidationErrorResponse(
-                message="Expiration date must be in the future",
-            ).model_dump(),
-        )
-    
     try:
         api_key, raw_key = await api_key_service.create_api_key(
             db,
@@ -138,21 +124,19 @@ async def create_api_key(
             created_by_user_id=current_user.id,
             context=audit_context,
         )
-    except ValueError as e:
+    except ApiKeyUserNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ValidationErrorResponse(message=str(exc)).model_dump(),
+        ) from exc
+    except ApiKeyExpirationError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ValidationErrorResponse(message=str(e)).model_dump(),
-        )
+            detail=ValidationErrorResponse(message=str(exc)).model_dump(),
+        ) from exc
     
     return ApiKeyCreateResponse(
-        id=api_key.id,
-        user_id=api_key.user_id,
-        name=api_key.name,
-        prefix=api_key.prefix,
-        expires_at=api_key.expires_at,
-        last_used_at=api_key.last_used_at,
-        revoked_at=api_key.revoked_at,
-        created_at=api_key.created_at,
+        **ApiKeyRead.model_validate(api_key).model_dump(),
         key=raw_key,
     )
 
@@ -198,19 +182,7 @@ async def list_api_keys(
         include_revoked=include_revoked,
     )
     
-    return [
-        ApiKeyRead(
-            id=key.id,
-            user_id=key.user_id,
-            name=key.name,
-            prefix=key.prefix,
-            expires_at=key.expires_at,
-            last_used_at=key.last_used_at,
-            revoked_at=key.revoked_at,
-            created_at=key.created_at,
-        )
-        for key in keys
-    ]
+    return [ApiKeyRead.model_validate(key) for key in keys]
 
 
 @router.get("/{api_key_id}", response_model=ApiKeyRead)
@@ -248,16 +220,7 @@ async def get_api_key(
                 ).model_dump(),
             )
     
-    return ApiKeyRead(
-        id=api_key.id,
-        user_id=api_key.user_id,
-        name=api_key.name,
-        prefix=api_key.prefix,
-        expires_at=api_key.expires_at,
-        last_used_at=api_key.last_used_at,
-        revoked_at=api_key.revoked_at,
-        created_at=api_key.created_at,
-    )
+    return ApiKeyRead.model_validate(api_key)
 
 
 @router.delete("/{api_key_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -278,7 +241,7 @@ async def revoke_api_key(
     
     **Authentication**: Session cookie or API key
     """
-    audit_context = _build_audit_context(request)
+    audit_context = build_audit_context(request)
     
     # First check if key exists and get ownership info
     api_key = await api_key_service.get_api_key(db, api_key_id=api_key_id)

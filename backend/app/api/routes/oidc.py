@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -16,7 +15,8 @@ from app.api.route_utils import (
     revoke_oidc_browser_binding_cookie,
 )
 from app.core.database import get_db
-from app.services.auth_service import RequestMetadata, auth_service
+from app.api.request_metadata import build_request_metadata
+from app.services.auth_service import auth_service
 from app.services.audit_service import get_audit_service
 from app.services.oidc_service import (
     OIDCAuthenticationError,
@@ -38,17 +38,6 @@ class OIDCConfigResponse(BaseModel):
 class OIDCTestResponse(BaseModel):
     success: bool
     message: str
-
-
-def _build_metadata(request: Request) -> RequestMetadata:
-    client_host: Optional[str] = None
-    if request.client:
-        client_host = request.client.host
-    return RequestMetadata(
-        ip_address=client_host,
-        user_agent=request.headers.get("user-agent"),
-        correlation_id=request.headers.get("x-request-id"),
-    )
 
 
 def _frontend_error_redirect(redirect_to: str, message: str) -> RedirectResponse:
@@ -96,13 +85,20 @@ async def begin_oidc_login(
             redirect_to=next,
             callback_url=callback_url,
         )
+        response = RedirectResponse(
+            url=authorization_url,
+            status_code=status.HTTP_302_FOUND,
+        )
+        issue_oidc_browser_binding_cookie(
+            response,
+            browser_binding_token,
+            expires_at,
+        )
         await db.commit()
     except OIDCConfigurationError as exc:
         await db.rollback()
         return _frontend_error_redirect(next, str(exc))
 
-    response = RedirectResponse(url=authorization_url, status_code=status.HTTP_302_FOUND)
-    issue_oidc_browser_binding_cookie(response, browser_binding_token, expires_at)
     return response
 
 
@@ -117,7 +113,7 @@ async def finish_oidc_login(
         return _frontend_error_redirect(str(request.base_url).rstrip("/"), "OIDC sign-in is disabled")
 
     callback_url = str(request.url_for("finish_oidc_login"))
-    metadata = _build_metadata(request)
+    metadata = build_request_metadata(request)
     fallback_redirect = str(request.base_url).rstrip("/")
     browser_binding_token = read_oidc_browser_binding_cookie(request)
 
@@ -141,7 +137,17 @@ async def finish_oidc_login(
             oidc_issuer=issuer,
             oidc_subject=subject,
             session_id=auth_result.session.id,
-            context=metadata.to_audit_context(),
+            context=metadata,
+        )
+        response = RedirectResponse(
+            url=redirect_to,
+            status_code=status.HTTP_302_FOUND,
+        )
+        revoke_oidc_browser_binding_cookie(response)
+        issue_authenticated_session_cookies(
+            response,
+            auth_result.session_token,
+            auth_result.session.expires_at,
         )
         await db.commit()
     except (OIDCConfigurationError, OIDCAuthenticationError, OIDCStateError) as exc:
@@ -149,15 +155,12 @@ async def finish_oidc_login(
         await get_audit_service(db).oidc_login_failure(
             reason=str(exc),
             oidc_issuer=None,
-            context=metadata.to_audit_context(),
+            context=metadata,
         )
         response = await _safe_error_redirect(db, request, fallback_redirect, str(exc))
         revoke_oidc_browser_binding_cookie(response)
         return response
 
-    response = RedirectResponse(url=redirect_to, status_code=status.HTTP_302_FOUND)
-    revoke_oidc_browser_binding_cookie(response)
-    issue_authenticated_session_cookies(response, auth_result.session_token, auth_result.session.expires_at)
     return response
 
 

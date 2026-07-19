@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.settings_registry import get_local
+from app.core.password_policy import validate_password_policy
 from app.models.enums import (
     AccountType,
     SessionRevokedReason,
@@ -26,11 +26,31 @@ from app.models.models import (
     AuthSession,
     UserAccount,
 )
-from app.services import AuditContext, PasswordHasher, get_audit_service
-from app.services.auth_service import PasswordPolicyViolation, RequestMetadata
-from app.services.security.password_hasher import Argon2Parameters
+from app.services import PasswordHasher, get_audit_service
+from app.services.audit_service import AuditContext
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Expected operation failures
+# ---------------------------------------------------------------------------
+
+
+class AdminAuthError(ValueError):
+    """Base class for expected admin-auth operation rejections."""
+
+
+class AdminAuthValidationError(AdminAuthError):
+    """Raised when an admin-auth operation is invalid for the target account."""
+
+
+class AdminAuthConflictError(AdminAuthError):
+    """Raised when requested account data conflicts with an existing account."""
+
+
+class AdminAuthNotFoundError(AdminAuthError):
+    """Raised when an admin-auth operation targets a missing account."""
 
 
 # ---------------------------------------------------------------------------
@@ -69,16 +89,8 @@ class AdminAuthService:
         *,
         password_hasher: Optional[PasswordHasher] = None,
     ) -> None:
-        self._hasher = password_hasher or PasswordHasher(
-            Argon2Parameters(
-                time_cost=get_local("auth.argon2.time_cost"),
-                memory_cost=get_local("auth.argon2.memory_cost_kib"),
-                parallelism=get_local("auth.argon2.parallelism"),
-                hash_len=get_local("auth.argon2.hash_len"),
-                salt_len=get_local("auth.argon2.salt_len"),
-                encoding=get_local("auth.argon2.encoding"),
-            )
-        )
+        self._hasher = password_hasher or PasswordHasher.from_local_settings()
+
     async def create_user(
         self,
         *,
@@ -87,7 +99,7 @@ class AdminAuthService:
         email: Optional[str],
         role: UserRole,
         description: Optional[str] = None,
-        request_metadata: RequestMetadata,
+        request_metadata: AuditContext,
         db: AsyncSession,
     ) -> CreateUserResult:
         """
@@ -106,7 +118,7 @@ class AdminAuthService:
             CreateUserResult with user ID and password setup token details
 
         Raises:
-            ValueError: If username or email already exists
+            AdminAuthConflictError: If username or email already exists
         """
         normalized_username = username.strip().lower()
         normalized_email = email.strip().lower() if email and email.strip() else None
@@ -116,7 +128,9 @@ class AdminAuthService:
             select(UserAccount).where(UserAccount.username == normalized_username)
         )
         if result.scalar_one_or_none() is not None:
-            raise ValueError(f"Username '{normalized_username}' already exists")
+            raise AdminAuthConflictError(
+                f"Username '{normalized_username}' already exists"
+            )
 
         # Check for duplicate email
         if normalized_email:
@@ -124,7 +138,9 @@ class AdminAuthService:
                 select(UserAccount).where(UserAccount.email == normalized_email)
             )
             if result.scalar_one_or_none() is not None:
-                raise ValueError(f"Email '{normalized_email}' already exists")
+                raise AdminAuthConflictError(
+                    f"Email '{normalized_email}' already exists"
+                )
 
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(minutes=await self._get_reset_token_expiry_minutes(db))
@@ -157,28 +173,26 @@ class AdminAuthService:
         )
         db.add(reset_request)
 
-        await db.commit()
-        await db.refresh(user)
-
-        # Audit log
         await get_audit_service(db).user_created(
             admin_user_id=admin_user_id,
             target_user_id=user.id,
             username=user.username,
             email=user.email,
             role=user.role,
-            context=request_metadata.to_audit_context(),
+            context=request_metadata,
         )
+        response = CreateUserResult(
+            user_id=user.id,
+            expires_at=expires_at,
+            reset_token=reset_token,
+        )
+        await db.commit()
 
         logger.info(
             f"Admin {admin_user_id} created user {user.id} ({normalized_username}) with role {role.value}"
         )
 
-        return CreateUserResult(
-            user_id=user.id,
-            expires_at=expires_at,
-            reset_token=reset_token,
-        )
+        return response
 
     async def update_user_status(
         self,
@@ -186,7 +200,7 @@ class AdminAuthService:
         admin_user_id: UUID,
         target_user_id: UUID,
         new_status: UserStatus,
-        request_metadata: RequestMetadata,
+        request_metadata: AuditContext,
         db: AsyncSession,
     ) -> None:
         """
@@ -200,11 +214,12 @@ class AdminAuthService:
             db: Database session
 
         Raises:
-            ValueError: If user not found or attempting self-modification
+            AdminAuthNotFoundError: If the target user does not exist
+            AdminAuthValidationError: If attempting self-modification
         """
         # Prevent self-modification
         if admin_user_id == target_user_id:
-            raise ValueError("Cannot change your own account status")
+            raise AdminAuthValidationError("Cannot change your own account status")
 
         # Load user
         result = await db.execute(
@@ -215,7 +230,9 @@ class AdminAuthService:
         user = result.scalar_one_or_none()
 
         if user is None:
-            raise ValueError(f"User with ID {target_user_id} not found")
+            raise AdminAuthNotFoundError(
+                f"User with ID {target_user_id} not found"
+            )
 
         old_status = user.status
 
@@ -236,16 +253,14 @@ class AdminAuthService:
             user.lockout_expires_at = None
             user.failed_login_attempts = 0
 
-        await db.commit()
-
-        # Audit log
         await get_audit_service(db).user_status_changed(
             admin_user_id=admin_user_id,
             target_user_id=target_user_id,
             old_status=old_status,
             new_status=new_status,
-            context=request_metadata.to_audit_context(),
+            context=request_metadata,
         )
+        await db.commit()
 
         logger.info(
             f"Admin {admin_user_id} changed status of user {target_user_id} "
@@ -264,12 +279,14 @@ class AdminAuthService:
         assignable: Optional[bool] = None,
         override_timestamps: Optional[bool] = None,
         description: Optional[str] = None,
-        request_metadata: RequestMetadata,
+        request_metadata: AuditContext,
         db: AsyncSession,
     ) -> UserAccount:
         """Update editable fields on a user account."""
         if admin_user_id == target_user_id:
-            raise ValueError("Cannot edit your own account through the admin panel")
+            raise AdminAuthValidationError(
+                "Cannot edit your own account through the admin panel"
+            )
 
         result = await db.execute(
             select(UserAccount).where(UserAccount.id == target_user_id)
@@ -277,7 +294,9 @@ class AdminAuthService:
         user = result.scalar_one_or_none()
 
         if user is None:
-            raise ValueError(f"User with ID {target_user_id} not found")
+            raise AdminAuthNotFoundError(
+                f"User with ID {target_user_id} not found"
+            )
 
         old_values = {
             "username": user.username,
@@ -297,12 +316,16 @@ class AdminAuthService:
                 )
             )
             if duplicate_username_result.scalar_one_or_none() is not None:
-                raise ValueError(f"Username '{normalized_username}' already exists")
+                raise AdminAuthConflictError(
+                    f"Username '{normalized_username}' already exists"
+                )
             user.username = normalized_username
 
         if email_provided:
             if user.account_type == AccountType.NHI:
-                raise ValueError("NHI accounts cannot have an email address")
+                raise AdminAuthValidationError(
+                    "NHI accounts cannot have an email address"
+                )
             if email is None:
                 user.email = None
             else:
@@ -314,7 +337,9 @@ class AdminAuthService:
                     )
                 )
                 if duplicate_email_result.scalar_one_or_none() is not None:
-                    raise ValueError(f"Email '{normalized_email}' already exists")
+                    raise AdminAuthConflictError(
+                        f"Email '{normalized_email}' already exists"
+                    )
                 user.email = normalized_email
 
         if role is not None:
@@ -322,12 +347,16 @@ class AdminAuthService:
 
         if assignable is not None:
             if user.account_type != AccountType.NHI and assignable:
-                raise ValueError("Only NHI accounts can be made assignable")
+                raise AdminAuthValidationError(
+                    "Only NHI accounts can be made assignable"
+                )
             user.assignable = assignable
 
         if override_timestamps is not None:
             if user.account_type != AccountType.NHI and override_timestamps:
-                raise ValueError("Only NHI accounts can override timestamps")
+                raise AdminAuthValidationError(
+                    "Only NHI accounts can override timestamps"
+                )
             user.override_timestamps = override_timestamps
 
         if description is not None:
@@ -335,9 +364,6 @@ class AdminAuthService:
             user.description = normalized_description or None
 
         user.updated_at = datetime.now(timezone.utc)
-
-        await db.commit()
-        await db.refresh(user)
 
         await get_audit_service(db).user_updated(
             admin_user_id=admin_user_id,
@@ -351,8 +377,9 @@ class AdminAuthService:
                 "override_timestamps": user.override_timestamps,
                 "description": user.description,
             },
-            context=request_metadata.to_audit_context(),
+            context=request_metadata,
         )
+        await db.commit()
 
         logger.info(
             f"Admin {admin_user_id} updated user {target_user_id} "
@@ -366,7 +393,7 @@ class AdminAuthService:
         *,
         admin_user_id: UUID,
         target_user_id: UUID,
-        request_metadata: RequestMetadata,
+        request_metadata: AuditContext,
         db: AsyncSession,
     ) -> PasswordResetResult:
         """
@@ -388,11 +415,14 @@ class AdminAuthService:
             PasswordResetResult with reset details
 
         Raises:
-            ValueError: If user not found or attempting self-modification
+            AdminAuthNotFoundError: If the target user does not exist
+            AdminAuthValidationError: If the operation is invalid for the target
         """
         # Prevent self-modification
         if admin_user_id == target_user_id:
-            raise ValueError("Cannot reset your own password through admin panel")
+            raise AdminAuthValidationError(
+                "Cannot reset your own password through admin panel"
+            )
 
         # Load user
         result = await db.execute(
@@ -401,10 +431,12 @@ class AdminAuthService:
         user = result.scalar_one_or_none()
 
         if user is None:
-            raise ValueError(f"User with ID {target_user_id} not found")
+            raise AdminAuthNotFoundError(
+                f"User with ID {target_user_id} not found"
+            )
 
         if user.account_type == AccountType.NHI:
-            raise ValueError(
+            raise AdminAuthValidationError(
                 "Cannot issue password reset for NHI accounts; they authenticate via API keys only"
             )
 
@@ -439,47 +471,36 @@ class AdminAuthService:
             db=db,
         )
 
-        await db.commit()
-        await db.refresh(reset_request)
-
-        # Audit log
         await get_audit_service(db).password_reset_issued(
             admin_user_id=admin_user_id,
             target_user_id=target_user_id,
             reset_request_id=reset_request.id,
             expires_at=expires_at,
-            context=request_metadata.to_audit_context(),
+            context=request_metadata,
         )
+        response = PasswordResetResult(
+            reset_request_id=reset_request.id,
+            expires_at=expires_at,
+            reset_token=reset_token,
+        )
+        await db.commit()
 
         logger.info(
             f"Admin {admin_user_id} issued password reset for user {target_user_id}"
         )
 
-        return PasswordResetResult(
-            reset_request_id=reset_request.id,
-            expires_at=expires_at,
-            reset_token=reset_token,
-        )
+        return response
 
     async def consume_reset_token(
         self,
         *,
         token: str,
         new_password: str,
-        request_metadata: RequestMetadata,
+        request_metadata: AuditContext,
         db: AsyncSession,
     ) -> None:
         """Consume a one-time reset token and set a new password."""
-        candidate = new_password.strip()
-        if len(candidate) < 12:
-            raise PasswordPolicyViolation("Password does not meet minimum length requirements")
-
-        from app.models.models import PASSWORD_POLICY_REGEX
-
-        if not PASSWORD_POLICY_REGEX.match(candidate):
-            raise PasswordPolicyViolation(
-                "Password must include upper, lower, number, and special character"
-            )
+        candidate = validate_password_policy(new_password)
 
         now = datetime.now(timezone.utc)
         token_hash = self._hash_reset_token(token)
@@ -492,21 +513,21 @@ class AdminAuthService:
         reset_request = result.scalar_one_or_none()
 
         if reset_request is None:
-            raise ValueError("Password reset token is invalid")
+            raise AdminAuthValidationError("Password reset token is invalid")
         if reset_request.invalidated_at is not None or reset_request.consumed_at is not None:
-            raise ValueError("Password reset token is no longer valid")
+            raise AdminAuthValidationError("Password reset token is no longer valid")
         if reset_request.expires_at <= now:
             reset_request.invalidated_at = now
             await db.commit()
-            raise ValueError("Password reset token has expired")
+            raise AdminAuthValidationError("Password reset token has expired")
 
         user = reset_request.target_user
         if user is None:
             user = await db.get(UserAccount, reset_request.target_user_id)
         if user is None:
-            raise ValueError("Password reset token is invalid")
+            raise AdminAuthValidationError("Password reset token is invalid")
         if user.account_type == AccountType.NHI:
-            raise ValueError("Password reset token is invalid")
+            raise AdminAuthValidationError("Password reset token is invalid")
 
         await self._invalidate_active_reset_requests(user_id=user.id, now=now, db=db, exclude_id=reset_request.id)
 
@@ -529,14 +550,13 @@ class AdminAuthService:
             db=db,
         )
 
-        await db.commit()
-
         await get_audit_service(db).password_changed(
             user_id=user.id,
             username=user.username,
             was_forced=False,
-            context=request_metadata.to_audit_context(),
+            context=request_metadata,
         )
+        await db.commit()
 
     async def _revoke_user_sessions(
         self,
@@ -565,9 +585,6 @@ class AdminAuthService:
         for session in active_sessions:
             session.revoked_at = now
             session.revoked_reason = reason
-
-        if active_sessions:
-            await db.commit()
 
         return len(active_sessions)
 

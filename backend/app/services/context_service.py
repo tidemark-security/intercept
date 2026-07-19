@@ -5,7 +5,6 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -75,6 +74,22 @@ SYSTEM_IDENTIFIER_KEYS = {
 CandidateMap = dict[ContextCriterionType, set[str]]
 
 
+class ContextValidationError(ValueError):
+    """Raised when analyst-supplied context data is invalid."""
+
+
+class ContextEntryNotFoundError(LookupError):
+    """Raised when a requested context entry does not exist."""
+
+
+class ContextAlertNotFoundError(LookupError):
+    """Raised when context is requested for an alert that does not exist."""
+
+
+class ContextSerializationError(RuntimeError):
+    """Raised when an internal context model cannot be serialized."""
+
+
 def _ensure_aware(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
@@ -84,7 +99,7 @@ def _ensure_aware(value: datetime) -> datetime:
 def _normalize_body(value: str) -> str:
     body = value.strip()
     if not body:
-        raise ValueError("Context body is required")
+        raise ContextValidationError("Context body is required")
     return body
 
 
@@ -93,7 +108,7 @@ def _normalize_criteria(criteria: Iterable[ContextCriterion]) -> list[dict[str, 
     for criterion in criteria:
         value = criterion.value.strip()
         if not value:
-            raise ValueError("Criterion value is required")
+            raise ContextValidationError("Criterion value is required")
         normalized.append({"type": criterion.type.value, "value": value})
     return normalized
 
@@ -104,7 +119,7 @@ def _entry_criteria(entry: ContextEntry) -> list[ContextCriterion]:
 
 def _read_model(entry: ContextEntry) -> ContextEntryRead:
     if entry.id is None:
-        raise ValueError("Cannot serialize unsaved context entry")
+        raise ContextSerializationError("Cannot serialize unsaved context entry")
     return ContextEntryRead(
         id=entry.id,
         criteria=_entry_criteria(entry),
@@ -242,7 +257,7 @@ class ContextService:
     ) -> ContextEntryRead:
         expires_at = _ensure_aware(payload.expires_at)
         if expires_at <= datetime.now(timezone.utc):
-            raise ValueError("Expiry must be in the future")
+            raise ContextValidationError("Expiry must be in the future")
 
         now = datetime.now(timezone.utc)
         entry = ContextEntry(
@@ -264,9 +279,9 @@ class ContextService:
             performed_by=author,
             context=audit_context,
         )
+        response = _read_model(entry)
         await self.db.commit()
-        await self.db.refresh(entry)
-        return _read_model(entry)
+        return response
 
     async def update_entry(
         self,
@@ -278,7 +293,7 @@ class ContextService:
     ) -> ContextEntryRead:
         entry = await self.db.get(ContextEntry, entry_id)
         if entry is None:
-            raise HTTPException(status_code=404, detail="Context entry not found")
+            raise ContextEntryNotFoundError("Context entry not found")
 
         before = _audit_snapshot(entry)
         if payload.criteria is not None:
@@ -288,7 +303,7 @@ class ContextService:
         if payload.expires_at is not None:
             expires_at = _ensure_aware(payload.expires_at)
             if expires_at <= datetime.now(timezone.utc):
-                raise ValueError("Expiry must be in the future")
+                raise ContextValidationError("Expiry must be in the future")
             entry.expires_at = expires_at
             entry.expired_at = None
         entry.updated_at = datetime.now(timezone.utc)
@@ -304,9 +319,9 @@ class ContextService:
             performed_by=updated_by,
             context=audit_context,
         )
+        response = _read_model(entry)
         await self.db.commit()
-        await self.db.refresh(entry)
-        return _read_model(entry)
+        return response
 
     async def expire_entry(
         self,
@@ -317,7 +332,7 @@ class ContextService:
     ) -> ContextEntryRead:
         entry = await self.db.get(ContextEntry, entry_id)
         if entry is None:
-            raise HTTPException(status_code=404, detail="Context entry not found")
+            raise ContextEntryNotFoundError("Context entry not found")
 
         before = _audit_snapshot(entry)
         now = datetime.now(timezone.utc)
@@ -336,14 +351,14 @@ class ContextService:
             performed_by=expired_by,
             context=audit_context,
         )
+        response = _read_model(entry)
         await self.db.commit()
-        await self.db.refresh(entry)
-        return _read_model(entry)
+        return response
 
     async def get_matching_context_for_alert(self, alert_id: int) -> list[dict[str, Any]]:
         alert = await self.db.get(Alert, alert_id)
         if alert is None:
-            raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
+            raise ContextAlertNotFoundError(f"Alert {alert_id} not found")
 
         now = datetime.now(timezone.utc)
         result = await self.db.execute(

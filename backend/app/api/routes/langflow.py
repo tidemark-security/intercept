@@ -9,6 +9,7 @@ Provides endpoints for:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -16,11 +17,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import select, col
 from datetime import datetime, timedelta, timezone
 import httpx
+from sqlalchemy import delete as sql_delete, func
 
+from app.api.request_metadata import build_audit_context
 from app.api.routes.admin_auth import require_admin_user, require_authenticated_user, require_non_auditor_user
 from app.core.database import get_db
 from app.models.models import (
@@ -32,7 +35,6 @@ from app.models.models import (
     LangFlowSessionUpdate,
     LangFlowSessionRead,
     LangFlowMessage,
-    LangFlowMessageCreate,
     LangFlowMessageRead,
     UserAccount,
 )
@@ -52,11 +54,16 @@ from app.services.langflow_service import (
     LangFlowConfigurationError,
     LangFlowConnectionError,
     LangFlowError,
+    LangFlowSetupConfigurationError,
 )
 from app.services.api_key_service import api_key_service
 from app.services.audit_service import AuditContext
-from app.services.settings_service import SettingsService
-from app.services.sse_service import get_sse_service
+from app.services.settings_service import (
+    SettingConfigurationError,
+    SettingNotFoundError,
+    SettingsService,
+)
+from app.services.sse_service import stream_events
 import logging
 
 logger = logging.getLogger(__name__)
@@ -124,12 +131,6 @@ class StreamChatRequest(BaseModel):
     """Request to stream a chat message response."""
     message: str = Field(min_length=1, max_length=10000, description="Message content")
     context: Optional[Dict[str, Any]] = Field(default=None, description="Additional context")
-
-
-class SessionWithMessages(BaseModel):
-    """Session with message count."""
-    session: LangFlowSessionRead
-    message_count: int
 
 
 class TestConnectionResponse(BaseModel):
@@ -221,15 +222,28 @@ async def get_langflow_service(db: AsyncSession) -> LangFlowService:
         )
 
 
-def _build_audit_context(request: Request) -> AuditContext:
-    client_host: Optional[str] = None
-    if request.client:
-        client_host = request.client.host
-    return AuditContext(
-        ip_address=client_host,
-        user_agent=request.headers.get("user-agent"),
-        correlation_id=request.headers.get("x-request-id"),
+def _session_read(
+    session: LangFlowSession,
+    *,
+    message_count: int,
+) -> LangFlowSessionRead:
+    return LangFlowSessionRead.model_validate(
+        session,
+        update={"message_count": message_count},
     )
+
+
+def _message_read(message: LangFlowMessage) -> LangFlowMessageRead:
+    return LangFlowMessageRead.model_validate(message)
+
+
+async def _count_session_messages(db: AsyncSession, session_id: UUID) -> int:
+    result = await db.execute(
+        select(func.count(LangFlowMessage.id)).where(
+            LangFlowMessage.session_id == session_id
+        )
+    )
+    return result.scalar_one()
 
 
 def _record_setup_step(
@@ -254,14 +268,53 @@ def _get_langflow_asset_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "static" / "langflow"
 
 
+def _read_langflow_asset(asset_path: Path) -> Any:
+    return json.loads(asset_path.read_text(encoding="utf-8"))
+
+
+async def _load_langflow_asset(asset_path: Path) -> Any:
+    return await asyncio.to_thread(_read_langflow_asset, asset_path)
+
+
+async def _load_setup_flow_asset(asset_name: str) -> dict[str, Any]:
+    """Load and validate an admin-visible bundled setup asset."""
+    asset_path = _get_langflow_asset_dir() / asset_name
+    try:
+        payload = await _load_langflow_asset(asset_path)
+    except FileNotFoundError as exc:
+        raise LangFlowSetupConfigurationError(
+            f"Missing bundled Langflow asset: {asset_name}"
+        ) from exc
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise LangFlowSetupConfigurationError(
+            f"Bundled Langflow asset '{asset_name}' does not contain valid JSON"
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise LangFlowSetupConfigurationError(
+            f"Bundled Langflow asset '{asset_name}' did not contain a JSON object"
+        )
+
+    return payload
+
+
 def _derive_intercept_mcp_streamable_url(api_base_url: str) -> str:
     normalized = api_base_url.strip()
     if not normalized:
-        raise ValueError("backend_api_base_url must not be blank")
+        raise LangFlowSetupConfigurationError(
+            "backend_api_base_url must not be blank"
+        )
 
-    parsed = httpx.URL(normalized)
+    try:
+        parsed = httpx.URL(normalized)
+    except httpx.InvalidURL as exc:
+        raise LangFlowSetupConfigurationError(
+            "backend_api_base_url must be a valid absolute URL"
+        ) from exc
     if not parsed.scheme or not parsed.host:
-        raise ValueError("backend_api_base_url must be an absolute URL")
+        raise LangFlowSetupConfigurationError(
+            "backend_api_base_url must be an absolute URL"
+        )
 
     normalized_path = parsed.path.rstrip("/")
     for suffix in ("/api/v1", "/api"):
@@ -359,19 +412,6 @@ async def _ensure_langflow_nhi_account(
     return nhi_account, "created"
 
 
-def _build_api_key_response(api_key) -> ApiKeyRead:
-    return ApiKeyRead(
-        id=api_key.id,
-        user_id=api_key.user_id,
-        name=api_key.name,
-        prefix=api_key.prefix,
-        expires_at=api_key.expires_at,
-        last_used_at=api_key.last_used_at,
-        revoked_at=api_key.revoked_at,
-        created_at=api_key.created_at,
-    )
-
-
 async def _upsert_setting_value(
     settings_service: SettingsService,
     *,
@@ -381,17 +421,14 @@ async def _upsert_setting_value(
     audit_context: Optional[AuditContext],
 ) -> None:
     try:
-        await settings_service.update_setting(
+        await settings_service.update_setting_in_transaction(
             key,
             AppSettingUpdate(value=value),
             performed_by=performed_by,
             audit_context=audit_context,
         )
-    except ValueError as exc:
-        if "not found" not in str(exc):
-            raise
-
-        await settings_service.create_setting(
+    except SettingNotFoundError:
+        await settings_service.create_setting_in_transaction(
             AppSettingCreate(
                 key=key,
                 value=value,
@@ -497,7 +534,7 @@ async def setup_intercept_mcp_server(
     steps: list[LangFlowSetupStep] = []
     warnings: list[str] = []
     flow_assignments: dict[str, str] = {}
-    audit_context = _build_audit_context(request)
+    audit_context = build_audit_context(request)
     api_key_response: Optional[ApiKeyRead] = None
     nhi_user: Optional[UserAccount] = None
     mcp_server_url: Optional[str] = None
@@ -537,7 +574,7 @@ async def setup_intercept_mcp_server(
             created_by_user_id=current_user.id,
             context=audit_context,
         )
-        api_key_response = _build_api_key_response(api_key)
+        api_key_response = ApiKeyRead.model_validate(api_key)
         _record_setup_step(
             steps,
             step_id="api_key",
@@ -608,16 +645,7 @@ async def setup_intercept_mcp_server(
                 flows_by_endpoint[endpoint_name.strip()] = flow
 
         for flow_def in LANGFLOW_BUNDLED_FLOW_ASSETS:
-            asset_path = _get_langflow_asset_dir() / flow_def["asset_name"]
-            try:
-                raw_payload = json.loads(asset_path.read_text(encoding="utf-8"))
-            except FileNotFoundError as e:
-                raise LangFlowError(f"Missing bundled Langflow asset: {flow_def['asset_name']}") from e
-
-            if not isinstance(raw_payload, dict):
-                raise LangFlowError(
-                    f"Bundled Langflow asset '{flow_def['asset_name']}' did not contain a JSON object"
-                )
+            raw_payload = await _load_setup_flow_asset(flow_def["asset_name"])
 
             raw_payload = _replace_cached_intercept_mcp_server_url(raw_payload, mcp_server_url)
             sanitized_payload = langflow_service.sanitize_flow_payload(raw_payload)
@@ -715,13 +743,21 @@ async def setup_intercept_mcp_server(
             variable_name=LANGFLOW_SETUP_VARIABLE_NAME,
             flow_assignments=flow_assignments,
         )
-    except LangFlowConfigurationError as e:
+    except LangFlowError as e:
         message = str(e)
-    except (LangFlowError, ValueError) as e:
-        message = str(e)
-    except Exception as e:
-        logger.exception("Intercept MCP setup failed")
-        message = f"Intercept MCP setup failed: {str(e)}"
+        await db.rollback()
+        nhi_user = None
+        api_key_response = None
+        flow_assignments.clear()
+    except Exception:
+        await db.rollback()
+        raise
+    finally:
+        if langflow_service is not None:
+            try:
+                await langflow_service.close()
+            except Exception:
+                logger.exception("Failed to close LangFlow setup client")
 
     _record_setup_step(
         steps,
@@ -765,11 +801,11 @@ async def create_session(
     
     try:
         flow_id = await settings_service.get_flow_id_for_context(context_type)
-    except ValueError as e:
+    except SettingConfigurationError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
+            detail=str(exc),
+        ) from exc
     
     session = LangFlowSession(
         flow_id=flow_id,
@@ -779,11 +815,12 @@ async def create_session(
     )
     
     db.add(session)
+    await db.flush()
+    response = _session_read(session, message_count=0)
     await db.commit()
-    await db.refresh(session)
     
     logger.info(
-        f"Created LangFlow session",
+        "Created LangFlow session",
         extra={
             "session_id": str(session.id),
             "user_id": str(current_user.id),
@@ -791,10 +828,7 @@ async def create_session(
         }
     )
     
-    return LangFlowSessionRead(
-        **session.model_dump(),
-        message_count=0,
-    )
+    return response
 
 
 @router.get("/sessions", response_model=List[LangFlowSessionRead])
@@ -812,35 +846,28 @@ async def list_sessions(
     Supports pagination with skip and limit parameters. Admin users may provide
     a username query parameter to list sessions for a specific user.
     """
-    from sqlalchemy import func
-
     target_user = await resolve_target_chat_user(current_user, db, username)
-    
-    # Query sessions for current user with message counts
+
+    message_count = (
+        select(func.count(LangFlowMessage.id))
+        .where(LangFlowMessage.session_id == LangFlowSession.id)
+        .correlate(LangFlowSession)
+        .scalar_subquery()
+    )
     result = await db.execute(
-        select(LangFlowSession)
+        select(LangFlowSession, message_count.label("message_count"))
         .where(LangFlowSession.user_id == target_user.id)
         .order_by(col(LangFlowSession.updated_at).desc())
         .offset(skip)
         .limit(limit)
     )
-    sessions = result.scalars().all()
-    
-    # Get message counts for each session
-    session_reads = []
-    for session in sessions:
-        msg_result = await db.execute(
-            select(func.count(LangFlowMessage.id))
-            .where(LangFlowMessage.session_id == session.id)
-        )
-        message_count = msg_result.scalar() or 0
-        session_reads.append(LangFlowSessionRead(
-            **session.model_dump(),
-            message_count=message_count,
-        ))
+    session_reads = [
+        _session_read(session, message_count=count)
+        for session, count in result.all()
+    ]
     
     logger.info(
-        f"Listed LangFlow sessions",
+        "Listed LangFlow sessions",
         extra={
             "requesting_user_id": str(current_user.id),
             "target_user_id": str(target_user.id),
@@ -876,16 +903,8 @@ async def get_session(
         target_username=target_user.username,
     )
     
-    # Count messages
-    messages_result = await db.execute(
-        select(LangFlowMessage).where(LangFlowMessage.session_id == session_id)
-    )
-    message_count = len(messages_result.scalars().all())
-    
-    return LangFlowSessionRead(
-        **session.model_dump(),
-        message_count=message_count,
-    )
+    message_count = await _count_session_messages(db, session_id)
+    return _session_read(session, message_count=message_count)
 
 
 @router.patch("/sessions/{session_id}", response_model=LangFlowSessionRead)
@@ -913,12 +932,13 @@ async def update_session(
     if session_update.status in [SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.TIMEOUT]:
         if not session.completed_at:
             session.completed_at = datetime.now(timezone.utc)
-    
+
+    message_count = await _count_session_messages(db, session_id)
+    response = _session_read(session, message_count=message_count)
     await db.commit()
-    await db.refresh(session)
     
     logger.info(
-        f"Updated LangFlow session",
+        "Updated LangFlow session",
         extra={
             "session_id": str(session.id),
             "user_id": str(current_user.id),
@@ -926,16 +946,7 @@ async def update_session(
         }
     )
     
-    # Count messages
-    messages_result = await db.execute(
-        select(LangFlowMessage).where(LangFlowMessage.session_id == session_id)
-    )
-    message_count = len(messages_result.scalars().all())
-    
-    return LangFlowSessionRead(
-        **session.model_dump(),
-        message_count=message_count,
-    )
+    return response
 
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -953,10 +964,6 @@ async def delete_session(
     
     # Delete all messages first (cascade may not be set up)
     await db.execute(
-        select(LangFlowMessage).where(LangFlowMessage.session_id == session_id)
-    )
-    from sqlalchemy import delete as sql_delete
-    await db.execute(
         sql_delete(LangFlowMessage).where(LangFlowMessage.session_id == session_id)
     )
     
@@ -965,7 +972,7 @@ async def delete_session(
     await db.commit()
     
     logger.info(
-        f"Deleted LangFlow session",
+        "Deleted LangFlow session",
         extra={
             "session_id": str(session_id),
             "user_id": str(current_user.id),
@@ -1006,7 +1013,7 @@ async def get_session_messages(
     )
     messages = result.scalars().all()
     
-    return [LangFlowMessageRead(**msg.model_dump()) for msg in messages]
+    return [_message_read(message) for message in messages]
 
 
 @router.patch("/messages/{message_id}/feedback", response_model=LangFlowMessageRead)
@@ -1039,11 +1046,11 @@ async def set_message_feedback(
     # Update feedback
     message.feedback = request.feedback
     db.add(message)
+    response = _message_read(message)
     await db.commit()
-    await db.refresh(message)
     
     logger.info(
-        f"Set feedback on message",
+        "Set feedback on message",
         extra={
             "message_id": str(message_id),
             "feedback": request.feedback.value,
@@ -1051,7 +1058,7 @@ async def set_message_feedback(
         }
     )
     
-    return LangFlowMessageRead(**message.model_dump())
+    return response
 
 
 @router.delete("/messages/{message_id}/feedback", response_model=LangFlowMessageRead)
@@ -1083,18 +1090,18 @@ async def clear_message_feedback(
     # Clear feedback
     message.feedback = None
     db.add(message)
+    response = _message_read(message)
     await db.commit()
-    await db.refresh(message)
     
     logger.info(
-        f"Cleared feedback on message",
+        "Cleared feedback on message",
         extra={
             "message_id": str(message_id),
             "user_id": str(current_user.id),
         }
     )
     
-    return LangFlowMessageRead(**message.model_dump())
+    return response
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -1127,11 +1134,12 @@ async def send_chat_message(
         message_metadata={},
     )
     db.add(user_message)
+    await db.flush()
+    user_message_id = user_message.id
     await db.commit()
-    await db.refresh(user_message)
     
     logger.info(
-        f"Created user message",
+        "Created user message",
         extra={
             "message_id": str(user_message.id),
             "session_id": str(session.id),
@@ -1143,7 +1151,7 @@ async def send_chat_message(
     langflow_service = await get_langflow_service(db)
     
     try:
-        # Send message to LangFlow (non-streaming for now)
+        # Send the message through LangFlow's non-streaming endpoint.
         response = await langflow_service.send_message(
             flow_id=session.flow_id,
             message=chat_request.content,
@@ -1169,24 +1177,24 @@ async def send_chat_message(
             session.context = response["context"]
         
         session.updated_at = datetime.now(timezone.utc)
-        
+
+        chat_response = ChatResponse(
+            message_id=user_message_id,
+            session_id=session.id,
+            status="completed",
+            stream_url=None,  # Will be used for SSE in Phase 5
+        )
         await db.commit()
-        await db.refresh(assistant_message)
         
         logger.info(
-            f"Created assistant message",
+            "Created assistant message",
             extra={
                 "message_id": str(assistant_message.id),
                 "session_id": str(session.id),
             }
         )
         
-        return ChatResponse(
-            message_id=user_message.id,
-            session_id=session.id,
-            status="completed",
-            stream_url=None,  # Will be used for SSE in Phase 5
-        )
+        return chat_response
         
     except LangFlowConnectionError as e:
         logger.error(f"LangFlow connection error: {e}")
@@ -1226,7 +1234,7 @@ async def test_langflow_connection(
             ]
             configured_flows = {}
             for label, setting_key in configured_flow_settings:
-                value = await settings_service.get_typed_value(setting_key)
+                value = await settings_service.get(setting_key)
                 if isinstance(value, str) and value.strip():
                     configured_flows[label] = value.strip()
 
@@ -1295,32 +1303,6 @@ async def test_langflow_connection(
                 ),
             ],
         )
-    except Exception as e:
-        logger.error(f"Connection test error: {e}")
-        return TestConnectionResponse(
-            success=False,
-            message=f"Connection test failed: {str(e)}",
-            checks=[
-                LangFlowConnectionCheck(
-                    id="connectivity",
-                    label="Connectivity",
-                    success=False,
-                    message=f"Connection test failed: {str(e)}",
-                ),
-                LangFlowConnectionCheck(
-                    id="flow_listing",
-                    label="Authenticated flow listing",
-                    success=False,
-                    message=f"Connection test failed: {str(e)}",
-                ),
-                LangFlowConnectionCheck(
-                    id="configured_flows",
-                    label="Configured flow existence",
-                    success=False,
-                    message=f"Connection test failed: {str(e)}",
-                ),
-            ],
-        )
 
 
 @router.post("/stream/{session_id}")
@@ -1351,137 +1333,136 @@ async def stream_langflow_response(
             detail=f"Session is {session.status}, not ACTIVE"
         )
     
-    # Get services
+    stream_bind = db.bind
+    if stream_bind is None:
+        raise RuntimeError("The request database session is not bound")
+    stream_session_factory = async_sessionmaker(
+        stream_bind,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
     langflow_service = await get_langflow_service(db)
-    sse_service = get_sse_service()
-    
+    flow_id = session.flow_id
+    session_context = dict(session.context)
+    current_user_id = current_user.id
+
     async def event_generator():
         """Generate SSE events from LangFlow stream."""
         try:
-            # Create user message
-            user_message = LangFlowMessage(
-                session_id=session.id,
-                role=MessageRole.USER,
-                content=body.message,
-                message_metadata={},
-            )
-            db.add(user_message)
-            await db.commit()
-            await db.refresh(user_message)
-            
-            logger.info(
-                f"Starting LangFlow stream",
-                extra={
-                    "session_id": str(session.id),
-                    "user_id": str(current_user.id),
-                }
-            )
-            
-            # Accumulate assistant response
-            assistant_content = ""
-            
-            # Stream from LangFlow
-            async for chunk in langflow_service.stream_message(
-                flow_id=session.flow_id,
-                message=body.message,
-                session_id=session.id,
-                context=session.context,
-            ):
-                # LangFlow SSE events have multiple types:
-                # 1. {'event': 'add_message', 'data': {'sender': 'User'|'Machine', 'text': '...', 'properties': {'state': 'partial'|'complete'}}}
-                # 2. {'event': 'token', 'data': {'chunk': '...'}} - streaming tokens
-                # 3. {'event': 'end', 'data': {...}} - stream complete
-                
-                event_type = chunk.get("event", "")
-                event_data = chunk.get("data", {})
-                
-                # Handle token events - these are the actual streaming tokens
-                if event_type == "token":
-                    token_content = event_data.get("chunk", "")
-                    if token_content:
-                        assistant_content += token_content
-                        # Yield token as SSE event
-                        yield {
-                            "event": "message",
-                            "data": {
-                                "content": token_content,
-                                "partial": True,
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
+            async with stream_session_factory() as stream_db:
+                stream_session = await stream_db.get(LangFlowSession, session_id)
+                if stream_session is None:
+                    raise RuntimeError("LangFlow session no longer exists")
+
+                user_message = LangFlowMessage(
+                    session_id=session_id,
+                    role=MessageRole.USER,
+                    content=body.message,
+                    message_metadata={},
+                )
+                stream_db.add(user_message)
+                await stream_db.commit()
+
+                logger.info(
+                    "Starting LangFlow stream",
+                    extra={
+                        "session_id": str(session_id),
+                        "user_id": str(current_user_id),
+                    },
+                )
+
+                assistant_content = ""
+
+                async for chunk in langflow_service.stream_message(
+                    flow_id=flow_id,
+                    message=body.message,
+                    session_id=session_id,
+                    context=session_context,
+                ):
+                    # LangFlow SSE events have multiple types:
+                    # 1. {'event': 'add_message', 'data': {'sender': 'User'|'Machine', 'text': '...', 'properties': {'state': 'partial'|'complete'}}}
+                    # 2. {'event': 'token', 'data': {'chunk': '...'}} - streaming tokens
+                    # 3. {'event': 'end', 'data': {...}} - stream complete
+
+                    event_type = chunk.get("event", "")
+                    event_data = chunk.get("data", {})
+
+                    if event_type == "token":
+                        token_content = event_data.get("chunk", "")
+                        if token_content:
+                            assistant_content += token_content
+                            yield {
+                                "event": "message",
+                                "data": {
+                                    "content": token_content,
+                                    "partial": True,
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                                },
                             }
-                        }
-                    continue
-                
-                # Handle add_message events - skip User messages and partial Machine messages
-                if event_type == "add_message":
-                    sender = event_data.get("sender", "")
-                    if sender == "User":
-                        logger.debug(f"Skipping user message echo")
                         continue
-                    
-                    # Check if this is a complete message (not partial)
-                    properties = event_data.get("properties", {})
-                    state = properties.get("state", "")
-                    
-                    # When we get the complete message, use its text as the authoritative version
-                    # (it has proper formatting that may be lost in token accumulation)
-                    if state == "complete":
-                        complete_text = event_data.get("text", "")
-                        if complete_text:
-                            # Use the complete message text - it has proper formatting
-                            assistant_content = complete_text
-                    continue
-                
-                # Handle end event - stream is complete
-                if event_type == "end":
-                    logger.debug("Received end event from LangFlow")
-                    continue
-            
-            # Create assistant message with full content
-            assistant_message = LangFlowMessage(
-                session_id=session.id,
-                role=MessageRole.ASSISTANT,
-                content=assistant_content,
-                message_metadata={"streamed": True},
-            )
-            db.add(assistant_message)
-            
-            # Update session
-            session.updated_at = datetime.now(timezone.utc)
-            
-            await db.commit()
-            
-            logger.info(
-                f"Completed LangFlow stream",
-                extra={
-                    "session_id": str(session.id),
-                    "response_length": len(assistant_content),
+
+                    if event_type == "add_message":
+                        sender = event_data.get("sender", "")
+                        if sender == "User":
+                            logger.debug("Skipping user message echo")
+                            continue
+
+                        properties = event_data.get("properties", {})
+                        if properties.get("state", "") == "complete":
+                            complete_text = event_data.get("text", "")
+                            if complete_text:
+                                assistant_content = complete_text
+                        continue
+
+                    if event_type == "end":
+                        logger.debug("Received end event from LangFlow")
+                        continue
+
+                assistant_message = LangFlowMessage(
+                    session_id=session_id,
+                    role=MessageRole.ASSISTANT,
+                    content=assistant_content,
+                    message_metadata={"streamed": True},
+                )
+                stream_db.add(assistant_message)
+                stream_session.updated_at = datetime.now(timezone.utc)
+                await stream_db.commit()
+
+                logger.info(
+                    "Completed LangFlow stream",
+                    extra={
+                        "session_id": str(session_id),
+                        "response_length": len(assistant_content),
+                    },
+                )
+
+                yield {
+                    "event": "complete",
+                    "data": {
+                        "message_id": str(assistant_message.id),
+                        "content": assistant_content,
+                        "partial": False,
+                    },
                 }
+
+        except LangFlowError:
+            logger.warning(
+                "LangFlow stream failed",
+                extra={"session_id": str(session_id)},
             )
-            
-            # Send final event
-            yield {
-                "event": "complete",
-                "data": {
-                    "message_id": str(assistant_message.id),
-                    "content": assistant_content,
-                    "partial": False,
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in LangFlow stream: {e}")
             yield {
                 "event": "error",
                 "data": {
                     "error": "An error occurred while processing your message",
-                }
+                },
             }
-        finally:
-            await langflow_service.close()
-    
     # Return SSE response
     return StreamingResponse(
-        sse_service.stream_events(session_id, event_generator()),
+        stream_events(
+            session_id,
+            event_generator(),
+            on_close=langflow_service.close,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import json
 from typing import Any, Optional, cast
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from webauthn import (
     generate_authentication_options,
@@ -27,7 +28,7 @@ from webauthn.helpers.structs import (
 
 from app.core.settings_registry import get_local
 from app.models.enums import AccountType, UserStatus
-from app.models.models import AppSetting, PasskeyCredential, UserAccount, WebAuthnChallenge
+from app.models.models import PasskeyCredential, UserAccount, WebAuthnChallenge
 from app.services.settings_service import SettingsService
 
 
@@ -366,7 +367,7 @@ class PasskeyService:
 
         # Opportunistic cleanup
         await db.execute(
-            select(WebAuthnChallenge).where(cast(Any, WebAuthnChallenge.expires_at < now))
+            delete(WebAuthnChallenge).where(cast(Any, WebAuthnChallenge.expires_at < now))
         )
         return challenge_row
 
@@ -398,41 +399,39 @@ class PasskeyService:
         return challenge_row
 
     async def _load_config(self, db: AsyncSession) -> PasskeyConfig:
-        import json
-
         settings_service = SettingsService(db)  # type: ignore[arg-type]
 
-        rp_id = await settings_service.get_typed_value(
+        rp_id = await settings_service.get(
             "auth.passkeys.rp_id",
             default=(get_local("auth.session.cookie_domain") or "localhost"),
         )
-        rp_name = await settings_service.get_typed_value(
+        rp_name = await settings_service.get(
             "auth.passkeys.rp_name",
             default="Tidemark Intercept",
         )
         cors_origins_fallback = get_local("cors_origins", default=[])
-        expected_origins_raw = await settings_service.get_typed_value(
+        expected_origins_raw = await settings_service.get(
             "auth.passkeys.expected_origins",
             default=cors_origins_fallback,
         )
-        timeout_ms = await settings_service.get_typed_value("auth.passkeys.timeout_ms", default=60000)
-        challenge_ttl_seconds = await settings_service.get_typed_value(
+        timeout_ms = await settings_service.get("auth.passkeys.timeout_ms", default=60000)
+        challenge_ttl_seconds = await settings_service.get(
             "auth.passkeys.challenge_ttl_seconds",
             default=300,
         )
-        user_verification_raw = await settings_service.get_typed_value(
+        user_verification_raw = await settings_service.get(
             "auth.passkeys.user_verification",
             default="required",
         )
-        resident_key_raw = await settings_service.get_typed_value(
+        resident_key_raw = await settings_service.get(
             "auth.passkeys.resident_key",
             default="preferred",
         )
-        attestation_raw = await settings_service.get_typed_value(
+        attestation_raw = await settings_service.get(
             "auth.passkeys.attestation",
             default="none",
         )
-        attachment_raw = await settings_service.get_typed_value(
+        attachment_raw = await settings_service.get(
             "auth.passkeys.authenticator_attachment",
             default=None,
         )
@@ -457,7 +456,11 @@ class PasskeyService:
                     if origin.strip()
                 ]
         elif isinstance(expected_origins_raw, list):
-            expected_origins = [str(origin) for origin in expected_origins_raw if str(origin).strip()]
+            expected_origins = [
+                str(origin).strip()
+                for origin in expected_origins_raw
+                if str(origin).strip()
+            ]
         else:
             expected_origins = [
                 str(origin).strip()
@@ -470,24 +473,24 @@ class PasskeyService:
 
         try:
             user_verification = UserVerificationRequirement(str(user_verification_raw).lower())
-        except Exception:
+        except (TypeError, ValueError):
             user_verification = UserVerificationRequirement.REQUIRED
 
         try:
             resident_key = ResidentKeyRequirement(str(resident_key_raw).lower())
-        except Exception:
+        except (TypeError, ValueError):
             resident_key = ResidentKeyRequirement.PREFERRED
 
         try:
             attestation = AttestationConveyancePreference(str(attestation_raw).lower())
-        except Exception:
+        except (TypeError, ValueError):
             attestation = AttestationConveyancePreference.NONE
 
         attachment: Optional[AuthenticatorAttachment] = None
         if attachment_raw:
             try:
                 attachment = AuthenticatorAttachment(str(attachment_raw).lower())
-            except Exception:
+            except (TypeError, ValueError):
                 attachment = None
 
         return PasskeyConfig(
@@ -504,8 +507,6 @@ class PasskeyService:
 
     @staticmethod
     def _parse_options_json(options: Any) -> dict[str, Any]:
-        import json
-
         return json.loads(options_to_json(options))
 
     @staticmethod
@@ -545,7 +546,7 @@ class PasskeyService:
         for transport in transports:
             try:
                 values.append(AuthenticatorTransport(str(transport).lower()))
-            except Exception:
+            except (TypeError, ValueError):
                 continue
         return values
 

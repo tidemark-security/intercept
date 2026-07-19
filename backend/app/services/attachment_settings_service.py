@@ -50,24 +50,24 @@ async def get_attachment_limits(db: AsyncSession) -> AttachmentLimits:
     settings_service = SettingsService(db)  # type: ignore[arg-type]
 
     max_upload_size_mb = _coerce_positive_int(
-        await settings_service.get_typed_value("storage.max_upload_size_mb", 50),
+        await settings_service.get("storage.max_upload_size_mb", 50),
         50,
     )
     max_image_preview_size_mb = _coerce_positive_int(
-        await settings_service.get_typed_value("storage.max_image_preview_size_mb", 5),
+        await settings_service.get("storage.max_image_preview_size_mb", 5),
         5,
     )
     max_text_preview_size_mb = _coerce_positive_int(
-        await settings_service.get_typed_value("storage.max_text_preview_size_mb", 1),
+        await settings_service.get("storage.max_text_preview_size_mb", 1),
         1,
     )
     # Defaults come from the settings registry (storage.allowed_file_types /
     # storage.denied_file_types) when no env var or DB override is present.
     allowed_file_types = _coerce_str_list(
-        await settings_service.get_typed_value("storage.allowed_file_types", []),
+        await settings_service.get("storage.allowed_file_types", []),
     )
     denied_file_types = _coerce_str_list(
-        await settings_service.get_typed_value("storage.denied_file_types", []),
+        await settings_service.get("storage.denied_file_types", []),
     )
 
     return AttachmentLimits(

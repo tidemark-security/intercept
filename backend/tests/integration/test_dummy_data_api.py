@@ -98,5 +98,6 @@ async def test_populate_dummy_data_persists_generated_alerts(
 
     if link_alerts:
         assert all(alert.status == AlertStatus.ESCALATED for alert in linked_alerts)
+        assert all(alert.linked_at is not None for alert in linked_alerts)
     else:
         assert all(alert.case_id is None for alert in alerts)

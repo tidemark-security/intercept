@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from typing import List, Optional
 from uuid import UUID
 
@@ -8,7 +9,9 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
+from webauthn.helpers.exceptions import WebAuthnException
 
+from app.api.error_schemas import ValidationErrorResponse, ValidationField
 from app.api.route_utils import (
     generate_csrf_token,
     issue_authenticated_session_cookies,
@@ -16,7 +19,7 @@ from app.api.route_utils import (
     read_session_cookie,
     revoke_authenticated_session_cookies,
 )
-from app.core.settings_registry import get_local
+from app.api.request_metadata import build_request_metadata
 from app.core.database import get_db
 from app.models.enums import AccountType, SessionRevokedReason, UserRole, UserStatus
 from app.services.auth_service import (
@@ -27,7 +30,6 @@ from app.services.auth_service import (
     NHIPasswordLoginError,
     PasswordLoginDisabledError,
     PasswordPolicyViolation,
-    RequestMetadata,
     SessionNotFoundError,
     auth_service,
 )
@@ -38,6 +40,8 @@ from app.services.passkey_service import (
     PasskeyOwnershipError,
     passkey_service,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
@@ -51,16 +55,6 @@ class LoginRequest(BaseModel):
     """Request payload for username/password login."""
     username: str = Field(min_length=1, description="Username (case-insensitive)")
     password: str = Field(min_length=1, description="Password in plain text")
-
-
-class ValidationField(BaseModel):
-    field: str
-    error: str
-
-
-class ValidationErrorResponse(BaseModel):
-    message: str
-    fields: List[ValidationField] = Field(default_factory=list)
 
 
 class UserSummary(BaseModel):
@@ -161,14 +155,34 @@ async def _local_credential_management_allowed(db: AsyncSession, user: UserAccou
     return await oidc_service.is_password_login_allowed(db, user=user)
 
 
-def _build_metadata(request: Request) -> RequestMetadata:
-    client_host: Optional[str] = None
-    if request.client:
-        client_host = request.client.host
-    return RequestMetadata(
-        ip_address=client_host,
-        user_agent=request.headers.get("user-agent"),
-        correlation_id=request.headers.get("x-request-id"),
+async def _build_authenticated_login_response(
+    *,
+    response: Response,
+    db: AsyncSession,
+    result: LoginResult,
+) -> LoginResponse:
+    """Issue login cookies and build the shared successful-login payload."""
+    issue_authenticated_session_cookies(
+        response,
+        result.session_token,
+        result.session.expires_at,
+    )
+    return LoginResponse(
+        user=UserSummary(
+            id=result.user.id,
+            username=result.user.username,
+            role=result.user.role,
+            status=result.user.status,
+        ),
+        session=SessionSummary(
+            sessionId=result.session.id,
+            expiresAt=result.session.expires_at,
+        ),
+        mustChangePassword=result.user.must_change_password,
+        localCredentialManagementAllowed=await _local_credential_management_allowed(
+            db,
+            result.user,
+        ),
     )
 
 
@@ -209,14 +223,12 @@ async def login(
     - Rate limiting prevents brute-force attacks
     - All attempts are logged for audit
     """
-    metadata = _build_metadata(request)
+    metadata = build_request_metadata(request)
     client_ip = metadata.ip_address or "unknown"
     limiter_key = f"{body.username.strip().lower()}:{client_ip}"
 
-    allowed, retry_after = await auth_service.check_rate_limit(limiter_key)
+    allowed, retry_after = await auth_service.check_rate_limit(db, limiter_key)
     if not allowed:
-        if retry_after is None:
-            retry_after = get_local("auth.login.rate_limit_window_seconds")
         payload = ValidationErrorResponse(
             message="Too many login attempts. Please try again later.",
             fields=[],
@@ -241,24 +253,10 @@ async def login(
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
-    issue_authenticated_session_cookies(response, result.session_token, result.session.expires_at)
-
-    user_summary = UserSummary(
-        id=result.user.id,
-        username=result.user.username,
-        role=result.user.role,
-        status=result.user.status,
-    )
-    session_summary = SessionSummary(
-        sessionId=result.session.id,
-        expiresAt=result.session.expires_at,
-    )
-
-    return LoginResponse(
-        user=user_summary,
-        session=session_summary,
-        mustChangePassword=result.user.must_change_password,
-        localCredentialManagementAllowed=await _local_credential_management_allowed(db, result.user),
+    return await _build_authenticated_login_response(
+        response=response,
+        db=db,
+        result=result,
     )
 
 
@@ -285,7 +283,7 @@ async def logout(
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
-    metadata = _build_metadata(request)
+    metadata = build_request_metadata(request)
 
     try:
         await auth_service.logout(
@@ -375,11 +373,14 @@ async def finish_passkey_registration(
             message="Registration challenge is invalid or expired.",
             status_code=status.HTTP_400_BAD_REQUEST,
         )
-    except Exception:
+    except WebAuthnException:
         return _validation_error(
             message="Unable to verify passkey registration.",
             status_code=status.HTTP_400_BAD_REQUEST,
         )
+    except Exception:
+        logger.exception("Unexpected error finishing passkey registration")
+        raise
 
     return _to_passkey_read(passkey)
 
@@ -417,7 +418,7 @@ async def finish_passkey_authentication(
     db: AsyncSession = Depends(get_db),
 ):
     """Complete WebAuthn authentication and issue a normal application session."""
-    metadata = _build_metadata(request)
+    metadata = build_request_metadata(request)
 
     try:
         auth_result = await passkey_service.finish_authentication(
@@ -435,11 +436,14 @@ async def finish_passkey_authentication(
             message="Passkey credential not found.",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
-    except Exception:
+    except WebAuthnException:
         return _validation_error(
             message="Unable to verify passkey authentication.",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
+    except Exception:
+        logger.exception("Unexpected error finishing passkey authentication")
+        raise
 
     auth_login = await auth_service.create_session_for_user(
         db,
@@ -448,21 +452,10 @@ async def finish_passkey_authentication(
     )
     auth_result.user.last_login_at = datetime.now(timezone.utc)
 
-    issue_authenticated_session_cookies(response, auth_login.session_token, auth_login.session.expires_at)
-
-    return LoginResponse(
-        user=UserSummary(
-            id=auth_login.user.id,
-            username=auth_login.user.username,
-            role=auth_login.user.role,
-            status=auth_login.user.status,
-        ),
-        session=SessionSummary(
-            sessionId=auth_login.session.id,
-            expiresAt=auth_login.session.expires_at,
-        ),
-        mustChangePassword=auth_login.user.must_change_password,
-        localCredentialManagementAllowed=await _local_credential_management_allowed(db, auth_login.user),
+    return await _build_authenticated_login_response(
+        response=response,
+        db=db,
+        result=auth_login,
     )
 
 
@@ -633,7 +626,7 @@ async def change_password(
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
-    metadata = _build_metadata(request)
+    metadata = build_request_metadata(request)
 
     try:
         new_login = await auth_service.change_password(
@@ -677,9 +670,12 @@ async def reset_password_with_token(
     db: AsyncSession = Depends(get_db),
 ):
     """Set a new password using an admin-issued one-time reset token."""
-    from app.services.admin_auth_service import admin_auth_service
+    from app.services.admin_auth_service import (
+        AdminAuthValidationError,
+        admin_auth_service,
+    )
 
-    metadata = _build_metadata(request)
+    metadata = build_request_metadata(request)
 
     try:
         await admin_auth_service.consume_reset_token(
@@ -693,7 +689,7 @@ async def reset_password_with_token(
             message=str(exc),
             status_code=status.HTTP_400_BAD_REQUEST,
         )
-    except ValueError as exc:
+    except AdminAuthValidationError as exc:
         return _validation_error(
             message=str(exc),
             status_code=status.HTTP_400_BAD_REQUEST,

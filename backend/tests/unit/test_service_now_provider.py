@@ -1,6 +1,7 @@
 import httpx
 import pytest
 
+from app.core.settings_registry import get_setting_default
 from app.services.enrichment.base import EnrichmentResult
 from app.services.enrichment.providers.servicenow import servicenow_provider
 from app.services.enrichment.service import enrichment_service
@@ -12,6 +13,9 @@ class StubSettings:
 
     async def get(self, key: str, default: object = None) -> object:
         return self._values.get(key, default)
+
+    async def get_many(self, defaults: dict[str, object]) -> dict[str, object]:
+        return {key: self._values.get(key, default) for key, default in defaults.items()}
 
 
 class FakeResponse:
@@ -159,6 +163,35 @@ def test_can_enrich_and_build_cache_key() -> None:
     assert provider.build_cache_key({"type": "system", "hostname": "DC01"}) == "system:dc01"
     assert provider.build_cache_key({"type": "system", "hostname": "DC01", "cmdb_id": "CI-1"}) == "system:dc01"
     assert not provider.can_enrich({"type": "external_actor", "name": "Alice"})
+
+
+def test_normalize_config_uses_registered_provider_defaults() -> None:
+    provider = servicenow_provider.__class__()
+
+    normalized = provider.normalize_config(
+        {
+            "instance_url": "https://example.service-now.com",
+            "username": "svc-user",
+            "password": "svc-pass",
+        }
+    )
+
+    assert normalized["table"] == get_setting_default(
+        "enrichment.servicenow.table"
+    )
+    assert normalized["fields"] == get_setting_default(
+        "enrichment.servicenow.fields"
+    )
+    assert normalized["cmdb_fields"] == get_setting_default(
+        "enrichment.servicenow.cmdb_fields"
+    )
+    assert "sys_class_name" not in normalized["cmdb_fields"]
+    assert normalized["page_size"] == get_setting_default(
+        "enrichment.servicenow.page_size"
+    )
+    assert normalized["max_records"] == get_setting_default(
+        "enrichment.servicenow.max_records"
+    )
 
 
 @pytest.mark.asyncio

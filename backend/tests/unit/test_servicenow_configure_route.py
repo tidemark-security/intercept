@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -29,6 +30,15 @@ class FakeSettingsService:
         self.values[key] = setting_update.value
         return SimpleNamespace(id=1, key=key, value=setting_update.value)
 
+    async def upsert_setting_in_transaction(self, setting_create, **_kwargs):
+        key = setting_create.key
+        if key in self.values:
+            self.updated.append(key)
+        else:
+            self.created.append(key)
+        self.values[key] = setting_create.value
+        return SimpleNamespace(id=1, key=key, value=setting_create.value)
+
 
 def _request(**overrides):
     data = {
@@ -56,12 +66,15 @@ async def test_configure_service_now_uses_registered_servicenow_keys(monkeypatch
     FakeSettingsService.created = []
     FakeSettingsService.updated = []
     monkeypatch.setattr(enrichments, "SettingsService", FakeSettingsService)
+    enqueue_refresh = AsyncMock()
+    monkeypatch.setattr(enrichments, "enqueue_bulk_sync_schedule_refresh", enqueue_refresh)
+    db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
 
     response = await enrichments.configure_service_now(
         http_request=SimpleNamespace(client=None, headers={}),
         request=_request(),
         current_user=SimpleNamespace(username="admin"),
-        db=None,
+        db=db,
     )
 
     assert response.instance_url == "https://example.service-now.com"
@@ -75,6 +88,9 @@ async def test_configure_service_now_uses_registered_servicenow_keys(monkeypatch
     assert FakeSettingsService.values["enrichment.servicenow.cmdb_table_enabled"] == "true"
     assert "enrichment.servicenow.active_only" in FakeSettingsService.values
     assert "enrichment.service_now.enabled" not in FakeSettingsService.values
+    db.commit.assert_awaited_once_with()
+    db.rollback.assert_not_awaited()
+    enqueue_refresh.assert_awaited_once_with("servicenow")
 
 
 @pytest.mark.asyncio
@@ -88,6 +104,9 @@ async def test_configure_service_now_preserves_blank_saved_secrets(monkeypatch: 
     FakeSettingsService.created = []
     FakeSettingsService.updated = []
     monkeypatch.setattr(enrichments, "SettingsService", FakeSettingsService)
+    enqueue_refresh = AsyncMock()
+    monkeypatch.setattr(enrichments, "enqueue_bulk_sync_schedule_refresh", enqueue_refresh)
+    db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
 
     response = await enrichments.configure_service_now(
         http_request=SimpleNamespace(client=None, headers={}),
@@ -100,7 +119,7 @@ async def test_configure_service_now_preserves_blank_saved_secrets(monkeypatch: 
             ttl_seconds=7200,
         ),
         current_user=SimpleNamespace(username="admin"),
-        db=None,
+        db=db,
     )
 
     assert response.settings_saved == 21
@@ -110,6 +129,8 @@ async def test_configure_service_now_preserves_blank_saved_secrets(monkeypatch: 
     assert FakeSettingsService.values["enrichment.servicenow.auth_type"] == "oauth_password"
     assert FakeSettingsService.values["enrichment.servicenow.oauth_client_id"] == "oauth-client"
     assert FakeSettingsService.values["enrichment.servicenow.ttl_seconds"] == "7200"
+    db.commit.assert_awaited_once_with()
+    enqueue_refresh.assert_awaited_once_with("servicenow")
 
 
 @pytest.mark.asyncio

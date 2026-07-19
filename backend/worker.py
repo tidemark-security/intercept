@@ -16,8 +16,9 @@ Environment Variables:
 """
 import asyncio
 import logging
-import signal
 import os
+import signal
+import sys
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -26,7 +27,7 @@ from aiohttp import web
 # Configure logging before imports
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper()),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ from app.core.database import async_session_factory
 from app.core.security import initialize_encryption_service
 from app.services.enrichment.providers import register_providers
 from app.services.enrichment.bulk_sync_schedule_sync import sync_bulk_sync_schedules
+from app.services.maxmind_service import maxmind_service
 from app.services.task_queue_service import (
     initialize_task_queue_service,
     shutdown_task_queue_service,
@@ -44,24 +46,23 @@ from app.services.task_queue_service import (
 from app.services.tasks import register_task_handlers
 
 
+def _resolve_worker_id() -> str:
+    """Return the explicit worker ID, hostname fallback, or final default."""
+    return os.getenv("WORKER_ID") or os.getenv("HOSTNAME") or "worker-unknown"
+
+
+def _escape_prometheus_label(value: str) -> str:
+    """Escape a label value according to Prometheus text exposition rules."""
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
 # Global metrics
 class WorkerMetrics:
     """Track worker metrics for monitoring."""
     
-    def __init__(self):
+    def __init__(self) -> None:
         self.started_at: Optional[datetime] = None
-        self.tasks_processed: int = 0
-        self.tasks_failed: int = 0
-        self.last_task_at: Optional[datetime] = None
-        self.worker_id: str = os.getenv("HOSTNAME", os.getenv("WORKER_ID", "worker-unknown"))
-    
-    def record_success(self):
-        self.tasks_processed += 1
-        self.last_task_at = datetime.now(timezone.utc)
-    
-    def record_failure(self):
-        self.tasks_failed += 1
-        self.last_task_at = datetime.now(timezone.utc)
+        self.worker_id: str = _resolve_worker_id()
     
     def uptime_seconds(self) -> float:
         if self.started_at is None:
@@ -82,7 +83,7 @@ class WorkerHealthServer:
         GET /metrics - Prometheus-format metrics
     """
     
-    def __init__(self, port: int = 8001):
+    def __init__(self, port: int = 8001) -> None:
         self.port = port
         self.app = web.Application()
         self.app.router.add_get("/health", self.health)
@@ -90,7 +91,7 @@ class WorkerHealthServer:
         self.app.router.add_get("/metrics", self.metrics)
         self.runner: Optional[web.AppRunner] = None
     
-    async def health(self, request: web.Request) -> web.Response:
+    async def health(self, _request: web.Request) -> web.Response:
         """
         Liveness probe - is the worker process alive?
         
@@ -103,7 +104,7 @@ class WorkerHealthServer:
             "uptime_seconds": METRICS.uptime_seconds(),
         })
     
-    async def ready(self, request: web.Request) -> web.Response:
+    async def ready(self, _request: web.Request) -> web.Response:
         """
         Readiness probe - is the worker ready to process tasks?
         
@@ -121,32 +122,35 @@ class WorkerHealthServer:
                     "pool_size": service.get_pool_size(),
                 })
 
+            logger.debug("Worker readiness unavailable: %s", reason)
             return web.json_response(
                 {
                     "status": "not ready",
                     "worker_id": METRICS.worker_id,
-                    "reason": reason,
+                    "reason": "worker unavailable",
                 },
                 status=503,
             )
         except RuntimeError:
-            pass
+            logger.debug("Worker readiness requested before queue initialization")
         except Exception as e:
-            logger.warning(f"Readiness check failed: {e}")
+            logger.warning("Readiness check failed: %s", e)
         
         return web.json_response(
-            {"status": "not ready", "worker_id": METRICS.worker_id},
+            {
+                "status": "not ready",
+                "worker_id": METRICS.worker_id,
+                "reason": "worker unavailable",
+            },
             status=503
         )
     
-    async def metrics(self, request: web.Request) -> web.Response:
+    async def metrics(self, _request: web.Request) -> web.Response:
         """
         Prometheus-format metrics endpoint.
         
         Exposes:
             - worker_uptime_seconds: How long the worker has been running
-            - worker_tasks_processed_total: Counter of successful tasks
-            - worker_tasks_failed_total: Counter of failed tasks
             - worker_queue_size: Current number of pending jobs
             - worker_info: Worker metadata (labels)
         """
@@ -157,26 +161,18 @@ class WorkerHealthServer:
             if service.queries:
                 result = await service.queries.queue_size()
                 queue_size = result if result else 0
-        except Exception as e:
-            logger.debug(f"Could not get queue size: {e}")
+        except Exception as exc:
+            logger.debug("Could not get queue size: %s", exc)
         
         # Build Prometheus-format output
         lines = [
             "# HELP worker_info Worker information",
             "# TYPE worker_info gauge",
-            f'worker_info{{worker_id="{METRICS.worker_id}"}} 1',
+            f'worker_info{{worker_id="{_escape_prometheus_label(METRICS.worker_id)}"}} 1',
             "",
             "# HELP worker_uptime_seconds Worker uptime in seconds",
             "# TYPE worker_uptime_seconds gauge",
             f"worker_uptime_seconds {METRICS.uptime_seconds():.2f}",
-            "",
-            "# HELP worker_tasks_processed_total Total number of tasks processed successfully",
-            "# TYPE worker_tasks_processed_total counter",
-            f"worker_tasks_processed_total {METRICS.tasks_processed}",
-            "",
-            "# HELP worker_tasks_failed_total Total number of tasks that failed",
-            "# TYPE worker_tasks_failed_total counter",
-            f"worker_tasks_failed_total {METRICS.tasks_failed}",
             "",
             "# HELP worker_queue_size Current number of pending jobs in the queue",
             "# TYPE worker_queue_size gauge",
@@ -184,40 +180,53 @@ class WorkerHealthServer:
             "",
         ]
         
-        # Add last task timestamp if available
-        if METRICS.last_task_at:
-            lines.extend([
-                "# HELP worker_last_task_timestamp_seconds Unix timestamp of last processed task",
-                "# TYPE worker_last_task_timestamp_seconds gauge",
-                f"worker_last_task_timestamp_seconds {METRICS.last_task_at.timestamp():.0f}",
-                "",
-            ])
-        
         return web.Response(
             text="\n".join(lines),
             content_type="text/plain",
             charset="utf-8",
         )
     
-    async def start(self):
+    async def start(self) -> None:
         """Start the health server."""
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
         site = web.TCPSite(self.runner, "0.0.0.0", self.port)
         await site.start()
-        logger.info(f"Health server running on http://0.0.0.0:{self.port}")
-        logger.info(f"  - GET /health  (liveness probe)")
-        logger.info(f"  - GET /ready   (readiness probe)")
-        logger.info(f"  - GET /metrics (Prometheus metrics)")
+        logger.info("Health server running on http://0.0.0.0:%s", self.port)
+        logger.info("  - GET /health  (liveness probe)")
+        logger.info("  - GET /ready   (readiness probe)")
+        logger.info("  - GET /metrics (Prometheus metrics)")
     
-    async def stop(self):
+    async def stop(self) -> None:
         """Stop the health server."""
         if self.runner:
             await self.runner.cleanup()
             logger.info("Health server stopped")
 
 
-async def run_worker():
+async def _wait_for_shutdown_or_worker_failure(
+    stop_event: asyncio.Event,
+    worker_task: asyncio.Task[None],
+) -> None:
+    """Wait for shutdown while surfacing a failed queue worker to the process."""
+    shutdown_task = asyncio.create_task(stop_event.wait(), name="worker-shutdown-wait")
+    try:
+        done, _ = await asyncio.wait(
+            {shutdown_task, worker_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if worker_task in done:
+            await worker_task
+    finally:
+        if not shutdown_task.done():
+            shutdown_task.cancel()
+            try:
+                await shutdown_task
+            except asyncio.CancelledError:
+                pass
+
+
+async def run_worker() -> None:
     """
     Main worker entry point.
     
@@ -231,13 +240,13 @@ async def run_worker():
     health_port = int(get_local("worker.health_port"))
     
     METRICS.started_at = datetime.now(timezone.utc)
-    METRICS.worker_id = os.getenv("HOSTNAME", os.getenv("WORKER_ID", "worker-unknown"))
+    METRICS.worker_id = _resolve_worker_id()
     
     logger.info("=" * 60)
-    logger.info(f"Starting pgqueuer worker")
-    logger.info(f"  Worker ID:    {METRICS.worker_id}")
-    logger.info(f"  Concurrency:  {concurrency}")
-    logger.info(f"  Health Port:  {health_port}")
+    logger.info("Starting pgqueuer worker")
+    logger.info("  Worker ID:    %s", METRICS.worker_id)
+    logger.info("  Concurrency:  %s", concurrency)
+    logger.info("  Health Port:  %s", health_port)
     logger.info("=" * 60)
     
     # Start health server first (so container shows as starting)
@@ -264,28 +273,28 @@ async def run_worker():
             await sync_bulk_sync_schedules(db)
         
         # Start processing jobs
-        logger.info(f"Starting job processing (concurrency={concurrency})...")
-        await service.start_worker(concurrency=concurrency)
+        logger.info("Starting job processing (concurrency=%s)...", concurrency)
+        worker_task = await service.start_worker(concurrency=concurrency)
         
         logger.info("✅ Worker is ready and processing tasks")
         
         # Set up graceful shutdown
         stop_event = asyncio.Event()
         
-        def handle_shutdown_signal():
+        def handle_shutdown_signal() -> None:
             logger.info("Shutdown signal received, stopping gracefully...")
             stop_event.set()
         
         # Register signal handlers
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, handle_shutdown_signal)
         
         # Wait until shutdown signal
-        await stop_event.wait()
+        await _wait_for_shutdown_or_worker_failure(stop_event, worker_task)
         
-    except Exception as e:
-        logger.error(f"Worker failed to start: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Worker failed to start")
         raise
     
     finally:
@@ -294,23 +303,31 @@ async def run_worker():
         
         try:
             await shutdown_task_queue_service()
-        except Exception as e:
-            logger.warning(f"Error during task queue shutdown: {e}")
+        except Exception:
+            logger.exception("Error during task queue shutdown")
+
+        try:
+            await maxmind_service.close_readers()
+        except Exception:
+            logger.exception("Error closing MaxMind readers")
+
+        try:
+            await health_server.stop()
+        except Exception:
+            logger.exception("Error stopping health server")
         
-        await health_server.stop()
-        
-        logger.info(f"Worker stopped. Processed {METRICS.tasks_processed} tasks, {METRICS.tasks_failed} failures.")
+        logger.info("Worker stopped")
 
 
-def main():
+def main() -> None:
     """Entry point for the worker process."""
     try:
         asyncio.run(run_worker())
     except KeyboardInterrupt:
         logger.info("Worker interrupted by user")
-    except Exception as e:
-        logger.error(f"Worker crashed: {e}", exc_info=True)
-        exit(1)
+    except Exception:
+        logger.exception("Worker crashed")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

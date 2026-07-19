@@ -7,6 +7,7 @@ import pytest
 from app.models.enums import CaseRunbookStatus, PICERLStage, Priority
 from app.models.models import Case, CaseRunbook, Task, RunbookTaskDefinition, RunbookTaskOverride
 from app.services.case_runbook_planner import plan_case_runbook_application
+from app.services.case_runbook_validation import CaseRunbookValidationError
 
 
 def _runbook() -> CaseRunbook:
@@ -39,7 +40,7 @@ def test_planner_rejects_no_selected_tasks() -> None:
     case = Case(title="Case", priority=Priority.MEDIUM, created_by="analyst")
     applied_at = datetime(2026, 6, 21, 1, 2, 3, tzinfo=timezone.utc)
 
-    with pytest.raises(ValueError, match="at least one"):
+    with pytest.raises(CaseRunbookValidationError, match="at least one"):
         plan_case_runbook_application(
             case=case,
             runbook=_runbook(),

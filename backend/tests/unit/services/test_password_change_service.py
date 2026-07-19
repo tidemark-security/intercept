@@ -14,11 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import SessionRevokedReason, UserRole, UserStatus
 from app.models.models import AuthSession, UserAccount
+from app.services.audit_service import AuditContext
 from app.services.auth_service import (
     AuthService,
     InvalidCredentialsError,
     PasswordPolicyViolation,
-    RequestMetadata,
     SessionNotFoundError,
 )
 from app.services.security.password_hasher import PasswordHasher
@@ -128,7 +128,7 @@ async def test_change_password_verifies_current_password(
             session_token="valid_token",
             current_password="OldPassword123!",
             new_password="NewSecure!Pass456",
-            metadata=RequestMetadata(),
+            metadata=AuditContext(),
         )
 
         # Verify commit was called
@@ -150,7 +150,7 @@ async def test_change_password_rejects_incorrect_current_password(
                 session_token="valid_token",
                 current_password="WrongPassword!",
                 new_password="NewSecure!Pass456",
-                metadata=RequestMetadata(),
+                metadata=AuditContext(),
             )
 
         # Verify commit was NOT called
@@ -173,7 +173,7 @@ async def test_change_password_enforces_minimum_length(
                 session_token="valid_token",
                 current_password="OldPassword123!",
                 new_password="Short1!",  # Only 7 characters
-                metadata=RequestMetadata(),
+                metadata=AuditContext(),
             )
 
 
@@ -194,7 +194,7 @@ async def test_change_password_enforces_complexity_requirements(
                 session_token="valid_token",
                 current_password="OldPassword123!",
                 new_password="nouppercase123!",
-                metadata=RequestMetadata(),
+                metadata=AuditContext(),
             )
 
         # Missing lowercase
@@ -204,7 +204,7 @@ async def test_change_password_enforces_complexity_requirements(
                 session_token="valid_token",
                 current_password="OldPassword123!",
                 new_password="NOLOWERCASE123!",
-                metadata=RequestMetadata(),
+                metadata=AuditContext(),
             )
 
         # Missing number
@@ -214,7 +214,7 @@ async def test_change_password_enforces_complexity_requirements(
                 session_token="valid_token",
                 current_password="OldPassword123!",
                 new_password="NoNumbersHere!",
-                metadata=RequestMetadata(),
+                metadata=AuditContext(),
             )
 
         # Missing special character
@@ -224,7 +224,7 @@ async def test_change_password_enforces_complexity_requirements(
                 session_token="valid_token",
                 current_password="OldPassword123!",
                 new_password="NoSpecialChar123",
-                metadata=RequestMetadata(),
+                metadata=AuditContext(),
             )
 
 
@@ -264,7 +264,7 @@ async def test_change_password_rotates_current_session(
             session_token="valid_token",
             current_password="OldPassword123!",
             new_password="NewSecure!Pass456",
-            metadata=RequestMetadata(),
+            metadata=AuditContext(),
         )
 
         assert sample_session.revoked_at is not None
@@ -319,7 +319,7 @@ async def test_change_password_revokes_other_sessions(
             session_token="valid_token",
             current_password="OldPassword123!",
             new_password="NewSecure!Pass456",
-            metadata=RequestMetadata(),
+            metadata=AuditContext(),
         )
 
         # Verify other sessions were revoked with correct reason
@@ -359,7 +359,7 @@ async def test_change_password_updates_user_fields(
             session_token="valid_token",
             current_password="OldPassword123!",
             new_password="NewSecure!Pass456",
-            metadata=RequestMetadata(),
+            metadata=AuditContext(),
         )
 
         # Verify password hash was updated
@@ -399,7 +399,7 @@ async def test_change_password_requires_valid_session(
                 session_token="invalid_token",
                 current_password="OldPassword123!",
                 new_password="NewSecure!Pass456",
-                metadata=RequestMetadata(),
+                metadata=AuditContext(),
             )
 
 
@@ -419,7 +419,7 @@ async def test_change_password_calls_audit_logging(
     mock_result.scalars.return_value.all.return_value = []
     mock_db.execute.return_value = mock_result
 
-    metadata = RequestMetadata(
+    metadata = AuditContext(
         ip_address="192.168.1.100",
         user_agent="TestAgent/1.0",
         correlation_id="test-correlation-123",

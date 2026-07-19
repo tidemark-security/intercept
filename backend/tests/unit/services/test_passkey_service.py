@@ -1,8 +1,11 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import uuid4
 
 from app.models.enums import UserRole, UserStatus
-from app.models.models import UserAccount
+from sqlmodel import select
+
+from app.models.models import UserAccount, WebAuthnChallenge
 from app.services.passkey_service import PasskeyCredentialNotFoundError, PasskeyService
 import pytest
 
@@ -45,7 +48,7 @@ def test_extract_transports_falls_back_to_platform_attachment() -> None:
 async def test_load_config_falls_back_to_cors_origins(monkeypatch) -> None:
     service = PasskeyService()
 
-    async def _fake_get_typed_value(_self, key: str, default=None):
+    async def _fake_get(_self, key: str, default=None):
         if key == "auth.passkeys.expected_origins":
             return None
         return default
@@ -58,8 +61,8 @@ async def test_load_config_falls_back_to_cors_origins(monkeypatch) -> None:
         return default
 
     monkeypatch.setattr(
-        "app.services.passkey_service.SettingsService.get_typed_value",
-        _fake_get_typed_value,
+        "app.services.passkey_service.SettingsService.get",
+        _fake_get,
     )
     monkeypatch.setattr("app.services.passkey_service.get_local", _fake_get_local)
 
@@ -73,7 +76,7 @@ async def test_load_config_falls_back_to_cors_origins(monkeypatch) -> None:
 async def test_load_config_parses_json_string_expected_origins(monkeypatch) -> None:
     service = PasskeyService()
 
-    async def _fake_get_typed_value(_self, key: str, default=None):
+    async def _fake_get(_self, key: str, default=None):
         if key == "auth.passkeys.expected_origins":
             return '["https://one.example.com", "https://two.example.com"]'
         return default
@@ -86,8 +89,8 @@ async def test_load_config_parses_json_string_expected_origins(monkeypatch) -> N
         return default
 
     monkeypatch.setattr(
-        "app.services.passkey_service.SettingsService.get_typed_value",
-        _fake_get_typed_value,
+        "app.services.passkey_service.SettingsService.get",
+        _fake_get,
     )
     monkeypatch.setattr("app.services.passkey_service.get_local", _fake_get_local)
 
@@ -97,6 +100,63 @@ async def test_load_config_parses_json_string_expected_origins(monkeypatch) -> N
         "https://one.example.com",
         "https://two.example.com",
     ]
+
+
+@pytest.mark.asyncio
+async def test_load_config_normalizes_list_origins(monkeypatch) -> None:
+    service = PasskeyService()
+
+    async def _fake_get(_self, key: str, default=None):
+        if key == "auth.passkeys.expected_origins":
+            return [" https://one.example.com ", "", "https://two.example.com"]
+        return default
+
+    monkeypatch.setattr(
+        "app.services.passkey_service.SettingsService.get",
+        _fake_get,
+    )
+    monkeypatch.setattr(
+        "app.services.passkey_service.get_local",
+        lambda key, default=None: "example.com" if key == "auth.session.cookie_domain" else default,
+    )
+
+    config = await service._load_config(db=None)  # type: ignore[arg-type]
+
+    assert config.expected_origins == [
+        "https://one.example.com",
+        "https://two.example.com",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_challenge_deletes_expired_rows(session_maker: Any) -> None:
+    now = datetime.now(timezone.utc)
+    expired = WebAuthnChallenge(
+        challenge="expired",
+        flow_type="authentication",
+        expires_at=now - timedelta(minutes=1),
+    )
+    active = WebAuthnChallenge(
+        challenge="active",
+        flow_type="authentication",
+        expires_at=now + timedelta(minutes=5),
+    )
+
+    async with session_maker() as session:
+        session.add_all([expired, active])
+        await session.commit()
+
+        created = await PasskeyService()._create_challenge(
+            session,
+            challenge="new",
+            flow_type="authentication",
+            ttl_seconds=300,
+        )
+        await session.commit()
+        challenges = (await session.execute(select(WebAuthnChallenge))).scalars().all()
+
+    assert {challenge.challenge for challenge in challenges} == {"active", "new"}
+    assert created.expires_at > now
 
 
 @pytest.mark.asyncio

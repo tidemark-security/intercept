@@ -4,37 +4,72 @@ Manages CRUD operations for TriageRecommendation records and handles
 the recommendation acceptance/rejection workflow.
 """
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
-from sqlmodel import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import HTTPException
+from enum import Enum
+import logging
+import math
+from typing import Any, Dict, List, Optional, TypeVar
 
+import asyncpg
+from pgqueuer.errors import DuplicateJobError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import select
+
+from app.core.entity_ids import ALERT_PREFIX, CASE_PREFIX, format_entity_id
 from app.models.models import (
-    TriageRecommendation, Alert, CaseRunbook, Task, TaskCreate
+    TriageRecommendation,
+    TriageRecommendationRead,
+    Alert,
+    CaseRunbook,
+    Task,
+    TaskCreate,
 )
 from app.models.enums import (
-    RecommendationStatus, TriageDisposition, AlertStatus, CaseRunbookStatus, Priority, TaskStatus,
-    RejectionCategory, RealtimeEventType
+    AlertStatus,
+    CaseRunbookStatus,
+    Priority,
+    RealtimeEventType,
+    RecommendationStatus,
+    RejectionCategory,
+    TaskStatus,
+    TriageDisposition,
 )
-from app.services.case_runbook_service import case_runbook_service
 from app.services.alert_triage_apply_service import (
+    CLOSED_ALERT_STATUSES,
     apply_triage_state,
     create_case_from_alert,
     mark_alert_escalated,
 )
-from app.services.timeline_service import timeline_service
+from app.services.case_runbook_service import case_runbook_service
+from app.services.committed_response import reset_post_commit_session
 from app.services.realtime_service import emit_event
-from app.services.tag_filter_utils import merge_persisted_tags, normalize_persisted_tags
+from app.services.tag_filter_utils import (
+    merge_persisted_tags,
+    normalize_persisted_tags,
+    persisted_tag_delta,
+)
+from app.services.timeline_service import timeline_service
 
 
-CLOSED_ALERT_STATUSES = {
-    AlertStatus.CLOSED_TP,
-    AlertStatus.CLOSED_BP,
-    AlertStatus.CLOSED_FP,
-    AlertStatus.CLOSED_UNRESOLVED,
-    AlertStatus.CLOSED_DUPLICATE,
-}
+logger = logging.getLogger(__name__)
+
+
+class TriageRecommendationError(ValueError):
+    """Base class for expected triage recommendation rejections."""
+
+
+class TriageRecommendationValidationError(TriageRecommendationError):
+    """Raised when recommendation input violates the triage contract."""
+
+
+class TriageRecommendationNotFoundError(TriageRecommendationError):
+    """Raised when a requested alert or recommendation does not exist."""
+
+
+class TriageRecommendationConflictError(TriageRecommendationError):
+    """Raised when current state prevents a recommendation operation."""
+
 
 DISPOSITION_TO_CLOSED_STATUS: Dict[TriageDisposition, AlertStatus] = {
     TriageDisposition.FALSE_POSITIVE: AlertStatus.CLOSED_FP,
@@ -58,23 +93,85 @@ DISPOSITION_TO_CANONICAL_STATUS: Dict[TriageDisposition, AlertStatus] = {
 }
 
 
-def _parse_triage_disposition(value: Any) -> TriageDisposition:
-    raw_value = value.value if hasattr(value, "value") else value
+EnumT = TypeVar("EnumT", bound=Enum)
+
+
+def _parse_enum(value: Any, enum_type: type[EnumT], field_name: str) -> EnumT:
+    raw_value = value.value if isinstance(value, Enum) else value
     try:
-        return TriageDisposition(raw_value)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid disposition: {raw_value}") from exc
+        return enum_type(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise TriageRecommendationValidationError(
+            f"Invalid {field_name}: {raw_value}"
+        ) from exc
+
+
+def _normalize_confidence(value: Any) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError) as exc:
+        raise TriageRecommendationValidationError(
+            f"Invalid confidence: {value}"
+        ) from exc
+    if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+        raise TriageRecommendationValidationError(f"Invalid confidence: {value}")
+    return confidence
+
+
+@dataclass(frozen=True)
+class _AlertState:
+    status: Optional[AlertStatus]
+    priority: Optional[Priority]
+    assignee: Optional[str]
+    tags: List[str]
+    case_id: Optional[int]
+
+
+@dataclass(frozen=True)
+class AcceptRecommendationResult:
+    """Committed result of accepting a triage recommendation."""
+
+    recommendation: TriageRecommendationRead
+    case_id: Optional[int]
+    tasks_created: int
+
+
+@dataclass(frozen=True)
+class AcceptRecommendationOptions:
+    """Analyst-selected patches to apply while accepting a recommendation."""
+
+    apply_status: bool = True
+    apply_priority: bool = True
+    apply_assignee: bool = True
+    apply_tags: bool = True
+    case_runbook_id: Optional[int] = None
+    skip_case_runbook: bool = False
+
+    def __post_init__(self) -> None:
+        if self.case_runbook_id is not None and self.skip_case_runbook:
+            raise TriageRecommendationValidationError(
+                "case_runbook_id and skip_case_runbook are mutually exclusive"
+            )
+
+
+def _snapshot_alert(alert: Alert) -> _AlertState:
+    return _AlertState(
+        status=alert.status,
+        priority=alert.priority,
+        assignee=alert.assignee,
+        tags=list(alert.tags or []),
+        case_id=alert.case_id,
+    )
+
+
+def _parse_triage_disposition(value: Any) -> TriageDisposition:
+    return _parse_enum(value, TriageDisposition, "disposition")
 
 
 def _validate_suggested_status(value: Any) -> None:
     if value is None:
         return
-
-    raw_value = value.value if hasattr(value, "value") else value
-    try:
-        AlertStatus(raw_value)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid suggested_status: {raw_value}") from exc
+    _parse_enum(value, AlertStatus, "suggested_status")
 
 
 def normalize_recommendation_contract(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -82,20 +179,26 @@ def normalize_recommendation_contract(data: Dict[str, Any]) -> Dict[str, Any]:
     normalized = dict(data)
     disposition = _parse_triage_disposition(data.get("disposition"))
     _validate_suggested_status(data.get("suggested_status"))
+    suggested_priority = data.get("suggested_priority")
+    if suggested_priority is not None:
+        normalized["suggested_priority"] = _parse_enum(
+            suggested_priority,
+            Priority,
+            "suggested_priority",
+        ).value
+    normalized["confidence"] = _normalize_confidence(data.get("confidence", 0.0))
 
     should_escalate = disposition in ESCALATING_TRIAGE_DISPOSITIONS
     recommended_actions = normalized.get("recommended_actions") or []
     recommended_case_runbook_id = normalized.get("recommended_case_runbook_id")
 
     if recommended_actions and recommended_case_runbook_id is not None:
-        raise HTTPException(
-            status_code=400,
-            detail="recommended_case_runbook_id and recommended_actions are mutually exclusive",
+        raise TriageRecommendationValidationError(
+            "recommended_case_runbook_id and recommended_actions are mutually exclusive"
         )
     if (recommended_actions or recommended_case_runbook_id is not None) and not should_escalate:
-        raise HTTPException(
-            status_code=400,
-            detail="Dismissal recommendations cannot include work recommendations",
+        raise TriageRecommendationValidationError(
+            "Dismissal recommendations cannot include work recommendations"
         )
 
     normalized["disposition"] = disposition.value
@@ -104,55 +207,151 @@ def normalize_recommendation_contract(data: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
-def validate_recommendation_contract(data: Dict[str, Any]) -> None:
-    normalize_recommendation_contract(data)
+def get_effective_suggested_status(
+    recommendation: TriageRecommendation,
+) -> Optional[AlertStatus]:
+    return recommendation.suggested_status or DISPOSITION_TO_CLOSED_STATUS.get(
+        recommendation.disposition
+    )
 
 
-def get_effective_suggested_status(recommendation: TriageRecommendation) -> Optional[AlertStatus]:
-    return recommendation.suggested_status or DISPOSITION_TO_CLOSED_STATUS.get(recommendation.disposition)
+def _reset_for_enqueue(
+    recommendation: TriageRecommendation,
+    *,
+    enqueued_by: str,
+    queued_at: datetime,
+) -> None:
+    """Reset a recommendation row to the canonical queued placeholder state."""
+    recommendation.disposition = TriageDisposition.UNKNOWN
+    recommendation.confidence = 0.0
+    recommendation.reasoning_bullets = []
+    recommendation.recommended_actions = []
+    recommendation.recommended_case_runbook_id = None
+    recommendation.suggested_status = None
+    recommendation.suggested_priority = None
+    recommendation.suggested_assignee = None
+    recommendation.suggested_tags_add = []
+    recommendation.suggested_tags_remove = []
+    recommendation.request_escalate_to_case = False
+    recommendation.applied_context_entries = []
+    recommendation.created_by = enqueued_by
+    recommendation.created_at = queued_at
+    recommendation.status = RecommendationStatus.QUEUED
+    recommendation.reviewed_by = None
+    recommendation.reviewed_at = None
+    recommendation.rejection_category = None
+    recommendation.rejection_reason = None
+    recommendation.applied_changes = []
+    recommendation.error_message = None
+
+
+def _pending_recommendation_values(
+    data: Dict[str, Any],
+    *,
+    created_by: str,
+    created_at: datetime,
+    default_context_entries: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Build the canonical mutable state for a newly pending recommendation."""
+    return {
+        "disposition": TriageDisposition(data["disposition"]),
+        "confidence": data["confidence"],
+        "reasoning_bullets": data.get("reasoning_bullets", []),
+        "recommended_actions": data.get("recommended_actions", []),
+        "recommended_case_runbook_id": data.get("recommended_case_runbook_id"),
+        "suggested_status": AlertStatus(data["suggested_status"]),
+        "suggested_priority": (
+            Priority(data["suggested_priority"])
+            if data.get("suggested_priority")
+            else None
+        ),
+        "suggested_assignee": data.get("suggested_assignee"),
+        "suggested_tags_add": normalize_persisted_tags(
+            data.get("suggested_tags_add", [])
+        ),
+        "suggested_tags_remove": normalize_persisted_tags(
+            data.get("suggested_tags_remove", [])
+        ),
+        "request_escalate_to_case": data.get("request_escalate_to_case", False),
+        "applied_context_entries": data.get(
+            "applied_context_entries",
+            default_context_entries,
+        ),
+        "created_by": created_by,
+        "created_at": created_at,
+        "status": RecommendationStatus.PENDING,
+        "reviewed_by": None,
+        "reviewed_at": None,
+        "rejection_category": None,
+        "rejection_reason": None,
+        "applied_changes": [],
+        "error_message": None,
+    }
+
+
+async def _lock_alert(db: AsyncSession, alert_id: int) -> Optional[Alert]:
+    result = await db.execute(
+        select(Alert)
+        .where(Alert.id == alert_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _lock_acceptance_state(
+    db: AsyncSession,
+    alert_id: int,
+) -> tuple[Alert, TriageRecommendation]:
+    """Lock mutable acceptance state in the shared Alert-then-child order."""
+    if await get_by_alert_id(db, alert_id) is None:
+        raise TriageRecommendationNotFoundError(
+            f"No triage recommendation found for alert {alert_id}"
+        )
+
+    alert = await _lock_alert(db, alert_id)
+    if alert is None:
+        raise TriageRecommendationNotFoundError(f"Alert {alert_id} not found")
+
+    recommendation = await get_by_alert_id(db, alert_id, for_update=True)
+    if recommendation is None:
+        raise TriageRecommendationNotFoundError(
+            f"No triage recommendation found for alert {alert_id}"
+        )
+    return alert, recommendation
 
 
 def _build_state_change_note(
-    reviewed_by: str,
-    before_status: Optional[AlertStatus],
-    after_status: Optional[AlertStatus],
-    before_priority: Optional[Priority],
-    after_priority: Optional[Priority],
-    before_assignee: Optional[str],
-    after_assignee: Optional[str],
-    before_tags: List[str],
-    after_tags: List[str],
-    before_case_id: Optional[int],
-    after_case_id: Optional[int],
+    before: _AlertState,
+    alert: Alert,
 ) -> Optional[str]:
     changes: List[str] = []
 
-    if after_status != before_status and after_status is not None:
-        changes.append(f"set status to {after_status.value}")
+    if alert.status != before.status and alert.status is not None:
+        changes.append(f"set status to {alert.status.value}")
 
-    if after_priority != before_priority and after_priority is not None:
-        changes.append(f"set priority to `{after_priority.value}`")
+    if alert.priority != before.priority and alert.priority is not None:
+        changes.append(f"set priority to `{alert.priority.value}`")
 
-    if after_assignee != before_assignee and after_assignee:
-        changes.append(f"set assignee to `{after_assignee}`")
+    if alert.assignee != before.assignee and alert.assignee:
+        changes.append(f"set assignee to `{alert.assignee}`")
 
-    before_tags_set = set(before_tags)
-    after_tags_set = set(after_tags)
-    added_tags = sorted(after_tags_set - before_tags_set)
-    removed_tags = sorted(before_tags_set - after_tags_set)
+    added_tags, removed_tags = persisted_tag_delta(before.tags, alert.tags)
 
     if added_tags:
         changes.append(f"added tags: {', '.join(f'`{tag}`' for tag in added_tags)}")
     if removed_tags:
         changes.append(f"removed tags: {', '.join(f'`{tag}`' for tag in removed_tags)}")
 
-    if after_case_id != before_case_id and after_case_id is not None:
-        changes.append(f"linked alert to case CAS-{after_case_id:07d}")
+    if alert.case_id != before.case_id and alert.case_id is not None:
+        changes.append(
+            f"linked alert to case {format_entity_id(alert.case_id, CASE_PREFIX)}"
+        )
 
     if not changes:
         return None
 
-    return f"accepted AI recommendation and " + "; ".join(changes) + "."
+    return "accepted AI recommendation and " + "; ".join(changes) + "."
 
 
 async def get_by_alert_id(
@@ -162,11 +361,11 @@ async def get_by_alert_id(
     for_update: bool = False,
 ) -> Optional[TriageRecommendation]:
     """Get current triage recommendation for an alert.
-    
+
     Args:
         db: Database session
         alert_id: Alert ID
-        
+
     Returns:
         TriageRecommendation if exists, None otherwise
     """
@@ -174,7 +373,7 @@ async def get_by_alert_id(
         TriageRecommendation.alert_id == alert_id
     )
     if for_update:
-        query = query.with_for_update()
+        query = query.with_for_update().execution_options(populate_existing=True)
     result = await db.execute(query)
     return result.scalar_one_or_none()
 
@@ -183,97 +382,56 @@ async def create_or_replace_recommendation(
     db: AsyncSession,
     alert_id: int,
     data: Dict[str, Any],
-    created_by: str
-) -> TriageRecommendation:
+    created_by: str,
+) -> TriageRecommendationRead:
     """Create or replace triage recommendation for an alert.
-    
+
     Due to unique constraint on alert_id, we update the existing record in-place:
-    - If a QUEUED/FAILED recommendation exists: Update it with new data and set to PENDING
+    - If a recommendation exists: Replace its data and set it to PENDING
     - If no recommendation exists: Create a new one with PENDING status
-    
+
     Args:
         db: Database session
         alert_id: Alert ID
         data: Recommendation data (disposition, confidence, reasoning, etc.)
         created_by: Username of creator (from API key)
-        
+
     Returns:
         TriageRecommendation with PENDING status
-        
-    Raises:
-        HTTPException(404): Alert not found
-        HTTPException(400): Invalid data
-    """
-    # Verify alert exists
-    alert = await db.get(Alert, alert_id)
-    if not alert:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Alert {alert_id} not found"
-        )
-    data = normalize_recommendation_contract(data)
 
-    # Check for existing recommendation
-    existing = await get_by_alert_id(db, alert_id)
-    if existing:
-        # Update the existing recommendation in-place (unique constraint on alert_id)
-        existing.disposition = TriageDisposition(data.get("disposition"))
-        existing.confidence = float(data.get("confidence", 0.0))
-        existing.reasoning_bullets = data.get("reasoning_bullets", [])
-        existing.recommended_actions = data.get("recommended_actions", [])
-        existing.recommended_case_runbook_id = data.get("recommended_case_runbook_id")
-        existing.suggested_status = AlertStatus(data["suggested_status"]) if data.get("suggested_status") else None
-        existing.suggested_priority = Priority(data["suggested_priority"]) if data.get("suggested_priority") else None
-        existing.suggested_assignee = data.get("suggested_assignee")
-        existing.suggested_tags_add = normalize_persisted_tags(data.get("suggested_tags_add", []))
-        existing.suggested_tags_remove = normalize_persisted_tags(data.get("suggested_tags_remove", []))
-        existing.request_escalate_to_case = data.get("request_escalate_to_case", False)
-        existing.applied_context_entries = data.get(
-            "applied_context_entries",
-            existing.applied_context_entries or [],
+    Raises:
+        TriageRecommendationNotFoundError: Alert not found
+        TriageRecommendationValidationError: Invalid recommendation data
+    """
+    alert = await _lock_alert(db, alert_id)
+    if alert is None:
+        raise TriageRecommendationNotFoundError(f"Alert {alert_id} not found")
+    data = normalize_recommendation_contract(data)
+    created_at = datetime.now(timezone.utc)
+
+    existing = await get_by_alert_id(db, alert_id, for_update=True)
+    if existing is not None:
+        recommendation = existing
+        values = _pending_recommendation_values(
+            data,
+            created_by=created_by,
+            created_at=created_at,
+            default_context_entries=existing.applied_context_entries or [],
         )
-        existing.created_by = created_by
-        existing.created_at = datetime.now(timezone.utc)
-        existing.status = RecommendationStatus.PENDING
-        existing.error_message = None  # Clear any previous error
-        existing.reviewed_by = None  # Reset review fields
-        existing.reviewed_at = None
-        existing.rejection_reason = None
-        existing.applied_changes = []
-        
-        db.add(existing)
-        await emit_event(
-            db,
-            entity_type="alert",
-            entity_id=alert_id,
-            event_type=RealtimeEventType.TRIAGE_COMPLETED,
-            performed_by=created_by,
+        for field, value in values.items():
+            setattr(recommendation, field, value)
+    else:
+        values = _pending_recommendation_values(
+            data,
+            created_by=created_by,
+            created_at=created_at,
+            default_context_entries=[],
         )
-        await db.commit()
-        await db.refresh(existing)
-        return existing
-    
-    # Create new recommendation
-    recommendation = TriageRecommendation(
-        alert_id=alert_id,
-        disposition=TriageDisposition(data.get("disposition")),
-        confidence=float(data.get("confidence", 0.0)),
-        reasoning_bullets=data.get("reasoning_bullets", []),
-        recommended_actions=data.get("recommended_actions", []),
-        recommended_case_runbook_id=data.get("recommended_case_runbook_id"),
-        suggested_status=AlertStatus(data["suggested_status"]) if data.get("suggested_status") else None,
-        suggested_priority=Priority(data["suggested_priority"]) if data.get("suggested_priority") else None,
-        suggested_assignee=data.get("suggested_assignee"),
-        suggested_tags_add=normalize_persisted_tags(data.get("suggested_tags_add", [])),
-        suggested_tags_remove=normalize_persisted_tags(data.get("suggested_tags_remove", [])),
-        request_escalate_to_case=data.get("request_escalate_to_case", False),
-        applied_context_entries=data.get("applied_context_entries", []),
-        created_by=created_by,
-        created_at=datetime.now(timezone.utc),
-        status=RecommendationStatus.PENDING,
-    )
-    
+        recommendation = TriageRecommendation(alert_id=alert_id, **values)
+
     db.add(recommendation)
+    if existing is None:
+        await db.flush()
     await emit_event(
         db,
         entity_type="alert",
@@ -281,119 +439,159 @@ async def create_or_replace_recommendation(
         event_type=RealtimeEventType.TRIAGE_COMPLETED,
         performed_by=created_by,
     )
+    response = TriageRecommendationRead.model_validate(recommendation)
     await db.commit()
-    await db.refresh(recommendation)
-    
-    return recommendation
+    return response
+
+
+async def _compensate_failed_enqueue(
+    db: AsyncSession,
+    *,
+    alert_id: int,
+    queued_at: datetime,
+    queued_response: TriageRecommendationRead,
+) -> TriageRecommendationRead:
+    """Mark this enqueue generation failed without overwriting a newer one."""
+    try:
+        current = await get_by_alert_id(db, alert_id, for_update=True)
+    except Exception:
+        # The QUEUED row is already durable. Recovery is deliberately
+        # best-effort so a recovery defect cannot report that commit as undone.
+        await reset_post_commit_session(db, logger)
+        logger.exception(
+            "Triage enqueue was persisted for alert %s, but queue failure "
+            "compensation could not load the current recommendation",
+            alert_id,
+        )
+        return queued_response
+
+    if (
+        current is not None
+        and current.status == RecommendationStatus.QUEUED
+        and current.created_at == queued_at
+    ):
+        current.status = RecommendationStatus.FAILED
+        current.error_message = "Task queue unavailable"
+        failed_response = TriageRecommendationRead.model_validate(current)
+        try:
+            await db.commit()
+        except Exception:
+            # Preserve the truthful committed QUEUED snapshot if the optional
+            # FAILED-state compensation cannot itself be committed.
+            await reset_post_commit_session(db, logger)
+            logger.exception(
+                "Triage enqueue was persisted for alert %s, but queue "
+                "failure compensation could not be committed",
+                alert_id,
+            )
+            return queued_response
+        return failed_response
+
+    current_response = (
+        TriageRecommendationRead.model_validate(current)
+        if current is not None
+        else queued_response
+    )
+    await reset_post_commit_session(db, logger)
+    return current_response
 
 
 async def enqueue_triage(
     db: AsyncSession,
     alert_id: int,
     enqueued_by: str = "system"
-) -> TriageRecommendation:
+) -> TriageRecommendationRead:
     """Create a QUEUED placeholder and enqueue triage task.
-    
-    If a recommendation already exists:
-    - QUEUED/FAILED: Update in-place and re-enqueue
-    - PENDING/ACCEPTED/REJECTED/SUPERSEDED: Mark as SUPERSEDED and create new QUEUED
-    
+
+    If a recommendation already exists, reset it in-place and re-enqueue it. The
+    database enforces one recommendation row per alert.
+
     Args:
         db: Database session
         alert_id: Alert ID
         enqueued_by: Username of who triggered the enqueue
-        
+
     Returns:
         TriageRecommendation with QUEUED status
-        
+
     Raises:
-        HTTPException(404): Alert not found
-        HTTPException(400): AI triage not enabled
+        TriageRecommendationNotFoundError: Alert not found
+        TriageRecommendationValidationError: AI triage is not enabled
     """
     from app.services.settings_service import SettingsService
-    from app.services.task_queue_service import get_task_queue_service
+    from app.services.task_queue_service import (
+        TaskQueueNotInitializedError,
+        get_task_queue_service,
+    )
     from app.services.tasks import TASK_TRIAGE_ALERT
-    
+
     settings = SettingsService(db)  # type: ignore[arg-type]
-    
+
     # Check if triage is enabled
-    flow_id = await settings.get_typed_value("langflow.alert_triage_flow_id")
+    flow_id = await settings.get("langflow.alert_triage_flow_id")
     if not flow_id:
-        raise HTTPException(
-            status_code=400,
-            detail="AI triage is not enabled. Configure 'langflow.alert_triage_flow_id' in settings."
+        raise TriageRecommendationValidationError(
+            "AI triage is not enabled. Configure "
+            "'langflow.alert_triage_flow_id' in settings."
         )
-    
-    # Verify alert exists
-    alert = await db.get(Alert, alert_id)
+
+    # Lock the owning alert so every recommendation writer serializes on one row.
+    alert = await _lock_alert(db, alert_id)
     if not alert:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Alert {alert_id} not found"
-        )
-    
+        raise TriageRecommendationNotFoundError(f"Alert {alert_id} not found")
+
     # Check for existing recommendation
-    existing = await get_by_alert_id(db, alert_id)
-    
+    existing = await get_by_alert_id(db, alert_id, for_update=True)
+    queued_at = datetime.now(timezone.utc)
+
     if existing:
-        if existing.status in [RecommendationStatus.QUEUED, RecommendationStatus.FAILED]:
-            # Update in-place for retry
-            existing.status = RecommendationStatus.QUEUED
-            existing.error_message = None
-            existing.created_by = enqueued_by
-            existing.created_at = datetime.now(timezone.utc)
-            db.add(existing)
-            recommendation = existing
-        else:
-            # Mark existing as SUPERSEDED
-            existing.status = RecommendationStatus.SUPERSEDED
-            db.add(existing)
-            
-            # Create new QUEUED placeholder
-            recommendation = TriageRecommendation(
-                alert_id=alert_id,
-                disposition=TriageDisposition.UNKNOWN,  # Placeholder
-                confidence=0.0,
-                reasoning_bullets=[],
-                recommended_actions=[],
-                created_by=enqueued_by,
-                created_at=datetime.now(timezone.utc),
-                status=RecommendationStatus.QUEUED,
-            )
-            db.add(recommendation)
+        recommendation = existing
     else:
-        # Create new QUEUED placeholder
         recommendation = TriageRecommendation(
             alert_id=alert_id,
-            disposition=TriageDisposition.UNKNOWN,  # Placeholder
+            disposition=TriageDisposition.UNKNOWN,
             confidence=0.0,
             reasoning_bullets=[],
             recommended_actions=[],
             created_by=enqueued_by,
-            created_at=datetime.now(timezone.utc),
+            created_at=queued_at,
             status=RecommendationStatus.QUEUED,
         )
-        db.add(recommendation)
-    
+    _reset_for_enqueue(
+        recommendation,
+        enqueued_by=enqueued_by,
+        queued_at=queued_at,
+    )
+    db.add(recommendation)
+    await db.flush()
+    queued_response = TriageRecommendationRead.model_validate(recommendation)
     await db.commit()
-    await db.refresh(recommendation)
-    
+
     # Enqueue the task
     try:
         task_queue = get_task_queue_service()
         await task_queue.enqueue(
             task_name=TASK_TRIAGE_ALERT,
-            payload={"alert_id": alert_id}
+            payload={"alert_id": alert_id},
+            dedupe_key=f"triage_alert:{alert_id}",
         )
-    except RuntimeError as e:
-        # Task queue not available - mark as failed
-        recommendation.status = RecommendationStatus.FAILED
-        recommendation.error_message = f"Task queue not available: {str(e)}"
-        db.add(recommendation)
-        await db.commit()
-        await db.refresh(recommendation)
-    
-    return recommendation
+    except (
+        TaskQueueNotInitializedError,
+        ConnectionError,
+        TimeoutError,
+        OSError,
+        asyncpg.PostgresError,
+        asyncpg.InterfaceError,
+        DuplicateJobError,
+    ):
+        return await _compensate_failed_enqueue(
+            db,
+            alert_id=alert_id,
+            queued_at=queued_at,
+            queued_response=queued_response,
+        )
+
+    return queued_response
 
 
 async def auto_reject_if_pending(
@@ -402,343 +600,375 @@ async def auto_reject_if_pending(
     reviewed_by: str
 ) -> Optional[TriageRecommendation]:
     """Auto-reject a pending triage recommendation when alert is manually triaged.
-    
+
     Called when an alert's status is manually changed to a closed or escalated state.
     This ensures the recommendation reflects that manual triage superseded the AI suggestion.
-    
+
     Args:
         db: Database session
         alert_id: Alert ID
         reviewed_by: Username of who performed the manual triage
-        
+
     Returns:
         TriageRecommendation if one was rejected, None if no pending recommendation exists
     """
     recommendation = await get_by_alert_id(db, alert_id, for_update=True)
     if not recommendation or recommendation.status != RecommendationStatus.PENDING:
         return None
-    
+
     recommendation.status = RecommendationStatus.REJECTED
     recommendation.reviewed_by = reviewed_by
     recommendation.reviewed_at = datetime.now(timezone.utc)
     recommendation.rejection_category = RejectionCategory.SUPERSEDED_MANUAL_TRIAGE
     recommendation.rejection_reason = "Alert was manually triaged"
-    
+
     db.add(recommendation)
     # Note: Caller is responsible for commit (usually part of larger transaction)
-    
+
     return recommendation
 
 
-async def accept_recommendation(
+async def _resolve_acceptance_runbook(
     db: AsyncSession,
-    alert_id: int,
-    options: Dict[str, Any],
-    reviewed_by: str
-) -> Dict[str, Any]:
-    """Accept triage recommendation and apply changes to alert.
-    
-    If request_escalate_to_case is true:
-    - Creates a new case from the alert
-    - Links the alert to the case with ESCALATED status
-    - Creates tasks from recommended_actions with case priority
-    
-    Args:
-        db: Database session
-        alert_id: Alert ID
-        options: Acceptance options (e.g., which patches to apply)
-        reviewed_by: Username of reviewer
-        
-    Returns:
-        Dict with:
-            - recommendation: TriageRecommendation with ACCEPTED status
-            - case_id: Optional[int] - New case ID if escalated
-            - tasks_created: int - Number of tasks created
-        
-    Raises:
-        HTTPException(404): Recommendation not found
-        HTTPException(409): Recommendation already reviewed
-    """
-    recommendation = await get_by_alert_id(db, alert_id, for_update=True)
-    if not recommendation:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No triage recommendation found for alert {alert_id}"
+    recommendation: TriageRecommendation,
+    options: AcceptRecommendationOptions,
+    applied_changes: List[Dict[str, Any]],
+) -> Optional[CaseRunbook]:
+    """Validate the analyst's runbook choice and record any override."""
+    requested_runbook_id = options.case_runbook_id
+    skip_case_runbook = options.skip_case_runbook
+    if (
+        requested_runbook_id is not None or skip_case_runbook
+    ) and not recommendation.request_escalate_to_case:
+        raise TriageRecommendationValidationError(
+            "Case Runbook overrides require an escalating recommendation"
         )
-    
-    if recommendation.status != RecommendationStatus.PENDING:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Recommendation already {recommendation.status.value}"
-        )
-    
-    # Get alert
-    alert = await db.get(Alert, alert_id)
-    if not alert:
-        raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
 
-    before_status = alert.status
-    before_priority = alert.priority
-    before_assignee = alert.assignee
-    before_tags = list(alert.tags or [])
-    before_case_id = alert.case_id
-
-    # Track what was applied
-    applied_changes = []
-    result_case_id = None
-    tasks_created = 0
-    effective_suggested_status = get_effective_suggested_status(recommendation)
-
-    requested_runbook_id = options.get("case_runbook_id")
-    skip_case_runbook = bool(options.get("skip_case_runbook"))
-    if requested_runbook_id is not None and skip_case_runbook:
-        raise HTTPException(status_code=400, detail="case_runbook_id and skip_case_runbook are mutually exclusive")
-    if (requested_runbook_id is not None or skip_case_runbook) and not recommendation.request_escalate_to_case:
-        raise HTTPException(status_code=400, detail="Case Runbook overrides require an escalating recommendation")
-
-    recommended_runbook: CaseRunbook | None = None
-    effective_runbook_id = requested_runbook_id or recommendation.recommended_case_runbook_id
+    effective_runbook_id = (
+        requested_runbook_id
+        if requested_runbook_id is not None
+        else recommendation.recommended_case_runbook_id
+    )
     if effective_runbook_id is not None and not skip_case_runbook:
-        recommended_runbook = await db.get(CaseRunbook, effective_runbook_id)
-        if recommended_runbook is None or recommended_runbook.status != CaseRunbookStatus.PUBLISHED:
-            detail = (
-                "The selected Case Runbook is no longer published. "
-                "Choose another published runbook or continue without a runbook."
-            ) if requested_runbook_id is not None else (
-                "The recommended Case Runbook is no longer published. "
+        runbook = await db.get(CaseRunbook, effective_runbook_id)
+        if runbook is None or runbook.status != CaseRunbookStatus.PUBLISHED:
+            subject = "selected" if requested_runbook_id is not None else "recommended"
+            raise TriageRecommendationConflictError(
+                f"The {subject} Case Runbook is no longer published. "
                 "Choose another published runbook or continue without a runbook."
             )
-            raise HTTPException(status_code=409, detail=detail)
-        if requested_runbook_id is not None and requested_runbook_id != recommendation.recommended_case_runbook_id:
+        if (
+            requested_runbook_id is not None
+            and requested_runbook_id != recommendation.recommended_case_runbook_id
+        ):
             applied_changes.append({
                 "field": "case_runbook",
                 "action": "replaced_recommended_runbook",
                 "runbook_id": requested_runbook_id,
             })
-    elif skip_case_runbook and recommendation.recommended_case_runbook_id is not None:
+        return runbook
+
+    if skip_case_runbook and recommendation.recommended_case_runbook_id is not None:
         applied_changes.append({
             "field": "case_runbook",
             "action": "skipped",
-            "reason": "Analyst continued without the unavailable recommended Case Runbook",
+            "reason": (
+                "Analyst continued without the unavailable recommended Case Runbook"
+            ),
             "runbook_id": recommendation.recommended_case_runbook_id,
         })
-    
-    # Apply suggested changes based on options (default: apply all)
-    apply_status = options.get("apply_status", True)
-    apply_priority = options.get("apply_priority", True)
-    apply_tags = options.get("apply_tags", True)
-    
-    if apply_status and effective_suggested_status:
-        alert.status = effective_suggested_status
-        applied_changes.append({
-            "field": "status",
-            "value": effective_suggested_status.value
-        })
-    
-    if apply_priority and recommendation.suggested_priority:
+    return None
+
+
+def _apply_recommendation_to_alert(
+    alert: Alert,
+    recommendation: TriageRecommendation,
+    options: AcceptRecommendationOptions,
+    *,
+    reviewed_by: str,
+    accepted_at: datetime,
+    before: _AlertState,
+    applied_changes: List[Dict[str, Any]],
+) -> bool:
+    """Apply selected alert patches and return whether a case is required."""
+    effective_status = get_effective_suggested_status(recommendation)
+    apply_status = options.apply_status
+
+    if apply_status and effective_status and alert.status != effective_status:
+        alert.status = effective_status
+        applied_changes.append({"field": "status", "value": effective_status.value})
+
+    if (
+        options.apply_priority
+        and recommendation.suggested_priority
+        and alert.priority != recommendation.suggested_priority
+    ):
         alert.priority = recommendation.suggested_priority
         applied_changes.append({
             "field": "priority",
-            "value": recommendation.suggested_priority.value
+            "value": recommendation.suggested_priority.value,
         })
-    
-    if apply_tags:
-        # Apply tag changes
+
+    if options.apply_tags:
+        before_tags = normalize_persisted_tags(alert.tags)
         add_tags = normalize_persisted_tags(recommendation.suggested_tags_add)
         remove_tags = normalize_persisted_tags(recommendation.suggested_tags_remove)
+        current_tags = merge_persisted_tags(before_tags, add_tags)
         remove_tag_keys = {tag.lower() for tag in remove_tags}
-        current_tags = merge_persisted_tags(alert.tags, add_tags)
-        
-        # Add tags
-        for tag in add_tags:
-            applied_changes.append({
-                "field": "tags",
-                "action": "add",
-                "value": tag
-            })
-        
-        # Remove tags
-        for tag in remove_tags:
-            applied_changes.append({
-                "field": "tags",
-                "action": "remove",
-                "value": tag
-            })
-        
-        alert.tags = [tag for tag in current_tags if tag.lower() not in remove_tag_keys]
+        after_tags = [
+            tag for tag in current_tags if tag.lower() not in remove_tag_keys
+        ]
+        added_tags, removed_tags = persisted_tag_delta(before_tags, after_tags)
+        applied_changes.extend(
+            {"field": "tags", "action": "add", "value": tag}
+            for tag in added_tags
+        )
+        applied_changes.extend(
+            {"field": "tags", "action": "remove", "value": tag}
+            for tag in removed_tags
+        )
+        alert.tags = after_tags
 
     apply_triage_state(
         alert,
         triaged_by=reviewed_by,
-        set_assignee=True,
+        set_assignee=options.apply_assignee,
+        now=accepted_at,
     )
-    if alert.assignee != before_assignee:
-        applied_changes.append({
-            "field": "assignee",
-            "value": reviewed_by,
-        })
-    
+    if options.apply_assignee and recommendation.suggested_assignee:
+        alert.assignee = recommendation.suggested_assignee
+    if alert.assignee != before.assignee:
+        applied_changes.append({"field": "assignee", "value": alert.assignee})
+
     accepted_with_closed_status = bool(
         apply_status
-        and effective_suggested_status
-        and effective_suggested_status in CLOSED_ALERT_STATUSES
+        and effective_status
+        and effective_status in CLOSED_ALERT_STATUSES
     )
-
-    # Accept outcomes must end in either a closed alert state or case-based investigation.
-    should_escalate_to_case = recommendation.request_escalate_to_case or not accepted_with_closed_status
-    if should_escalate_to_case and not recommendation.request_escalate_to_case:
+    should_escalate = (
+        recommendation.request_escalate_to_case or not accepted_with_closed_status
+    )
+    if should_escalate and not recommendation.request_escalate_to_case:
         applied_changes.append({
             "field": "escalation",
             "action": "forced_case_escalation",
             "reason": "Accepted recommendation requires case-based investigation",
         })
+    return should_escalate
 
-    # Handle escalation to case when requested or when needed to satisfy acceptance outcome invariants.
-    if should_escalate_to_case:
-        if alert.case_id:
-            # Already linked to a case, skip escalation but continue
-            result_case_id = alert.case_id
-            mark_alert_escalated(
-                alert,
-                case_id=alert.case_id,
-                preserve_existing_linked_at=True,
-            )
-            applied_changes.append({
-                "field": "escalation",
-                "action": "skipped",
-                "reason": "Alert already linked to case",
-                "case_id": alert.case_id,
-            })
-            if recommended_runbook is not None:
-                apply_response = await case_runbook_service.apply_runbook(
-                    db,
-                    case_id=alert.case_id,
-                    runbook_id=recommended_runbook.id,  # type: ignore[arg-type]
-                    overrides=[],
-                    user=reviewed_by,
-                    commit=False,
-                )
-                tasks_created += len(apply_response.created_task_ids)
-                applied_changes.append({
-                    "field": "case_runbook",
-                    "action": "applied",
-                    "runbook_id": recommended_runbook.id,
-                    "created_task_ids": apply_response.created_task_ids,
-                })
-        else:
-            # Create new case from alert directly (not using case_service to avoid nested commits)
-            case_priority = recommendation.suggested_priority or alert.priority or Priority.MEDIUM
-            new_case = await create_case_from_alert(
+
+def _create_recommended_action_tasks(
+    db: AsyncSession,
+    recommendation: TriageRecommendation,
+    *,
+    case_id: int,
+    case_priority: Priority,
+    alert_id: int,
+    reviewed_by: str,
+    accepted_at: datetime,
+) -> int:
+    """Stage validated tasks for a newly created investigation case."""
+    alert_human_id = format_entity_id(alert_id, ALERT_PREFIX)
+    created_count = 0
+    for action in recommendation.recommended_actions:
+        action_title = action.get("title", "") if isinstance(action, dict) else str(action)
+        action_description = (
+            action.get("description", "") if isinstance(action, dict) else ""
+        )
+        task_title = action_title[:197] + "..." if len(action_title) > 200 else action_title
+        task_description = f"AI-recommended action from triage of alert {alert_human_id}"
+        if action_description:
+            task_description = f"{task_description}\n\n{action_description}"
+
+        task_data = TaskCreate(
+            title=task_title,
+            description=task_description,
+            priority=case_priority,
+            case_id=case_id,
+            assignee=reviewed_by,
+            status=TaskStatus.TODO,
+        )
+        db.add(Task(
+            **task_data.model_dump(exclude_unset=False, exclude={"created_at"}),
+            linked_at=accepted_at,
+            created_by=reviewed_by,
+            created_at=accepted_at,
+            updated_at=accepted_at,
+        ))
+        created_count += 1
+    return created_count
+
+
+async def _apply_case_escalation(
+    db: AsyncSession,
+    alert: Alert,
+    recommendation: TriageRecommendation,
+    runbook: Optional[CaseRunbook],
+    *,
+    alert_id: int,
+    reviewed_by: str,
+    accepted_at: datetime,
+    applied_changes: List[Dict[str, Any]],
+) -> tuple[Optional[int], int]:
+    """Stage the complete case-based investigation outcome."""
+    new_case = None
+    case_priority = recommendation.suggested_priority or alert.priority or Priority.MEDIUM
+    if alert.case_id:
+        result_case_id = alert.case_id
+        mark_alert_escalated(
+            alert,
+            case_id=alert.case_id,
+            now=accepted_at,
+            preserve_existing_linked_at=True,
+        )
+        applied_changes.append({
+            "field": "escalation",
+            "action": "skipped",
+            "reason": "Alert already linked to case",
+            "case_id": alert.case_id,
+        })
+    else:
+        new_case = await create_case_from_alert(
+            db,
+            alert=alert,
+            created_by=reviewed_by,
+            priority=case_priority,
+            assignee=reviewed_by,
+            now=accepted_at,
+        )
+        mark_alert_escalated(
+            alert,
+            case_id=new_case.id,  # type: ignore[arg-type]
+            now=accepted_at,
+        )
+        result_case_id = new_case.id
+        applied_changes.append({
+            "field": "escalation",
+            "action": "created_case",
+            "case_id": new_case.id,
+        })
+
+    tasks_created = 0
+    if runbook is not None and result_case_id is not None:
+        apply_response = await case_runbook_service.apply_runbook(
+            db,
+            case_id=result_case_id,
+            runbook_id=runbook.id,  # type: ignore[arg-type]
+            overrides=[],
+            user=reviewed_by,
+            commit=False,
+        )
+        tasks_created = len(apply_response.created_task_ids)
+        applied_changes.append({
+            "field": "case_runbook",
+            "action": "applied",
+            "runbook_id": runbook.id,
+            "created_task_ids": apply_response.created_task_ids,
+        })
+
+    if new_case is not None:
+        if runbook is None:
+            tasks_created += _create_recommended_action_tasks(
                 db,
-                alert=alert,
-                created_by=reviewed_by,
-                priority=case_priority,
-                assignee=reviewed_by,
+                recommendation,
+                case_id=new_case.id,  # type: ignore[arg-type]
+                case_priority=case_priority,
+                alert_id=alert_id,
+                reviewed_by=reviewed_by,
+                accepted_at=accepted_at,
             )
-            
-            # Link alert to case
-            mark_alert_escalated(alert, case_id=new_case.id)  # type: ignore[arg-type]
-            
-            result_case_id = new_case.id
+        if tasks_created > 0:
             applied_changes.append({
-                "field": "escalation",
-                "action": "created_case",
-                "case_id": new_case.id
+                "field": "tasks",
+                "action": "created",
+                "count": tasks_created,
             })
 
-            if recommended_runbook is not None and new_case.id is not None:
-                apply_response = await case_runbook_service.apply_runbook(
-                    db,
-                    case_id=new_case.id,
-                    runbook_id=recommended_runbook.id,  # type: ignore[arg-type]
-                    overrides=[],
-                    user=reviewed_by,
-                    commit=False,
-                )
-                tasks_created += len(apply_response.created_task_ids)
-                applied_changes.append({
-                    "field": "case_runbook",
-                    "action": "applied",
-                    "runbook_id": recommended_runbook.id,
-                    "created_task_ids": apply_response.created_task_ids,
-                })
-            
-            # Create tasks from recommended_actions using TaskCreate for validation
-            for action in ([] if recommended_runbook is not None else recommendation.recommended_actions):
-                # Extract title and description from action object
-                action_title = action.get("title", "") if isinstance(action, dict) else str(action)
-                action_description = action.get("description", "") if isinstance(action, dict) else ""
-                
-                # Truncate title to fit TaskCreate max_length constraint
-                task_title = action_title[:197] + "..." if len(action_title) > 200 else action_title
-                
-                # Build description: use action description if provided, otherwise use default
-                if action_description:
-                    task_description = f"AI-recommended action from triage of alert ALT-{alert_id:07d}\n\n{action_description}"
-                else:
-                    task_description = f"AI-recommended action from triage of alert ALT-{alert_id:07d}"
-                
-                # Use TaskCreate for Pydantic validation
-                task_data = TaskCreate(
-                    title=task_title,
-                    description=task_description,
-                    priority=case_priority,
-                    case_id=new_case.id,
-                    assignee=reviewed_by,
-                    status=TaskStatus.TODO,
-                )
-                
-                db_task = Task(
-                    **task_data.model_dump(exclude_unset=False, exclude={"created_at"}),
-                    linked_at=datetime.now(timezone.utc),
-                    created_by=reviewed_by,
-                    created_at=datetime.now(timezone.utc),
-                    updated_at=datetime.now(timezone.utc),
-                )
-                db.add(db_task)
-                tasks_created += 1
-            
-            if tasks_created > 0:
-                applied_changes.append({
-                    "field": "tasks",
-                    "action": "created",
-                    "count": tasks_created
-                })
-    
+    return result_case_id, tasks_created
+
+
+async def accept_recommendation(
+    db: AsyncSession,
+    alert_id: int,
+    options: AcceptRecommendationOptions,
+    reviewed_by: str,
+) -> AcceptRecommendationResult:
+    """Accept triage recommendation and apply changes to alert.
+
+    If request_escalate_to_case is true:
+    - Creates a new case from the alert
+    - Links the alert to the case with ESCALATED status
+    - Creates tasks from recommended_actions with case priority
+
+    Args:
+        db: Database session
+        alert_id: Alert ID
+        options: Acceptance options (e.g., which patches to apply)
+        reviewed_by: Username of reviewer
+
+    Raises:
+        TriageRecommendationNotFoundError: Recommendation or alert not found
+        TriageRecommendationConflictError: Recommendation is already reviewed
+        TriageRecommendationValidationError: Acceptance options are invalid
+    """
+    alert, recommendation = await _lock_acceptance_state(db, alert_id)
+    if recommendation.status != RecommendationStatus.PENDING:
+        raise TriageRecommendationConflictError(
+            f"Recommendation already {recommendation.status.value}"
+        )
+
+    before = _snapshot_alert(alert)
+    applied_changes: List[Dict[str, Any]] = []
+    recommended_runbook = await _resolve_acceptance_runbook(
+        db,
+        recommendation,
+        options,
+        applied_changes,
+    )
+    accepted_at = datetime.now(timezone.utc)
+    should_escalate_to_case = _apply_recommendation_to_alert(
+        alert,
+        recommendation,
+        options,
+        reviewed_by=reviewed_by,
+        accepted_at=accepted_at,
+        before=before,
+        applied_changes=applied_changes,
+    )
+
+    result_case_id = None
+    tasks_created = 0
+    if should_escalate_to_case:
+        result_case_id, tasks_created = await _apply_case_escalation(
+            db,
+            alert,
+            recommendation,
+            recommended_runbook,
+            alert_id=alert_id,
+            reviewed_by=reviewed_by,
+            accepted_at=accepted_at,
+            applied_changes=applied_changes,
+        )
+
     # Update recommendation status
     recommendation.status = RecommendationStatus.ACCEPTED
     recommendation.reviewed_by = reviewed_by
-    recommendation.reviewed_at = datetime.now(timezone.utc)
+    recommendation.reviewed_at = accepted_at
     recommendation.applied_changes = applied_changes
 
-    state_change_note = _build_state_change_note(
-        reviewed_by=reviewed_by,
-        before_status=before_status,
-        after_status=alert.status,
-        before_priority=before_priority,
-        after_priority=alert.priority,
-        before_assignee=before_assignee,
-        after_assignee=alert.assignee,
-        before_tags=before_tags,
-        after_tags=list(alert.tags or []),
-        before_case_id=before_case_id,
-        after_case_id=alert.case_id,
-    )
+    state_change_note = _build_state_change_note(before, alert)
     if state_change_note:
         timeline_service.add_timeline_item(
             alert,
-            {
-                "type": "note",
-                "description": state_change_note,
-                "timestamp": datetime.now(timezone.utc),
-                "tags": ["triage-recommendation", "state-change"],
-                "flagged": False,
-                "highlighted": False,
-                "replies": [],
-            },
+            timeline_service.build_note_item(
+                description=state_change_note,
+                created_by=reviewed_by,
+                timestamp=accepted_at,
+                tags=["triage-recommendation", "state-change"],
+            ),
             created_by=reviewed_by,
         )
-    
+
     db.add(alert)
     db.add(recommendation)
     await emit_event(
@@ -748,14 +978,14 @@ async def accept_recommendation(
         event_type=RealtimeEventType.TRIAGE_COMPLETED,
         performed_by=reviewed_by,
     )
+    recommendation_response = TriageRecommendationRead.model_validate(recommendation)
     await db.commit()
-    await db.refresh(recommendation)
-    
-    return {
-        "recommendation": recommendation,
-        "case_id": result_case_id,
-        "tasks_created": tasks_created
-    }
+
+    return AcceptRecommendationResult(
+        recommendation=recommendation_response,
+        case_id=result_case_id,
+        tasks_created=tasks_created,
+    )
 
 
 async def reject_recommendation(
@@ -764,44 +994,48 @@ async def reject_recommendation(
     category: RejectionCategory,
     reason: Optional[str],
     reviewed_by: str
-) -> TriageRecommendation:
+) -> TriageRecommendationRead:
     """Reject triage recommendation with category and optional reason.
-    
+
     Args:
         db: Database session
         alert_id: Alert ID
         category: Rejection category
         reason: Optional additional details
         reviewed_by: Username of reviewer
-        
+
     Returns:
         TriageRecommendation with REJECTED status
-        
+
     Raises:
-        HTTPException(404): Recommendation not found
-        HTTPException(409): Recommendation already reviewed
+        TriageRecommendationNotFoundError: Recommendation not found
+        TriageRecommendationConflictError: Recommendation is already reviewed
+        TriageRecommendationValidationError: Rejection details are invalid
     """
+    if category == RejectionCategory.OTHER and not (reason and reason.strip()):
+        raise TriageRecommendationValidationError(
+            "Reason is required when category is OTHER"
+        )
+
     recommendation = await get_by_alert_id(db, alert_id, for_update=True)
     if not recommendation:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No triage recommendation found for alert {alert_id}"
+        raise TriageRecommendationNotFoundError(
+            f"No triage recommendation found for alert {alert_id}"
         )
-    
+
     if recommendation.status != RecommendationStatus.PENDING:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Recommendation already {recommendation.status.value}"
+        raise TriageRecommendationConflictError(
+            f"Recommendation already {recommendation.status.value}"
         )
-    
+
     recommendation.status = RecommendationStatus.REJECTED
     recommendation.reviewed_by = reviewed_by
     recommendation.reviewed_at = datetime.now(timezone.utc)
     recommendation.rejection_category = category
     recommendation.rejection_reason = reason
-    
+
     db.add(recommendation)
+    response = TriageRecommendationRead.model_validate(recommendation)
     await db.commit()
-    await db.refresh(recommendation)
-    
-    return recommendation
+
+    return response

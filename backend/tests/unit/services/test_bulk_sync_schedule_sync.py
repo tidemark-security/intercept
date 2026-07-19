@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.services.enrichment.bulk_sync_schedule_sync import (
+    BulkSyncScheduleValueError,
+    SUPPORTED_BULK_SYNC_PROVIDER_IDS,
     bulk_sync_schedule_dedupe_key,
     cron_expression_for_utc_time,
     get_bulk_sync_provider_id_from_setting_key,
@@ -15,6 +17,7 @@ from app.services.enrichment.bulk_sync_schedule_sync import (
     sync_bulk_sync_schedule_for_provider,
     sync_bulk_sync_schedules,
 )
+from app.services.enrichment.providers import BUILTIN_PROVIDERS
 
 
 class _AsyncLock:
@@ -23,6 +26,12 @@ class _AsyncLock:
 
     async def __aexit__(self, exc_type, exc, tb):
         return False
+
+
+def test_supported_bulk_sync_provider_ids_follow_provider_capabilities() -> None:
+    assert SUPPORTED_BULK_SYNC_PROVIDER_IDS == tuple(
+        provider.provider_id for provider in BUILTIN_PROVIDERS if provider.supports_bulk_sync
+    )
 
 
 @pytest.mark.parametrize(
@@ -111,8 +120,49 @@ async def test_sync_bulk_sync_schedule_for_provider_enqueues_active_provider(
         payload={"provider_id": "ldap", "reschedule": True, "scheduled": True},
         priority=10,
         schedule_at=datetime(2026, 3, 31, 2, 15, tzinfo=timezone.utc),
-        dedupe_key=bulk_sync_schedule_dedupe_key("ldap"),
+        dedupe_key=bulk_sync_schedule_dedupe_key(
+            "ldap",
+            datetime(2026, 3, 31, 2, 15, tzinfo=timezone.utc),
+        ),
     )
+
+
+@pytest.mark.asyncio
+async def test_schedule_enqueue_failure_preserves_existing_queued_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_service = SimpleNamespace(
+        schedule_refresh_lock=_AsyncLock(),
+        enqueue=AsyncMock(side_effect=RuntimeError("queue unavailable")),
+    )
+    fake_db = AsyncMock()
+
+    async def fake_get(self, key: str, default=None):
+        values = {
+            "enrichment.ldap.enabled": True,
+            "enrichment.ldap.bulk_sync_enabled": True,
+            "enrichment.ldap.bulk_sync_time_utc": "02:15",
+        }
+        return values.get(key, default)
+
+    monkeypatch.setattr(
+        "app.services.enrichment.bulk_sync_schedule_sync.get_task_queue_service",
+        lambda: fake_service,
+    )
+    monkeypatch.setattr(
+        "app.services.enrichment.bulk_sync_schedule_sync._utcnow",
+        lambda: datetime(2026, 3, 31, 1, 0, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        "app.services.enrichment.bulk_sync_schedule_sync.SettingsService.get",
+        fake_get,
+    )
+
+    with pytest.raises(RuntimeError, match="queue unavailable"):
+        await sync_bulk_sync_schedule_for_provider(fake_db, "ldap")
+
+    fake_db.execute.assert_not_awaited()
+    fake_db.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -188,3 +238,47 @@ async def test_sync_bulk_sync_schedules_reconciles_all_bulk_sync_providers(
 
     assert synced_provider_ids == ["ldap", "entra_id"]
     fake_db.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_invalid_schedule_removes_stale_queued_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_service = SimpleNamespace(
+        queries=SimpleNamespace(),
+        schedule_refresh_lock=_AsyncLock(),
+    )
+    fake_db = AsyncMock()
+    fake_db.execute.return_value.rowcount = 1
+
+    async def fake_get(self, key: str, default=None):
+        if key.endswith("bulk_sync_time_utc"):
+            return "25:00"
+        return default
+
+    async def invalid_provider_sync(*_args, **_kwargs):
+        raise BulkSyncScheduleValueError(
+            "Bulk sync time must use HH:MM 24-hour UTC format"
+        )
+
+    monkeypatch.setattr(
+        "app.services.enrichment.bulk_sync_schedule_sync.get_task_queue_service",
+        lambda: fake_service,
+    )
+    monkeypatch.setattr(
+        "app.services.enrichment.bulk_sync_schedule_sync.enrichment_registry.list",
+        lambda: [SimpleNamespace(provider_id="ldap", supports_bulk_sync=True)],
+    )
+    monkeypatch.setattr(
+        "app.services.enrichment.bulk_sync_schedule_sync.SettingsService.get",
+        fake_get,
+    )
+    monkeypatch.setattr(
+        "app.services.enrichment.bulk_sync_schedule_sync.sync_bulk_sync_schedule_for_provider",
+        invalid_provider_sync,
+    )
+
+    await sync_bulk_sync_schedules(fake_db)
+
+    assert fake_db.execute.await_count == 2
+    fake_db.commit.assert_awaited_once_with()

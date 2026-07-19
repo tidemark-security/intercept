@@ -161,6 +161,42 @@ def _templates_to_bundle(templates: Iterable[LinkTemplate | PersonalLinkTemplate
     )
 
 
+async def _export_templates(
+    *,
+    db: AsyncSession,
+    template_ids: List[int],
+    model: Type[LinkTemplate] | Type[PersonalLinkTemplate],
+    not_found_subject: str,
+    user_id: Any = None,
+) -> LinkTemplateExportBundle:
+    if not template_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="template_ids must contain at least one template id",
+        )
+
+    query = select(model)
+    if model is PersonalLinkTemplate:
+        query = query.where(PersonalLinkTemplate.user_id == user_id)
+    query = query.where(model.id.in_(template_ids)).order_by(
+        model.display_order,
+        model.name,
+    )
+
+    result = await db.execute(query)
+    templates = result.scalars().all()
+    found_ids = {template.id for template in templates}
+    missing_ids = [
+        template_id for template_id in template_ids if template_id not in found_ids
+    ]
+    if missing_ids:
+        raise HTTPException(
+            status_code=404,
+            detail=f"{not_found_subject} not found: {missing_ids}",
+        )
+    return _templates_to_bundle(templates)
+
+
 def _extract_portable_templates(payload: Any) -> List[PortableLinkTemplate]:
     raw_templates: Any
     if isinstance(payload, list):
@@ -239,10 +275,10 @@ async def _import_templates(
         db.add(template)
         created.append(template)
 
+    await db.flush()
+    response = [read_model.model_validate(template) for template in created]
     await db.commit()
-    for template in created:
-        await db.refresh(template)
-    return [read_model.model_validate(template) for template in created]
+    return response
 
 
 async def _get_owned_personal_template(
@@ -270,7 +306,7 @@ async def get_link_templates(
     """Get public link templates."""
     query = select(LinkTemplate).order_by(LinkTemplate.display_order, LinkTemplate.name)
     if enabled_only:
-        query = query.where(LinkTemplate.enabled == True)
+        query = query.where(LinkTemplate.enabled.is_(True))
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -282,20 +318,12 @@ async def export_link_templates(
     _: UserAccount = Depends(require_admin_user),
 ):
     """Export selected public link templates as a portable JSON bundle."""
-    if not request.template_ids:
-        raise HTTPException(status_code=422, detail="template_ids must contain at least one template id")
-
-    result = await db.execute(
-        select(LinkTemplate)
-        .where(LinkTemplate.id.in_(request.template_ids))
-        .order_by(LinkTemplate.display_order, LinkTemplate.name)
+    return await _export_templates(
+        db=db,
+        template_ids=request.template_ids,
+        model=LinkTemplate,
+        not_found_subject="Link templates",
     )
-    templates = result.scalars().all()
-    found_ids = {template.id for template in templates}
-    missing_ids = [template_id for template_id in request.template_ids if template_id not in found_ids]
-    if missing_ids:
-        raise HTTPException(status_code=404, detail=f"Link templates not found: {missing_ids}")
-    return _templates_to_bundle(templates)
 
 
 @router.post("/import", response_model=List[LinkTemplateRead])
@@ -322,14 +350,14 @@ async def resolve_link_templates(
     """Resolve enabled public and current-user personal templates for one context."""
     public_result = await db.execute(
         select(LinkTemplate)
-        .where(LinkTemplate.enabled == True)
+        .where(LinkTemplate.enabled.is_(True))
         .order_by(LinkTemplate.display_order, LinkTemplate.name)
     )
     personal_result = await db.execute(
         select(PersonalLinkTemplate)
         .where(
             PersonalLinkTemplate.user_id == current_user.id,
-            PersonalLinkTemplate.enabled == True,
+            PersonalLinkTemplate.enabled.is_(True),
         )
         .order_by(PersonalLinkTemplate.display_order, PersonalLinkTemplate.name)
     )
@@ -405,10 +433,11 @@ async def create_link_template(
 
     template = LinkTemplate(**template_data.model_dump())
     db.add(template)
+    await db.flush()
+    response = LinkTemplateRead.model_validate(template)
     await db.commit()
-    await db.refresh(template)
-    logger.info("Created public link template %s (id=%s)", template.template_id, template.id)
-    return template
+    logger.info("Created public link template %s (id=%s)", response.template_id, response.id)
+    return response
 
 
 @router.patch("/{template_id}", response_model=LinkTemplateRead)
@@ -430,10 +459,10 @@ async def update_link_template(
         setattr(template, key, value)
     template.updated_at = datetime.now(timezone.utc)
 
+    response = LinkTemplateRead.model_validate(template)
     await db.commit()
-    await db.refresh(template)
-    logger.info("Updated public link template %s (id=%s)", template.template_id, template.id)
-    return template
+    logger.info("Updated public link template %s (id=%s)", response.template_id, response.id)
+    return response
 
 
 @router.delete("/{template_id}")
@@ -447,9 +476,10 @@ async def delete_link_template(
     if not template:
         raise HTTPException(status_code=404, detail=f"Link template {template_id} not found")
 
+    deleted_template_id = template.template_id
     await db.delete(template)
     await db.commit()
-    logger.info("Deleted public link template %s (id=%s)", template.template_id, template_id)
+    logger.info("Deleted public link template %s (id=%s)", deleted_template_id, template_id)
     return {"message": f"Link template {template_id} deleted successfully"}
 
 
@@ -466,7 +496,7 @@ async def get_personal_link_templates(
         .order_by(PersonalLinkTemplate.display_order, PersonalLinkTemplate.name)
     )
     if enabled_only:
-        query = query.where(PersonalLinkTemplate.enabled == True)
+        query = query.where(PersonalLinkTemplate.enabled.is_(True))
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -478,23 +508,13 @@ async def export_personal_link_templates(
     current_user: UserAccount = Depends(require_authenticated_user),
 ):
     """Export selected current-user personal link templates as a portable JSON bundle."""
-    if not request.template_ids:
-        raise HTTPException(status_code=422, detail="template_ids must contain at least one template id")
-
-    result = await db.execute(
-        select(PersonalLinkTemplate)
-        .where(
-            PersonalLinkTemplate.user_id == current_user.id,
-            PersonalLinkTemplate.id.in_(request.template_ids),
-        )
-        .order_by(PersonalLinkTemplate.display_order, PersonalLinkTemplate.name)
+    return await _export_templates(
+        db=db,
+        template_ids=request.template_ids,
+        model=PersonalLinkTemplate,
+        not_found_subject="Personal link templates",
+        user_id=current_user.id,
     )
-    templates = result.scalars().all()
-    found_ids = {template.id for template in templates}
-    missing_ids = [template_id for template_id in request.template_ids if template_id not in found_ids]
-    if missing_ids:
-        raise HTTPException(status_code=404, detail=f"Personal link templates not found: {missing_ids}")
-    return _templates_to_bundle(templates)
 
 
 @personal_router.post("/import", response_model=List[PersonalLinkTemplateRead])
@@ -545,15 +565,16 @@ async def create_personal_link_template(
 
     template = PersonalLinkTemplate(**template_data.model_dump(), user_id=current_user.id)
     db.add(template)
+    await db.flush()
+    response = PersonalLinkTemplateRead.model_validate(template)
     await db.commit()
-    await db.refresh(template)
     logger.info(
         "Created personal link template %s (id=%s, user_id=%s)",
-        template.template_id,
-        template.id,
+        response.template_id,
+        response.id,
         current_user.id,
     )
-    return template
+    return response
 
 
 @personal_router.patch("/{template_id}", response_model=PersonalLinkTemplateRead)
@@ -573,9 +594,9 @@ async def update_personal_link_template(
         setattr(template, key, value)
     template.updated_at = datetime.now(timezone.utc)
 
+    response = PersonalLinkTemplateRead.model_validate(template)
     await db.commit()
-    await db.refresh(template)
-    return template
+    return response
 
 
 @personal_router.delete("/{template_id}", status_code=204)

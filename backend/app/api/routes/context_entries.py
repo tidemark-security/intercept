@@ -6,6 +6,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.request_metadata import build_audit_context
 from app.api.routes.admin_auth import require_authenticated_user, require_non_auditor_user
 from app.core.database import get_db
 from app.models.models import (
@@ -14,8 +15,11 @@ from app.models.models import (
     ContextEntryUpdate,
     UserAccount,
 )
-from app.services.audit_service import AuditContext
-from app.services.context_service import ContextService
+from app.services.context_service import (
+    ContextEntryNotFoundError,
+    ContextService,
+    ContextValidationError,
+)
 
 
 router = APIRouter(
@@ -23,14 +27,6 @@ router = APIRouter(
     tags=["context-entries"],
     dependencies=[Depends(require_authenticated_user)],
 )
-
-
-def _audit_context(request: Request) -> AuditContext:
-    return AuditContext(
-        ip_address=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-        correlation_id=request.headers.get("x-correlation-id"),
-    )
 
 
 @router.get("", response_model=List[ContextEntryRead])
@@ -55,10 +51,13 @@ async def create_context_entry(
         return await ContextService(db).create_entry(
             payload,
             author=current_user.username,
-            audit_context=_audit_context(request),
+            audit_context=build_audit_context(request),
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except ContextValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
 
 @router.put("/{entry_id}", response_model=ContextEntryRead)
@@ -75,10 +74,18 @@ async def update_context_entry(
             entry_id,
             payload,
             updated_by=current_user.username,
-            audit_context=_audit_context(request),
+            audit_context=build_audit_context(request),
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except ContextEntryNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ContextValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
 
 
 @router.post("/{entry_id}/expire", response_model=ContextEntryRead)
@@ -89,8 +96,14 @@ async def expire_context_entry(
     current_user: UserAccount = Depends(require_non_auditor_user),
 ) -> ContextEntryRead:
     """Expire shared context immediately."""
-    return await ContextService(db).expire_entry(
-        entry_id,
-        expired_by=current_user.username,
-        audit_context=_audit_context(request),
-    )
+    try:
+        return await ContextService(db).expire_entry(
+            entry_id,
+            expired_by=current_user.username,
+            audit_context=build_audit_context(request),
+        )
+    except ContextEntryNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc

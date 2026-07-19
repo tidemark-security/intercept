@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -23,6 +24,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 VALID_ENTITY_TYPES = {"alert", "case", "task"}
+
+
+def _parse_message(raw: str) -> dict[str, Any] | None:
+    """Decode a client message, accepting JSON objects only."""
+    try:
+        message = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+    return message if isinstance(message, dict) else None
+
+
+def _parse_subscription_target(
+    message: dict[str, Any],
+) -> tuple[str, int] | None:
+    """Return a valid subscription target, excluding boolean pseudo-integers."""
+    entity_type = message.get("entity_type")
+    entity_id = message.get("entity_id")
+    if (
+        entity_type not in VALID_ENTITY_TYPES
+        or not isinstance(entity_id, int)
+        or isinstance(entity_id, bool)
+    ):
+        return None
+    return entity_type, entity_id
 
 
 def _origin_allowed(ws: WebSocket) -> bool:
@@ -46,9 +72,6 @@ async def _authenticate(ws: WebSocket) -> LoginResult | None:
         return login_result
     except SessionNotFoundError:
         return None
-    except Exception:
-        logger.exception("WebSocket auth error")
-        return None
 
 
 async def _revalidate_session(session_token: str) -> bool:
@@ -60,9 +83,46 @@ async def _revalidate_session(session_token: str) -> bool:
         return True
     except SessionNotFoundError:
         return False
-    except Exception:
-        logger.exception("WebSocket session re-validation error")
-        return False
+
+
+async def _close_for_session_validation_failure(ws: WebSocket) -> None:
+    """Best-effort close when the session backend cannot be reached."""
+    try:
+        await ws.send_json(
+            {
+                "type": "error",
+                "payload": {"message": "Session validation unavailable"},
+            }
+        )
+        await ws.close(code=1011, reason="Session validation unavailable")
+    except (RuntimeError, WebSocketDisconnect):
+        # The peer may have disconnected while validation was in progress.
+        pass
+
+
+async def _heartbeat(ws: WebSocket) -> None:
+    """Ping a connection and close it when its session expires or cannot be checked."""
+    while True:
+        await asyncio.sleep(HEARTBEAT_INTERVAL)
+        try:
+            token = connection_manager.get_session_token(ws)
+            session_valid = bool(token and await _revalidate_session(token))
+        except Exception:
+            logger.exception("WebSocket session validation error")
+            await _close_for_session_validation_failure(ws)
+            return
+
+        try:
+            if not session_valid:
+                await ws.send_json(
+                    {"type": "error", "payload": {"message": "Session expired"}}
+                )
+                await ws.close(code=4001, reason="Session expired")
+                return
+            await ws.send_json({"type": "ping"})
+        except (RuntimeError, WebSocketDisconnect):
+            # Sending to an already-closed connection is an expected race.
+            return
 
 
 @router.websocket("/ws")
@@ -72,7 +132,12 @@ async def websocket_endpoint(ws: WebSocket):
         return
 
     # --- Authenticate on handshake ---
-    login_result = await _authenticate(ws)
+    try:
+        login_result = await _authenticate(ws)
+    except Exception:
+        logger.exception("WebSocket authentication service error")
+        await ws.close(code=1011, reason="Authentication service unavailable")
+        return
     if not login_result:
         await ws.close(code=4001, reason="Unauthorized")
         return
@@ -81,55 +146,31 @@ async def websocket_endpoint(ws: WebSocket):
     await connection_manager.connect(ws, login_result.session_token, login_result.user.username)
     logger.info("WebSocket connected (active: %d)", connection_manager.active_connections)
 
-    # Background heartbeat + session re-validation
-    async def heartbeat():
-        try:
-            while True:
-                await asyncio.sleep(HEARTBEAT_INTERVAL)
-                # Re-validate session
-                token = connection_manager.get_session_token(ws)
-                if not token or not await _revalidate_session(token):
-                    await ws.send_json({"type": "error", "payload": {"message": "Session expired"}})
-                    await ws.close(code=4001, reason="Session expired")
-                    return
-                await ws.send_json({"type": "ping"})
-        except Exception:
-            pass  # Connection closed; heartbeat exits
-
-    heartbeat_task = asyncio.create_task(heartbeat())
+    heartbeat_task = asyncio.create_task(_heartbeat(ws))
 
     try:
         while True:
             raw = await ws.receive_text()
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
+            msg = _parse_message(raw)
+            if msg is None:
                 await ws.send_json({"type": "error", "payload": {"message": "Invalid JSON"}})
                 continue
 
             msg_type = msg.get("type")
 
-            if msg_type == "subscribe":
-                entity_type = msg.get("entity_type")
-                entity_id = msg.get("entity_id")
-                if entity_type not in VALID_ENTITY_TYPES or not isinstance(entity_id, int):
-                    await ws.send_json({"type": "error", "payload": {"message": "Invalid subscribe params"}})
+            if msg_type in {"subscribe", "unsubscribe"}:
+                target = _parse_subscription_target(msg)
+                if target is None:
+                    await ws.send_json({
+                        "type": "error",
+                        "payload": {"message": f"Invalid {msg_type} params"},
+                    })
                     continue
-                await connection_manager.subscribe(ws, entity_type, entity_id)
+                entity_type, entity_id = target
+                subscription_action = getattr(connection_manager, msg_type)
+                await subscription_action(ws, entity_type, entity_id)
                 await ws.send_json({
-                    "type": "subscribed",
-                    "payload": {"entity_type": entity_type, "entity_id": entity_id},
-                })
-
-            elif msg_type == "unsubscribe":
-                entity_type = msg.get("entity_type")
-                entity_id = msg.get("entity_id")
-                if entity_type not in VALID_ENTITY_TYPES or not isinstance(entity_id, int):
-                    await ws.send_json({"type": "error", "payload": {"message": "Invalid unsubscribe params"}})
-                    continue
-                await connection_manager.unsubscribe(ws, entity_type, entity_id)
-                await ws.send_json({
-                    "type": "unsubscribed",
+                    "type": f"{msg_type}d",
                     "payload": {"entity_type": entity_type, "entity_id": entity_id},
                 })
 
@@ -145,5 +186,9 @@ async def websocket_endpoint(ws: WebSocket):
         logger.exception("WebSocket error")
     finally:
         heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
         await connection_manager.disconnect(ws)
         logger.info("WebSocket disconnected (active: %d)", connection_manager.active_connections)

@@ -3,22 +3,29 @@
 This service implements PostgreSQL full-text search with:
 - Weighted zones (A=title, B=description, C=source/assignee, D=timeline)
 - ts_headline for snippet generation with <mark> tags
-- Parallel async queries across all entity types
+- Unified pagination across alert, case, and task queries
 - Fuzzy matching fallback using pg_trgm similarity
-- Type-specific JSONB containment queries for IOCs (IPs, emails, URLs, hashes)
+- Type-specific timeline queries for IOCs (IPs, emails, URLs, hashes)
 """
-import asyncio
 import ipaddress
-import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, List, Optional, Tuple
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.entity_ids import (
+    ALERT_PREFIX,
+    CASE_PREFIX,
+    PREFIX_TO_KIND,
+    TASK_PREFIX,
+    WORK_ITEM_KIND_TO_PREFIX,
+    format_entity_id,
+)
 from app.models.search_schemas import (
     EntityType,
     SearchResultItem,
@@ -81,45 +88,24 @@ class QueryClassification:
     numeric_id: Optional[int] = None            # Plain numeric ID (could match any entity type)
 
 
-@dataclass
-class LegacyTotalByType:
-    """Backward-compatible per-entity totals used by legacy unit tests."""
-
-    alert: int = 0
-    case: int = 0
-    task: int = 0
-
-
-@dataclass
-class LegacyGlobalSearchResponse:
-    """Backward-compatible global search response shape."""
-
-    results: List[SearchResultItem]
-    total_by_type: LegacyTotalByType
-
-
 # Regex patterns for query classification
 # Order matters - more specific patterns should be checked first
 
 # Human ID patterns - ALT-0000001, CAS-000001, TSK-000001 (1-9 digits after prefix)
 _HUMAN_ID_PATTERN = re.compile(
-    r'^(ALT|CAS|TSK)-(\d{1,9})$', re.IGNORECASE
+    rf"^({'|'.join(map(re.escape, WORK_ITEM_KIND_TO_PREFIX.values()))})-(\d{{1,9}})$",
+    re.IGNORECASE,
 )
-_HUMAN_ID_PREFIX_MAP = {
-    'ALT': 'alert',
-    'CAS': 'case',
-    'TSK': 'task',
-}
 
 # Use patterns from shared validation module
 _IPV4_PATTERN = STRICT_PATTERNS["ipv4"]
-_IPV6_PATTERN = STRICT_PATTERNS["ipv6"]
 _EMAIL_PATTERN = STRICT_PATTERNS["email"]
 _URL_PATTERN = STRICT_PATTERNS["url"]
 _DOMAIN_PATTERN = STRICT_PATTERNS["domain"]
 _MD5_PATTERN = STRICT_PATTERNS["md5"]
 _SHA1_PATTERN = STRICT_PATTERNS["sha1"]
 _SHA256_PATTERN = STRICT_PATTERNS["sha256"]
+_HASH_PATTERNS = (_SHA256_PATTERN, _SHA1_PATTERN, _MD5_PATTERN)
 _FILENAME_PATTERN = STRICT_PATTERNS["filename"]
 _MITRE_ATTACK_PATTERN = STRICT_PATTERNS["mitre_attack"]
 
@@ -148,6 +134,36 @@ def _is_ipv6_address(value: str) -> bool:
         return False
 
 
+class SearchDateRangeValidationError(ValueError):
+    """Raised when resolved search date bounds are inconsistent."""
+
+
+def resolve_search_date_range(
+    start_date: Optional[datetime],
+    end_date: Optional[datetime],
+    *,
+    now: Optional[datetime] = None,
+) -> tuple[datetime, datetime]:
+    """Resolve optional search bounds and enforce the supported one-year window."""
+    resolved_end = end_date or now or datetime.now(timezone.utc)
+    resolved_start = start_date or resolved_end - timedelta(days=30)
+
+    if resolved_start > resolved_end:
+        raise SearchDateRangeValidationError("Start date must be before end date")
+    if resolved_end - resolved_start > timedelta(days=365):
+        raise SearchDateRangeValidationError("Date range cannot exceed 1 year")
+
+    return resolved_start, resolved_end
+
+
+def _contains_like_pattern(value: str, *, asterisk_wildcard: bool = False) -> str:
+    """Build a literal SQL LIKE substring pattern, optionally honoring ``*``."""
+    escaped = value.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+    if asterisk_wildcard:
+        escaped = escaped.replace("*", "%")
+    return f"%{escaped}%"
+
+
 def classify_query(query: str) -> QueryClassification:
     """Classify a search query to determine optimal search strategy.
     
@@ -163,163 +179,104 @@ def classify_query(query: str) -> QueryClassification:
     
     # Check for wildcard
     has_wildcard = '*' in query
+
+    def classified(
+        query_type: QueryType,
+        normalized_value: Optional[str] = None,
+        *,
+        human_id_entity_type: Optional[str] = None,
+        human_id_numeric: Optional[int] = None,
+        numeric_id: Optional[int] = None,
+    ) -> QueryClassification:
+        return QueryClassification(
+            query_type=query_type,
+            normalized_value=query if normalized_value is None else normalized_value,
+            has_wildcard=has_wildcard,
+            original_query=original,
+            human_id_entity_type=human_id_entity_type,
+            human_id_numeric=human_id_numeric,
+            numeric_id=numeric_id,
+        )
     
     # For classification, remove wildcards temporarily
     test_value = query.replace('*', '')
     
     # Empty after removing wildcards means it's just wildcards
     if not test_value:
-        return QueryClassification(
-            query_type=QueryType.GENERIC,
-            normalized_value=query,
-            has_wildcard=has_wildcard,
-            original_query=original,
-        )
+        return classified(QueryType.GENERIC)
     
     # Check patterns in order of specificity
     
     # Human ID (ALT-0000001, CAS-000001, TSK-000001) - highest priority
     human_id_match = _HUMAN_ID_PATTERN.match(test_value)
-    if human_id_match:
+    if human_id_match and not has_wildcard:
         prefix = human_id_match.group(1).upper()
         numeric_id = int(human_id_match.group(2))
-        entity_type = _HUMAN_ID_PREFIX_MAP.get(prefix)
-        return QueryClassification(
-            query_type=QueryType.HUMAN_ID,
-            normalized_value=query.upper(),  # Normalize to uppercase
-            has_wildcard=has_wildcard,
-            original_query=original,
+        entity_type = PREFIX_TO_KIND.get(prefix)
+        return classified(
+            QueryType.HUMAN_ID,
+            query.upper(),
             human_id_entity_type=entity_type,
             human_id_numeric=numeric_id,
         )
     
     # Plain numeric ID (e.g., "123") - could be alert, case, or task ID
     # Check after human ID but before IP to avoid matching IPs like "192"
-    if test_value.isdigit():
+    if test_value.isdigit() and not has_wildcard:
         numeric_value = int(test_value)
         # Only treat as ID if it's a reasonable entity ID (positive, not too large)
         if 0 < numeric_value <= 999999999:
-            return QueryClassification(
-                query_type=QueryType.NUMERIC_ID,
-                normalized_value=query,
-                has_wildcard=has_wildcard,
-                original_query=original,
-                numeric_id=numeric_value,
-            )
+            return classified(QueryType.NUMERIC_ID, numeric_id=numeric_value)
     
     # IPv4 (exact match)
     if _IPV4_PATTERN.match(test_value):
-        return QueryClassification(
-            query_type=QueryType.IP,
-            normalized_value=query,
-            has_wildcard=has_wildcard,
-            original_query=original,
-        )
+        return classified(QueryType.IP)
     
     # IPv4 with wildcards (e.g., 192.168.* or 10.*.*.*)
     if has_wildcard and _IPV4_WILDCARD_PATTERN.match(query):
-        return QueryClassification(
-            query_type=QueryType.IP,
-            normalized_value=query,
-            has_wildcard=True,
-            original_query=original,
-        )
+        return classified(QueryType.IP)
     
     # IPv6
     if _is_ipv6_address(test_value):
-        return QueryClassification(
-            query_type=QueryType.IP,
-            normalized_value=query,
-            has_wildcard=has_wildcard,
-            original_query=original,
-        )
+        return classified(QueryType.IP)
     
     # Email
     if _EMAIL_PATTERN.match(test_value):
-        return QueryClassification(
-            query_type=QueryType.EMAIL,
-            normalized_value=query.lower(),  # Normalize email to lowercase
-            has_wildcard=has_wildcard,
-            original_query=original,
-        )
+        return classified(QueryType.EMAIL, query.lower())
     
     # URL (before domain since URLs contain domains)
     if _URL_PATTERN.match(test_value):
-        return QueryClassification(
-            query_type=QueryType.URL,
-            normalized_value=query,
-            has_wildcard=has_wildcard,
-            original_query=original,
-        )
+        return classified(QueryType.URL)
     
     # Hashes (check before domain since hex strings could match domain pattern)
-    if _SHA256_PATTERN.match(test_value):
-        return QueryClassification(
-            query_type=QueryType.HASH,
-            normalized_value=query.lower(),  # Normalize hash to lowercase
-            has_wildcard=has_wildcard,
-            original_query=original,
-        )
-    if _SHA1_PATTERN.match(test_value):
-        return QueryClassification(
-            query_type=QueryType.HASH,
-            normalized_value=query.lower(),
-            has_wildcard=has_wildcard,
-            original_query=original,
-        )
-    if _MD5_PATTERN.match(test_value):
-        return QueryClassification(
-            query_type=QueryType.HASH,
-            normalized_value=query.lower(),
-            has_wildcard=has_wildcard,
-            original_query=original,
-        )
+    if any(pattern.match(test_value) for pattern in _HASH_PATTERNS):
+        return classified(QueryType.HASH, query.lower())
     
     # MITRE ATT&CK ID (check BEFORE filename to avoid T1059.002 matching as filename)
     if _MITRE_ATTACK_PATTERN.match(test_value):
-        return QueryClassification(
-            query_type=QueryType.MITRE,
-            normalized_value=query.upper(),  # Normalize to uppercase (T1059.001)
-            has_wildcard=has_wildcard,
-            original_query=original,
-        )
+        return classified(QueryType.MITRE, query.upper())
     
     # Filename (check BEFORE domain - use extension whitelist to avoid false positives)
     filename_match = _FILENAME_PATTERN.match(test_value)
     if filename_match:
         extension = filename_match.group(1).lower()
         if extension in _FILENAME_EXTENSIONS:
-            return QueryClassification(
-                query_type=QueryType.FILENAME,
-                normalized_value=query,
-                has_wildcard=has_wildcard,
-                original_query=original,
-            )
+            return classified(QueryType.FILENAME)
     
     # Domain/hostname (after filename check)
     if _DOMAIN_PATTERN.match(test_value):
-        return QueryClassification(
-            query_type=QueryType.DOMAIN,
-            normalized_value=query.lower(),  # Normalize domain to lowercase
-            has_wildcard=has_wildcard,
-            original_query=original,
-        )
+        return classified(QueryType.DOMAIN, query.lower())
     
     # Fallback to generic
-    return QueryClassification(
-        query_type=QueryType.GENERIC,
-        normalized_value=query,
-        has_wildcard=has_wildcard,
-        original_query=original,
-    )
+    return classified(QueryType.GENERIC)
 
 
 # =============================================================================
-# Type-Specific Field Mappings for JSONB Containment Queries
+# Type-Specific Field Mappings for Timeline Queries
 # =============================================================================
 
 # Maps QueryType to list of (timeline_item_type, field_name) tuples
-# These are used to build efficient @> containment queries
+# These are used to match structured timeline item fields.
 FIELD_MAPPINGS: dict[QueryType, list[tuple[str, str]]] = {
     QueryType.IP: [
         ("system", "ip_address"),
@@ -371,39 +328,97 @@ class SearchService:
     
     # Human ID prefixes for each entity type
     PREFIXES = {
-        EntityType.ALERT: "ALT-",
-        EntityType.CASE: "CAS-",
-        EntityType.TASK: "TSK-",
+        EntityType.ALERT: ALERT_PREFIX,
+        EntityType.CASE: CASE_PREFIX,
+        EntityType.TASK: TASK_PREFIX,
+    }
+    TABLE_NAMES = {
+        EntityType.ALERT: "alerts",
+        EntityType.CASE: "cases",
+        EntityType.TASK: "tasks",
+    }
+    ENTITY_TYPES_BY_KIND = {
+        "alert": EntityType.ALERT,
+        "case": EntityType.CASE,
+        "task": EntityType.TASK,
     }
     
     def _generate_human_id(self, entity_type: EntityType, entity_id: int) -> str:
         """Generate human-readable ID like ALT-0000123."""
         prefix = self.PREFIXES[entity_type]
-        return f"{prefix}{entity_id:07d}"
+        return format_entity_id(entity_id, prefix)
 
-    def _search_metadata(self, row) -> dict:
+    @staticmethod
+    def _search_metadata(row: Any) -> dict[str, Any]:
         """Extract optional display metadata shared by alert/case/task rows."""
-        def optional_attr(name):
-            value = getattr(row, name, None)
-            if value.__class__.__module__.startswith("unittest.mock"):
-                return None
-            return value
-
-        def as_optional_str(value):
+        def as_optional_str(value: Any) -> Optional[str]:
             if value is None:
                 return None
-            if hasattr(value, "value"):
+            if isinstance(value, Enum):
                 return str(value.value)
             return str(value)
 
         return {
-            "updated_at": optional_attr("updated_at"),
-            "priority": as_optional_str(optional_attr("priority")),
-            "status": as_optional_str(optional_attr("status")),
-            "assignee": as_optional_str(optional_attr("assignee")),
+            "updated_at": getattr(row, "updated_at", None),
+            "priority": as_optional_str(getattr(row, "priority", None)),
+            "status": as_optional_str(getattr(row, "status", None)),
+            "assignee": as_optional_str(getattr(row, "assignee", None)),
         }
 
-    def _iter_timeline_items(self, timeline_items: Any) -> List[dict]:
+    @staticmethod
+    def _coerce_tags(value: Any) -> List[str]:
+        """Keep valid string tags while tolerating malformed legacy JSON."""
+        if not isinstance(value, list):
+            return []
+        return [tag for tag in value if isinstance(tag, str)]
+
+    @staticmethod
+    def _title_description_snippet(row: Any) -> str:
+        """Build the compact snippet used by exact-ID results."""
+        snippet = row.title or ""
+        if row.description:
+            description = row.description[:100]
+            snippet = f"{snippet} - {description}" if snippet else description
+        return snippet
+
+    @staticmethod
+    def _truncate_snippet(snippet: Any, *, preserve_json: bool = False) -> str:
+        value = str(snippet or "")
+        if len(value) <= 150 or (preserve_json and value.strip().startswith("{")):
+            return value
+        return value[:147] + "..."
+
+    def _result_from_row(
+        self,
+        row: Any,
+        entity_type: EntityType,
+        *,
+        snippet: str,
+        score: float,
+        normalized_tags: Optional[List[str]] = None,
+    ) -> SearchResultItem:
+        """Map a database search row into the shared response contract."""
+        tags = self._coerce_tags(getattr(row, "tags", None))
+        return SearchResultItem(
+            entity_type=entity_type,
+            entity_id=row.id,
+            human_id=self._generate_human_id(entity_type, row.id),
+            title=row.title or "",
+            snippet=snippet,
+            score=score,
+            timeline_item_id=None,
+            created_at=row.created_at,
+            **self._search_metadata(row),
+            tags=tags,
+            tag_matches=self._build_tag_matches(
+                tags,
+                getattr(row, "timeline_items", None),
+                normalized_tags,
+            ),
+        )
+
+    @staticmethod
+    def _iter_timeline_items(timeline_items: Any) -> List[dict]:
         """Return timeline item dicts from object-backed or array-backed storage."""
         if isinstance(timeline_items, dict):
             candidates = timeline_items.values()
@@ -414,7 +429,8 @@ class SearchService:
 
         return [item for item in candidates if isinstance(item, dict)]
 
-    def _timeline_item_label(self, item: dict) -> str:
+    @staticmethod
+    def _timeline_item_label(item: dict) -> str:
         """Build a compact label for timeline tag match context."""
         for field in (
             "title",
@@ -433,6 +449,8 @@ class SearchService:
             if isinstance(value, str) and value.strip():
                 label = value.strip()
                 return label[:77] + "..." if len(label) > 80 else label
+            if field == "id" and value is not None:
+                return str(value)
 
         item_type = item.get("type")
         return str(item_type) if item_type else "Timeline item"
@@ -481,21 +499,14 @@ class SearchService:
                 timeline_item_label=item_label,
             ))
 
-        for tag in entity_tags or []:
-            if not isinstance(tag, str):
-                continue
+        for tag in self._coerce_tags(entity_tags):
             tag_lower = tag.lower()
             for filter_value in normalized_filters:
                 if filter_value.lower() in tag_lower:
                     add_match(source="entity", tag=tag, filter_value=filter_value)
 
         for item in self._iter_timeline_items(timeline_items):
-            tags = item.get("tags")
-            if not isinstance(tags, list):
-                continue
-            for tag in tags:
-                if not isinstance(tag, str):
-                    continue
+            for tag in self._coerce_tags(item.get("tags")):
                 tag_lower = tag.lower()
                 for filter_value in normalized_filters:
                     if filter_value.lower() in tag_lower:
@@ -512,20 +523,12 @@ class SearchService:
         self,
         db: AsyncSession,
         classification: QueryClassification,
-        target_entity_type: Optional[EntityType] = None,
+        target_entity_type: EntityType,
+        start_date: datetime,
+        end_date: datetime,
+        normalized_tags: List[str],
     ) -> Optional[SearchResultItem]:
-        """Look up an entity by exact human ID match.
-        
-        Returns a SearchResultItem with score 1.0 if found, None otherwise.
-        
-        Args:
-            db: Database session
-            classification: Query classification (must be HUMAN_ID type)
-            target_entity_type: If specified, only match if entity type matches
-            
-        Returns:
-            SearchResultItem with score 1.0 if exact match found, None otherwise
-        """
+        """Look up a filtered exact human-ID match for one entity type."""
         if classification.query_type != QueryType.HUMAN_ID:
             return None
         
@@ -535,31 +538,39 @@ class SearchService:
         if not entity_type_str or entity_id is None:
             return None
         
-        # Map string to EntityType enum
-        entity_type_map = {
-            'alert': EntityType.ALERT,
-            'case': EntityType.CASE,
-            'task': EntityType.TASK,
-        }
-        entity_type = entity_type_map.get(entity_type_str)
+        entity_type = self.ENTITY_TYPES_BY_KIND.get(entity_type_str)
         if not entity_type:
             return None
         
-        # If target_entity_type is specified, check if it matches
-        if target_entity_type and entity_type != target_entity_type:
+        if entity_type != target_entity_type:
             return None
-        
-        # Determine table name
-        table_map = {
-            EntityType.ALERT: "alerts",
-            EntityType.CASE: "cases",
-            EntityType.TASK: "tasks",
-        }
-        table_name = table_map[entity_type]
-        
-        # Query for exact ID match
+
+        return await self._lookup_exact_id(
+            db,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            start_date=start_date,
+            end_date=end_date,
+            normalized_tags=normalized_tags,
+        )
+
+    async def _lookup_exact_id(
+        self,
+        db: AsyncSession,
+        *,
+        entity_type: EntityType,
+        entity_id: int,
+        start_date: datetime,
+        end_date: datetime,
+        normalized_tags: List[str],
+    ) -> Optional[SearchResultItem]:
+        """Return an exact ID match that satisfies the active search filters."""
+        table_name = self.TABLE_NAMES[entity_type]
+        tag_filter_sql, tag_filter_params = self._build_tag_filter_sql(normalized_tags)
+        tag_filter_clause = f" AND {tag_filter_sql}" if tag_filter_sql else ""
+
         sql = text(f"""
-            SELECT 
+            SELECT
                 id,
                 title,
                 description,
@@ -572,55 +583,40 @@ class SearchService:
                 assignee
             FROM {table_name}
             WHERE id = :entity_id
+              AND created_at >= :start_date
+              AND created_at <= :end_date
+              {tag_filter_clause}
         """)
-        
-        result = await db.execute(sql, {"entity_id": entity_id})
+
+        result = await db.execute(sql, {
+            "entity_id": entity_id,
+            "start_date": start_date,
+            "end_date": end_date,
+            **tag_filter_params,
+        })
         row = result.fetchone()
-        
+
         if not row:
             return None
-        
-        # Build snippet from title/description
-        snippet = ""
-        if row.title:
-            snippet = row.title
-        if row.description:
-            desc_preview = row.description[:100] if len(row.description) > 100 else row.description
-            snippet = f"{snippet} - {desc_preview}" if snippet else desc_preview
-        
-        return SearchResultItem(
-            entity_type=entity_type,
-            entity_id=row.id,
-            human_id=self._generate_human_id(entity_type, row.id),
-            title=row.title or "",
-            snippet=snippet,
-            score=1.0,  # Exact match = maximum score
-            timeline_item_id=None,
-            created_at=row.created_at,
-            **self._search_metadata(row),
-            tags=row.tags or [],
-            tag_matches=[],
+
+        return self._result_from_row(
+            row,
+            entity_type,
+            snippet=self._title_description_snippet(row),
+            score=1.0,
+            normalized_tags=normalized_tags,
         )
     
     async def _lookup_by_numeric_id(
         self,
         db: AsyncSession,
         classification: QueryClassification,
-        entity_types: Optional[List[EntityType]] = None,
+        entity_types: List[EntityType],
+        start_date: datetime,
+        end_date: datetime,
+        normalized_tags: List[str],
     ) -> List[SearchResultItem]:
-        """Look up entities by plain numeric ID across all entity types.
-        
-        When a user enters just a number like "123", we check if it matches
-        an alert, case, or task ID and return any matches as top results.
-        
-        Args:
-            db: Database session
-            classification: Query classification (must be NUMERIC_ID type)
-            entity_types: If specified, only search these entity types
-            
-        Returns:
-            List of SearchResultItems with score 1.0 for each matching entity
-        """
+        """Look up filtered plain numeric-ID matches across entity types."""
         if classification.query_type != QueryType.NUMERIC_ID:
             return []
         
@@ -628,87 +624,32 @@ class SearchService:
         if entity_id is None:
             return []
         
-        # Search all entity types by default
-        if entity_types is None:
-            entity_types = list(EntityType)
-        
         results: List[SearchResultItem] = []
-        
-        # Check each entity type for a matching ID
-        table_map = {
-            EntityType.ALERT: "alerts",
-            EntityType.CASE: "cases",
-            EntityType.TASK: "tasks",
-        }
-        
+
         for entity_type in entity_types:
-            table_name = table_map.get(entity_type)
-            if not table_name:
-                continue
-            
-            sql = text(f"""
-                SELECT 
-                    id,
-                    title,
-                    description,
-                    tags,
-                    created_at,
-                    updated_at,
-                    priority,
-                    status,
-                    assignee
-                FROM {table_name}
-                WHERE id = :entity_id
-            """)
-            
-            result = await db.execute(sql, {"entity_id": entity_id})
-            row = result.fetchone()
-            
-            if row:
-                # Build snippet from title/description
-                snippet = ""
-                if row.title:
-                    snippet = row.title
-                if row.description:
-                    desc_preview = row.description[:100] if len(row.description) > 100 else row.description
-                    snippet = f"{snippet} - {desc_preview}" if snippet else desc_preview
-                
-                results.append(SearchResultItem(
-                    entity_type=entity_type,
-                    entity_id=row.id,
-                    human_id=self._generate_human_id(entity_type, row.id),
-                    title=row.title or "",
-                    snippet=snippet,
-                    score=1.0,  # Exact ID match = maximum score
-                    timeline_item_id=None,
-                    created_at=row.created_at,
-                    **self._search_metadata(row),
-                    tags=row.tags or [],
-                    tag_matches=[],
-                ))
-        
+            match = await self._lookup_exact_id(
+                db,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                start_date=start_date,
+                end_date=end_date,
+                normalized_tags=normalized_tags,
+            )
+            if match:
+                results.append(match)
+
         return results
     
-    def _build_jsonb_containment_sql(
+    def _build_timeline_match_sql(
         self,
         classification: QueryClassification,
     ) -> tuple[str, dict]:
-        """Build JSONB containment query conditions for classified queries.
-        
-        For non-wildcard queries, generates efficient @> containment conditions
-        that leverage the GIN index on timeline_items.
-        
-        For wildcard queries, falls back to ILIKE on timeline_items::text.
-        
-        For DOMAIN queries, uses hybrid approach: GIN pre-filter on item types
-        that could contain domains, then ILIKE refinement for substring matching.
+        """Build timeline-item match conditions for a classified query.
+
+        Structured values use exact field comparisons. Wildcard and generic
+        queries use a safely escaped text search. Domain queries first restrict
+        the scan to timeline item types that can contain domain strings.
         This catches domains within email addresses (e.g., evil.com in user@evil.com).
-        
-        Args:
-            classification: The classified query with type and normalized value
-            
-        Returns:
-            Tuple of (SQL WHERE clause fragment, parameter dict)
         """
         query_type = classification.query_type
         value = classification.normalized_value
@@ -716,19 +657,21 @@ class SearchService:
         
         # For wildcards or generic queries, use ILIKE fallback
         if has_wildcard or query_type == QueryType.GENERIC:
-            # Convert * to % for SQL LIKE
-            like_value = value.replace('*', '%')
-            # Note: Use CAST() instead of :: to avoid SQLAlchemy parameter parsing issues
             return (
-                "CAST(timeline_items AS text) ILIKE :jsonb_pattern",
-                {"jsonb_pattern": f"%{like_value}%"}
+                "CAST(timeline_items AS text) ILIKE :timeline_pattern ESCAPE '\\'",
+                {
+                    "timeline_pattern": _contains_like_pattern(
+                        value,
+                        asterisk_wildcard=True,
+                    )
+                },
             )
         
-        # For DOMAIN queries, use hybrid GIN pre-filter + ILIKE approach
+        # Restrict domain text scans to item types that can contain domains.
         # This catches domains within email addresses (evil.com in user@evil.com)
         # and URLs (evil.com in https://evil.com/path)
         if query_type == QueryType.DOMAIN:
-            return self._build_hybrid_domain_sql(value)
+            return self._build_domain_match_sql(value)
         
         # Build containment conditions for specific field mappings
         conditions = []
@@ -738,9 +681,6 @@ class SearchService:
         # Get field mappings for this query type
         field_mappings = FIELD_MAPPINGS.get(query_type, [])
         for item_type, field_name in field_mappings:
-            param_name = f"containment_{param_idx}"
-            # Build JSONB containment: timeline_items @> CAST(:param AS jsonb)
-            # Note: Use CAST() instead of :: to avoid SQLAlchemy parameter parsing issues
             type_param = f"containment_type_{param_idx}"
             value_param = f"containment_value_{param_idx}"
             conditions.append(
@@ -758,7 +698,6 @@ class SearchService:
         # Add observable type mappings
         observable_types = OBSERVABLE_TYPE_MAPPINGS.get(query_type, [])
         for obs_type in observable_types:
-            param_name = f"containment_{param_idx}"
             observable_type_param = f"containment_observable_type_{param_idx}"
             observable_value_param = f"containment_observable_value_{param_idx}"
             conditions.append(
@@ -775,11 +714,9 @@ class SearchService:
             param_idx += 1
         
         if not conditions:
-            # No mappings found, fallback to ILIKE
-            # Note: Use CAST() instead of :: to avoid SQLAlchemy parameter parsing issues
             return (
-                "CAST(timeline_items AS text) ILIKE :jsonb_pattern",
-                {"jsonb_pattern": f"%{value}%"}
+                "CAST(timeline_items AS text) ILIKE :timeline_pattern ESCAPE '\\'",
+                {"timeline_pattern": _contains_like_pattern(value)},
             )
         
         # Join conditions with OR - any of them matching is a hit
@@ -789,7 +726,7 @@ class SearchService:
         )
     
     # Timeline item types that could contain domain strings
-    # Used for hybrid GIN pre-filter before ILIKE refinement
+    # Used to narrow domain text searches before ILIKE refinement.
     DOMAIN_CONTAINING_TYPES: list[dict] = [
         {"type": "email"},                                    # sender, recipient contain domains
         {"type": "observable", "observable_type": "DOMAIN"},  # direct domain observable
@@ -803,25 +740,9 @@ class SearchService:
         {"type": "threat_actor"},                             # contact_email contains domains
     ]
 
-    def _build_hybrid_domain_sql(self, domain: str) -> tuple[str, dict]:
-        """Build hybrid GIN pre-filter + ILIKE query for domain searches.
-        
-        This approach:
-        1. Uses GIN index to quickly find rows with domain-containing item types
-        2. Applies ILIKE only on those filtered rows
-        
-        This is much faster than full-table ILIKE when domain-containing items
-        are sparse, while still catching domains within email addresses
-        (evil.com matches user@evil.com) and URLs.
-        
-        Args:
-            domain: The domain to search for (e.g., "evil.com")
-            
-        Returns:
-            Tuple of (SQL WHERE clause fragment, parameter dict)
-        """
-        # Build GIN containment conditions for types that could contain domains
-        gin_conditions = []
+    def _build_domain_match_sql(self, domain: str) -> tuple[str, dict]:
+        """Restrict a domain substring search to relevant timeline item types."""
+        type_conditions = []
         params = {}
         
         for idx, type_filter in enumerate(self.DOMAIN_CONTAINING_TYPES):
@@ -833,7 +754,7 @@ class SearchService:
                 observable_clause = f" AND timeline_domain.item->>'observable_type' = :{observable_type_param}"
                 params[observable_type_param] = str(observable_type)
 
-            gin_conditions.append(
+            type_conditions.append(
                 f"""EXISTS (
                     SELECT 1
                     FROM ({TIMELINE_ITEMS_SQL}) AS timeline_domain
@@ -842,16 +763,10 @@ class SearchService:
             )
             params[type_param] = str(type_filter["type"])
         
-        # Combine: (GIN pre-filter) AND (ILIKE refinement)
-        # The GIN conditions are OR'd together (any matching type)
-        # Then ILIKE is applied to the reduced result set
-        params["domain_pattern"] = f"%{domain}%"
-        
-        # PostgreSQL will use GIN index for the containment checks first,
-        # then apply ILIKE filter on the reduced result set
+        params["domain_pattern"] = _contains_like_pattern(domain)
         sql = f"""(
-            ({" OR ".join(gin_conditions)})
-            AND CAST(timeline_items AS text) ILIKE :domain_pattern
+            ({" OR ".join(type_conditions)})
+            AND CAST(timeline_items AS text) ILIKE :domain_pattern ESCAPE '\\'
         )"""
         
         return sql, params
@@ -864,7 +779,7 @@ class SearchService:
         normalized: List[str] = []
         seen: set[str] = set()
         for raw_tag in tags:
-            if not raw_tag:
+            if not isinstance(raw_tag, str):
                 continue
             cleaned = raw_tag.strip()
             if not cleaned:
@@ -888,9 +803,13 @@ class SearchService:
 
         for idx, tag in enumerate(tags):
             param_name = f"tag_pattern_{idx}"
-            params[param_name] = f"%{tag}%"
-            top_level_tag_conditions.append(f"tag ILIKE :{param_name}")
-            timeline_tag_conditions.append(f"timeline_tag ILIKE :{param_name}")
+            params[param_name] = _contains_like_pattern(tag)
+            top_level_tag_conditions.append(
+                f"tag ILIKE :{param_name} ESCAPE '\\'"
+            )
+            timeline_tag_conditions.append(
+                f"timeline_tag ILIKE :{param_name} ESCAPE '\\'"
+            )
 
         top_level_where = " OR ".join(top_level_tag_conditions)
         timeline_where = " OR ".join(timeline_tag_conditions)
@@ -923,456 +842,6 @@ class SearchService:
         )"""
 
         return sql, params
-    
-    async def _search_entity(
-        self,
-        db: AsyncSession,
-        table_name: str,
-        entity_type: EntityType,
-        query: str,
-        start_date: datetime,
-        end_date: datetime,
-        limit: int,
-        tags: Optional[List[str]] = None,
-    ) -> Tuple[List[SearchResultItem], int]:
-        """Search a single entity table and return results with total count.
-        
-        Args:
-            db: Database session
-            table_name: Name of the table to search (alerts, cases, tasks)
-            entity_type: Type of entity being searched
-            query: Search query text
-            start_date: Start of date range filter
-            end_date: End of date range filter
-            limit: Maximum number of results to return
-            
-        Returns:
-            Tuple of (list of SearchResultItem, total count)
-            
-        Note:
-            This method combines multiple search strategies:
-            1. Exact human ID match (ALT-000001, CAS-000001, TSK-000001) - score 1.0
-            2. Full-text search using tsvector/tsquery for natural language queries
-            3. Type-specific JSONB containment queries for IOCs (IPs, emails, etc.)
-               using GIN indexes for fast lookup
-            4. ILIKE fallback for wildcard queries or unclassified terms
-        """
-        normalized_tags = self._normalize_tag_filters(tags)
-        tag_filter_sql, tag_filter_params = self._build_tag_filter_sql(normalized_tags)
-        tag_filter_clause = f" AND {tag_filter_sql}" if tag_filter_sql else ""
-
-        # Special filter-only mode (q='*'): skip content search and apply filters only
-        if query == "*":
-            sql = text(f"""
-                WITH filtered AS (
-                    SELECT
-                        id,
-                        title,
-                        description,
-                        tags,
-                        timeline_items,
-                        created_at,
-                        updated_at,
-                        priority,
-                        status,
-                        assignee
-                    FROM {table_name}
-                    WHERE created_at >= :start_date
-                      AND created_at <= :end_date
-                      {tag_filter_clause}
-                )
-                SELECT
-                    id,
-                    title,
-                    description,
-                    tags,
-                    created_at,
-                    updated_at,
-                    priority,
-                    status,
-                    assignee,
-                    0.0 AS score,
-                    COALESCE(title, '') || ' ' || COALESCE(LEFT(description, 100), '') AS snippet,
-                    (SELECT COUNT(*) FROM filtered) AS total_count
-                FROM filtered
-                ORDER BY created_at DESC
-                LIMIT :limit
-            """)
-
-            result = await db.execute(sql, {
-                "start_date": start_date,
-                "end_date": end_date,
-                "limit": limit,
-                **tag_filter_params,
-            })
-            rows = result.fetchall()
-            if not rows:
-                return [], 0
-
-            total_count = rows[0].total_count if rows else 0
-            items = [
-                SearchResultItem(
-                    entity_type=entity_type,
-                    entity_id=row.id,
-                    human_id=self._generate_human_id(entity_type, row.id),
-                    title=row.title or "",
-                    snippet=(row.snippet or "")[:150],
-                    score=0.0,
-                    timeline_item_id=None,
-                    created_at=row.created_at,
-                    **self._search_metadata(row),
-                    tags=row.tags or [],
-                    tag_matches=self._build_tag_matches(row.tags or [], getattr(row, "timeline_items", None), normalized_tags),
-                )
-                for row in rows
-            ]
-            return items, total_count
-
-        # Classify the query to determine optimal search strategy
-        classification = classify_query(query)
-        normalized_query = classification.normalized_value
-        
-        logger.debug(
-            "Query classified",
-            extra={
-                "original": query,
-                "type": classification.query_type.value,
-                "has_wildcard": classification.has_wildcard,
-                "normalized": normalized_query,
-            }
-        )
-        
-        # Check for exact human ID match first (highest priority)
-        if classification.query_type == QueryType.HUMAN_ID:
-            exact_match = await self._lookup_by_human_id(db, classification, entity_type)
-            if exact_match:
-                logger.debug(
-                    "Exact human ID match found",
-                    extra={"human_id": exact_match.human_id, "entity_type": entity_type.value}
-                )
-                return [exact_match], 1
-            # If no match for this entity type (e.g., searching cases for ALT-000001),
-            # return empty results
-            return [], 0
-        
-        # Build JSONB containment conditions based on classification
-        jsonb_condition, jsonb_params = self._build_jsonb_containment_sql(classification)
-        
-        # Build the search SQL
-        # Combines full-text search with type-specific JSONB containment
-        # Full-text search uses websearch_to_tsquery for natural language queries
-        # (supports AND, OR, "phrases", -negation with fallback to plainto_tsquery)
-        # JSONB search uses @> containment for IPs, hashes, and exact strings
-        # ts_headline generates snippets with <mark> tags
-        # Using websearch_to_tsquery for boolean operator support (AND, OR, "phrases", -negation)
-        sql = text(f"""
-            WITH search_results AS (
-                -- Full-text search on search_vector (title, description, timeline text)
-                SELECT 
-                    id,
-                    title,
-                    description,
-                    tags,
-                    created_at,
-                    updated_at,
-                    priority,
-                    status,
-                    assignee,
-                    timeline_items,
-                    ts_rank(search_vector, websearch_to_tsquery('english', :query)) AS score,
-                    'fulltext' AS match_source
-                FROM {table_name}
-                WHERE search_vector @@ websearch_to_tsquery('english', :query)
-                  AND created_at >= :start_date
-                  AND created_at <= :end_date
-                                    {tag_filter_clause}
-                
-                UNION
-                
-                -- Type-specific JSONB containment search (for IPs, hashes, emails, etc.)
-                SELECT 
-                    id,
-                    title,
-                    description,
-                    tags,
-                    created_at,
-                    updated_at,
-                    priority,
-                    status,
-                    assignee,
-                    timeline_items,
-                    0.8 AS score,  -- High score for exact IOC matches
-                    'jsonb' AS match_source
-                FROM {table_name}
-                WHERE {jsonb_condition}
-                  AND created_at >= :start_date
-                  AND created_at <= :end_date
-                                    {tag_filter_clause}
-            ),
-            deduplicated AS (
-                -- Deduplicate results, keeping the highest score per entity
-                SELECT DISTINCT ON (id)
-                    id,
-                    title,
-                    description,
-                    tags,
-                    created_at,
-                    updated_at,
-                    priority,
-                    status,
-                    assignee,
-                    timeline_items,
-                    score,
-                    match_source
-                FROM search_results
-                ORDER BY id, score DESC
-            )
-            SELECT 
-                id, 
-                title, 
-                description, 
-                tags,
-                timeline_items,
-                created_at, 
-                updated_at,
-                priority,
-                status,
-                assignee,
-                score,
-                match_source,
-                CASE 
-                    WHEN match_source = 'fulltext' THEN
-                        ts_headline(
-                            'english',
-                            COALESCE(title, '') || ' ' || COALESCE(description, ''),
-                            websearch_to_tsquery('english', :query),
-                            'MaxWords=25, MinWords=10, StartSel=<mark>, StopSel=</mark>, MaxFragments=1'
-                        )
-                    ELSE
-                        -- For JSONB matches, return full timeline item JSON (no truncation)
-                        COALESCE(
-                            (
-                                SELECT item.item::text
-                                FROM ({TIMELINE_ITEMS_SQL}) AS item
-                                WHERE item.item::text ILIKE '%' || :query || '%'
-                                LIMIT 1
-                            ),
-                            COALESCE(title, '') || ' ' || COALESCE(LEFT(description, 100), '')
-                        )
-                END AS snippet,
-                (SELECT COUNT(*) FROM deduplicated) AS total_count
-            FROM deduplicated
-            ORDER BY score DESC
-            LIMIT :limit
-        """)
-        
-        # Merge base params with JSONB containment params
-        params = {
-            "query": normalized_query,
-            "start_date": start_date,
-            "end_date": end_date,
-            "limit": limit,
-            **jsonb_params,
-            **tag_filter_params,
-        }
-        
-        try:
-            result = await db.execute(sql, params)
-            rows = result.fetchall()
-        except Exception as e:
-            # Graceful degradation: if websearch_to_tsquery fails due to malformed
-            # boolean syntax (e.g., unbalanced quotes), fall back to plainto_tsquery
-            logger.warning(
-                "websearch_to_tsquery failed, falling back to plainto_tsquery",
-                extra={"query": normalized_query, "error": str(e)}
-            )
-            fallback_sql = text(sql.text.replace(
-                "websearch_to_tsquery('english', :query)",
-                "plainto_tsquery('english', :query)"
-            ))
-            result = await db.execute(fallback_sql, params)
-            rows = result.fetchall()
-        
-        if not rows:
-            return [], 0
-        
-        total_count = rows[0].total_count if rows else 0
-        
-        items = []
-        for row in rows:
-            # Truncate snippet to 150 chars, but only for non-JSON snippets
-            # JSON snippets (timeline items) should be returned in full for frontend rendering
-            snippet = row.snippet or ""
-            is_json_snippet = snippet.strip().startswith('{')
-            if not is_json_snippet and len(snippet) > 150:
-                # Find a good break point for text snippets
-                snippet = snippet[:147] + "..."
-            
-            items.append(SearchResultItem(
-                entity_type=entity_type,
-                entity_id=row.id,
-                human_id=self._generate_human_id(entity_type, row.id),
-                title=row.title or "",
-                snippet=snippet,
-                score=min(1.0, row.score),  # Normalize score to 0-1
-                timeline_item_id=None,  # TODO: Extract if match was in timeline
-                created_at=row.created_at,
-                **self._search_metadata(row),
-                tags=row.tags or [],
-                tag_matches=self._build_tag_matches(row.tags or [], getattr(row, "timeline_items", None), normalized_tags),
-            ))
-        
-        return items, total_count
-    
-    async def search_alerts(
-        self,
-        db: AsyncSession,
-        query: str,
-        start_date: datetime,
-        end_date: datetime,
-        limit: int = 5,
-    ) -> Tuple[List[SearchResultItem], int]:
-        """Search alerts table."""
-        return await self._search_entity(
-            db, "alerts", EntityType.ALERT, query, start_date, end_date, limit
-        )
-    
-    async def search_cases(
-        self,
-        db: AsyncSession,
-        query: str,
-        start_date: datetime,
-        end_date: datetime,
-        limit: int = 5,
-    ) -> Tuple[List[SearchResultItem], int]:
-        """Search cases table."""
-        return await self._search_entity(
-            db, "cases", EntityType.CASE, query, start_date, end_date, limit
-        )
-    
-    async def search_tasks(
-        self,
-        db: AsyncSession,
-        query: str,
-        start_date: datetime,
-        end_date: datetime,
-        limit: int = 5,
-    ) -> Tuple[List[SearchResultItem], int]:
-        """Search tasks table."""
-        return await self._search_entity(
-            db, "tasks", EntityType.TASK, query, start_date, end_date, limit
-        )
-
-    async def fuzzy_search(
-        self,
-        db: AsyncSession,
-        query: str,
-        entity_types: List[EntityType],
-        similarity_threshold: float = 0.3,
-        limit_per_type: int = 5,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-    ) -> List[SearchResultItem]:
-        """Backward-compatible fuzzy search entrypoint.
-
-        Kept for legacy unit tests and callers that still invoke ``fuzzy_search``
-        directly.
-        """
-        now = datetime.now(timezone.utc)
-        resolved_end = end_date or now
-        resolved_start = start_date or (resolved_end - timedelta(days=30))
-
-        table_map = {
-            EntityType.ALERT: "alerts",
-            EntityType.CASE: "cases",
-            EntityType.TASK: "tasks",
-        }
-
-        all_items: List[SearchResultItem] = []
-        for entity_type in entity_types:
-            table_name = table_map.get(entity_type)
-            if not table_name:
-                continue
-            items, _ = await self._fuzzy_search_entity_paginated(
-                db=db,
-                table_name=table_name,
-                entity_type=entity_type,
-                query=query,
-                start_date=resolved_start,
-                end_date=resolved_end,
-                skip=0,
-                limit=limit_per_type,
-                similarity_threshold=similarity_threshold,
-            )
-            all_items.extend(items)
-
-        all_items.sort(key=lambda x: (-x.score, -x.created_at.timestamp()))
-        return all_items
-
-    async def global_search(
-        self,
-        db: AsyncSession,
-        query: str,
-        entity_types: List[EntityType],
-        limit_per_type: int = 5,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-    ) -> LegacyGlobalSearchResponse:
-        """Backward-compatible non-paginated global search.
-
-        Runs full-text search per entity type and only falls back to fuzzy search
-        for entity types that return no full-text/jsonb matches.
-        """
-        now = datetime.now(timezone.utc)
-        resolved_end = end_date or now
-        resolved_start = start_date or (resolved_end - timedelta(days=30))
-
-        table_map = {
-            EntityType.ALERT: "alerts",
-            EntityType.CASE: "cases",
-            EntityType.TASK: "tasks",
-        }
-        total_by_type = LegacyTotalByType()
-        merged_results: List[SearchResultItem] = []
-
-        for entity_type in entity_types:
-            table_name = table_map.get(entity_type)
-            if not table_name:
-                continue
-
-            items, count = await self._search_entity(
-                db=db,
-                table_name=table_name,
-                entity_type=entity_type,
-                query=query,
-                start_date=resolved_start,
-                end_date=resolved_end,
-                limit=limit_per_type,
-            )
-
-            if count == 0:
-                items, count = await self._fuzzy_search_entity_paginated(
-                    db=db,
-                    table_name=table_name,
-                    entity_type=entity_type,
-                    query=query,
-                    start_date=resolved_start,
-                    end_date=resolved_end,
-                    skip=0,
-                    limit=limit_per_type,
-                )
-
-            if entity_type == EntityType.ALERT:
-                total_by_type.alert = count
-            elif entity_type == EntityType.CASE:
-                total_by_type.case = count
-            elif entity_type == EntityType.TASK:
-                total_by_type.task = count
-
-            merged_results.extend(items)
-
-        merged_results.sort(key=lambda x: (-x.score, -x.created_at.timestamp()))
-        return LegacyGlobalSearchResponse(results=merged_results, total_by_type=total_by_type)
 
     async def paginated_search(
         self,
@@ -1387,11 +856,9 @@ class SearchService:
         user_id: Optional[str] = None,
     ) -> PaginatedSearchResponse:
         """Perform paginated search across one or more entity types.
-        
-        This is used by the dedicated search page for pagination.
-        Unlike global_search which returns limit_per_type results per entity,
-        this returns paginated results across specified entity types.
-        
+
+        This is the canonical search entrypoint used by the dedicated search page.
+
         Args:
             db: Database session
             query: Search query text (2-200 chars)
@@ -1401,17 +868,12 @@ class SearchService:
             start_date: Start of date range (default: 30 days ago)
             end_date: End of date range (default: now)
             user_id: User ID for audit logging
-            
+
         Returns:
             PaginatedSearchResponse with results and pagination info
         """
-        # Default date range to last 30 days
-        now = datetime.now(timezone.utc)
-        if end_date is None:
-            end_date = now
-        if start_date is None:
-            start_date = now - timedelta(days=30)
-        
+        start_date, end_date = resolve_search_date_range(start_date, end_date)
+        entity_types = list(dict.fromkeys(entity_types))
         normalized_tags = self._normalize_tag_filters(tags)
         filter_only_mode = query == "*"
 
@@ -1428,7 +890,14 @@ class SearchService:
         # For numeric ID queries, look up matching entities first
         numeric_id_matches: List[SearchResultItem] = []
         if is_numeric_id_query and not filter_only_mode:
-            numeric_id_matches = await self._lookup_by_numeric_id(db, classification, entity_types)
+            numeric_id_matches = await self._lookup_by_numeric_id(
+                db,
+                classification,
+                entity_types,
+                start_date,
+                end_date,
+                normalized_tags,
+            )
             if numeric_id_matches:
                 logger.info(
                     "Numeric ID matches found in paginated search",
@@ -1438,74 +907,76 @@ class SearchService:
                         "numeric_id": classification.numeric_id,
                         "match_count": len(numeric_id_matches),
                         "entity_types": [m.entity_type.value for m in numeric_id_matches],
-                    }
+                    },
                 )
-        
-        # Build table info for all requested entity types
-        table_info = [
-            (entity_type, {
-                EntityType.ALERT: "alerts",
-                EntityType.CASE: "cases",
-                EntityType.TASK: "tasks",
-            }[entity_type])
-            for entity_type in entity_types
-        ]
+
+        numeric_match_by_type = {
+            match.entity_type: match for match in numeric_id_matches
+        }
         
         # Search across all entity types and aggregate results
         all_items: List[SearchResultItem] = []
         total_count = 0
         
-        for entity_type, table_name in table_info:
+        for entity_type in entity_types:
+            table_name = self.TABLE_NAMES[entity_type]
             # First try full-text search
-            items, count = await self._search_entity_paginated(
+            exact_numeric_match = numeric_match_by_type.get(entity_type)
+            items, count = await self._search_entity_candidates(
                 db=db,
                 table_name=table_name,
                 entity_type=entity_type,
                 query=query,
                 start_date=start_date,
                 end_date=end_date,
-                skip=0,  # We'll handle pagination after merging
-                limit=skip + limit,  # Get enough to cover skip + limit
-                tags=normalized_tags,
+                candidate_limit=skip + limit,
+                normalized_tags=normalized_tags,
+                excluded_entity_id=(
+                    exact_numeric_match.entity_id if exact_numeric_match else None
+                ),
             )
             
             # If no results, try fuzzy search fallback (but NOT for human ID queries)
             if count == 0 and not is_human_id_query and not filter_only_mode:
-                items, count = await self._fuzzy_search_entity_paginated(
+                items, count = await self._fuzzy_search_entity_candidates(
                     db=db,
                     table_name=table_name,
                     entity_type=entity_type,
                     query=query,
                     start_date=start_date,
                     end_date=end_date,
-                    skip=0,
-                    limit=skip + limit,
-                    tags=normalized_tags,
+                    candidate_limit=skip + limit,
+                    normalized_tags=normalized_tags,
+                    excluded_entity_id=(
+                        exact_numeric_match.entity_id if exact_numeric_match else None
+                    ),
                 )
             
             all_items.extend(items)
             total_count += count
         
-        # Merge numeric ID matches: they have score 1.0 and should replace any lower-scored duplicates
-        if numeric_id_matches:
-            # Create a dict for fast lookup of existing results by (entity_type, entity_id)
-            existing_by_key = {(r.entity_type, r.entity_id): i for i, r in enumerate(all_items)}
-            
-            for match in numeric_id_matches:
-                key = (match.entity_type, match.entity_id)
-                if key in existing_by_key:
-                    # Replace the existing result with the higher-scored numeric ID match
-                    all_items[existing_by_key[key]] = match
-                else:
-                    # Add new result and update count
-                    all_items.append(match)
-                    total_count += 1
+        # Content queries exclude these rows, so exact-ID totals cannot double-count.
+        all_items.extend(numeric_id_matches)
+        total_count += len(numeric_id_matches)
         
         # Sort merged results by score (descending), then by created_at (descending)
         if filter_only_mode:
-            all_items.sort(key=lambda x: -x.created_at.timestamp())
+            all_items.sort(
+                key=lambda item: (
+                    -item.created_at.timestamp(),
+                    item.entity_type.value,
+                    -item.entity_id,
+                )
+            )
         else:
-            all_items.sort(key=lambda x: (-x.score, -x.created_at.timestamp()))
+            all_items.sort(
+                key=lambda item: (
+                    -item.score,
+                    -item.created_at.timestamp(),
+                    item.entity_type.value,
+                    -item.entity_id,
+                )
+            )
         
         # Apply pagination to merged results
         paginated_items = all_items[skip:skip + limit]
@@ -1520,7 +991,7 @@ class SearchService:
                 "skip": skip,
                 "limit": limit,
                 "total_results": total_count,
-            }
+            },
         )
         
         return PaginatedSearchResponse(
@@ -1536,7 +1007,7 @@ class SearchService:
             ),
         )
 
-    async def _search_entity_paginated(
+    async def _search_entity_candidates(
         self,
         db: AsyncSession,
         table_name: str,
@@ -1544,14 +1015,28 @@ class SearchService:
         query: str,
         start_date: datetime,
         end_date: datetime,
-        skip: int,
-        limit: int,
-        tags: Optional[List[str]] = None,
+        candidate_limit: int,
+        normalized_tags: Optional[List[str]] = None,
+        excluded_entity_id: Optional[int] = None,
     ) -> Tuple[List[SearchResultItem], int]:
-        """Search a single entity table with pagination support."""
-        normalized_tags = self._normalize_tag_filters(tags)
+        """Return one entity type's top candidates and unpaginated count."""
+        normalized_tags = normalized_tags or []
         tag_filter_sql, tag_filter_params = self._build_tag_filter_sql(normalized_tags)
         tag_filter_clause = f" AND {tag_filter_sql}" if tag_filter_sql else ""
+        id_exclusion_clause = (
+            " AND id != :excluded_entity_id" if excluded_entity_id is not None else ""
+        )
+        common_params = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "limit": candidate_limit,
+            **(
+                {"excluded_entity_id": excluded_entity_id}
+                if excluded_entity_id is not None
+                else {}
+            ),
+            **tag_filter_params,
+        }
 
         if query == "*":
             sql = text(f"""
@@ -1570,6 +1055,7 @@ class SearchService:
                     FROM {table_name}
                     WHERE created_at >= :start_date
                       AND created_at <= :end_date
+                      {id_exclusion_clause}
                       {tag_filter_clause}
                 ),
                 counted AS (
@@ -1591,61 +1077,46 @@ class SearchService:
                     total_count,
                     COALESCE(title, '') || ' ' || COALESCE(LEFT(description, 100), '') AS snippet
                 FROM counted
-                ORDER BY created_at DESC
-                OFFSET :skip
+                ORDER BY created_at DESC, id DESC
                 LIMIT :limit
             """)
 
-            result = await db.execute(sql, {
-                "start_date": start_date,
-                "end_date": end_date,
-                "skip": skip,
-                "limit": limit,
-                **tag_filter_params,
-            })
+            result = await db.execute(sql, common_params)
             rows = result.fetchall()
             if not rows:
                 return [], 0
 
-            total_count = rows[0].total_count if rows else 0
-            items: List[SearchResultItem] = []
-            for row in rows:
-                snippet = row.snippet or ""
-                if len(snippet) > 150:
-                    snippet = snippet[:147] + "..."
-
-                items.append(SearchResultItem(
-                    entity_type=entity_type,
-                    entity_id=row.id,
-                    human_id=self._generate_human_id(entity_type, row.id),
-                    title=row.title or "",
-                    snippet=snippet,
+            return [
+                self._result_from_row(
+                    row,
+                    entity_type,
+                    snippet=self._truncate_snippet(row.snippet),
                     score=0.0,
-                    timeline_item_id=None,
-                    created_at=row.created_at,
-                    **self._search_metadata(row),
-                    tags=row.tags or [],
-                    tag_matches=self._build_tag_matches(row.tags or [], getattr(row, "timeline_items", None), normalized_tags),
-                ))
-
-            return items, total_count
+                    normalized_tags=normalized_tags,
+                )
+                for row in rows
+            ], rows[0].total_count
 
         classification = classify_query(query)
         normalized_query = classification.normalized_value
         
         # Check for exact human ID match first (highest priority)
         if classification.query_type == QueryType.HUMAN_ID:
-            exact_match = await self._lookup_by_human_id(db, classification, entity_type)
+            exact_match = await self._lookup_by_human_id(
+                db,
+                classification,
+                entity_type,
+                start_date,
+                end_date,
+                normalized_tags,
+            )
             if exact_match:
-                # For pagination, if skip > 0, we're past the single result
-                if skip > 0:
-                    return [], 1  # Total is 1 but we've skipped past it
                 return [exact_match], 1
             # If no match for this entity type, return empty
             return [], 0
         
         # Build JSONB containment conditions based on classification
-        jsonb_condition, jsonb_params = self._build_jsonb_containment_sql(classification)
+        timeline_condition, timeline_params = self._build_timeline_match_sql(classification)
         
         sql = text(f"""
             WITH search_results AS (
@@ -1666,9 +1137,10 @@ class SearchService:
                 WHERE search_vector @@ websearch_to_tsquery('english', :query)
                   AND created_at >= :start_date
                   AND created_at <= :end_date
-                                    {tag_filter_clause}
+                  {id_exclusion_clause}
+                  {tag_filter_clause}
                 
-                UNION
+                UNION ALL
                 
                 SELECT 
                     id,
@@ -1684,10 +1156,11 @@ class SearchService:
                     0.8 AS score,
                     'jsonb' AS match_source
                 FROM {table_name}
-                WHERE {jsonb_condition}
+                WHERE {timeline_condition}
                   AND created_at >= :start_date
                   AND created_at <= :end_date
-                                    {tag_filter_clause}
+                  {id_exclusion_clause}
+                  {tag_filter_clause}
             ),
             deduplicated AS (
                 SELECT DISTINCT ON (id)
@@ -1737,72 +1210,45 @@ class SearchService:
                             (
                                 SELECT item.item::text
                                 FROM ({TIMELINE_ITEMS_SQL}) AS item
-                                WHERE item.item::text ILIKE '%' || :query || '%'
+                                WHERE item.item::text ILIKE :snippet_pattern ESCAPE '\\'
                                 LIMIT 1
                             ),
                             COALESCE(title, '') || ' ' || COALESCE(LEFT(description, 100), '')
                         )
                 END AS snippet
             FROM counted
-            ORDER BY score DESC
-            OFFSET :skip
+            ORDER BY score DESC, created_at DESC, id DESC
             LIMIT :limit
         """)
         
         params = {
             "query": normalized_query,
-            "start_date": start_date,
-            "end_date": end_date,
-            "skip": skip,
-            "limit": limit,
-            **jsonb_params,
-            **tag_filter_params,
+            "snippet_pattern": _contains_like_pattern(
+                normalized_query,
+                asterisk_wildcard=True,
+            ),
+            **timeline_params,
+            **common_params,
         }
-        
-        try:
-            result = await db.execute(sql, params)
-            rows = result.fetchall()
-        except Exception as e:
-            logger.warning(
-                "websearch_to_tsquery failed, falling back to plainto_tsquery",
-                extra={"query": normalized_query, "error": str(e)}
-            )
-            fallback_sql = text(sql.text.replace(
-                "websearch_to_tsquery('english', :query)",
-                "plainto_tsquery('english', :query)"
-            ))
-            result = await db.execute(fallback_sql, params)
-            rows = result.fetchall()
+
+        result = await db.execute(sql, params)
+        rows = result.fetchall()
         
         if not rows:
             return [], 0
         
-        total_count = rows[0].total_count if rows else 0
-        
-        items = []
-        for row in rows:
-            snippet = row.snippet or ""
-            is_json_snippet = snippet.strip().startswith('{')
-            if not is_json_snippet and len(snippet) > 150:
-                snippet = snippet[:147] + "..."
-            
-            items.append(SearchResultItem(
-                entity_type=entity_type,
-                entity_id=row.id,
-                human_id=self._generate_human_id(entity_type, row.id),
-                title=row.title or "",
-                snippet=snippet,
+        return [
+            self._result_from_row(
+                row,
+                entity_type,
+                snippet=self._truncate_snippet(row.snippet, preserve_json=True),
                 score=min(1.0, row.score),
-                timeline_item_id=None,
-                created_at=row.created_at,
-                **self._search_metadata(row),
-                tags=row.tags or [],
-                tag_matches=self._build_tag_matches(row.tags or [], getattr(row, "timeline_items", None), normalized_tags),
-            ))
-        
-        return items, total_count
+                normalized_tags=normalized_tags,
+            )
+            for row in rows
+        ], rows[0].total_count
 
-    async def _fuzzy_search_entity_paginated(
+    async def _fuzzy_search_entity_candidates(
         self,
         db: AsyncSession,
         table_name: str,
@@ -1810,15 +1256,18 @@ class SearchService:
         query: str,
         start_date: datetime,
         end_date: datetime,
-        skip: int,
-        limit: int,
+        candidate_limit: int,
         similarity_threshold: float = 0.3,
-        tags: Optional[List[str]] = None,
+        normalized_tags: Optional[List[str]] = None,
+        excluded_entity_id: Optional[int] = None,
     ) -> Tuple[List[SearchResultItem], int]:
-        """Fuzzy search fallback with pagination support."""
-        normalized_tags = self._normalize_tag_filters(tags)
+        """Return fuzzy candidates for one entity type and its full count."""
+        normalized_tags = normalized_tags or []
         tag_filter_sql, tag_filter_params = self._build_tag_filter_sql(normalized_tags)
         tag_filter_clause = f" AND {tag_filter_sql}" if tag_filter_sql else ""
+        id_exclusion_clause = (
+            " AND id != :excluded_entity_id" if excluded_entity_id is not None else ""
+        )
 
         sql = text(f"""
             WITH fuzzy_results AS (
@@ -1844,6 +1293,7 @@ class SearchService:
                 )
                 AND created_at >= :start_date
                 AND created_at <= :end_date
+                {id_exclusion_clause}
                 {tag_filter_clause}
             ),
             counted AS (
@@ -1853,8 +1303,7 @@ class SearchService:
             SELECT id, title, description, created_at, updated_at, priority, status, assignee, score, total_count
                      , tags, timeline_items
             FROM counted
-            ORDER BY score DESC
-            OFFSET :skip
+            ORDER BY score DESC, created_at DESC, id DESC
             LIMIT :limit
         """)
         
@@ -1863,32 +1312,28 @@ class SearchService:
             "threshold": similarity_threshold,
             "start_date": start_date,
             "end_date": end_date,
-            "skip": skip,
-            "limit": limit,
+            "limit": candidate_limit,
+            **(
+                {"excluded_entity_id": excluded_entity_id}
+                if excluded_entity_id is not None
+                else {}
+            ),
             **tag_filter_params,
         })
         
         rows = result.fetchall()
-        total_count = rows[0].total_count if rows else 0
-        
-        items = []
-        for row in rows:
-            snippet = row.description[:147] + "..." if row.description and len(row.description) > 150 else (row.description or "")
-            items.append(SearchResultItem(
-                entity_type=entity_type,
-                entity_id=row.id,
-                human_id=self._generate_human_id(entity_type, row.id),
-                title=row.title or "",
-                snippet=snippet,
+        if not rows:
+            return [], 0
+        return [
+            self._result_from_row(
+                row,
+                entity_type,
+                snippet=self._truncate_snippet(row.description),
                 score=min(1.0, row.score),
-                timeline_item_id=None,
-                created_at=row.created_at,
-                **self._search_metadata(row),
-                tags=row.tags or [],
-                tag_matches=self._build_tag_matches(row.tags or [], getattr(row, "timeline_items", None), normalized_tags),
-            ))
-        
-        return items, total_count
+                normalized_tags=normalized_tags,
+            )
+            for row in rows
+        ], rows[0].total_count
 
 
 # Singleton instance

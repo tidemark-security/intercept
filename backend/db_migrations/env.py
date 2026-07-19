@@ -12,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 # Import SQLModel and our models
 from sqlmodel import SQLModel
-from app.models import models  # This imports all our SQLModel classes
+from app.models import models as _registered_models  # noqa: E402, F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

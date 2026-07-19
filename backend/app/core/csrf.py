@@ -8,6 +8,7 @@ from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from app.core.request_context import get_correlation_id
 from app.core.settings_registry import get_local
 from app.services.api_key_service import (
     ApiKeyExpiredError,
@@ -115,7 +116,7 @@ class CSRFMiddleware:
         audit_context = AuditContext(
             ip_address=client_host,
             user_agent=headers.get("user-agent"),
-            correlation_id=headers.get("x-request-id"),
+            correlation_id=get_correlation_id(headers),
         )
 
         try:

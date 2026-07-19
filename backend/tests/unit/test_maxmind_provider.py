@@ -1,10 +1,11 @@
 import shutil
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from app.services.enrichment.providers.maxmind import maxmind_provider
-from app.services.maxmind_service import maxmind_service
+from app.services.maxmind_service import MaxMindConfigurationError, maxmind_service
 
 
 class StubSettings:
@@ -15,7 +16,11 @@ class StubSettings:
         return self._values.get(key, default)
 
 
-def _prepare_local_mmdbs(source_dir: Path, target_dir: Path, file_names: list[str]) -> None:
+def _prepare_local_mmdbs(
+    source_dir: Path,
+    target_dir: Path,
+    file_names: list[str],
+) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     for file_name in file_names:
         edition_id = file_name.replace("-Test.mmdb", "")
@@ -24,14 +29,26 @@ def _prepare_local_mmdbs(source_dir: Path, target_dir: Path, file_names: list[st
 
 def test_can_enrich_supported_ip_items() -> None:
     assert maxmind_provider.can_enrich(
-        {"type": "observable", "observable_type": "IP", "observable_value": "81.2.69.160"}
+        {
+            "type": "observable",
+            "observable_type": "IP",
+            "observable_value": "81.2.69.160",
+        }
     )
     assert maxmind_provider.can_enrich({"type": "system", "ip_address": "81.2.69.160"})
     assert maxmind_provider.can_enrich(
-        {"type": "network_traffic", "source_ip": "1.128.0.0", "destination_ip": "81.2.69.160"}
+        {
+            "type": "network_traffic",
+            "source_ip": "1.128.0.0",
+            "destination_ip": "81.2.69.160",
+        }
     )
     assert not maxmind_provider.can_enrich(
-        {"type": "observable", "observable_type": "DOMAIN", "observable_value": "example.com"}
+        {
+            "type": "observable",
+            "observable_type": "DOMAIN",
+            "observable_value": "example.com",
+        }
     )
     assert not maxmind_provider.can_enrich({"type": "system", "ip_address": "10.0.0.5"})
 
@@ -50,17 +67,59 @@ def test_build_cache_key_is_deterministic() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enrich_returns_results_and_aliases(maxmind_test_data_dir: Path, tmp_path: Path) -> None:
+async def test_enrich_rejects_invalid_ttl_before_loading_databases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = StubSettings({"enrichment.maxmind.ttl_seconds": "forever"})
+    ensure_readers_loaded = AsyncMock()
+    monkeypatch.setattr(
+        maxmind_service,
+        "ensure_readers_loaded",
+        ensure_readers_loaded,
+    )
+
+    with pytest.raises(
+        MaxMindConfigurationError,
+        match="TTL must be an integer",
+    ):
+        await maxmind_provider.enrich(
+            db=None,  # type: ignore[arg-type]
+            settings=settings,  # type: ignore[arg-type]
+            item={
+                "type": "observable",
+                "observable_type": "IP",
+                "observable_value": "1.1.1.1",
+            },
+            entity_type="alert",
+            entity_id=1,
+        )
+
+    ensure_readers_loaded.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_enrich_returns_results_and_aliases(
+    maxmind_test_data_dir: Path,
+    tmp_path: Path,
+) -> None:
     await maxmind_service.close_readers()
     local_cache_dir = tmp_path / "maxmind"
     _prepare_local_mmdbs(
         maxmind_test_data_dir,
         local_cache_dir,
-        ["GeoLite2-ASN-Test.mmdb", "GeoLite2-City-Test.mmdb", "GeoLite2-Country-Test.mmdb"],
+        [
+            "GeoLite2-ASN-Test.mmdb",
+            "GeoLite2-City-Test.mmdb",
+            "GeoLite2-Country-Test.mmdb",
+        ],
     )
     settings = StubSettings(
         {
-            "enrichment.maxmind.edition_ids": ["GeoLite2-ASN", "GeoLite2-City", "GeoLite2-Country"],
+            "enrichment.maxmind.edition_ids": [
+                "GeoLite2-ASN",
+                "GeoLite2-City",
+                "GeoLite2-Country",
+            ],
             "enrichment.maxmind.local_cache_dir": str(local_cache_dir),
             "enrichment.maxmind.storage_prefix": "maxmind/",
             "enrichment.maxmind.ttl_seconds": 3600,
@@ -82,8 +141,16 @@ async def test_enrich_returns_results_and_aliases(maxmind_test_data_dir: Path, t
     assert result.provider_id == "maxmind"
     assert result.cache_key == "1.128.0.0|81.2.69.160"
     assert result.ttl_seconds == 3600
-    assert result.enrichment_data["results"]["1.128.0.0"]["databases"]["GeoLite2-ASN"]["autonomous_system_organization"] == "Telstra Pty Ltd"
-    assert result.enrichment_data["results"]["81.2.69.160"]["databases"]["GeoLite2-City"]["country"]["iso_code"] == "GB"
+    assert (
+        result.enrichment_data["results"]["1.128.0.0"]["databases"]
+        ["GeoLite2-ASN"]["autonomous_system_organization"]
+        == "Telstra Pty Ltd"
+    )
+    assert (
+        result.enrichment_data["results"]["81.2.69.160"]["databases"]
+        ["GeoLite2-City"]["country"]["iso_code"]
+        == "GB"
+    )
     alias_types = {alias.alias_type for alias in result.aliases}
     assert "asn_organization" in alias_types
     assert "country_iso_code" in alias_types

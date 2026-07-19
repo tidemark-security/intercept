@@ -3,21 +3,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, cast, String
 from sqlalchemy.orm import selectinload, defer
 from sqlmodel import col
-from typing import Callable, List, Optional, Set, Dict, Any
+from typing import Callable, List, Optional, Dict, Any
 from datetime import datetime, timezone
-from uuid import uuid4
 import logging
 from fastapi_pagination import Page
-from fastapi_pagination.ext.sqlalchemy import paginate
-from fastapi import HTTPException
+from fastapi_pagination.ext.sqlalchemy import apaginate
 
+from app.core.entity_ids import ALERT_PREFIX, CASE_PREFIX, format_entity_id
 from app.models.models import (
-    Alert, Case, UserAccount, Task, Actor,
+    Alert, Case,
     AlertCreate, AlertUpdate, AlertTriageRequest,
     AlertBulkActionRequest, AlertBulkActionResponse,
-    AlertRead, AlertTimelineItem, TriageRecommendation
+    AlertTimelineItem,
 )
-from app.models.enums import AlertStatus, Priority, RecommendationStatus, TriageDisposition, RealtimeEventType
+from app.models.enums import AlertStatus, Priority, TriageDisposition, RealtimeEventType
 from app.services.case_service import case_service
 from app.services.alert_triage_apply_service import (
     apply_triage_state,
@@ -25,14 +24,52 @@ from app.services.alert_triage_apply_service import (
     is_triage_completion_status,
     mark_alert_escalated,
 )
-from app.services.timeline_add_service import add_timeline_item_and_commit, update_timeline_item_and_commit
-from app.services.timeline_service import timeline_service
+from app.services.timeline_add_service import (
+    TimelineItemConflict,
+    add_timeline_item_and_commit,
+    remove_timeline_item_and_commit,
+    update_timeline_item_and_commit,
+)
+from app.services.timeline_service import TimelineValidationError, timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
 from app.services import triage_recommendation_service
+from app.services.date_filter_utils import DateFilterValidationError, parse_datetime_filter
 from app.services.tag_filter_utils import append_tag_filters, merge_persisted_tags, normalize_persisted_tags
+from app.services.committed_response import (
+    detach_committed_state,
+    load_committed_response,
+    reset_post_commit_session,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class AlertValidationError(ValueError):
+    """An alert operation violates a client-facing domain rule."""
+
+
+class AlertRelatedEntityNotFoundError(AlertValidationError):
+    """An entity referenced by an alert operation does not exist."""
+
+
+_ALERT_STATUS_CHANGE_DESCRIPTIONS: Dict[AlertStatus, str] = {
+    AlertStatus.NEW: "Alert status changed to New",
+    AlertStatus.IN_PROGRESS: "Alert status changed to In Progress",
+    AlertStatus.ESCALATED: "Alert status changed to Escalated",
+    AlertStatus.CLOSED_TP: "Alert closed as True Positive",
+    AlertStatus.CLOSED_BP: "Alert closed as True Positive Benign",
+    AlertStatus.CLOSED_FP: "Alert closed as False Positive",
+    AlertStatus.CLOSED_UNRESOLVED: "Alert closed as Unresolved",
+    AlertStatus.CLOSED_DUPLICATE: "Alert closed as Duplicate",
+}
+
+
+def _status_change_description(status: AlertStatus) -> str:
+    return _ALERT_STATUS_CHANGE_DESCRIPTIONS.get(
+        status,
+        f"Alert status changed to {status}",
+    )
 
 
 @dataclass(slots=True)
@@ -70,26 +107,30 @@ class AlertService:
                 alert_kwargs["created_at"] = created_at_override
 
             db_alert = Alert(**alert_kwargs)
+            # Keep the post-commit fallback response-safe if its richer reload
+            # fails and the session must be rolled back and detached.
+            db_alert.triage_recommendation = None
             
             db.add(db_alert)
             await db.commit()
-            await db.refresh(db_alert)
-            
-            logger.info(f"Alert created")
-            
-            # Auto-enqueue for AI triage if enabled
-            await self._auto_enqueue_triage(db, db_alert.id)  # type: ignore[arg-type]
-
-            loaded_alert = await self.get_alert(db, db_alert.id)  # type: ignore[arg-type]
-            if loaded_alert is None:
-                raise RuntimeError(f"Created alert {db_alert.id} could not be reloaded")
-
-            return loaded_alert
-            
         except Exception as e:
             await db.rollback()
             logger.error(f"Error creating alert: {e}")
             raise
+
+        logger.info("Alert created")
+        alert_id = db_alert.id  # type: ignore[assignment]
+        await detach_committed_state(db, logger)
+        await self._auto_enqueue_triage(db, alert_id)
+        return await load_committed_response(
+            db,
+            lambda: self.get_alert(db, alert_id),
+            db_alert,
+            logger=logger,
+            entity_type="alert",
+            entity_id=alert_id,
+            operation="creation",
+        )
     
     async def _auto_enqueue_triage(self, db: AsyncSession, alert_id: int):
         """Auto-enqueue alert for AI triage if enabled.
@@ -98,84 +139,63 @@ class AlertService:
         Fails silently if triage is not enabled or task queue is unavailable.
         """
         from app.services.settings_service import SettingsService
-        from app.services.task_queue_service import get_task_queue_service
-        from app.services.tasks import TASK_TRIAGE_ALERT
-        from datetime import datetime, timezone
-        
         try:
             settings = SettingsService(db)  # type: ignore[arg-type]
             
             # Check if triage flow is configured
-            flow_id = await settings.get_typed_value("langflow.alert_triage_flow_id")
+            flow_id = await settings.get("langflow.alert_triage_flow_id")
             if not flow_id:
                 logger.debug(f"AI triage not enabled - skipping auto-enqueue for alert {alert_id}")
                 return
             
             # Check if auto-enqueue is enabled (defaults to False)
-            auto_enqueue = await settings.get_typed_value("triage.auto_enqueue")
+            auto_enqueue = await settings.get("triage.auto_enqueue")
             if auto_enqueue is not True:
                 logger.debug(f"Auto-enqueue disabled - skipping for alert {alert_id}")
                 return
             
-            # Create QUEUED placeholder
-            recommendation = TriageRecommendation(
-                alert_id=alert_id,
-                disposition=TriageDisposition.UNKNOWN,
-                confidence=0.0,
-                reasoning_bullets=[],
-                recommended_actions=[],
-                created_by="system",
-                created_at=datetime.now(timezone.utc),
-                status=RecommendationStatus.QUEUED,
+            await triage_recommendation_service.enqueue_triage(
+                db,
+                alert_id,
+                enqueued_by="system",
             )
-            db.add(recommendation)
-            await db.commit()
-            await db.refresh(recommendation)
-            
-            # Enqueue triage task
-            try:
-                task_queue = get_task_queue_service()
-                await task_queue.enqueue(
-                    task_name=TASK_TRIAGE_ALERT,
-                    payload={"alert_id": alert_id}
-                )
-                logger.info(f"Auto-enqueued AI triage for alert {alert_id}")
-            except RuntimeError as e:
-                # Task queue not available - mark as failed
-                recommendation.status = RecommendationStatus.FAILED
-                recommendation.error_message = f"Task queue not available: {str(e)}"
-                db.add(recommendation)
-                await db.commit()
-                logger.warning(f"Failed to auto-enqueue triage for alert {alert_id}: {e}")
+            logger.info("Auto-enqueued AI triage for alert %s", alert_id)
                 
         except Exception as e:
             # Don't fail alert creation if triage enqueue fails
-            logger.warning(f"Auto-enqueue triage failed for alert {alert_id}: {e}")
+            await reset_post_commit_session(db, logger)
+            logger.warning("Auto-enqueue triage failed for alert %s: %s", alert_id, e)
     
     async def _get_alert_model(self, db: AsyncSession, alert_id: int) -> Optional[Alert]:
         """Get the tracked alert model with related entities loaded."""
-        try:
-            query = (
-                select(Alert)
-                .options(
-                    selectinload(Alert.case),  # type: ignore
-                    selectinload(Alert.triage_recommendation)  # type: ignore
-                )
-                .where(Alert.id == alert_id)  # type: ignore
+        query = (
+            select(Alert)
+            .options(
+                selectinload(Alert.case),  # type: ignore
+                selectinload(Alert.triage_recommendation)  # type: ignore
             )
-            result = await db.execute(query)
-            db_alert = result.scalar_one_or_none()
-            if not db_alert:
-                return None
-            
-            # Eager load all entities referenced in timeline items to avoid N+1 queries
-            if db_alert.timeline_items:
-                await self._preload_timeline_entities(db, db_alert.timeline_items)
+            .where(Alert.id == alert_id)  # type: ignore
+        )
+        result = await db.execute(query)
+        return result.scalar_one_or_none()
 
-            return db_alert
-        except Exception as e:
-            logger.error(f"Error fetching alert {alert_id}: {e}")
-            raise
+    async def _get_alert_for_update(
+        self,
+        db: AsyncSession,
+        alert_id: int,
+    ) -> Optional[Alert]:
+        """Lock and refresh an alert before mutating it."""
+        result = await db.execute(
+            select(Alert)
+            .options(
+                selectinload(Alert.case),  # type: ignore
+                selectinload(Alert.triage_recommendation),  # type: ignore
+            )
+            .where(Alert.id == alert_id)  # type: ignore
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
 
     async def get_alert(self, db: AsyncSession, alert_id: int, include_linked_timelines: bool = False) -> Optional[Alert]:
         """Get alert by ID with case and triage_recommendation relationships.
@@ -195,7 +215,7 @@ class AlertService:
             entity_type="alert",
             entity_id=alert_id,
             entity=db_alert,
-            human_prefix="ALT",
+            human_prefix=ALERT_PREFIX,
             include_linked_timelines=include_linked_timelines,
         )
 
@@ -212,16 +232,6 @@ class AlertService:
             },
         )
         return prepared_alert
-    
-    async def get_alert_by_human_id(self, db: AsyncSession, human_id: str) -> Optional[Alert]:
-        """Get alert by human_id."""
-        try:
-            if not human_id.startswith("ALT-"):
-                return None
-            alert_id = int(human_id[4:])
-            return await self.get_alert(db, alert_id)
-        except (ValueError, IndexError):
-            return None
     
     async def get_alerts(
         self, 
@@ -248,111 +258,86 @@ class AlertService:
             assignee: Filter by multiple assignee usernames (exact match, OR logic)
             search: Search string to match against alert ID, title, or description (case-insensitive partial match)
         """
-        try:
-            # Build base query
-            # Defer timeline_items - not needed for list view and can cause validation 
-            # errors if malformed data exists. Detail view fetches them separately.
-            query = select(Alert).options(
-                selectinload(Alert.case),  # type: ignore
-                selectinload(Alert.triage_recommendation),  # type: ignore
-                defer(Alert.timeline_items)  # type: ignore[arg-type]
-            )
-            
-            # Apply filters
-            filters = []
-            if status:
-                # Handle multiple statuses with IN clause
-                filters.append(Alert.status.in_(status))  # type: ignore
-            if assignee:
-                # Handle multiple assignees with IN clause
-                # Special handling for "__unassigned__" token to filter for NULL assignees
-                unassigned_requested = "__unassigned__" in assignee
-                regular_assignees = [a for a in assignee if a != "__unassigned__"]
-                
-                if unassigned_requested and regular_assignees:
-                    # Both unassigned and specific assignees requested
-                    filters.append(
-                        or_(
-                            Alert.assignee.is_(None),  # type: ignore
-                            Alert.assignee.in_(regular_assignees)  # type: ignore
-                        )
-                    )
-                elif unassigned_requested:
-                    # Only unassigned requested
-                    filters.append(Alert.assignee.is_(None))  # type: ignore
-                elif regular_assignees:
-                    # Only specific assignees requested
-                    filters.append(Alert.assignee.in_(regular_assignees))  # type: ignore
-            if case_id:
-                filters.append(Alert.case_id == case_id)
-            if priority:
-                # Handle multiple priorities with IN clause
-                filters.append(Alert.priority.in_(priority))  # type: ignore
-            if source:
-                filters.append(Alert.source.ilike(f"%{source}%"))  # type: ignore
-            append_tag_filters(filters, Alert.tags, include_tags, exclude_tags)
-            if has_case is not None:
-                if has_case:
-                    filters.append(Alert.case_id.is_not(None))  # type: ignore
-                else:
-                    filters.append(Alert.case_id.is_(None))  # type: ignore
-            
-            # Date range filtering (expects UTC ISO8601 strings)
-            if start_date:
-                try:
-                    # Parse ISO8601 with or without 'Z' suffix
-                    start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-                    filters.append(Alert.created_at >= start_dt)  # type: ignore
-                except ValueError:
-                    logger.warning(f"Invalid start_date format: {start_date}")
-            
-            if end_date:
-                try:
-                    # Parse ISO8601 with or without 'Z' suffix
-                    end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-                    filters.append(Alert.created_at <= end_dt)  # type: ignore
-                except ValueError:
-                    logger.warning(f"Invalid end_date format: {end_date}")
-            
-            # Search filtering (match against ID, title, or description)
-            if search:
-                search_pattern = f"%{search}%"
+        # Defer timeline_items because list responses do not need the potentially
+        # malformed legacy JSON that detail views normalize separately.
+        query = select(Alert).options(
+            selectinload(Alert.case),  # type: ignore
+            selectinload(Alert.triage_recommendation),  # type: ignore
+            defer(Alert.timeline_items),  # type: ignore[arg-type]
+        )
+        filters = []
+        if status:
+            filters.append(Alert.status.in_(status))  # type: ignore
+        if assignee:
+            unassigned_requested = "__unassigned__" in assignee
+            regular_assignees = [
+                username for username in assignee if username != "__unassigned__"
+            ]
+            if unassigned_requested and regular_assignees:
                 filters.append(
                     or_(
-                        cast(Alert.id, String).ilike(search_pattern),  # type: ignore
-                        Alert.title.ilike(search_pattern),  # type: ignore
-                        Alert.description.ilike(search_pattern)  # type: ignore
+                        Alert.assignee.is_(None),  # type: ignore
+                        Alert.assignee.in_(regular_assignees),  # type: ignore
                     )
                 )
-            
-            if filters:
-                query = query.where(*filters)
-            
-            # Apply sorting
-            allowed_sort_columns = {
-                "id": Alert.id,
-                "title": Alert.title,
-                "status": Alert.status,
-                "priority": Alert.priority,
-                "source": Alert.source,
-                "assignee": Alert.assignee,
-                "created_at": Alert.created_at,
-                "updated_at": Alert.updated_at,
-            }
-            if sort_by not in allowed_sort_columns:
-                raise ValueError(f"Unsupported alert sort column: {sort_by}")
+            elif unassigned_requested:
+                filters.append(Alert.assignee.is_(None))  # type: ignore
+            elif regular_assignees:
+                filters.append(Alert.assignee.in_(regular_assignees))  # type: ignore
+        if case_id:
+            filters.append(Alert.case_id == case_id)
+        if priority:
+            filters.append(Alert.priority.in_(priority))  # type: ignore
+        if source:
+            filters.append(Alert.source.ilike(f"%{source}%"))  # type: ignore
+        append_tag_filters(filters, Alert.tags, include_tags, exclude_tags)
+        if has_case is not None:
+            filters.append(
+                Alert.case_id.is_not(None)  # type: ignore
+                if has_case
+                else Alert.case_id.is_(None)  # type: ignore
+            )
+
+        try:
+            start_dt = parse_datetime_filter(start_date, parameter="start_date")
+            end_dt = parse_datetime_filter(end_date, parameter="end_date")
+        except DateFilterValidationError as exc:
+            raise AlertValidationError(str(exc)) from exc
+
+        if start_dt is not None:
+            filters.append(Alert.created_at >= start_dt)  # type: ignore
+        if end_dt is not None:
+            filters.append(Alert.created_at <= end_dt)  # type: ignore
+        if search:
+            search_pattern = f"%{search}%"
+            filters.append(
+                or_(
+                    cast(Alert.id, String).ilike(search_pattern),  # type: ignore
+                    Alert.title.ilike(search_pattern),  # type: ignore
+                    Alert.description.ilike(search_pattern),  # type: ignore
+                )
+            )
+        if filters:
+            query = query.where(*filters)
+
+        allowed_sort_columns = {
+            "id": Alert.id,
+            "title": Alert.title,
+            "status": Alert.status,
+            "priority": Alert.priority,
+            "source": Alert.source,
+            "assignee": Alert.assignee,
+            "created_at": Alert.created_at,
+            "updated_at": Alert.updated_at,
+        }
+        try:
             sort_column = allowed_sort_columns[sort_by]
-            if sort_order.lower() == "asc":
-                query = query.order_by(sort_column.asc())  # type: ignore
-            else:
-                query = query.order_by(sort_column.desc())  # type: ignore
-            
-            # Use fastapi-pagination for pagination with SQLAlchemy
-            return await paginate(db, query)
-            
-        except Exception as e:
-            logger.error(f"Error fetching alerts: {e}")
-            raise
+        except KeyError as exc:
+            raise AlertValidationError(
+                f"Unsupported alert sort column: {sort_by}"
+            ) from exc
+        ordering = sort_column.asc() if sort_order.lower() == "asc" else sort_column.desc()
+        return await apaginate(db, query.order_by(ordering))
 
     async def update_alert(
         self, 
@@ -363,11 +348,9 @@ class AlertService:
     ) -> Optional[Alert]:
         """Update an alert."""
         try:
-            db_alert = await self._get_alert_model(db, alert_id)
+            db_alert = await self._get_alert_for_update(db, alert_id)
             if not db_alert:
                 return None
-            if db_alert.case_id is not None:
-                raise ValueError("Alert is already linked to a case; unlink it before linking to another case")
             
             # Track status changes for timeline
             old_status = db_alert.status
@@ -391,37 +374,17 @@ class AlertService:
             
             # Add timeline item for status changes
             if status_changed and updated_by:
-                # Map status values (not enum attributes) to descriptions
-                status_descriptions = {
-                    "new": "Alert status changed to New",
-                    "in_progress": "Alert status changed to In Progress",
-                    "escalated": "Alert status changed to Escalated",
-                    "closed_true_positive": "Alert closed as True Positive",
-                    "closed_benign_positive": "Alert closed as True Positive Benign",
-                    "closed_false_positive": "Alert closed as False Positive",
-                    "closed_unresolved": "Alert closed as Unresolved",
-                    "closed_duplicate": "Alert closed as Duplicate",
-                }
-                
-                description = status_descriptions.get(
-                    db_alert.status,
-                    f"Alert status changed to {db_alert.status}"
-                )
+                description = _status_change_description(db_alert.status)
                 
                 # Create a note timeline item for the status change
                 now = datetime.now(timezone.utc)
-                status_change_item = {
-                    "id": str(uuid4()),
-                    "type": "note",
-                    "description": description,
-                    "created_at": now.isoformat(),
-                    "timestamp": now.isoformat(),
-                    "created_by": updated_by,
-                    "tags": ["status-change"],
-                    "flagged": False,
-                    "highlighted": False,
-                    "replies": []
-                }
+                status_change_item = timeline_service.build_note_item(
+                    description=description,
+                    created_by=updated_by,
+                    created_at=now.isoformat(),
+                    timestamp=now.isoformat(),
+                    tags=["status-change"],
+                )
                 
                 timeline_service.add_timeline_item(db_alert, status_change_item, created_by=updated_by)
                 
@@ -460,14 +423,21 @@ class AlertService:
             )
 
             await db.commit()
-            
-            logger.info(f"Alert updated")
-            return await self.get_alert(db, alert_id)
-            
         except Exception as e:
             await db.rollback()
             logger.error(f"Error updating alert {alert_id}: {e}")
             raise
+
+        logger.info("Alert updated")
+        return await load_committed_response(
+            db,
+            lambda: self.get_alert(db, alert_id),
+            db_alert,
+            logger=logger,
+            entity_type="alert",
+            entity_id=alert_id,
+            operation="update",
+        )
     
     async def triage_alert(
         self, 
@@ -478,7 +448,7 @@ class AlertService:
     ) -> Optional[Alert]:
         """Triage an alert and optionally escalate to case."""
         try:
-            db_alert = await self._get_alert_model(db, alert_id)
+            db_alert = await self._get_alert_for_update(db, alert_id)
             if not db_alert:
                 return None
             
@@ -497,7 +467,9 @@ class AlertService:
             # If escalating to case, create a new case
             if triage_request.escalate_to_case:
                 if db_alert.case_id:
-                    raise HTTPException(status_code=400, detail="Alert is already escalated to a case")
+                    raise AlertValidationError(
+                        "Alert is already escalated to a case"
+                    )
 
                 new_case = await create_case_from_alert(
                     db,
@@ -514,14 +486,21 @@ class AlertService:
                 logger.info(f"Alert escalated to case {new_case.id}")
             
             await db.commit()
-            
-            logger.info(f"Alert triaged by {triaged_by}")
-            return await self.get_alert(db, alert_id)
-            
         except Exception as e:
             await db.rollback()
             logger.error(f"Error triaging alert {alert_id}: {e}")
             raise
+
+        logger.info(f"Alert triaged by {triaged_by}")
+        return await load_committed_response(
+            db,
+            lambda: self.get_alert(db, alert_id),
+            db_alert,
+            logger=logger,
+            entity_type="alert",
+            entity_id=alert_id,
+            operation="triage",
+        )
     
     async def link_alert_to_case(
         self, 
@@ -532,14 +511,15 @@ class AlertService:
     ) -> Optional[Alert]:
         """Link an existing alert to an existing case."""
         try:
-            db_alert = await self._get_alert_model(db, alert_id)
+            # Preserve the existing not-found behavior without taking the child
+            # lock before its parent. The locked reload below is authoritative.
+            if await self._get_alert_model(db, alert_id) is None:
+                return None
+
+            db_case = await self._lock_required_case(db, case_id)
+            db_alert = await self._get_alert_for_update(db, alert_id)
             if not db_alert:
                 return None
-            
-            # Verify case exists
-            db_case = await case_service.get_case(db, case_id)
-            if not db_case:
-                raise ValueError(f"Case {case_id} not found")
             
             # Link alert to case
             apply_triage_state(
@@ -553,14 +533,25 @@ class AlertService:
             )
             
             await db.commit()
-            
-            logger.info(f"Alert linked to case CAS-{db_case.id:07d} by {linked_by}")
-            return await self.get_alert(db, alert_id)
-            
         except Exception as e:
             await db.rollback()
             logger.error(f"Error linking alert {alert_id} to case {case_id}: {e}")
             raise
+
+        logger.info(
+            "Alert linked to case %s by %s",
+            format_entity_id(db_case.id, CASE_PREFIX),
+            linked_by,
+        )
+        return await load_committed_response(
+            db,
+            lambda: self.get_alert(db, alert_id),
+            db_alert,
+            logger=logger,
+            entity_type="alert",
+            entity_id=alert_id,
+            operation="case link",
+        )
 
     async def bulk_action(
         self,
@@ -571,20 +562,40 @@ class AlertService:
         """Apply one supported bulk action to selected alerts."""
         try:
             alert_ids = self._deduplicate_alert_ids(request.alert_ids)
+            locked_link_case = (
+                await self._lock_required_case(db, request.case_id)
+                if request.action == "link_case"
+                else None
+            )
             ordered_alerts = await self._load_alerts_for_bulk_action(db, alert_ids)
             context = await self._prepare_bulk_action(
-                db, request, ordered_alerts, alert_ids, performed_by
+                db,
+                request,
+                ordered_alerts,
+                alert_ids,
+                performed_by,
+                locked_link_case=locked_link_case,
             )
 
             await self._apply_bulk_action_to_alerts(
                 db, ordered_alerts, request, context, performed_by
             )
+            fallback_response = self._bulk_action_response(ordered_alerts, context)
             await db.commit()
-            return await self._build_bulk_action_response(db, alert_ids, context)
         except Exception as e:
             await db.rollback()
             logger.error(f"Error applying bulk alert action {request.action}: {e}")
             raise
+
+        return await load_committed_response(
+            db,
+            lambda: self._build_bulk_action_response(db, alert_ids, context),
+            fallback_response,
+            logger=logger,
+            entity_type="alert batch",
+            entity_id=alert_ids,
+            operation=request.action,
+        )
 
     @staticmethod
     def _deduplicate_alert_ids(alert_ids: List[int]) -> List[int]:
@@ -599,13 +610,16 @@ class AlertService:
             select(Alert)
             .options(selectinload(Alert.triage_recommendation))  # type: ignore
             .where(col(Alert.id).in_(alert_ids))
+            .order_by(Alert.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         alerts = list(result.scalars().all())
         alerts_by_id = {alert.id: alert for alert in alerts}
         missing_ids = [alert_id for alert_id in alert_ids if alert_id not in alerts_by_id]
         if missing_ids:
             missing_list = ", ".join(str(item) for item in missing_ids)
-            raise ValueError(f"Alert(s) not found: {missing_list}")
+            raise AlertValidationError(f"Alert(s) not found: {missing_list}")
         return [alerts_by_id[alert_id] for alert_id in alert_ids]
 
     async def _prepare_bulk_action(
@@ -615,11 +629,14 @@ class AlertService:
         alerts: List[Alert],
         alert_ids: List[int],
         performed_by: str,
+        *,
+        locked_link_case: Optional[Case],
     ) -> _BulkActionContext:
         context = _BulkActionContext(status=self._resolve_bulk_update_status(request))
 
         if request.action == "link_case":
-            await self._get_required_case(db, request.case_id)
+            if locked_link_case is None:
+                raise RuntimeError("Bulk case link requires a locked destination case")
             self._ensure_alerts_can_link_to_case(alerts, request.case_id)
 
         if request.action == "create_case":
@@ -676,10 +693,22 @@ class AlertService:
         case_id: Optional[int],
     ) -> Case:
         if case_id is None:
-            raise ValueError("case_id is required")
+            raise AlertValidationError("case_id is required")
         case = await case_service.get_case(db, case_id)
         if not case:
-            raise ValueError(f"Case {case_id} not found")
+            raise AlertRelatedEntityNotFoundError(f"Case {case_id} not found")
+        return case
+
+    async def _lock_required_case(
+        self,
+        db: AsyncSession,
+        case_id: Optional[int],
+    ) -> Case:
+        if case_id is None:
+            raise AlertValidationError("case_id is required")
+        case = await case_service.lock_case_for_update(db, case_id)
+        if case is None:
+            raise AlertRelatedEntityNotFoundError(f"Case {case_id} not found")
         return case
 
     async def _get_required_alert(
@@ -688,10 +717,10 @@ class AlertService:
         alert_id: Optional[int],
     ) -> Alert:
         if alert_id is None:
-            raise ValueError("alert_id is required")
+            raise AlertValidationError("alert_id is required")
         alert = await self._get_alert_model(db, alert_id)
         if not alert:
-            raise ValueError(f"Alert {alert_id} not found")
+            raise AlertRelatedEntityNotFoundError(f"Alert {alert_id} not found")
         return alert
 
     @staticmethod
@@ -715,7 +744,9 @@ class AlertService:
             return
 
         if request.duplicate_target_alert_id in alert_ids:
-            raise ValueError("Duplicate target alert cannot be one of the selected alerts")
+            raise AlertValidationError(
+                "Duplicate target alert cannot be one of the selected alerts"
+            )
         context.target_alert = await self._get_required_alert(db, request.duplicate_target_alert_id)
 
     async def _apply_bulk_action_to_alerts(
@@ -774,7 +805,9 @@ class AlertService:
         performed_by: str,
     ) -> None:
         if context.status is None:
-            raise ValueError("status or disposition is required for update_status")
+            raise AlertValidationError(
+                "status or disposition is required for update_status"
+            )
 
         if context.status == AlertStatus.CLOSED_DUPLICATE:
             self._link_alert_to_duplicate_target(alert, request, context)
@@ -790,32 +823,32 @@ class AlertService:
         self,
         alert: Alert,
         request: AlertBulkActionRequest,
-        context: _BulkActionContext,
+        _context: _BulkActionContext,
         performed_by: str,
     ) -> None:
         if request.case_id is None:
-            raise ValueError("case_id is required for link_case")
+            raise AlertValidationError("case_id is required for link_case")
         self._link_alert_to_case(
             alert,
             request.case_id,
             performed_by,
-            f"Bulk linked alert to case CAS-{request.case_id:07d}",
+            f"Bulk linked alert to case {format_entity_id(request.case_id, CASE_PREFIX)}",
         )
 
     def _apply_bulk_created_case_link(
         self,
         alert: Alert,
-        request: AlertBulkActionRequest,
+        _request: AlertBulkActionRequest,
         context: _BulkActionContext,
         performed_by: str,
     ) -> None:
         if context.created_case is None or context.created_case.id is None:
-            raise ValueError("created case is required for create_case")
+            raise AlertValidationError("created case is required for create_case")
         self._link_alert_to_case(
             alert,
             context.created_case.id,
             performed_by,
-            f"Bulk linked alert to new case CAS-{context.created_case.id:07d}",
+            f"Bulk linked alert to new case {format_entity_id(context.created_case.id, CASE_PREFIX)}",
         )
 
     def _apply_bulk_duplicate_close(
@@ -837,8 +870,8 @@ class AlertService:
         self,
         alert: Alert,
         request: AlertBulkActionRequest,
-        context: _BulkActionContext,
-        performed_by: str,
+        _context: _BulkActionContext,
+        _performed_by: str,
     ) -> None:
         alert.tags = merge_persisted_tags(alert.tags, request.tags)
         alert.updated_at = datetime.now(timezone.utc)
@@ -847,11 +880,11 @@ class AlertService:
         self,
         alert: Alert,
         request: AlertBulkActionRequest,
-        context: _BulkActionContext,
+        _context: _BulkActionContext,
         performed_by: str,
     ) -> None:
         if not request.assignee:
-            raise ValueError("assignee is required for assign")
+            raise AlertValidationError("assignee is required for assign")
         alert.assignee = request.assignee
         if alert.status == AlertStatus.NEW:
             alert.status = AlertStatus.IN_PROGRESS
@@ -921,20 +954,35 @@ class AlertService:
             if updated_alert is not None:
                 updated_alerts.append(updated_alert)
 
+        if len(updated_alerts) != len(alert_ids):
+            raise RuntimeError("One or more committed alerts could not be reloaded")
+
+        return self._bulk_action_response(updated_alerts, context)
+
+    @staticmethod
+    def _bulk_action_response(
+        updated_alerts: List[Alert],
+        context: _BulkActionContext,
+    ) -> AlertBulkActionResponse:
         case_id = context.created_case.id if context.created_case is not None else None
         return AlertBulkActionResponse(
             updated_alerts=updated_alerts,  # type: ignore[arg-type]
             updated_count=len(updated_alerts),
             case_id=case_id,
-            case_human_id=f"CAS-{case_id:07d}" if case_id is not None else None,
+            case_human_id=(
+                format_entity_id(case_id, CASE_PREFIX)
+                if case_id is not None
+                else None
+            ),
         )
 
     @staticmethod
     def _ensure_alerts_can_link_to_case(alerts: List[Alert], case_id: Optional[int]) -> None:
         for alert in alerts:
             if alert.case_id is not None and alert.case_id != case_id:
-                raise ValueError(
-                    f"Alert ALT-{alert.id:07d} is already linked to case CAS-{alert.case_id:07d}"
+                raise AlertValidationError(
+                    f"Alert {format_entity_id(alert.id, ALERT_PREFIX)} is already linked "
+                    f"to case {format_entity_id(alert.case_id, CASE_PREFIX)}"
                 )
 
     @staticmethod
@@ -1020,7 +1068,7 @@ class AlertService:
             TriageDisposition.UNKNOWN: AlertStatus.CLOSED_UNRESOLVED,
         }
         if disposition not in disposition_statuses:
-            raise ValueError("Unsupported disposition for status update")
+            raise AlertValidationError("Unsupported disposition for status update")
         return disposition_statuses[disposition]
 
     @staticmethod
@@ -1031,24 +1079,19 @@ class AlertService:
         tags: List[str],
     ) -> None:
         now = datetime.now(timezone.utc)
-        note_item = {
-            "id": str(uuid4()),
-            "type": "note",
-            "description": description,
-            "created_at": now.isoformat(),
-            "timestamp": now.isoformat(),
-            "created_by": performed_by,
-            "tags": tags,
-            "flagged": False,
-            "highlighted": False,
-            "replies": {},
-        }
+        note_item = timeline_service.build_note_item(
+            description=description,
+            created_by=performed_by,
+            created_at=now.isoformat(),
+            timestamp=now.isoformat(),
+            tags=tags,
+        )
         timeline_service.add_timeline_item(alert, note_item, created_by=performed_by)
 
     @staticmethod
     def _build_bulk_case_description(alerts: List[Alert]) -> str:
         alert_lines = [
-            f"- ALT-{alert.id:07d}: {alert.title}"
+            f"- {format_entity_id(alert.id, ALERT_PREFIX)}: {alert.title}"
             for alert in alerts
             if alert.id is not None
         ]
@@ -1061,9 +1104,9 @@ class AlertService:
     ) -> str:
         refs: List[str] = []
         if target_case_id is not None:
-            refs.append(f"case CAS-{target_case_id:07d}")
+            refs.append(f"case {format_entity_id(target_case_id, CASE_PREFIX)}")
         if target_alert_id is not None:
-            refs.append(f"alert ALT-{target_alert_id:07d}")
+            refs.append(f"alert {format_entity_id(target_alert_id, ALERT_PREFIX)}")
         return f"Bulk closed alert as duplicate of {' and '.join(refs)}"
 
     async def unlink_alert_from_case(
@@ -1091,12 +1134,12 @@ class AlertService:
             ValueError: If alert is not linked to a case
         """
         try:
-            db_alert = await self._get_alert_model(db, alert_id)
+            db_alert = await self._get_alert_for_update(db, alert_id)
             if not db_alert:
                 return None
             
             if not db_alert.case_id:
-                raise ValueError("Alert is not linked to a case")
+                raise AlertValidationError("Alert is not linked to a case")
             
             old_case_id = db_alert.case_id
             
@@ -1107,14 +1150,26 @@ class AlertService:
             db_alert.status = AlertStatus.IN_PROGRESS
             
             await db.commit()
-            
-            logger.info(f"Alert ALT-{db_alert.id:07d} unlinked from case CAS-{old_case_id:07d} by {unlinked_by}")
-            return await self.get_alert(db, alert_id)
-            
         except Exception as e:
             await db.rollback()
             logger.error(f"Error unlinking alert {alert_id} from case: {e}")
             raise
+
+        logger.info(
+            "Alert %s unlinked from case %s by %s",
+            format_entity_id(db_alert.id, ALERT_PREFIX),
+            format_entity_id(old_case_id, CASE_PREFIX),
+            unlinked_by,
+        )
+        return await load_committed_response(
+            db,
+            lambda: self.get_alert(db, alert_id),
+            db_alert,
+            logger=logger,
+            entity_type="alert",
+            entity_id=alert_id,
+            operation="case unlink",
+        )
 
     async def add_timeline_item(
         self,
@@ -1123,34 +1178,42 @@ class AlertService:
         timeline_item: AlertTimelineItem,
         added_by: str,
         created_at_override: Optional[datetime] = None,
+        preserve_item_id: bool = False,
     ) -> Optional[Alert]:
         """Add a single timeline item to an alert's timeline."""
         try:
-            db_alert = await self._get_alert_model(db, alert_id)
-            if not db_alert:
+            committed_alert = await self._get_alert_model(db, alert_id)
+            if committed_alert is None:
                 return None
-
-            item_dict = await add_timeline_item_and_commit(
+            added_item = await add_timeline_item_and_commit(
                 db,
-                entity=db_alert,
                 entity_id=alert_id,
                 entity_type="alert",
                 timeline_item=timeline_item,
                 performed_by=added_by,
                 created_at_override=created_at_override,
+                preserve_item_id=preserve_item_id,
             )
-            
-            logger.info(f"Timeline item added to alert by {added_by}")
-            return await self.get_alert(db, alert_id)
-            
-        except ValueError as e:
-            # Raised when trying to add unsupported item types (e.g., tasks on alerts)
+            if added_item is None:
+                return None
+        except TimelineValidationError as exc:
             await db.rollback()
-            raise HTTPException(status_code=400, detail=str(e))
+            raise AlertValidationError(str(exc)) from exc
         except Exception as e:
             await db.rollback()
             logger.error(f"Error adding timeline item to alert {alert_id}: {e}")
             raise
+
+        logger.info(f"Timeline item added to alert by {added_by}")
+        return await load_committed_response(
+            db,
+            lambda: self.get_alert(db, alert_id),
+            committed_alert,
+            logger=logger,
+            entity_type="alert",
+            entity_id=alert_id,
+            operation="timeline item addition",
+        )
 
     async def update_timeline_item(
         self,
@@ -1158,45 +1221,49 @@ class AlertService:
         alert_id: int,
         item_id: str,
         updated_item: AlertTimelineItem,
-        updated_by: str
+        updated_by: str,
+        expected_item_fields: dict[str, Any] | None = None,
     ) -> Optional[Alert]:
         """Update a specific timeline item in an alert with permission checks and audit logging."""
         try:
-            db_alert = await self._get_alert_model(db, alert_id)
-            if not db_alert:
+            committed_alert = await self._get_alert_model(db, alert_id)
+            if committed_alert is None:
                 return None
-            
-            # Find the existing item to validate permissions and preserve metadata
-            existing_item = timeline_service._find_item_by_id(db_alert.timeline_items or [], item_id)
-            if not existing_item:
-                raise ValueError(f"Timeline item {item_id} not found")
-            
             updated_dict = await update_timeline_item_and_commit(
                 db,
-                entity=db_alert,
                 entity_id=alert_id,
                 entity_type="alert",
                 item_id=item_id,
-                existing_item=existing_item,
                 timeline_item=updated_item,
                 performed_by=updated_by,
+                expected_item_fields=expected_item_fields,
             )
 
             if updated_dict is None:
-                raise ValueError(f"Timeline item {item_id} not found")
-            
-            logger.info(
-                f"Timeline item {item_id} (type: {updated_dict.get('type')}) updated in alert {alert_id} by {updated_by}"
-            )
-            return await self.get_alert(db, alert_id)
-            
-        except HTTPException:
+                return None
+        except TimelineValidationError as exc:
+            await db.rollback()
+            raise AlertValidationError(str(exc)) from exc
+        except TimelineItemConflict:
             await db.rollback()
             raise
         except Exception as e:
             await db.rollback()
             logger.error(f"Error updating timeline item {item_id} in alert {alert_id}: {e}")
             raise
+
+        logger.info(
+            f"Timeline item {item_id} (type: {updated_dict.get('type')}) updated in alert {alert_id} by {updated_by}"
+        )
+        return await load_committed_response(
+            db,
+            lambda: self.get_alert(db, alert_id),
+            committed_alert,
+            logger=logger,
+            entity_type="alert",
+            entity_id=alert_id,
+            operation="timeline item update",
+        )
 
     async def remove_timeline_item(
         self,
@@ -1207,103 +1274,35 @@ class AlertService:
     ) -> Optional[Alert]:
         """Remove a specific timeline item from an alert and clean up associated resources."""
         try:
-            db_alert = await self._get_alert_model(db, alert_id)
-            if not db_alert:
+            committed_alert = await self._get_alert_model(db, alert_id)
+            if committed_alert is None:
                 return None
-            
-            # Find the item for error messaging
-            item_to_remove = timeline_service._find_item_by_id(db_alert.timeline_items or [], item_id)
-            if not item_to_remove:
-                raise ValueError(f"Timeline item {item_id} not found")
-            
-            # Remove timeline item with resource cleanup (handles attachments, etc.)
-            if not await timeline_service.remove_timeline_item_with_cleanup(
-                db, db_alert, item_id, removed_by
-            ):
-                raise ValueError(f"Timeline item {item_id} not found")
-            
-            await emit_event(
+            removed_item = await remove_timeline_item_and_commit(
                 db,
-                entity_type="alert",
                 entity_id=alert_id,
-                event_type=RealtimeEventType.TIMELINE_ITEM_DELETED,
+                entity_type="alert",
+                item_id=item_id,
                 performed_by=removed_by,
-                item_id=item_id,
-                item_type=item_to_remove.get("type"),
             )
-
-            await db.commit()
-            
-            await get_audit_service(db).log_timeline_item_deleted(
-                entity_type="alert",
-                entity_id=alert_id,
-                item_id=item_id,
-                item_type=item_to_remove.get("type", "unknown"),
-                user=removed_by,
-                old_value=item_to_remove,
-            )
-            logger.info(f"Timeline item {item_id} removed from alert by {removed_by}")
-            return await self.get_alert(db, alert_id)
-            
+            if removed_item is None:
+                return None
+        except TimelineValidationError as exc:
+            await db.rollback()
+            raise AlertValidationError(str(exc)) from exc
         except Exception as e:
             await db.rollback()
             logger.error(f"Error removing timeline item {item_id} from alert {alert_id}: {e}")
             raise
-    
-    async def _preload_timeline_entities(
-        self,
-        db: AsyncSession,
-        timeline_items: List[Dict[str, Any]] | Dict[str, Dict[str, Any]]
-    ) -> None:
-        """Preload all entities referenced in timeline items to avoid N+1 queries.
-        
-        This eagerly loads actors, tasks, and cases that are referenced
-        in the timeline items into SQLAlchemy's session cache.
-        """
-        actor_ids: Set[int] = set()
-        task_ids: Set[int] = set()
-        case_ids: Set[int] = set()
-        
-        def extract_ids_recursive(items: List[Dict[str, Any]] | Dict[str, Dict[str, Any]]) -> None:
-            """Recursively extract entity IDs from items and their replies."""
-            for item in timeline_service._iter_items(items):
-                item_type = item.get("type")
-                
-                # Extract entity IDs based on item type
-                if item_type in ("internal_actor", "external_actor", "threat_actor"):
-                    if item.get("actor_id"):
-                        actor_ids.add(item["actor_id"])
-                elif item_type == "task":
-                    if item.get("task_id") and isinstance(item["task_id"], int):
-                        task_ids.add(item["task_id"])
-                elif item_type == "case":
-                    if item.get("case_id") and isinstance(item["case_id"], int):
-                        case_ids.add(item["case_id"])
-                
-                # Recursively process replies
-                if item.get("replies"):
-                    extract_ids_recursive(item["replies"])
-        
-        # Extract all IDs from the timeline
-        extract_ids_recursive(timeline_items)
-        
-        # Bulk load all actors
-        if actor_ids:
-            actor_query = select(Actor).where(col(Actor.id).in_(actor_ids))
-            await db.execute(actor_query)
-            logger.debug(f"Preloaded {len(actor_ids)} actors for alert timeline")
-        
-        # Bulk load all tasks
-        if task_ids:
-            task_query = select(Task).where(col(Task.id).in_(task_ids))
-            await db.execute(task_query)
-            logger.debug(f"Preloaded {len(task_ids)} tasks for alert timeline")
-        
-        # Bulk load all cases
-        if case_ids:
-            case_query = select(Case).where(col(Case.id).in_(case_ids))
-            await db.execute(case_query)
-            logger.debug(f"Preloaded {len(case_ids)} cases for alert timeline")
 
+        logger.info(f"Timeline item {item_id} removed from alert by {removed_by}")
+        return await load_committed_response(
+            db,
+            lambda: self.get_alert(db, alert_id),
+            committed_alert,
+            logger=logger,
+            entity_type="alert",
+            entity_id=alert_id,
+            operation="timeline item removal",
+        )
 
 alert_service = AlertService()

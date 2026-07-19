@@ -7,8 +7,15 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 
-from app.models.enums import AlertStatus, RecommendationStatus, TriageDisposition
-from app.models.models import Alert, AuditLog, Case, TriageRecommendation
+from app.models.enums import (
+    AlertStatus,
+    CaseStatus,
+    RecommendationStatus,
+    TaskStatus,
+    TriageDisposition,
+)
+from app.models.models import Alert, AuditLog, Case, Task, TriageRecommendation
+from app.services.timeline_service import timeline_service
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -403,6 +410,63 @@ async def test_closing_case_with_summary_adds_case_timeline_note_only(
             and "Alert closed automatically as False Positive due to case" in item.get("description", "")
             for item in alert_items
         )
+
+
+@pytest.mark.asyncio
+async def test_linked_item_failure_rolls_back_entire_case_closure(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(
+        client,
+        session_maker,
+        analyst_user_factory,
+    )
+
+    async with session_maker() as session:
+        case = Case(title="Atomic closure case", created_by="seed-user")
+        session.add(case)
+        await session.flush()
+        assert case.id is not None
+        task = Task(
+            title="Must remain open",
+            created_by="seed-user",
+            case_id=case.id,
+        )
+        session.add(task)
+        await session.commit()
+        case_id = case.id
+        assert task.id is not None
+        task_id = task.id
+
+    def fail_task_timeline_update(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("linked timeline unavailable")
+
+    monkeypatch.setattr(
+        timeline_service,
+        "add_timeline_item",
+        fail_task_timeline_update,
+    )
+
+    with pytest.raises(RuntimeError, match="linked timeline unavailable"):
+        await client.put(
+            f"/api/v1/cases/{case_id}",
+            json={"status": "CLOSED"},
+            cookies={"intercept_session": session_cookie},
+        )
+
+    async with session_maker() as session:
+        stored_case = await session.get(Case, case_id)
+        stored_task = await session.get(Task, task_id)
+
+    assert stored_case is not None
+    assert stored_case.status == CaseStatus.NEW
+    assert stored_case.timeline_items == {}
+    assert stored_task is not None
+    assert stored_task.status == TaskStatus.TODO
+    assert stored_task.timeline_items == {}
 
 
 @pytest.mark.asyncio
