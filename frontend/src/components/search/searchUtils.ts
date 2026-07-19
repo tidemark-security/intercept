@@ -10,10 +10,10 @@ export const MIN_SEARCH_QUERY_LENGTH = 2;
  * Extended search result with optional metadata fields
  */
 export interface ExtendedSearchResultItem extends SearchResultItem {
-  priority?: string;
-  status?: string;
-  assignee?: string;
-  updated_at?: string;
+  priority?: string | null;
+  status?: string | null;
+  assignee?: string | null;
+  updated_at?: string | null;
 }
 
 /**
@@ -76,7 +76,11 @@ export function mapState(status?: string, entityType?: string): "new" | "in_prog
       default: return 'tsk_todo';
     }
   }
-  switch (status?.toLowerCase()) {
+  const normalizedStatus = status?.toLowerCase();
+  if (entityType === 'alert' && normalizedStatus?.startsWith('closed_')) {
+    return 'closed';
+  }
+  switch (normalizedStatus) {
     case 'new': return 'new';
     case 'in_progress': return 'in_progress';
     case 'escalated': return 'escalated';

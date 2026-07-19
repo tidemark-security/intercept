@@ -40,7 +40,8 @@ vi.mock('magika', () => ({
   Magika: {
     create: vi.fn().mockResolvedValue({
       identifyBytes: vi.fn().mockResolvedValue({
-        prediction: { output: { mime_type: 'text/plain' } },
+        // Real magika JS shape: output carries a label, not a MIME type
+        prediction: { output: { label: 'TXT' } },
       }),
     }),
   },
@@ -147,7 +148,11 @@ describe('useFileUpload', () => {
     });
 
     await act(async () => {
-      await result.current.uploadFile(file);
+      await result.current.uploadFile(file, {
+        description: 'Collected from the affected endpoint',
+        timestamp: '2026-07-12T14:30:00Z',
+        tags: ['evidence', 'endpoint'],
+      });
     });
 
     expect(generateTaskUploadUrl).toHaveBeenCalledWith({
@@ -156,6 +161,9 @@ describe('useFileUpload', () => {
         filename: 'report.txt',
         file_size: 3,
         mime_type: 'text/plain',
+        description: 'Collected from the affected endpoint',
+        timestamp: '2026-07-12T14:30:00Z',
+        tags: ['evidence', 'endpoint'],
       },
     });
     expect(updateTaskAttachmentStatus).toHaveBeenCalledWith({

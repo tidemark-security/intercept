@@ -28,12 +28,20 @@ export class TasksService {
      */
     public static createTaskApiV1TasksPost({
         requestBody,
+        migration = false,
     }: {
         requestBody: TaskCreate,
+        /**
+         * Allow authorized NHI migration clients to provide created_at
+         */
+        migration?: boolean,
     }): CancelablePromise<TaskRead> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/tasks',
+            query: {
+                'migration': migration,
+            },
             body: requestBody,
             mediaType: 'application/json',
             errors: {
@@ -58,9 +66,13 @@ export class TasksService {
         status,
         assignee,
         caseId,
+        includeTags,
+        excludeTags,
         search,
         startDate,
         endDate,
+        sortBy = 'created_at',
+        sortOrder = 'desc',
         page = 1,
         size = 50,
     }: {
@@ -76,6 +88,14 @@ export class TasksService {
          */
         caseId?: (number | null),
         /**
+         * Require tasks to include all of these tags
+         */
+        includeTags?: (Array<string> | null),
+        /**
+         * Require tasks to exclude all of these tags
+         */
+        excludeTags?: (Array<string> | null),
+        /**
          * Search tasks by title or description (case-insensitive partial match)
          */
         search?: (string | null),
@@ -87,6 +107,14 @@ export class TasksService {
          * Filter tasks created before this UTC datetime (ISO8601 format with 'Z' suffix)
          */
         endDate?: (string | null),
+        /**
+         * Field to sort by
+         */
+        sortBy?: string,
+        /**
+         * Sort order
+         */
+        sortOrder?: string,
         /**
          * Page number
          */
@@ -105,9 +133,13 @@ export class TasksService {
                 'status': status,
                 'assignee': assignee,
                 'case_id': caseId,
+                'include_tags': includeTags,
+                'exclude_tags': excludeTags,
                 'search': search,
                 'start_date': startDate,
                 'end_date': endDate,
+                'sort_by': sortBy,
+                'sort_order': sortOrder,
                 'page': page,
                 'size': size,
             },
@@ -256,15 +288,23 @@ export class TasksService {
     public static addTimelineItemApiV1TasksTaskIdTimelinePost({
         taskId,
         requestBody,
+        migration = false,
     }: {
         taskId: number,
         requestBody: Record<string, any>,
+        /**
+         * Allow authorized NHI migration clients to provide created_at
+         */
+        migration?: boolean,
     }): CancelablePromise<TaskRead> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/tasks/{task_id}/timeline',
             path: {
                 'task_id': taskId,
+            },
+            query: {
+                'migration': migration,
             },
             body: requestBody,
             mediaType: 'application/json',

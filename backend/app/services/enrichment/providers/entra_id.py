@@ -72,13 +72,33 @@ class EntraIDProvider(EnrichmentProvider):
                 return value.strip().lower()
         return ""
 
-    async def _get_token(self, tenant_id: str, client_id: str, client_secret: str) -> str:
+    def _bounded_int(self, value: Any, *, minimum: int, maximum: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = minimum
+        return max(minimum, min(maximum, parsed))
+
+    def _bounded_float(self, value: Any, *, minimum: float, maximum: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            parsed = minimum
+        return max(minimum, min(maximum, parsed))
+
+    async def _get_token(
+        self,
+        tenant_id: str,
+        client_id: str,
+        client_secret: str,
+        request_timeout_seconds: float,
+    ) -> str:
         now = datetime.now(timezone.utc)
         if self._token_value is not None and self._token_expires_at and now < self._token_expires_at:
             return self._token_value
 
         url = _TOKEN_URL.format(tenant_id=tenant_id)
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=request_timeout_seconds) as client:
             resp = await client.post(
                 url,
                 data={
@@ -98,18 +118,42 @@ class EntraIDProvider(EnrichmentProvider):
             self._token_expires_at = now + timedelta(seconds=max(60, expires_in - 60))
             return self._token_value
 
-    async def _get_settings(self, settings: SettingsService) -> Optional[Dict[str, str]]:
+    async def _get_settings(self, settings: SettingsService) -> Optional[Dict[str, Any]]:
         tenant_id = await settings.get(f"{self.settings_prefix}.tenant_id", "")
         client_id = await settings.get(f"{self.settings_prefix}.client_id", "")
         client_secret = await settings.get(f"{self.settings_prefix}.client_secret", "")
         if not (tenant_id and client_id and client_secret):
             return None
-        return {"tenant_id": tenant_id, "client_id": client_id, "client_secret": client_secret}
+        return {
+            "tenant_id": tenant_id,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "request_timeout_seconds": self._bounded_float(
+                await settings.get(f"{self.settings_prefix}.request_timeout_seconds", 30),
+                minimum=1,
+                maximum=600,
+            ),
+            "bulk_sync_page_size": self._bounded_int(
+                await settings.get(f"{self.settings_prefix}.bulk_sync_page_size", 999),
+                minimum=1,
+                maximum=999,
+            ),
+            "bulk_sync_max_records": self._bounded_int(
+                await settings.get(f"{self.settings_prefix}.bulk_sync_max_records", 0),
+                minimum=0,
+                maximum=1_000_000,
+            ),
+        }
 
-    async def _lookup_manager(self, token: str, identifier: str) -> Dict[str, Any] | None:
+    async def _lookup_manager(
+        self,
+        token: str,
+        identifier: str,
+        request_timeout_seconds: float,
+    ) -> Dict[str, Any] | None:
         headers = {"Authorization": f"Bearer {token}"}
         encoded_identifier = quote(identifier, safe="")
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=request_timeout_seconds) as client:
             resp = await client.get(
                 f"{_GRAPH_BASE}/users/{encoded_identifier}/manager",
                 headers=headers,
@@ -134,12 +178,17 @@ class EntraIDProvider(EnrichmentProvider):
             return identifier.rsplit("\\", 1)[-1]
         return identifier
 
-    async def _lookup_user(self, token: str, identifier: str) -> Optional[Dict[str, Any]]:
+    async def _lookup_user(
+        self,
+        token: str,
+        identifier: str,
+        request_timeout_seconds: float,
+    ) -> Optional[Dict[str, Any]]:
         """Look up a single user by UPN/object id first, then by mail or samAccountName."""
         encoded_identifier = identifier.replace("'", "''")
         sam_identifier = self._normalize_sam_account_name(identifier)
         encoded_sam_identifier = sam_identifier.replace("'", "''")
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=request_timeout_seconds) as client:
             endpoints: List[tuple[str, Dict[str, str], Dict[str, Any]]] = []
             if self._should_try_direct_user_lookup(identifier):
                 encoded_path_identifier = quote(identifier, safe="")
@@ -268,8 +317,14 @@ class EntraIDProvider(EnrichmentProvider):
         if not identifier:
             raise ValueError("Cannot determine identifier for Entra ID lookup")
 
-        token = await self._get_token(**cfg)
-        user = await self._lookup_user(token, identifier)
+        request_timeout_seconds = float(cfg["request_timeout_seconds"])
+        token = await self._get_token(
+            tenant_id=str(cfg["tenant_id"]),
+            client_id=str(cfg["client_id"]),
+            client_secret=str(cfg["client_secret"]),
+            request_timeout_seconds=request_timeout_seconds,
+        )
+        user = await self._lookup_user(token, identifier, request_timeout_seconds)
         if user is None:
             return EnrichmentResult(
                 provider_id=self.provider_id,
@@ -277,7 +332,7 @@ class EntraIDProvider(EnrichmentProvider):
                 enrichment_data={"error": f"User not found: {identifier}"},
             )
 
-        manager = await self._lookup_manager(token, user.get("id") or identifier)
+        manager = await self._lookup_manager(token, user.get("id") or identifier, request_timeout_seconds)
         return self._build_result(user, cache_key=self.build_cache_key(item), manager=manager)
 
     async def bulk_sync(self, *, db: AsyncSession, settings: SettingsService) -> List[EnrichmentResult]:
@@ -285,17 +340,27 @@ class EntraIDProvider(EnrichmentProvider):
         if not cfg:
             raise ValueError("Entra ID provider is not fully configured")
 
-        token = await self._get_token(**cfg)
+        request_timeout_seconds = float(cfg["request_timeout_seconds"])
+        token = await self._get_token(
+            tenant_id=str(cfg["tenant_id"]),
+            client_id=str(cfg["client_id"]),
+            client_secret=str(cfg["client_secret"]),
+            request_timeout_seconds=request_timeout_seconds,
+        )
         headers = {"Authorization": f"Bearer {token}"}
         results: List[EnrichmentResult] = []
-        url = f"{_GRAPH_BASE}/users?$select={_USER_FIELDS}&$top=999&$filter=accountEnabled eq true"
+        page_size = int(cfg["bulk_sync_page_size"])
+        max_records = int(cfg["bulk_sync_max_records"])
+        url = f"{_GRAPH_BASE}/users?$select={_USER_FIELDS}&$top={page_size}&$filter=accountEnabled eq true"
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=request_timeout_seconds) as client:
             while url:
                 resp = await client.get(url, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
                 for user in data.get("value", []):
+                    if max_records > 0 and len(results) >= max_records:
+                        break
                     try:
                         cache_key = f"user:{str(user.get('userPrincipalName') or user.get('mail') or user.get('id') or '').strip().lower()}"
                         if cache_key == "user:":
@@ -303,6 +368,8 @@ class EntraIDProvider(EnrichmentProvider):
                         results.append(self._build_result(user, cache_key=cache_key, manager=None))
                     except Exception as exc:
                         logger.warning("Entra ID: skipping user %s: %s", user.get("id"), exc)
+                if max_records > 0 and len(results) >= max_records:
+                    break
                 url = data.get("@odata.nextLink")
 
         logger.info("Entra ID bulk sync: %d users", len(results))

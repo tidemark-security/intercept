@@ -30,7 +30,6 @@ def _base_item(item_id: str, item_type: str, **overrides: Any) -> dict[str, Any]
         "id": item_id,
         "type": item_type,
         "description": overrides.pop("description", f"Test {item_type} item"),
-        "created_at": now,
         "timestamp": now,
         "created_by": overrides.pop("created_by", "test-user"),
         "tags": [],

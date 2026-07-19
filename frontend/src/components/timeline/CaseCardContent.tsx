@@ -1,5 +1,5 @@
 import React from 'react';
-import { EntityMetadataCard } from '@/components/cards/EntityMetadataCard';
+import { EntityMetadataCard, type EntityMetadataCardVariant } from '@/components/cards/EntityMetadataCard';
 import type { CaseRead } from '@/types/generated/models/CaseRead';
 
 export interface CaseCardContentProps {
@@ -9,6 +9,8 @@ export interface CaseCardContentProps {
   isLoading?: boolean;
   /** Whether to render the metadata tag section. Timeline embeds render tags in the shared footer. */
   showTags?: boolean;
+  /** Presentation density for the shared metadata layout. */
+  variant?: EntityMetadataCardVariant;
 }
 
 /**
@@ -28,7 +30,7 @@ export interface CaseCardContentProps {
  * <CaseCardContent data={partialData} isLoading={true} />
  * ```
  */
-export function CaseCardContent({ data, isLoading = false, showTags = true }: CaseCardContentProps) {
+export function CaseCardContent({ data, isLoading = false, showTags = true, variant }: CaseCardContentProps) {
   if (isLoading) {
     return (
       <EntityMetadataCard 
@@ -36,6 +38,7 @@ export function CaseCardContent({ data, isLoading = false, showTags = true }: Ca
         entityType="case" 
         isLoading={true} 
         showTags={showTags}
+        variant={variant}
       />
     );
   }
@@ -46,6 +49,7 @@ export function CaseCardContent({ data, isLoading = false, showTags = true }: Ca
       entityType="case"
       isLoading={false}
       showTags={showTags}
+      variant={variant}
     />
   );
 }

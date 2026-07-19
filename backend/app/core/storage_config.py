@@ -1,6 +1,5 @@
 """Object storage configuration for file uploads."""
 
-from typing import List
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -16,15 +15,15 @@ class StorageConfig(BaseSettings):
         validation_alias=AliasChoices("STORAGE_ENDPOINT", "MINIO_ENDPOINT"),
         description="MinIO/S3 endpoint URL"
     )
-    storage_access_key: str = Field(
-        default="minioadmin",
+    storage_access_key: str | None = Field(
+        default=None,
         validation_alias=AliasChoices("STORAGE_ACCESS_KEY", "MINIO_ACCESS_KEY"),
-        description="Storage access key"
+        description="Storage access key. Leave blank to use AWS autodiscovered credentials."
     )
-    storage_secret_key: str = Field(
-        default="minioadmin",
+    storage_secret_key: str | None = Field(
+        default=None,
         validation_alias=AliasChoices("STORAGE_SECRET_KEY", "MINIO_SECRET_KEY"),
-        description="Storage secret key"
+        description="Storage secret key. Leave blank to use AWS autodiscovered credentials."
     )
     storage_bucket: str = Field(
         default="intercept-attachments",
@@ -41,34 +40,23 @@ class StorageConfig(BaseSettings):
         validation_alias=AliasChoices("STORAGE_REGION", "MINIO_REGION"),
         description="Storage region"
     )
+    storage_auto_create_bucket: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("STORAGE_AUTO_CREATE_BUCKET", "MINIO_AUTO_CREATE_BUCKET"),
+        description="Create the storage bucket lazily if it does not exist"
+    )
+
+    @field_validator("storage_access_key", "storage_secret_key", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: object) -> object:
+        """Treat blank credential env vars the same as unset env vars."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
     
     # File validation settings
-    allowed_file_types: List[str] = Field(
-        default=[
-            # Images
-            "image/png", "image/jpeg", "image/gif", "image/webp",
-            "image/bmp", "image/tiff",
-            # Documents
-            "application/pdf",
-            "application/msword",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "application/vnd.ms-excel",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "application/vnd.ms-powerpoint",
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            # Text / data
-            "text/plain", "application/json", "text/csv",
-            "text/markdown", "application/xml",
-            # Archives
-            "application/zip", "application/x-7z-compressed",
-            "application/gzip", "application/x-tar",
-            # Forensics / network captures
-            "application/vnd.tcpdump.pcap",
-            # Generic binary (e.g. memory dumps, firmware)
-            "application/octet-stream",
-        ],
-        description="Comma-separated list of allowed MIME types"
-    )
+    # NOTE: allowed/denied MIME types are managed via the settings registry
+    # (storage.allowed_file_types / storage.denied_file_types), not here.
     max_upload_size_mb: int = Field(
         default=50,
         description="Maximum upload size in megabytes"
@@ -83,14 +71,6 @@ class StorageConfig(BaseSettings):
         default=30,
         description="Presigned download URL expiration time in minutes"
     )
-    
-    @field_validator('allowed_file_types', mode='before')
-    @classmethod
-    def parse_allowed_types(cls, v):
-        """Parse comma-separated string to list."""
-        if isinstance(v, str):
-            return [t.strip() for t in v.split(',')]
-        return v
     
 # Global storage config instance
 storage_config = StorageConfig()

@@ -8,7 +8,6 @@
 import React from 'react';
 
 import MarkdownContent from '@/components/data-display/MarkdownContent';
-import { TimelineDescriptionBlock } from '@/components/timeline/TimelineDescriptionBlock';
 import type { TimelineItem } from '@/types/timeline';
 import type { TTPItem } from '@/types/generated/models/TTPItem';
 import { getTimelineIcon } from '@/utils/timelineIcons';
@@ -124,22 +123,9 @@ export function handleTTPItem(
     </div>
   ) : undefined;
 
-  const hasTags = !!item.tags?.length;
-  const analystDescriptionBlock = item.description || hasTags || options.actionButtons ? (
-    <TimelineDescriptionBlock actionButtons={options.actionButtons} tags={item.tags} className="mt-auto">
-      {item.description ? (
-        <MarkdownContent
-          content={item.description}
-          className="min-w-0 text-default-font"
-        />
-      ) : null}
-    </TimelineDescriptionBlock>
-  ) : undefined;
-
-  const cardChildren = mitreDescriptionBlock || analystDescriptionBlock ? (
+  const cardChildren = mitreDescriptionBlock ? (
     <div className="flex w-full flex-col gap-3">
       {mitreDescriptionBlock}
-      {analystDescriptionBlock}
     </div>
   ) : undefined;
 

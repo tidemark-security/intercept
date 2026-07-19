@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tidemark Frontend Design"
+  short_description: "Build Tidemark Security app UI"
+  default_prompt: "Use $tidemark-frontend-design to build a Tidemark Security frontend page or component."

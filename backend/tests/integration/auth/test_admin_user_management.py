@@ -1,7 +1,7 @@
 """Integration tests for admin user management endpoints."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 from uuid import uuid4
 
@@ -89,6 +89,59 @@ async def test_admin_create_user_success(
         reset_request = reset_result.scalar_one_or_none()
         assert reset_request is not None
         assert reset_request.token_hash
+
+
+@pytest.mark.asyncio
+async def test_admin_create_nhi_with_override_timestamps(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    """Admin can create an NHI account with timestamp override capability."""
+    admin = admin_user_factory()
+
+    async with session_maker() as session:
+        session.add(admin)
+        await session.commit()
+
+    session_cookie = await _login_and_get_cookie(client, admin.username)
+
+    response = await client.post(
+        "/api/v1/admin/auth/users/nhi",
+        json={
+            "username": "svc.migration",
+            "role": "ANALYST",
+            "assignable": False,
+            "override_timestamps": True,
+            "description": "Migration importer",
+            "initial_api_key_name": "migration-key",
+            "initial_api_key_expires_at": (
+                datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=30)
+            ).isoformat().replace("+00:00", "Z"),
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 201, response.text
+
+    async with session_maker() as session:
+        result = await session.execute(
+            select(UserAccount).where(UserAccount.username == "svc.migration")
+        )
+        nhi_user = result.scalar_one_or_none()
+        assert nhi_user is not None
+        assert nhi_user.account_type == AccountType.NHI
+        assert nhi_user.override_timestamps is True
+
+    list_response = await client.get(
+        "/api/v1/admin/auth/users",
+        cookies={"intercept_session": session_cookie},
+    )
+    assert list_response.status_code == 200
+    listed_user = next(
+        item for item in list_response.json() if item["username"] == "svc.migration"
+    )
+    assert listed_user["overrideTimestamps"] is True
 
 
 @pytest.mark.asyncio
@@ -524,6 +577,82 @@ async def test_admin_update_nhi_user_success(
         assert updated_user.role == UserRole.ADMIN
         assert updated_user.description == "Updated service account"
         assert updated_user.email is None
+
+
+@pytest.mark.asyncio
+async def test_admin_update_nhi_override_timestamps(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    """Admin can toggle timestamp override capability for NHI accounts."""
+    admin = admin_user_factory()
+    now = datetime.now(timezone.utc)
+    nhi_user = UserAccount(
+        username="svc.toggle",
+        account_type=AccountType.NHI,
+        role=UserRole.ANALYST,
+        description="Service account",
+        email=None,
+        password_hash=None,
+        status=UserStatus.ACTIVE,
+        must_change_password=False,
+        failed_login_attempts=0,
+        override_timestamps=False,
+        created_at=now,
+        updated_at=now,
+        created_by_admin_id=admin.id,
+    )
+
+    async with session_maker() as session:
+        session.add(admin)
+        session.add(nhi_user)
+        await session.commit()
+        nhi_user_id = nhi_user.id
+
+    session_cookie = await _login_and_get_cookie(client, admin.username)
+
+    response = await client.patch(
+        f"/api/v1/admin/auth/users/{nhi_user_id}",
+        json={"override_timestamps": True},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 204
+
+    async with session_maker() as session:
+        updated_user = await session.get(UserAccount, nhi_user_id)
+        assert updated_user is not None
+        assert updated_user.override_timestamps is True
+
+
+@pytest.mark.asyncio
+async def test_admin_cannot_enable_override_timestamps_for_human_user(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+    analyst_user_factory,
+) -> None:
+    """Timestamp override capability is NHI-only."""
+    admin = admin_user_factory()
+    analyst = analyst_user_factory()
+
+    async with session_maker() as session:
+        session.add(admin)
+        session.add(analyst)
+        await session.commit()
+        analyst_id = analyst.id
+
+    session_cookie = await _login_and_get_cookie(client, admin.username)
+
+    response = await client.patch(
+        f"/api/v1/admin/auth/users/{analyst_id}",
+        json={"override_timestamps": True},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 400
+    assert "nhi" in response.json()["detail"]["message"].lower()
 
 
 @pytest.mark.asyncio

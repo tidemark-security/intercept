@@ -87,6 +87,7 @@ worker:
 | `DATABASE_URL` | required | PostgreSQL connection string |
 | `WORKER_CONCURRENCY` | `20` | Number of concurrent tasks |
 | `HEALTH_PORT` | `8001` | Port for health/metrics server |
+| `WORKER_DATABASE_COMMAND_TIMEOUT_SECONDS` | `60` | asyncpg command timeout for queue database operations |
 | `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
 | `WORKER_ID` | hostname | Identifier for metrics/logging |
 | `SECRET_KEY` | required | Encryption key (same as backend) |
@@ -155,10 +156,46 @@ The task queue uses `asyncpg` connection pooling for robust long-running workers
 
 - **Min connections**: 2 (always available)
 - **Max connections**: 10 (scales with load)
-- **Command timeout**: 60 seconds
+- **Command timeout**: 60 seconds by default (`worker.database.command_timeout_seconds`, local-only)
 - **Auto-reconnection**: Pool handles connection failures automatically
 
 This prevents "connection is closed" errors that occur with single connections in long-running worker processes.
+
+### Worker Task Runtime Settings
+
+Task execution timeouts and retry backoff are declared in the settings registry. Running workers refresh DB-backed admin settings every `worker.task_settings_refresh_interval_seconds` seconds; environment variable changes still require a worker process restart.
+
+How hot settings changes work:
+
+1. The worker keeps an in-memory snapshot of task timeout and retry settings.
+2. A background refresh loop reloads DB-backed settings on a timer.
+3. Each new task attempt copies the latest snapshot before it starts.
+4. A task that is already running keeps the snapshot it started with, so settings changes do not interrupt in-flight work.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `worker.tasks.default.execution_timeout_seconds` | `600` | Default timeout for one task attempt |
+| `worker.tasks.directory_sync.execution_timeout_seconds` | `3600` | Timeout for directory sync attempts, including Entra ID bulk sync |
+| `worker.tasks.<task_name>.execution_timeout_seconds` | unset | Optional per-task override; unset inherits the default |
+| `worker.tasks.retry_initial_delay_seconds` | `5` | Initial in-worker retry backoff |
+| `worker.tasks.retry_max_delay_seconds` | `60` | Maximum in-worker retry backoff |
+| `worker.tasks.retry_timer_buffer_seconds` | `300` | Extra stale-job lease time above the execution timeout |
+| `worker.task_settings_refresh_interval_seconds` | `30` | Worker polling interval for hot-swappable task settings |
+
+Hot-swap semantics:
+
+- A running task attempt keeps the timeout snapshot it started with.
+- Newly picked jobs and later in-worker retry attempts use the latest refreshed snapshot.
+- pgqueuer stale-job leases only increase while a worker process is running. Lower lease values take full effect after a worker restart, which avoids duplicate execution caused by lowering a heartbeat lease under active jobs.
+- Docker Compose healthcheck `timeout: 5s`, frontend/test timeouts, MCP Mermaid validation timeout, and provider HTTP request timeouts are separate from worker task execution timeouts.
+
+For large Microsoft Entra ID tenants, tune both the task timeout and the Graph paging controls:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `enrichment.entra_id.request_timeout_seconds` | `30` | Per-request timeout for Entra ID HTTP calls |
+| `enrichment.entra_id.bulk_sync_page_size` | `999` | Graph users page size, clamped to 1-999 |
+| `enrichment.entra_id.bulk_sync_max_records` | `0` | Maximum users processed per sync; `0` means unlimited |
 
 ### Database Schema
 
@@ -241,9 +278,11 @@ Handlers must be registered during application startup:
 ```python
 # In app/services/tasks.py
 
-def register_task_handlers():
+async def register_task_handlers():
     """Register all task handlers during app startup."""
     task_queue = get_task_queue_service()
+    async with async_session_factory() as db:
+        await task_queue.refresh_task_runtime_config(SettingsService(db))
     
     task_queue.register_handler(
         task_name="my_task",
@@ -252,15 +291,15 @@ def register_task_handlers():
     )
 ```
 
-`register_handler()` uses a custom executor built on pgqueuer's `RetryWithBackoffEntrypointExecutor`.
-The retry loop happens inside a single worker execution rather than by creating a new queue row for each attempt.
+`register_handler()` uses a custom executor with settings-backed execution timeouts and in-worker retry/backoff behavior. The retry loop happens inside a single worker execution rather than by creating a new queue row for each attempt.
 
 Current defaults in Intercept:
 
 - `max_retries` means retries after the initial attempt
-- Initial backoff delay: 5 seconds
-- Maximum backoff delay: 60 seconds
-- Maximum total retry window: 10 minutes
+- Initial backoff delay: `worker.tasks.retry_initial_delay_seconds` (default 5 seconds)
+- Maximum backoff delay: `worker.tasks.retry_max_delay_seconds` (default 60 seconds)
+- Default task attempt timeout: `worker.tasks.default.execution_timeout_seconds` (default 10 minutes)
+- Directory sync attempt timeout: `worker.tasks.directory_sync.execution_timeout_seconds` (default 60 minutes)
 - Optional terminal failure hook: runs once after retries are exhausted
 
 This is called automatically in `main.py`:
@@ -268,7 +307,7 @@ This is called automatically in `main.py`:
 ```python
 # In app/main.py lifespan
 await initialize_task_queue_service(get_local("database.url"))
-register_task_handlers()
+await register_task_handlers()
 ```
 
 ## Built-in Task Types
@@ -328,7 +367,7 @@ When a task handler raises an exception:
 
 1. The error is logged with task details
 2. The custom retry executor retries the handler in-process with exponential backoff and jitter
-3. Retries continue until `max_retries` or the total retry time limit is exhausted
+3. Retries continue until `max_retries` is exhausted; each attempt has its own configured execution timeout
 4. If configured, a terminal failure hook runs once after retries are exhausted
 5. The job ends in pgqueuer's terminal `exception` state and is written to `pgqueuer_log`
 
@@ -336,6 +375,7 @@ Important distinctions:
 
 - `retry_timer` is still used by pgqueuer to recover stale `picked` jobs if a worker dies or stops heartbeating
 - `retry_timer` is not the bounded retry policy for normal handler exceptions
+- task execution timeouts are registry settings and are enforced by the Intercept executor
 - Retry attempt counts are tracked in the running executor, not persisted on the job row
 
 ```python
@@ -464,7 +504,7 @@ PRIORITY_CRITICAL = 20 # Security alerts
 
 ### 4. Handle Timeouts
 
-Set reasonable timeouts for external operations:
+Set reasonable timeouts for external operations. These are request-level limits inside a task, separate from `worker.tasks.*.execution_timeout_seconds`:
 
 ```python
 async def handle_external_call(payload: Dict[str, Any]):

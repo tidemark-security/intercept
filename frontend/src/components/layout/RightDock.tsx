@@ -32,6 +32,7 @@ import { AddProcessForm } from "@/components/timeline/forms/ProcessForm";
 import { AddRegistryForm } from "@/components/timeline/forms/RegistryForm";
 import { AddTTPForm } from "@/components/timeline/forms/TTPForm";
 import { AddArtifactForm } from "@/components/timeline/forms/ArtifactForm";
+import { CaseRunbookApplyForm } from "@/components/timeline/forms/CaseRunbookApplyForm";
 import { CaseTaskEditForm } from "@/components/timeline/forms/CaseTaskEditForm";
 import type { CaseRead } from "@/types/generated/models/CaseRead";
 import type { TaskRead } from "@/types/generated/models/TaskRead";
@@ -134,6 +135,9 @@ function renderFormContent(
       return <AddTaskForm 
         initialData={editMode && itemData && isTaskItem(itemData as TimelineItem) ? (itemData as any) : undefined}
       />;
+
+    case "case_runbook":
+      return <CaseRunbookApplyForm />;
     
     case "attachment":
       return <AddAttachmentForm 

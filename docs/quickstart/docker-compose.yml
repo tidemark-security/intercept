@@ -224,7 +224,7 @@ services:
   # Langflow — AI/LLM orchestration platform (optional — AI features)
   # ---------------------------------------------------------------------------
   langflow:
-    image: langflowai/langflow:1.9.0
+    image: langflowai/langflow:1.10.1
     user: root
     environment:
       LANGFLOW_DATABASE_URL: postgresql://langflow_user:${LANGFLOW_DB_PASSWORD}@postgres:5432/langflow

@@ -11,17 +11,19 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Union, cast
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, text
+from sqlalchemy import select, func, text, cast as sql_cast, String
 
 from app.core.id_parser import parse_entity_id, format_entity_id, get_prefix_for_kind, ALERT_PREFIX
-from app.models.models import Alert, Case, Task
-from app.models.enums import AlertStatus, CaseStatus, TaskStatus, Priority, TriageDisposition
+from app.models.models import Alert, Case, CaseRunbook, Task, RunbookTaskDefinition
+from app.models.enums import AlertStatus, CaseStatus, CaseRunbookStatus, TaskStatus, Priority
 from app.mcp.schemas import (
     GetSummaryOutput,
     ObjectHeader,
     TimelineSection,
     TimelinePreview,
     ObservablesSection,
+    ContextEntrySummary,
+    ContextSection,
     RelatedCounts,
     Resource,
     RecordTriageDecisionOutput,
@@ -34,10 +36,17 @@ from app.mcp.schemas import (
     ValidateMermaidOutput,
     WorkItemPreview,
     RelatedMatch,
+    CaseRunbookSearchResult,
+    GetCaseRunbookOutput,
+    LeanRunbookTask,
+    SearchCaseRunbooksOutput,
 )
+from app.services.case_runbook_service import parse_case_runbook_id
 from app.services.observable_service import extract_observables, extract_high_signal_entities
 from app.services.similarity_service import count_similar_alerts
+from app.services.context_service import ContextService
 from app.services import triage_recommendation_service
+from app.services.tag_filter_utils import normalize_persisted_tags
 
 
 _MERMAID_VALIDATION_TIMEOUT_SECONDS = 10
@@ -394,6 +403,23 @@ async def get_summary(
         total_count=len(observables),
         omitted_count=0,  # extract_observables already limits
     )
+
+    context_items: list[ContextEntrySummary] = []
+    if kind == "alert":
+        matching_context = await ContextService(db).get_matching_context_for_alert(numeric_id)
+        context_items = [
+            ContextEntrySummary.model_validate(entry)
+            for entry in matching_context[:max_timeline_items]
+        ]
+        context_total_count = len(matching_context)
+    else:
+        context_total_count = 0
+
+    context_section = ContextSection(
+        items=context_items,
+        total_count=context_total_count,
+        omitted_count=max(0, context_total_count - len(context_items)),
+    )
     
     # Count related items
     related_counts = RelatedCounts()
@@ -443,6 +469,7 @@ async def get_summary(
         header=header,
         timeline=timeline_section,
         observables=observables_section,
+        context=context_section,
         related_counts=related_counts,
         resources=resources,
     )
@@ -454,7 +481,8 @@ async def record_triage_decision(
     disposition: str,
     confidence: float,
     reasoning_bullets: Optional[List[str]] = None,
-    recommended_actions: Optional[List[str]] = None,
+    recommended_actions: Optional[List[Dict[str, Any]]] = None,
+    recommended_case_runbook_id: Optional[int | str] = None,
     suggested_status: Optional[str] = None,
     suggested_priority: Optional[str] = None,
     suggested_assignee: Optional[str] = None,
@@ -472,13 +500,13 @@ async def record_triage_decision(
         disposition: Triage disposition
         confidence: AI confidence (0.0-1.0)
         reasoning_bullets: Why this disposition. Use markdown links for evidence references.
-        recommended_actions: Suggested next steps
-        suggested_status: Optional status patch
+        recommended_actions: Suggested next steps for escalating dispositions only
+        suggested_status: Optional status patch; canonical value is derived from disposition
         suggested_priority: Optional priority patch
         suggested_assignee: Optional assignee patch
         suggested_tags_add: Tags to add
         suggested_tags_remove: Tags to remove
-        request_escalate_to_case: Request case creation
+        request_escalate_to_case: Optional/deprecated case creation request; persisted value is derived from disposition
         commit: If false, returns dry-run preview only
         created_by: Username from API key
         
@@ -500,14 +528,32 @@ async def record_triage_decision(
             detail=f"Alert {format_entity_id(numeric_id, canonical_prefix)} not found"
         )
 
-    normalized_suggested_status = suggested_status
-    if not normalized_suggested_status:
+    data = triage_recommendation_service.normalize_recommendation_contract({
+        "disposition": disposition,
+        "confidence": confidence,
+        "reasoning_bullets": reasoning_bullets or [],
+        "recommended_actions": recommended_actions or [],
+        "recommended_case_runbook_id": recommended_case_runbook_id,
+        "suggested_status": suggested_status,
+        "suggested_priority": suggested_priority,
+        "suggested_assignee": suggested_assignee,
+        "suggested_tags_add": suggested_tags_add or [],
+        "suggested_tags_remove": suggested_tags_remove or [],
+        "request_escalate_to_case": request_escalate_to_case,
+    })
+
+    numeric_runbook_id: int | None = None
+    if data["recommended_case_runbook_id"] is not None:
         try:
-            disposition_enum = TriageDisposition(disposition)
-            inferred_status = triage_recommendation_service.DISPOSITION_TO_CLOSED_STATUS.get(disposition_enum)
-            normalized_suggested_status = inferred_status.value if inferred_status else None
-        except ValueError:
-            normalized_suggested_status = None
+            numeric_runbook_id = parse_case_runbook_id(data["recommended_case_runbook_id"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        runbook = await db.get(CaseRunbook, numeric_runbook_id)
+        if runbook is None or runbook.status != CaseRunbookStatus.PUBLISHED:
+            raise HTTPException(status_code=400, detail="recommended_case_runbook_id must reference a published Case Runbook")
+    data["recommended_case_runbook_id"] = numeric_runbook_id
+    normalized_suggested_status = data["suggested_status"]
     
     # Build suggested patches
     suggested_patches = []
@@ -532,6 +578,9 @@ async def record_triage_decision(
             current_value=alert.assignee,
             new_value=suggested_assignee,
         ))
+
+    suggested_tags_add = normalize_persisted_tags(data["suggested_tags_add"])
+    suggested_tags_remove = normalize_persisted_tags(data["suggested_tags_remove"])
     
     if suggested_tags_add:
         for tag in suggested_tags_add:
@@ -561,19 +610,8 @@ async def record_triage_decision(
             message="Dry-run preview - no changes made",
         )
     
-    # Build recommendation data
-    data = {
-        "disposition": disposition,
-        "confidence": confidence,
-        "reasoning_bullets": reasoning_bullets or [],
-        "recommended_actions": recommended_actions or [],
-        "suggested_status": normalized_suggested_status,
-        "suggested_priority": suggested_priority,
-        "suggested_assignee": suggested_assignee,
-        "suggested_tags_add": suggested_tags_add or [],
-        "suggested_tags_remove": suggested_tags_remove or [],
-        "request_escalate_to_case": request_escalate_to_case,
-    }
+    data["suggested_tags_add"] = suggested_tags_add or []
+    data["suggested_tags_remove"] = suggested_tags_remove or []
     
     # Check if existing recommendation
     existing = await triage_recommendation_service.get_by_alert_id(db, numeric_id)
@@ -594,6 +632,87 @@ async def record_triage_decision(
         suggested_patches=suggested_patches,
         status="PENDING",
         message=f"Recommendation {mode} successfully. Status: PENDING until analyst reviews.",
+    )
+
+
+def _runbook_tasks(runbook: CaseRunbook) -> list[RunbookTaskDefinition]:
+    return [
+        task if isinstance(task, RunbookTaskDefinition) else RunbookTaskDefinition.model_validate(task)
+        for task in (runbook.runbook_tasks or [])
+    ]
+
+
+async def search_case_runbooks(
+    db: AsyncSession,
+    *,
+    query: str | None = None,
+    limit: int = 10,
+) -> SearchCaseRunbooksOutput:
+    stmt = select(CaseRunbook).where(CaseRunbook.status == CaseRunbookStatus.PUBLISHED)
+    if query and query.strip():
+        pattern = f"%{query.strip()}%"
+        stmt = stmt.where(
+            func.lower(
+                func.concat(
+                    CaseRunbook.title,
+                    " ",
+                    CaseRunbook.description,
+                    " ",
+                    sql_cast(CaseRunbook.runbook_tasks, String),
+                )
+            ).like(pattern.lower())
+        )
+    stmt = stmt.order_by(CaseRunbook.title.asc()).limit(limit)
+    runbooks = (await db.execute(stmt)).scalars().all()
+
+    return SearchCaseRunbooksOutput(
+        items=[
+            CaseRunbookSearchResult(
+                id=runbook.id,  # type: ignore[arg-type]
+                human_id=f"RUN-{runbook.id:07d}",
+                title=runbook.title or "",
+                description=runbook.description,
+                case_tags=runbook.case_tags or [],
+                runbook_task_count=len(_runbook_tasks(runbook)),
+                picerl_stages=sorted({task.picerl_stage.value for task in _runbook_tasks(runbook)}),
+            )
+            for runbook in runbooks
+            if runbook.id is not None
+        ]
+    )
+
+
+async def get_case_runbook(
+    db: AsyncSession,
+    *,
+    id_str: str,
+) -> GetCaseRunbookOutput:
+    try:
+        runbook_id = parse_case_runbook_id(id_str)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    runbook = await db.get(CaseRunbook, runbook_id)
+    if runbook is None or runbook.status != CaseRunbookStatus.PUBLISHED:
+        raise HTTPException(status_code=404, detail="Published Case Runbook not found")
+
+    return GetCaseRunbookOutput(
+        id=runbook.id,  # type: ignore[arg-type]
+        human_id=f"RUN-{runbook.id:07d}",
+        title=runbook.title or "",
+        description=runbook.description,
+        case_tags=runbook.case_tags or [],
+        runbook_tasks=[
+            LeanRunbookTask(
+                title=task.title,
+                description=task.description,
+                picerl_stage=task.picerl_stage.value,
+                relative_due_seconds=task.relative_due_seconds,
+                priority=task.priority.value if task.priority else None,
+                tags=task.tags,
+            )
+            for task in _runbook_tasks(runbook)
+        ],
     )
 
 
@@ -939,7 +1058,7 @@ async def add_timeline_item(
         body: Note content (max 16,000 chars)
         commit: If false, returns dry-run preview only
         created_by: Username from API key
-        created_at: Timestamp when item was created. Defaults to current time if not specified.
+        created_at: Authorized migration-only timestamp when item was created.
         
     Returns:
         Dictionary with mode, item_id, created_at, author, message
@@ -995,7 +1114,7 @@ async def add_timeline_item(
     existing_item = timeline_service._find_item_by_id(timeline_items, item_id)
     if existing_item:
         existing_created_at = None
-        existing_timestamp = existing_item.get("timestamp") or existing_item.get("created_at")
+        existing_timestamp = existing_item.get("created_at") or existing_item.get("timestamp")
         if existing_timestamp:
             try:
                 existing_created_at = datetime.fromisoformat(str(existing_timestamp).replace("Z", "+00:00"))
@@ -1020,20 +1139,39 @@ async def add_timeline_item(
             message="Dry-run preview - no changes made",
         )
     
-    # Build typed timeline item and delegate to the service layer
-    timestamp = created_at if created_at else datetime.now(timezone.utc)
+    # Build typed timeline item and delegate to the service layer.
+    created_at_value = created_at if created_at else datetime.now(timezone.utc)
+    timestamp = datetime.now(timezone.utc)
     note_item = NoteItem(
         id=item_id,
         description=body,
-        created_at=timestamp,
+        created_at=created_at_value,
         timestamp=timestamp,
         created_by=created_by,
     )
     
     service_map = {
-        "alert": lambda: alert_service.add_timeline_item(db, numeric_id, note_item, created_by),
-        "case": lambda: case_service.add_timeline_item(db, numeric_id, note_item, created_by),
-        "task": lambda: task_service.add_timeline_item(db, numeric_id, note_item, created_by),
+        "alert": lambda: alert_service.add_timeline_item(
+            db,
+            numeric_id,
+            note_item,
+            created_by,
+            created_at_override=created_at,
+        ),
+        "case": lambda: case_service.add_timeline_item(
+            db,
+            numeric_id,
+            note_item,
+            created_by,
+            created_at_override=created_at,
+        ),
+        "task": lambda: task_service.add_timeline_item(
+            db,
+            numeric_id,
+            note_item,
+            created_by,
+            created_at_override=created_at,
+        ),
     }
     
     result = await service_map[target_kind]()
@@ -1046,7 +1184,7 @@ async def add_timeline_item(
     return AddTimelineItemOutput(
         mode="committed",
         item_id=item_id,
-        created_at=timestamp,
+        created_at=created_at_value,
         author=created_by,
         message=f"Timeline item added successfully to {target_kind} {format_entity_id(numeric_id, canonical_prefix)}",
     )

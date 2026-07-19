@@ -65,6 +65,12 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: "Add a Task",
   },
   {
+    command: "run",
+    type: "case_runbook",
+    label: "/run",
+    description: "Apply a Case Runbook",
+  },
+  {
     command: "att",
     type: "attachment",
     label: "/att",

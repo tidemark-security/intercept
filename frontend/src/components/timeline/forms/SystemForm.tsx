@@ -10,7 +10,7 @@ import React from "react";
 import { SystemTypeSelector } from "@/components/entities/SystemTypeSelector";
 import { TextArea } from "@/components/forms/TextArea";
 import { TextField } from "@/components/forms/TextField";
-import { ToggleGroup } from "@/components/buttons/ToggleGroup";
+import { ToggleGroup } from "@tidemark-security/ux";
 import { TagsManager } from "@/components/forms/TagsManager";
 import { DateTimeManager } from "@/components/forms/DateTimeManager";
 import { useTimelineForm } from "@/hooks/useTimelineForm";

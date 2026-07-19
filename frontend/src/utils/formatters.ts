@@ -3,22 +3,19 @@
  */
 
 import type { AlertStatus } from '../types/generated/models/AlertStatus';
+import { formatAlertStatusLabel } from './statusLabels';
 
 /**
- * Converts AlertStatus UPPERCASE values to human-readable Sentence Case format
+ * Converts AlertStatus UPPERCASE values to canonical human-readable labels.
  * 
  * @param status - The AlertStatus enum value in UPPERCASE format (e.g., 'IN_PROGRESS', 'CLOSED_TP')
- * @returns Formatted string in Sentence Case (e.g., "In Progress", "Closed Tp")
+ * @returns Formatted status label (e.g., "In Progress", "Closed (True Positive)")
  * 
  * @example
  * formatStatusLabel('NEW') // Returns "New"
  * formatStatusLabel('IN_PROGRESS') // Returns "In Progress"
- * formatStatusLabel('CLOSED_TP') // Returns "Closed Tp"
+ * formatStatusLabel('CLOSED_TP') // Returns "Closed (True Positive)"
  */
 export function formatStatusLabel(status: AlertStatus): string {
-  return status
-    .toLowerCase()
-    .split('_')
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
+  return formatAlertStatusLabel(status);
 }

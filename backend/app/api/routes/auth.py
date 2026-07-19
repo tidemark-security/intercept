@@ -79,6 +79,7 @@ class LoginResponse(BaseModel):
     user: UserSummary
     session: SessionSummary
     mustChangePassword: bool = False
+    localCredentialManagementAllowed: bool = True
 
 
 class PasswordChangeRequest(BaseModel):
@@ -148,6 +149,16 @@ def _to_passkey_read(passkey) -> PasskeyRead:
         transports=passkey.transports,
         isBackedUp=passkey.is_backed_up,
     )
+
+
+async def _local_credential_management_allowed(db: AsyncSession, user: UserAccount) -> bool:
+    from app.services.oidc_service import oidc_service
+    from app.services.settings_service import SettingsService
+
+    settings = SettingsService(db)  # type: ignore[arg-type]
+    if not bool(await settings.get("oidc.enabled", default=False)):
+        return True
+    return await oidc_service.is_password_login_allowed(db, user=user)
 
 
 def _build_metadata(request: Request) -> RequestMetadata:
@@ -247,6 +258,7 @@ async def login(
         user=user_summary,
         session=session_summary,
         mustChangePassword=result.user.must_change_password,
+        localCredentialManagementAllowed=await _local_credential_management_allowed(db, result.user),
     )
 
 
@@ -450,6 +462,7 @@ async def finish_passkey_authentication(
             expiresAt=auth_login.session.expires_at,
         ),
         mustChangePassword=auth_login.user.must_change_password,
+        localCredentialManagementAllowed=await _local_credential_management_allowed(db, auth_login.user),
     )
 
 
@@ -586,6 +599,7 @@ async def get_session(
         user=user_summary,
         session=session_summary,
         mustChangePassword=session_data.user.must_change_password,
+        localCredentialManagementAllowed=await _local_credential_management_allowed(db, session_data.user),
     )
 
 

@@ -102,6 +102,7 @@ def create_timeline_converter(timeline_item_types: Dict[str, Any]):
     CLIENT_WRITABLE_ATTACHMENT_FIELDS = {
         "id",
         "type",
+        "description",
         "file_name",
         "mime_type",
         "file_size",
@@ -289,7 +290,11 @@ async def handle_generate_upload_url(
                 detail=f"File size {request_data.file_size} exceeds limit {max_size_mb}MB",
             )
 
-        if not storage_service.validate_file_type(request_data.mime_type):
+        if not storage_service.validate_file_type(
+            request_data.mime_type,
+            attachment_limits.allowed_file_types,
+            attachment_limits.denied_file_types,
+        ):
             raise HTTPException(
                 status_code=415,
                 detail=f"File type {request_data.mime_type} not allowed",
@@ -308,6 +313,7 @@ async def handle_generate_upload_url(
         attachment_item = AttachmentItem(
             id=item_id,
             type="attachment",
+            description=request_data.description,
             file_name=sanitized_filename,
             mime_type=request_data.mime_type,
             file_size=request_data.file_size,
@@ -317,7 +323,8 @@ async def handle_generate_upload_url(
             uploaded_by=current_user.username,
             uploaded_by_user_id=str(current_user.id),
             created_by=current_user.username,
-            timestamp=datetime.now(timezone.utc),
+            timestamp=request_data.timestamp or datetime.now(timezone.utc),
+            tags=request_data.tags or [],
         )
 
         await service.add_timeline_item(
@@ -377,6 +384,12 @@ async def handle_update_attachment_status(
     from app.models.enums import UploadStatus
     from app.models.models import AttachmentItem
     from app.services.attachment_settings_service import get_attachment_limits
+    from app.services.email_evidence_service import (
+        EmailEvidenceParseError,
+        build_email_timeline_item,
+        is_email_evidence_file,
+        parse_email_evidence,
+    )
     from app.services.storage_service import storage_service
 
     try:
@@ -403,6 +416,8 @@ async def handle_update_attachment_status(
                 status_code=400,
                 detail=f"Cannot transition from {current_status} to {update_data.status}",
             )
+
+        email_timeline_item = None
 
         if update_data.status == UploadStatus.COMPLETE:
             storage_key = timeline_item.get("storage_key")
@@ -494,12 +509,17 @@ async def handle_update_attachment_status(
                     )
 
                 detected_mime_type = await storage_service.detect_mime_type(storage_key)
-                if not storage_service.validate_file_type(detected_mime_type):
+                if not storage_service.validate_file_type(
+                    detected_mime_type,
+                    attachment_limits.allowed_file_types,
+                    attachment_limits.denied_file_types,
+                ):
                     raise HTTPException(
                         status_code=415,
                         detail=f"Detected file type {detected_mime_type} not allowed",
                     )
-                if detected_mime_type != timeline_item.get("mime_type"):
+                declared_mime_type = storage_service.normalize_mime_type(timeline_item.get("mime_type"))
+                if storage_service.normalize_mime_type(detected_mime_type) != declared_mime_type:
                     raise HTTPException(
                         status_code=415,
                         detail="Uploaded file content type does not match the declared MIME type",
@@ -509,6 +529,29 @@ async def handle_update_attachment_status(
                         status_code=409,
                         detail="Uploaded file hash does not match the stored object",
                     )
+                if entity_type == "case" and is_email_evidence_file(
+                    timeline_item.get("file_name"),
+                    detected_mime_type,
+                ):
+                    try:
+                        email_bytes = await storage_service.get_object_bytes(
+                            storage_key,
+                            max_bytes=expected_size,
+                        )
+                        parsed_email = parse_email_evidence(
+                            email_bytes,
+                            timeline_item.get("file_name"),
+                            detected_mime_type,
+                        )
+                        email_timeline_item = build_email_timeline_item(
+                            parsed_email,
+                            created_by=current_user.username,
+                        )
+                    except EmailEvidenceParseError as exc:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=str(exc),
+                        ) from exc
             except HTTPException:
                 try:
                     await storage_service.delete_file(storage_key)
@@ -518,7 +561,10 @@ async def handle_update_attachment_status(
 
             server_hash = final_metadata.sha256
             timeline_item["file_hash"] = server_hash
-            timeline_item.pop("upload_storage_key", None)
+            # Keep this field explicitly set so attachment updates using
+            # ``exclude_unset`` clear the staged key instead of merging the
+            # previous value back into the completed attachment.
+            timeline_item["upload_storage_key"] = None
             try:
                 await storage_service.delete_file(upload_storage_key)
             except Exception:  # pragma: no cover - best-effort cleanup
@@ -531,6 +577,11 @@ async def handle_update_attachment_status(
         updated = await service.update_timeline_item(
             db, parent_id, item_id, attachment_item, current_user.username,
         )
+
+        if email_timeline_item is not None:
+            updated = await service.add_timeline_item(
+                db, parent_id, email_timeline_item, current_user.username,
+            )
 
         logger.info(
             "Updated attachment status for %s %s, item %s, status %s, user %s",

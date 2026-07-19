@@ -13,7 +13,7 @@ import { cn } from "@/utils/cn";
 import { Slider } from "@/components/forms/Slider";
 import { TextArea } from "@/components/forms/TextArea";
 import { TextField } from "@/components/forms/TextField";
-import { ToggleGroup } from "@/components/buttons/ToggleGroup";
+import { ToggleGroup } from "@tidemark-security/ux";
 import { RadioCardGroup } from "@/components/forms/RadioCardGroup";
 import { TagsManager } from "@/components/forms/TagsManager";
 import { DateTimeManager } from "@/components/forms/DateTimeManager";

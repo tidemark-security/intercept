@@ -1,4 +1,5 @@
 import type { FilterState } from '@/types/filters';
+import type { SortOption } from '@/components/entities/EntityFilterToolbar';
 import React from 'react';
 
 /**
@@ -28,6 +29,21 @@ export interface EntityListProps<T, F = FilterState> {
    * @returns URL path for the item detail page
    */
   getItemHref?: (id: number, humanId: string) => string;
+
+  /** Enable checkbox selection for visible rows */
+  selectable?: boolean;
+
+  /** Currently selected row IDs */
+  selectedIds?: Set<number>;
+
+  /** Callback when one row checkbox changes */
+  onSelectionChange?: (id: number, selected: boolean) => void;
+
+  /** Callback when the visible page selection changes */
+  onSelectVisible?: (selected: boolean, ids: number[]) => void;
+
+  /** Optional multi-select or contextual actions rendered in the filter header */
+  toolbarActions?: React.ReactNode;
   
   /** Current filter state */
   filters: F;
@@ -37,6 +53,12 @@ export interface EntityListProps<T, F = FilterState> {
   
   /** Options for the status filter dropdown */
   statusOptions?: { value: string; label: string }[];
+
+  /** Options for the sort dropdown */
+  sortOptions?: SortOption[];
+
+  /** Show include/exclude tag filters in the compact filter bar */
+  enableTagFilters?: boolean;
   
   /** Current page number (1-indexed) */
   currentPage: number;
@@ -84,6 +106,9 @@ export interface EntityListProps<T, F = FilterState> {
     // Uses UIPriority (lowercase) for priority - matches what priorityToUIPriority returns
     priority: 'info' | 'low' | 'medium' | 'high' | 'critical' | 'extreme';
   };
+
+  /** Called when a visible tag is clicked in a list card */
+  onTagClick?: (tag: string, mode: 'include' | 'exclude') => void;
   
   /** Optional message to display when list is empty */
   emptyMessage?: string;

@@ -17,6 +17,7 @@ export type TriageRecommendationRead = {
     confidence: number;
     reasoning_bullets?: Array<string>;
     recommended_actions?: Array<any>;
+    recommended_case_runbook_id?: (number | null);
     suggested_status?: (AlertStatus | null);
     suggested_priority?: (Priority | null);
     suggested_assignee?: (string | null);
@@ -32,5 +33,6 @@ export type TriageRecommendationRead = {
     rejection_reason?: (string | null);
     applied_changes?: Array<Record<string, any>>;
     error_message?: (string | null);
+    applied_context_entries?: Array<Record<string, any>>;
 };
 

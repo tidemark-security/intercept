@@ -12,6 +12,7 @@ import type { LinkItem } from './LinkItem';
 import type { NetworkTrafficItem } from './NetworkTrafficItem';
 import type { NoteItem } from './NoteItem';
 import type { ObservableItem } from './ObservableItem';
+import type { PICERLStage } from './PICERLStage';
 import type { Priority } from './Priority';
 import type { ProcessItem } from './ProcessItem';
 import type { RegistryChangeItem } from './RegistryChangeItem';
@@ -29,7 +30,9 @@ export type TaskUpdate = {
     priority?: (Priority | null);
     assignee?: (string | null);
     due_date?: (string | null);
+    picerl_stage?: (PICERLStage | null);
     case_id?: (number | null);
+    source_runbook?: (number | null);
     timeline_items?: (Record<string, (DeletedItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AttachmentItem | CaseItem | EmailItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | RegistryChangeItem | SystemItem | TTPItem)> | null);
     tags?: (Array<string> | null);
 };

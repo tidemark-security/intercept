@@ -126,6 +126,14 @@ docker rm "$INIT_EXTRACT_CONTAINER" >/dev/null
 log "Starting N-1 PostgreSQL image"
 docker network create "$NETWORK_NAME" >/dev/null
 docker volume create "$POSTGRES_VOLUME" >/dev/null
+docker run --rm \
+    --user 0 \
+    -v "$POSTGRES_VOLUME:/var/lib/postgresql/data" \
+    --entrypoint sh \
+    "$PREVIOUS_POSTGRES_IMAGE" \
+    -c "mkdir -p /var/lib/postgresql/data/pgdata && \
+        chown -R postgres:postgres /var/lib/postgresql/data && \
+        chmod 700 /var/lib/postgresql/data/pgdata" >/dev/null
 docker run -d \
     --name "$POSTGRES_CONTAINER" \
     --network "$NETWORK_NAME" \

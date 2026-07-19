@@ -52,7 +52,7 @@ function Admin() {
   if (!isAdmin) {
     return (
       <DefaultPageLayout withContainer>
-        <div className="container max-w-none flex h-full w-full flex-col items-center justify-center gap-4">
+        <div className="mx-auto flex h-full w-full max-w-[1536px] flex-col items-center justify-center gap-4 px-6 mobile:px-4">
           <AlertCircle className="text-[48px] text-error text-error-500" />
           <span className="text-heading-2 font-heading-2 text-default-font">
             Access Denied
@@ -67,7 +67,7 @@ function Admin() {
 
   return (
     <DefaultPageLayout withContainer>
-      <div className="container max-w-none flex h-full w-full flex-col items-start gap-6 py-8">
+      <div className="mx-auto flex h-full w-full max-w-[1536px] flex-col items-start gap-6 px-6 py-8 mobile:px-4">
         {/* Header */}
         <div className="flex w-full flex-col items-start gap-2">
           <div className="flex items-center gap-3">

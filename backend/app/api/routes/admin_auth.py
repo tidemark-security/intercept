@@ -83,6 +83,14 @@ class AdminUpdateUserRequest(BaseModel):
         default=None,
         description="Updated user role",
     )
+    assignable: bool = Field(
+        default=False,
+        description="Whether an NHI account can be assigned task work",
+    )
+    override_timestamps: bool = Field(
+        default=False,
+        description="Whether an NHI account can override created_at timestamps during migration imports",
+    )
     description: Optional[str] = Field(
         default=None,
         max_length=500,
@@ -91,7 +99,7 @@ class AdminUpdateUserRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_has_updates(self) -> "AdminUpdateUserRequest":
-        if not self.model_fields_set.intersection({"username", "email", "role", "description"}):
+        if not self.model_fields_set.intersection({"username", "email", "role", "description", "assignable", "override_timestamps"}):
             raise ValueError("At least one editable field must be provided")
         return self
 
@@ -118,6 +126,8 @@ class UserSummary(BaseModel):
     email: Optional[str] = Field(description="User email")
     role: UserRole = Field(description="User role")
     accountType: AccountType = Field(description="Account type (HUMAN, NHI)")
+    assignable: bool = Field(default=False, description="Whether this account can be assigned work")
+    overrideTimestamps: bool = Field(default=False, description="Whether this account can override timestamps")
     oidcIssuer: Optional[str] = Field(default=None, description="OIDC issuer for linked SSO identities")
     oidcSubject: Optional[str] = Field(default=None, description="OIDC subject for linked SSO identities")
 
@@ -138,6 +148,11 @@ class AdminCreateNHIRequest(BaseModel):
 
     username: str = Field(min_length=3, max_length=64, description="Unique username for the NHI account")
     role: UserRole = Field(description="User role (ANALYST, ADMIN, AUDITOR)")
+    assignable: bool = Field(default=False, description="Whether this NHI can be assigned task work")
+    override_timestamps: bool = Field(
+        default=False,
+        description="Whether this NHI can override created_at timestamps during migration imports",
+    )
     description: Optional[str] = Field(
         default=None,
         max_length=500,
@@ -534,6 +549,8 @@ async def update_user(
             email=payload.email,
             email_provided="email" in payload.model_fields_set,
             role=payload.role,
+            assignable=payload.assignable if "assignable" in payload.model_fields_set else None,
+            override_timestamps=payload.override_timestamps if "override_timestamps" in payload.model_fields_set else None,
             description=payload.description,
             request_metadata=metadata,
             db=db,
@@ -699,7 +716,7 @@ async def issue_password_reset(
 async def get_users_summary(
     user_status: Optional[UserStatus] = UserStatus.ACTIVE,
     role: Optional[UserRole] = None,
-    account_type: Optional[AccountType] = AccountType.HUMAN,
+    account_type: Optional[AccountType] = None,
     db: AsyncSession = Depends(get_db),
     _current_user: UserAccount = Depends(require_authenticated_user),
 ) -> List[UserSummary]:
@@ -721,6 +738,10 @@ async def get_users_summary(
             role=role,
             account_type=account_type,
         )
+        users = [
+            user for user in users
+            if user.account_type == AccountType.HUMAN or user.assignable
+        ]
 
         return [
             UserSummary(
@@ -729,6 +750,8 @@ async def get_users_summary(
                 email=user.email,
                 role=user.role,
                 accountType=user.account_type,
+                assignable=user.assignable,
+                overrideTimestamps=user.override_timestamps,
                 oidcIssuer=user.oidc_issuer,
                 oidcSubject=user.oidc_subject,
             )
@@ -773,6 +796,8 @@ async def list_users(
             "oidcIssuer": user.oidc_issuer,
             "oidcSubject": user.oidc_subject,
             "accountType": user.account_type.value,
+            "assignable": user.assignable,
+            "overrideTimestamps": user.override_timestamps,
             "role": user.role.value,
             "status": user.status.value,
             "mustChangePassword": user.must_change_password,
@@ -844,6 +869,8 @@ async def create_nhi_account(
         username=normalized_username,
         account_type=AccountType.NHI,
         role=payload.role,
+        assignable=payload.assignable,
+        override_timestamps=payload.override_timestamps,
         description=payload.description,
         email=None,
         password_hash=None,

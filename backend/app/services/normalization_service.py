@@ -205,6 +205,7 @@ class NormalizationService:
 
     # --- Actor helpers ---
     async def _normalize_actor(self, db: AsyncSession, item: Dict[str, Any]) -> Dict[str, Any]:
+        item = dict(item)
         # Map timeline item 'type' field to actor_type enum
         # e.g., 'internal_actor' -> ActorType.INTERNAL
         item_type = item.get("type")
@@ -214,6 +215,8 @@ class NormalizationService:
             item["actor_type"] = ActorType.EXTERNAL
         elif item_type == "threat_actor":
             item["actor_type"] = ActorType.EXTERNAL_THREAT
+
+        self._coalesce_inbound_actor_aliases(item)
         
         # Accept either actor_id or denormalized identity
         actor_id = item.get("actor_id")
@@ -243,10 +246,40 @@ class NormalizationService:
         normalized["snapshot_hash"] = snapshot_hash
 
         # Remove denormalized fields from storage to avoid bloat
-        for k in ("user_id", "name", "title", "org", "contact_phone", "contact_email"):
+        for k in (
+            "user_id",
+            "name",
+            "display_name",
+            "displayName",
+            "full_name",
+            "fullName",
+            "username",
+            "userPrincipalName",
+            "upn",
+            "title",
+            "org",
+            "contact_phone",
+            "contact_email",
+        ):
             normalized.pop(k, None)
 
         return normalized
+
+    def _coalesce_inbound_actor_aliases(self, item: Dict[str, Any]) -> None:
+        """Accept common external identity field names before snapshotting."""
+        if item.get("name") in (None, ""):
+            for alias in ("display_name", "displayName", "full_name", "fullName"):
+                value = item.get(alias)
+                if isinstance(value, str) and value.strip():
+                    item["name"] = value.strip()
+                    break
+
+        if item.get("user_id") in (None, ""):
+            for alias in ("username", "userPrincipalName", "upn"):
+                value = item.get(alias)
+                if isinstance(value, str) and value.strip():
+                    item["user_id"] = value.strip()
+                    break
 
     async def _denormalize_actor(self, db: AsyncSession, item: Dict[str, Any]) -> Dict[str, Any]:
         actor_id = item.get("actor_id")

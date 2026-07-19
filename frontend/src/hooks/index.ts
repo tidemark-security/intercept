@@ -6,6 +6,8 @@ export { useFileUpload } from './useFileUpload';
 export { useValidation } from './useValidation';
 export { useFeatureFlags } from './useFeatureFlags';
 export { useEnqueueTriage } from './useEnqueueTriage';
+export { useResolveLinkedAlerts } from './useResolveLinkedAlerts';
+export type { ResolveLinkedAlertsRequest } from './useResolveLinkedAlerts';
 export { queryKeys, getEntityQueryKey, getEntityListQueryKey } from './queryKeys';
 export type { EntityType, DetailQueryOptions } from './queryKeys';
 export { useTimelineGraph, usePatchTimelineGraph } from './useTimelineGraph';

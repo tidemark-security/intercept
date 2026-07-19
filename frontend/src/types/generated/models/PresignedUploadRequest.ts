@@ -18,4 +18,17 @@ export type PresignedUploadRequest = {
      * Client-reported MIME type (validated server-side)
      */
     mime_type: string;
+    /**
+     * Free text description to store with the attachment
+     */
+    description?: (string | null);
+    /**
+     * Timestamp when the attachment was created or collected
+     */
+    timestamp?: (string | null);
+    /**
+     * Tags to store with the attachment
+     */
+    tags?: (Array<string> | null);
 };
+

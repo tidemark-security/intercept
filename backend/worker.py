@@ -227,8 +227,8 @@ async def run_worker():
     4. Runs the queue manager until shutdown signal
     """
     # Configuration from environment
-    concurrency = int(os.getenv("WORKER_CONCURRENCY", "20"))
-    health_port = int(os.getenv("HEALTH_PORT", "8001"))
+    concurrency = int(get_local("worker.concurrency"))
+    health_port = int(get_local("worker.health_port"))
     
     METRICS.started_at = datetime.now(timezone.utc)
     METRICS.worker_id = os.getenv("HOSTNAME", os.getenv("WORKER_ID", "worker-unknown"))
@@ -257,7 +257,7 @@ async def run_worker():
         
         # Register all task handlers
         logger.info("Registering task handlers...")
-        register_task_handlers()
+        await register_task_handlers()
 
         logger.info("Syncing bulk sync schedules...")
         async with async_session_factory() as db:

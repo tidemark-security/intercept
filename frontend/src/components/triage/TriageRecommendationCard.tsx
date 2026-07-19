@@ -3,14 +3,13 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/data-display/Badge';
 import { RelativeTime } from '@/components/data-display/RelativeTime';
 import { Button } from '@/components/buttons/Button';
-import { Dialog } from '@/components/overlays/Dialog';
 import { IconButton } from '@/components/buttons/IconButton';
+import { Select } from '@/components/forms/Select';
 import { Priority } from '@/components/misc/Priority';
 import { Progress } from '@/components/feedback/Progress';
-import { Select } from '@/components/forms/Select';
 import { State } from '@/components/misc/State';
-import { TextArea } from '@/components/forms/TextArea';
 import { useTheme } from '@/contexts/ThemeContext';
+import { useCaseRunbooks } from '@/hooks/useCaseRunbooks';
 import { cn } from '@/utils/cn';
 import type { TriageRecommendationRead } from '@/types/generated/models/TriageRecommendationRead';
 import type { AcceptRecommendationRequest } from '@/types/generated/models/AcceptRecommendationRequest';
@@ -19,6 +18,7 @@ import { alertStatusToUIState, priorityToUIPriority } from '@/utils/statusHelper
 import type { AlertStatus } from '@/types/generated/models/AlertStatus';
 import type { Priority as PriorityType } from '@/types/generated/models/Priority';
 import { ReasoningText } from './ReasoningText';
+import { TriageRejectionDialog } from './TriageRejectionDialog';
 
 import { AlertCircle, ArrowRight, Check, ChevronDown, ChevronUp, Loader2, RefreshCw, Sparkles, Tag, TriangleAlert, X } from 'lucide-react';
 // Helper to format disposition for display
@@ -116,17 +116,12 @@ function getStatusLabel(status: string): string {
   }
 }
 
-// Rejection category options for dropdown
-const REJECTION_CATEGORY_OPTIONS: { value: RejectionCategory; label: string }[] = [
-  { value: 'INCORRECT_DISPOSITION', label: 'Incorrect Disposition' },
-  { value: 'WRONG_SUGGESTED_STATUS', label: 'Wrong Suggested Status' },
-  { value: 'WRONG_PRIORITY', label: 'Wrong Priority' },
-  { value: 'MISSING_CONTEXT', label: 'Missing Context' },
-  { value: 'INCOMPLETE_ANALYSIS', label: 'Incomplete Analysis' },
-  { value: 'PREFER_MANUAL_REVIEW', label: 'Prefer Manual Review' },
-  { value: 'FALSE_REASONING', label: 'False Reasoning' },
-  { value: 'OTHER', label: 'Other' },
-];
+function formatContextScope(entry: Record<string, any>): string {
+  const scope = entry.scope && typeof entry.scope === 'object' ? entry.scope : {};
+  const type = typeof scope.type === 'string' ? scope.type.replace(/_/g, ' ').toLowerCase() : 'context';
+  const label = type.replace(/\b\w/g, (char: string) => char.toUpperCase());
+  return scope.value ? `${label}: ${scope.value}` : label;
+}
 
 interface TriageRecommendationCardProps {
   recommendation: TriageRecommendationRead;
@@ -134,6 +129,7 @@ interface TriageRecommendationCardProps {
   onReject: (category: RejectionCategory, reason?: string) => void;
   onRetry?: () => void;
   onNavigateToCase?: (caseHumanId: string) => void;
+  acceptError?: string | null;
   isAccepting?: boolean;
   isRejecting?: boolean;
   isRetrying?: boolean;
@@ -147,6 +143,7 @@ export function TriageRecommendationCard({
   onReject,
   onRetry,
   onNavigateToCase,
+  acceptError,
   isAccepting = false,
   isRejecting = false,
   isRetrying = false,
@@ -164,11 +161,10 @@ export function TriageRecommendationCard({
   
   // Collapse/expand state - reviewed recommendations start collapsed by default
   const [isExpanded, setIsExpanded] = useState(isReviewed ? defaultExpanded : true);
+  const [replacementRunbookId, setReplacementRunbookId] = useState<string>('');
   
   // Rejection dialog state
   const [showRejectDialog, setShowRejectDialog] = useState(false);
-  const [rejectionCategory, setRejectionCategory] = useState<RejectionCategory | ''>('');
-  const [rejectionReason, setRejectionReason] = useState('');
   const previousRecommendationStatusRef = useRef(recommendation.status);
 
   const inferredSuggestedStatus = useMemo(() => {
@@ -192,33 +188,31 @@ export function TriageRecommendationCard({
     recommendation.suggested_tags_remove,
   ]);
   
-  const handleAccept = () => {
-    onAccept({
+  const buildAcceptOptions = (patch: Partial<AcceptRecommendationRequest> = {}): AcceptRecommendationRequest => ({
       apply_status: true,
       apply_priority: true,
       apply_assignee: true,
       apply_tags: true,
-    });
+      ...patch,
+  });
+
+  const handleAccept = () => {
+    onAccept(buildAcceptOptions());
   };
   
   // Get inferred action for display
   const recommendedAction = useMemo(() => getRecommendedAction(recommendation), [recommendation]);
+  const appliedContextEntries = recommendation.applied_context_entries ?? [];
+  const shouldShowRunbookRecovery = Boolean(
+    isPending &&
+    canReview &&
+    recommendation.request_escalate_to_case &&
+    acceptError &&
+    acceptError.toLowerCase().includes('runbook')
+  );
+  const { data: publishedRunbooksData, isLoading: isLoadingRunbooks } = useCaseRunbooks(['PUBLISHED'], null);
+  const publishedRunbooks = useMemo(() => publishedRunbooksData?.items ?? [], [publishedRunbooksData?.items]);
   
-  const handleRejectConfirm = () => {
-    if (rejectionCategory && (rejectionCategory !== 'OTHER' || rejectionReason.trim())) {
-      onReject(rejectionCategory, rejectionReason.trim() || undefined);
-      setShowRejectDialog(false);
-      setRejectionCategory('');
-      setRejectionReason('');
-    }
-  };
-  
-  const handleRejectCancel = () => {
-    setShowRejectDialog(false);
-    setRejectionCategory('');
-    setRejectionReason('');
-  };
-
   useEffect(() => {
     const previousStatus = previousRecommendationStatusRef.current;
     if (previousStatus !== recommendation.status && recommendation.status === 'ACCEPTED') {
@@ -226,6 +220,13 @@ export function TriageRecommendationCard({
     }
     previousRecommendationStatusRef.current = recommendation.status;
   }, [recommendation.status]);
+
+  useEffect(() => {
+    if (!shouldShowRunbookRecovery || replacementRunbookId || publishedRunbooks.length === 0) {
+      return;
+    }
+    setReplacementRunbookId(String(publishedRunbooks[0].id));
+  }, [publishedRunbooks, replacementRunbookId, shouldShowRunbookRecovery]);
 
   // QUEUED state - show processing indicator
   if (isQueued) {
@@ -488,6 +489,32 @@ export function TriageRecommendationCard({
           <div className="flex h-px w-full flex-none bg-neutral-border" />
         </>
       )}
+
+      {appliedContextEntries.length > 0 && (
+        <>
+          <div className="flex w-full flex-col items-start gap-4">
+            <span className="text-heading-3 font-heading-3 text-default-font">
+              Applied Context
+            </span>
+            <div className="flex w-full flex-col gap-3">
+              {appliedContextEntries.map((entry, idx) => (
+                <div key={`${entry.id ?? idx}`} className="flex flex-col gap-1 rounded-md border border-neutral-border px-3 py-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="neutral">{formatContextScope(entry)}</Badge>
+                    {entry.author && (
+                      <span className="text-caption text-subtext-color">by {entry.author}</span>
+                    )}
+                  </div>
+                  {entry.body && (
+                    <p className="whitespace-pre-wrap text-body text-default-font">{entry.body}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex h-px w-full flex-none bg-neutral-border" />
+        </>
+      )}
       
       {/* Recommended Changes Section */}
       {hasSuggestedChanges && (
@@ -582,6 +609,55 @@ export function TriageRecommendationCard({
           </div>
         </>
       )}
+
+      {shouldShowRunbookRecovery && (
+        <>
+          <div className="flex w-full flex-col gap-4 border border-warning-500 bg-warning-100 px-4 py-3">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="mt-0.5 h-5 w-5 flex-none text-warning-700" />
+              <div className="flex min-w-0 flex-1 flex-col gap-1">
+                <span className="text-body-bold font-body-bold text-default-font">
+                  Case Runbook unavailable
+                </span>
+                <span className="text-body font-body text-default-font">
+                  {acceptError}
+                </span>
+              </div>
+            </div>
+            <div className="grid w-full gap-3 md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-end">
+              <Select
+                className="w-full"
+                label="Replacement Runbook"
+                placeholder={isLoadingRunbooks ? 'Loading runbooks' : 'Choose a published runbook'}
+                value={replacementRunbookId}
+                onValueChange={setReplacementRunbookId}
+              >
+                {publishedRunbooks.map((runbook) => (
+                  <Select.Item key={runbook.id} value={String(runbook.id)}>
+                    {runbook.title || runbook.human_id}
+                  </Select.Item>
+                ))}
+              </Select>
+              <Button
+                variant="brand-secondary"
+                disabled={isAccepting || isRejecting || !replacementRunbookId}
+                loading={isAccepting}
+                onClick={() => onAccept(buildAcceptOptions({ case_runbook_id: Number(replacementRunbookId) }))}
+              >
+                Apply Replacement
+              </Button>
+              <Button
+                variant="neutral-secondary"
+                disabled={isAccepting || isRejecting}
+                onClick={() => onAccept(buildAcceptOptions({ skip_case_runbook: true }))}
+              >
+                Continue Without Runbook
+              </Button>
+            </div>
+          </div>
+          <div className="flex h-px w-full flex-none bg-neutral-border" />
+        </>
+      )}
       
 
       
@@ -637,63 +713,11 @@ export function TriageRecommendationCard({
       )}
       
       {/* Rejection Dialog */}
-      <Dialog open={canReview && showRejectDialog} onOpenChange={setShowRejectDialog}>
-        <Dialog.Content className="p-6">
-          <div className="flex flex-col gap-4 w-[400px]">
-            <div className="flex flex-col gap-1">
-              <span className="text-heading-3 font-heading-3 text-default-font">
-                Reject Recommendation
-              </span>
-              <span className="text-body font-body text-subtext-color">
-                Select the reason for rejecting this AI triage recommendation.
-              </span>
-            </div>
-            
-            <Select
-              label="Rejection Category"
-              helpText="Required"
-              value={rejectionCategory}
-              onValueChange={(value) => setRejectionCategory(value as RejectionCategory)}
-              placeholder="Select a category..."
-            >
-              {REJECTION_CATEGORY_OPTIONS.map((option) => (
-                <Select.Item key={option.value} value={option.value}>
-                  {option.label}
-                </Select.Item>
-              ))}
-            </Select>
-            
-            <TextArea
-              label="Additional Details"
-              helpText={rejectionCategory === 'OTHER' ? 'Required for "Other" category' : 'Optional'}
-            >
-              <TextArea.Input
-                placeholder="Provide additional context for the rejection..."
-                value={rejectionReason}
-                onChange={(e) => setRejectionReason(e.target.value)}
-              />
-            </TextArea>
-            
-            <div className="flex items-center justify-end gap-3">
-              <Button
-                variant="neutral-secondary"
-                size="small"
-                onClick={handleRejectCancel}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="destructive-primary"
-                size="small"
-                onClick={handleRejectConfirm}
-                disabled={!rejectionCategory || (rejectionCategory === 'OTHER' && !rejectionReason.trim())}
-              >
-                Reject Recommendation
-              </Button>
-            </div>
-          </div>
-        </Dialog.Content>
-      </Dialog>
+      <TriageRejectionDialog
+        open={canReview && showRejectDialog}
+        onOpenChange={setShowRejectDialog}
+        onReject={onReject}
+      />
     </div>
   );
 }

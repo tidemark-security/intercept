@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { PICERLStage } from './PICERLStage';
 import type { Priority } from './Priority';
 import type { TaskStatus } from './TaskStatus';
 import type { TimelineItemAudit } from './TimelineItemAudit';
@@ -69,7 +70,13 @@ export type TaskItem = {
     status?: (TaskStatus | null);
     priority?: (Priority | null);
     assignee?: (string | null);
+    /**
+     * Description from the linked task entity; distinct from the timeline link description
+     */
+    entity_description?: (string | null);
     due_date?: (string | null);
+    picerl_stage?: (PICERLStage | null);
+    source_runbook?: (number | null);
     /**
      * Timeline items from the linked task (populated on read with include_linked_timelines=true)
      */

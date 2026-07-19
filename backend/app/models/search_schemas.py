@@ -16,6 +16,17 @@ class EntityType(str, Enum):
     TASK = "task"
 
 
+class SearchTagMatch(SQLModel):
+    """Tag match metadata explaining why a tag-filtered result matched."""
+
+    source: str = Field(description="Where the matching tag was found: entity or timeline")
+    tag: str = Field(description="The matched tag value")
+    filter: str = Field(description="The filter value that matched the tag")
+    timeline_item_id: Optional[str] = Field(default=None, description="Timeline item ID for timeline tag matches")
+    timeline_item_type: Optional[str] = Field(default=None, description="Timeline item type for timeline tag matches")
+    timeline_item_label: Optional[str] = Field(default=None, description="Short label for the matching timeline item")
+
+
 class SearchResultItem(SQLModel):
     """Single search result item."""
     entity_type: EntityType = Field(description="Type of entity (alert, case, task)")
@@ -26,7 +37,12 @@ class SearchResultItem(SQLModel):
     score: float = Field(ge=0, le=1, description="Relevance score (higher is more relevant)")
     timeline_item_id: Optional[str] = Field(default=None, description="ID of timeline item if match was in timeline content")
     created_at: datetime = Field(description="When the entity was created")
+    updated_at: Optional[datetime] = Field(default=None, description="When the entity was last updated")
+    priority: Optional[str] = Field(default=None, description="Entity priority")
+    status: Optional[str] = Field(default=None, description="Entity status")
+    assignee: Optional[str] = Field(default=None, description="Current entity assignee")
     tags: List[str] = Field(default_factory=list, description="Top-level entity tags")
+    tag_matches: List[SearchTagMatch] = Field(default_factory=list, description="Tag filter match metadata")
 
 
 class DateRangeApplied(SQLModel):

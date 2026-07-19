@@ -56,10 +56,6 @@ jobs:
         working-directory: frontend
         run: npm install --no-audit --no-fund
 
-      - name: Install Playwright Chromium
-        working-directory: frontend
-        run: npx playwright install --with-deps chromium
-
       - name: Start built frontend image
         run: docker run --detach --name intercept-frontend-smoke --publish 8080:8080 intercept-frontend:ci
 
@@ -78,7 +74,14 @@ jobs:
         working-directory: frontend
         env:
           BASE_URL: http://127.0.0.1:8080
-        run: npm run test:production-smoke
+        run: |
+          docker run --rm \
+            --network host \
+            -e BASE_URL \
+            -v "$PWD:/work" \
+            -w /work \
+            mcr.microsoft.com/playwright:v1.59.1-noble \
+            npm run test:production-smoke
 
       - name: Show frontend container logs on failure
         if: failure()

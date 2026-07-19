@@ -52,6 +52,11 @@ from app.models.enums import (
 logger = logging.getLogger(__name__)
 
 
+def _outcome_rate_denominator(closed: int, duplicates: int = 0) -> int:
+    """Return the count of closed alerts that represent analyst dispositions."""
+    return max(closed - duplicates, 0)
+
+
 def bin_to_15min_floor(dt: datetime) -> datetime:
     """Round datetime down to nearest 15-minute boundary."""
     if dt.tzinfo is None:
@@ -267,10 +272,15 @@ class MetricsService:
         open_cases = (latest.cases_new if latest else 0) + (latest.cases_in_progress if latest else 0)
         open_tasks = (latest.tasks_todo if latest else 0) + (latest.tasks_in_progress if latest else 0)
 
-        # Calculate rates
-        tp_rate = total_alerts_tp / total_alerts_closed if total_alerts_closed > 0 else None
-        fp_rate = total_alerts_fp / total_alerts_closed if total_alerts_closed > 0 else None
-        bp_rate = total_alerts_bp / total_alerts_closed if total_alerts_closed > 0 else None
+        # Calculate rates. Duplicate closures are operationally useful to count,
+        # but they are not TP/FP/BP dispositions and should not dilute outcome rates.
+        outcome_closed = _outcome_rate_denominator(
+            total_alerts_closed,
+            sum(w.alerts_duplicate for w in time_series),
+        )
+        tp_rate = total_alerts_tp / outcome_closed if outcome_closed > 0 else None
+        fp_rate = total_alerts_fp / outcome_closed if outcome_closed > 0 else None
+        bp_rate = total_alerts_bp / outcome_closed if outcome_closed > 0 else None
         escalation_rate = total_escalated / total_triaged if total_triaged > 0 else None
 
         # Calculate average timings (weighted average of means)
@@ -417,6 +427,7 @@ class MetricsService:
             ad["alerts_fp"] += row.get("alerts_fp", 0) or 0
             ad["alerts_bp"] += row.get("alerts_bp", 0) or 0
             ad["alerts_escalated"] += row.get("alerts_escalated", 0) or 0
+            ad["alerts_duplicate"] = ad.get("alerts_duplicate", 0) + (row.get("alerts_duplicate", 0) or 0)
             ad["cases_assigned"] += row.get("cases_assigned", 0) or 0
             ad["cases_closed"] += row.get("cases_closed", 0) or 0
             ad["tasks_completed"] += row.get("tasks_completed", 0) or 0
@@ -441,7 +452,10 @@ class MetricsService:
         analysts: List[AnalystMetricsSummary] = []
         for analyst_name, ad in analyst_data.items():
             triaged = ad["alerts_triaged"]
-            closed = ad["alerts_tp"] + ad["alerts_fp"] + ad["alerts_bp"]
+            closed = _outcome_rate_denominator(
+                ad["alerts_tp"] + ad["alerts_fp"] + ad["alerts_bp"] + ad.get("alerts_duplicate", 0),
+                ad.get("alerts_duplicate", 0),
+            )
             
             analysts.append(AnalystMetricsSummary(
                 analyst=analyst_name,
@@ -593,6 +607,7 @@ class MetricsService:
             source_data[src]["fp"] += row.get("alerts_fp", 0) or 0
             source_data[src]["bp"] += row.get("alerts_bp", 0) or 0
             source_data[src]["escalated"] += row.get("alerts_escalated", 0) or 0
+            source_data[src]["duplicates"] = source_data[src].get("duplicates", 0) + (row.get("alerts_duplicate", 0) or 0)
 
             # Aggregate by hour
             hour = row.get("hour_of_day")
@@ -606,6 +621,7 @@ class MetricsService:
         by_source: List[AlertMetricsBySource] = []
         for src, sd in source_data.items():
             closed = sd["closed"]
+            outcome_closed = _outcome_rate_denominator(closed, sd.get("duplicates", 0))
             triaged = closed + sd["escalated"]
             by_source.append(AlertMetricsBySource(
                 source=src,
@@ -614,7 +630,7 @@ class MetricsService:
                 total_tp=sd["tp"],
                 total_fp=sd["fp"],
                 total_escalated=sd["escalated"],
-                fp_rate=sd["fp"] / closed if closed > 0 else None,
+                fp_rate=sd["fp"] / outcome_closed if outcome_closed > 0 else None,
                 escalation_rate=sd["escalated"] / triaged if triaged > 0 else None,
             ))
         by_source.sort(key=lambda s: s.total_alerts, reverse=True)
@@ -626,6 +642,7 @@ class MetricsService:
             # Convert source_data to dimension format
             for src, sd in source_data.items():
                 closed = sd["closed"]
+                outcome_closed = _outcome_rate_denominator(closed, sd.get("duplicates", 0))
                 triaged = closed + sd["escalated"]
                 by_dimension.append(AlertMetricsByDimension(
                     dimension="source",
@@ -636,7 +653,7 @@ class MetricsService:
                     total_fp=sd["fp"],
                     total_bp=sd["bp"],
                     total_escalated=sd["escalated"],
-                    fp_rate=sd["fp"] / closed if closed > 0 else None,
+                    fp_rate=sd["fp"] / outcome_closed if outcome_closed > 0 else None,
                     escalation_rate=sd["escalated"] / triaged if triaged > 0 else None,
                 ))
         elif group_by in ("title", "tag"):
@@ -694,6 +711,7 @@ class MetricsService:
                     COUNT(*) FILTER (WHERE status::text = 'CLOSED_TP') AS total_tp,
                     COUNT(*) FILTER (WHERE status::text = 'CLOSED_FP') AS total_fp,
                     COUNT(*) FILTER (WHERE status::text = 'CLOSED_BP') AS total_bp,
+                    COUNT(*) FILTER (WHERE status::text = 'CLOSED_DUPLICATE') AS total_duplicate,
                     COUNT(*) FILTER (WHERE status::text = 'ESCALATED') AS total_escalated
                 FROM alerts
                 WHERE created_at >= :start_time
@@ -708,6 +726,7 @@ class MetricsService:
                     COUNT(*) FILTER (WHERE status::text = 'CLOSED_TP') AS total_tp,
                     COUNT(*) FILTER (WHERE status::text = 'CLOSED_FP') AS total_fp,
                     COUNT(*) FILTER (WHERE status::text = 'CLOSED_BP') AS total_bp,
+                    COUNT(*) FILTER (WHERE status::text = 'CLOSED_DUPLICATE') AS total_duplicate,
                     COUNT(*) FILTER (WHERE status::text = 'ESCALATED') AS total_escalated
                 FROM alerts, jsonb_array_elements_text(COALESCE(tags, '[]'::jsonb)) AS tag
                 WHERE created_at >= :start_time
@@ -735,6 +754,7 @@ class MetricsService:
         by_dimension: List[AlertMetricsByDimension] = []
         for row in rows:
             closed = row.get("total_closed", 0) or 0
+            outcome_closed = _outcome_rate_denominator(closed, row.get("total_duplicate", 0) or 0)
             escalated = row.get("total_escalated", 0) or 0
             triaged = closed + escalated
             
@@ -747,7 +767,7 @@ class MetricsService:
                 total_fp=row.get("total_fp", 0) or 0,
                 total_bp=row.get("total_bp", 0) or 0,
                 total_escalated=escalated,
-                fp_rate=row["total_fp"] / closed if closed > 0 else None,
+                fp_rate=row["total_fp"] / outcome_closed if outcome_closed > 0 else None,
                 escalation_rate=escalated / triaged if triaged > 0 else None,
             ))
         

@@ -16,6 +16,7 @@ import { TextArea } from "@/components/forms/TextArea";
 import { TagsManager } from "@/components/forms/TagsManager";
 import { DateTimeManager } from "@/components/forms/DateTimeManager";
 import { useFileUpload } from "@/hooks/useFileUpload";
+import { useAttachmentLimits } from "@/hooks/useAttachmentLimits";
 import { useTimelineFormContext } from "@/contexts/TimelineFormContext";
 import { useUpdateTimelineItem } from "@/hooks/useUpdateTimelineItem";
 import { useToast } from "@/contexts/ToastContext";
@@ -96,6 +97,8 @@ export function AddAttachmentForm({ initialData, pendingFiles, onPendingFilesCon
     },
   });
   
+  const { limits } = useAttachmentLimits();
+
   // File upload hook
   const { uploadFile, progress } = useFileUpload({
     alertId,
@@ -158,10 +161,14 @@ export function AddAttachmentForm({ initialData, pendingFiles, onPendingFilesCon
             ? { ...f, status: 'uploading' }
             : f
         ));
-        uploadFile(fileToUpload.file);
+        uploadFile(fileToUpload.file, {
+          description: formState.description || undefined,
+          timestamp: formState.timestamp || undefined,
+          tags: formState.tags.length > 0 ? formState.tags : undefined,
+        });
       }
     }
-  }, [currentUploadIndex, files, uploadFile]);
+  }, [currentUploadIndex, files, formState.description, formState.tags, formState.timestamp, uploadFile]);
 
   // Track the last pendingFiles reference we consumed to prevent double-processing
   // (React strict mode re-runs mount effects before the parent's clearPendingFiles propagates)
@@ -228,7 +235,7 @@ export function AddAttachmentForm({ initialData, pendingFiles, onPendingFilesCon
         itemId: initialData.id,
         updates: {
           type: "attachment",
-          description: formState.description || undefined,
+          description: formState.description,
           timestamp: formState.timestamp || initialData.timestamp || new Date().toISOString(),
           tags: formState.tags,
         },
@@ -328,7 +335,7 @@ export function AddAttachmentForm({ initialData, pendingFiles, onPendingFilesCon
                   Drop files here or click to browse
                 </span>
                 <span className="text-caption font-caption text-subtext-color">
-                  Supports all file types up to 50MB
+                  Supports files up to {limits.max_upload_size_mb}MB
                 </span>
               </div>
             </div>

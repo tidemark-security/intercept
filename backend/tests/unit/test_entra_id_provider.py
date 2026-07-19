@@ -156,6 +156,67 @@ class SamLookupAsyncClient(FakeAsyncClient):
         raise AssertionError(f"Unexpected GET request: {url} {params} {headers}")
 
 
+class PagedBulkSyncAsyncClient(FakeAsyncClient):
+    instances: list["PagedBulkSyncAsyncClient"] = []
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.get_urls: list[str] = []
+        PagedBulkSyncAsyncClient.instances.append(self)
+
+    async def get(self, url: str, headers: dict[str, str] | None = None, params: dict[str, object] | None = None):
+        self.get_urls.append(url)
+        assert headers == {"Authorization": "Bearer entra-token"}
+        assert params is None
+
+        if "$skiptoken=page-2" in url:
+            return FakeResponse(
+                200,
+                {
+                    "value": [
+                        {
+                            "id": "entra-user-3",
+                            "displayName": "Charlie Cloud",
+                            "mail": "charlie@example.com",
+                            "userPrincipalName": "charlie@example.com",
+                            "accountEnabled": True,
+                        },
+                        {
+                            "id": "entra-user-4",
+                            "displayName": "Dana Directory",
+                            "mail": "dana@example.com",
+                            "userPrincipalName": "dana@example.com",
+                            "accountEnabled": True,
+                        },
+                    ],
+                },
+            )
+
+        assert "$top=2" in url
+        return FakeResponse(
+            200,
+            {
+                "value": [
+                    {
+                        "id": "entra-user-1",
+                        "displayName": "Alice Analyst",
+                        "mail": "alice@example.com",
+                        "userPrincipalName": "alice@example.com",
+                        "accountEnabled": True,
+                    },
+                    {
+                        "id": "entra-user-2",
+                        "displayName": "Bob Builder",
+                        "mail": "bob@example.com",
+                        "userPrincipalName": "bob@example.com",
+                        "accountEnabled": True,
+                    },
+                ],
+                "@odata.nextLink": "https://graph.microsoft.com/v1.0/users?$skiptoken=page-2",
+            },
+        )
+
+
 def test_can_enrich_and_build_cache_key() -> None:
     item = {"type": "internal_actor", "user_id": "Alice@Example.com"}
     assert entra_id_provider.can_enrich(item)
@@ -238,3 +299,37 @@ async def test_bulk_sync_returns_directory_results(monkeypatch: pytest.MonkeyPat
     assert len(results) == 1
     assert results[0].cache_key == "user:bob@example.com"
     assert results[0].enrichment_data["display_name"] == "Bob Builder"
+
+
+@pytest.mark.asyncio
+async def test_bulk_sync_uses_configured_timeout_page_size_and_max_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    PagedBulkSyncAsyncClient.instances = []
+    monkeypatch.setattr("app.services.enrichment.providers.entra_id.httpx.AsyncClient", PagedBulkSyncAsyncClient)
+    provider = entra_id_provider.__class__()
+    settings = StubSettings(
+        {
+            "enrichment.entra_id.tenant_id": "tenant-id",
+            "enrichment.entra_id.client_id": "client-id",
+            "enrichment.entra_id.client_secret": "client-secret",
+            "enrichment.entra_id.request_timeout_seconds": 45,
+            "enrichment.entra_id.bulk_sync_page_size": 2,
+            "enrichment.entra_id.bulk_sync_max_records": 3,
+        }
+    )
+
+    results = await provider.bulk_sync(
+        db=None,  # type: ignore[arg-type]
+        settings=settings,  # type: ignore[arg-type]
+    )
+
+    assert [result.cache_key for result in results] == [
+        "user:alice@example.com",
+        "user:bob@example.com",
+        "user:charlie@example.com",
+    ]
+    assert [client.timeout for client in PagedBulkSyncAsyncClient.instances] == [45, 45]
+    bulk_client = PagedBulkSyncAsyncClient.instances[-1]
+    assert len(bulk_client.get_urls) == 2
+    assert "$top=2" in bulk_client.get_urls[0]

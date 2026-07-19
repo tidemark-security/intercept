@@ -18,11 +18,13 @@ interface AttachmentTextPreviewProps {
   item: AttachmentItem;
   entityId: number;
   entityType: AttachmentEntityType;
+  variant?: 'default' | 'tiny';
 }
 
 const SNIPPET_LINES = 15;
+const TINY_SNIPPET_LINES = 3;
 
-export function AttachmentTextPreview({ item, entityId, entityType }: AttachmentTextPreviewProps) {
+export function AttachmentTextPreview({ item, entityId, entityType, variant = 'default' }: AttachmentTextPreviewProps) {
   const viewer = useFullscreenViewer();
   const { resolvedTheme } = useTheme();
   const { limits } = useAttachmentLimits();
@@ -33,6 +35,8 @@ export function AttachmentTextPreview({ item, entityId, entityType }: Attachment
   const filename = item.file_name || 'attachment';
   const language = getLanguageFromFilename(filename);
   const tooLarge = (item.file_size ?? 0) > limits.max_text_preview_size_bytes;
+  const isTiny = variant === 'tiny';
+  const snippetLines = isTiny ? TINY_SNIPPET_LINES : SNIPPET_LINES;
 
   // Fetch presigned download URL
   const { data: downloadDetails } = useQuery({
@@ -78,6 +82,7 @@ export function AttachmentTextPreview({ item, entityId, entityType }: Attachment
         fileSizeBytes={item.file_size}
         limitBytes={limits.max_text_preview_size_bytes}
         attachmentTypeLabel="text attachment"
+        variant={variant}
       />
     );
   }
@@ -112,7 +117,7 @@ export function AttachmentTextPreview({ item, entityId, entityType }: Attachment
   };
 
   if (isLoading && !textContent) {
-    return <div className="h-[120px] w-full animate-pulse rounded-md bg-neutral-100" aria-hidden="true" />;
+    return <div className={isTiny ? "h-12 w-full animate-pulse rounded bg-neutral-100" : "h-[120px] w-full animate-pulse rounded-md bg-neutral-100"} aria-hidden="true" />;
   }
 
   if (!textContent) {
@@ -120,26 +125,30 @@ export function AttachmentTextPreview({ item, entityId, entityType }: Attachment
   }
 
   const totalLines = textContent.split('\n').length;
-  const isTruncated = totalLines > SNIPPET_LINES;
+  const isTruncated = totalLines > snippetLines;
 
   return (
     <>
       <button
         type="button"
-        className="w-full overflow-hidden border border-neutral-border text-left transition hover:border-neutral-400"
+        className={isTiny
+          ? "max-h-16 w-full overflow-hidden rounded border border-neutral-border text-left transition hover:border-neutral-400"
+          : "w-full overflow-hidden border border-neutral-border text-left transition hover:border-neutral-400"}
         onClick={viewer.open}
       >
         <CodeBlock
           language={language}
           code={textContent}
           resolvedTheme={resolvedTheme}
-          maxLines={SNIPPET_LINES}
-          showLineNumbers
-          className="pointer-events-none [&_button]:hidden [&_pre]:border-0 [&_pre]:!mb-0"
+          maxLines={snippetLines}
+          showLineNumbers={!isTiny}
+          className={isTiny
+            ? "pointer-events-none text-[10px] [&_button]:hidden [&_pre]:border-0 [&_pre]:!mb-0 [&_pre]:!p-2"
+            : "pointer-events-none [&_button]:hidden [&_pre]:border-0 [&_pre]:!mb-0"}
         />
-        {isTruncated && (
+        {isTruncated && !isTiny && (
           <div className="border-t border-neutral-border bg-neutral-100 px-3 py-1 text-center text-xs text-subtext-color">
-            …{totalLines - SNIPPET_LINES} more lines — click to expand
+            …{totalLines - snippetLines} more lines — click to expand
           </div>
         )}
       </button>

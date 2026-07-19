@@ -144,10 +144,15 @@ curl -X POST http://localhost:8000/api/v1/admin/auth/users/nhi \
     "username": "automation_service",
     "role": "ANALYST",
     "description": "Automated case management",
+    "override_timestamps": false,
     "initial_api_key_name": "Service Key",
     "initial_api_key_expires_at": "2027-01-01T00:00:00Z"
   }'
 ```
+
+Set `override_timestamps` to `true` only for dedicated migration NHIs that need
+to call migration timestamp override mode. See
+[`Migration Timestamp Overrides`](../migration-timestamp-overrides.md).
 
 ### Key Rotation
 

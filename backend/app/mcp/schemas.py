@@ -71,6 +71,24 @@ class ObservablesSection(BaseModel):
     omitted_count: int
 
 
+class ContextEntrySummary(BaseModel):
+    """Analyst-authored context entry that matched the summarized entity."""
+    id: int
+    criteria: List[Dict[str, str]]
+    body: str
+    author: str
+    created_at: datetime
+    updated_at: datetime
+    expires_at: datetime
+
+
+class ContextSection(BaseModel):
+    """Matching temporary context entries with bounding metadata."""
+    items: List[ContextEntrySummary]
+    total_count: int
+    omitted_count: int
+
+
 class RelatedCounts(BaseModel):
     """Counts of related/linked items."""
     linked_alerts: int = 0
@@ -93,6 +111,7 @@ class GetSummaryOutput(BaseModel):
     header: ObjectHeader
     timeline: TimelineSection
     observables: ObservablesSection
+    context: ContextSection
     related_counts: RelatedCounts
     resources: List[Resource]
 
@@ -120,13 +139,26 @@ class RecordTriageDecisionInput(BaseModel):
     ]
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning_bullets: Optional[List[str]] = None
-    recommended_actions: Optional[List[RecommendedAction]] = None
-    suggested_status: Optional[str] = None
+    recommended_actions: Optional[List[RecommendedAction]] = Field(
+        default=None,
+        description="Suggested next steps for escalating dispositions only.",
+    )
+    recommended_case_runbook_id: Optional[str | int] = Field(
+        default=None,
+        description="Published Case Runbook ID for escalating dispositions only.",
+    )
+    suggested_status: Optional[str] = Field(
+        default=None,
+        description="Optional status patch; persisted value is derived from disposition.",
+    )
     suggested_priority: Optional[str] = None
     suggested_assignee: Optional[str] = None
     suggested_tags_add: Optional[List[str]] = None
     suggested_tags_remove: Optional[List[str]] = None
-    request_escalate_to_case: bool = False
+    request_escalate_to_case: bool = Field(
+        default=False,
+        description="Optional/deprecated request; persisted value is derived from disposition.",
+    )
     commit: bool = False  # Dry-run if false
 
 
@@ -144,6 +176,51 @@ class RecordTriageDecisionOutput(BaseModel):
     suggested_patches: List[SuggestedPatch]
     status: Literal["PENDING", "ACCEPTED", "REJECTED", "SUPERSEDED"]
     message: str
+
+
+class SearchCaseRunbooksInput(BaseModel):
+    """Input schema for search_case_runbooks tool."""
+
+    query: Optional[str] = None
+    limit: int = Field(default=10, ge=1, le=25)
+
+
+class CaseRunbookSearchResult(BaseModel):
+    id: int
+    human_id: str
+    title: str
+    description: Optional[str] = None
+    case_tags: List[str] = Field(default_factory=list)
+    runbook_task_count: int
+    picerl_stages: List[str] = Field(default_factory=list)
+
+
+class SearchCaseRunbooksOutput(BaseModel):
+    items: List[CaseRunbookSearchResult]
+
+
+class GetCaseRunbookInput(BaseModel):
+    """Input schema for get_case_runbook tool."""
+
+    id: str
+
+
+class LeanRunbookTask(BaseModel):
+    title: str
+    description: Optional[str] = None
+    picerl_stage: str
+    relative_due_seconds: Optional[int] = None
+    priority: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+
+
+class GetCaseRunbookOutput(BaseModel):
+    id: int
+    human_id: str
+    title: str
+    description: Optional[str] = None
+    case_tags: List[str] = Field(default_factory=list)
+    runbook_tasks: List[LeanRunbookTask] = Field(default_factory=list)
 
 
 # ============================================================================
@@ -224,8 +301,9 @@ class AddTimelineItemInput(BaseModel):
     body: str = Field(max_length=16000)
     created_at: Optional[datetime] = Field(
         default=None, 
-        description="Timestamp when item was created. Defaults to current time if not specified."
+        description="Migration-only timestamp when item was created. Requires migration=true and an authorized NHI."
     )
+    migration: bool = False
     commit: bool = False  # Dry-run if false
 
 

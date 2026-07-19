@@ -1,5 +1,4 @@
 import type { AlertRead } from '@/types/generated/models/AlertRead';
-import type { AlertStatus } from '@/types/generated/models/AlertStatus';
 import type { CaseReadWithAlerts } from '@/types/generated/models/CaseReadWithAlerts';
 import type { TaskRead } from '@/types/generated/models/TaskRead';
 import type { AcceptRecommendationRequest } from '@/types/generated/models/AcceptRecommendationRequest';
@@ -7,6 +6,7 @@ import type { RejectionCategory } from '@/types/generated/models/RejectionCatego
 import type { app__api__routes__admin_auth__UserSummary } from '@/types/generated/models/app__api__routes__admin_auth__UserSummary';
 import type { TimelineItemType } from '@/types/drafts';
 import type { UIState } from '@/utils/statusHelpers';
+import type { LinkedAlertResolutionUpdate } from '@/hooks/useResolveLinkedAlerts';
 
 // Define a compatible user type since UserAccountRead might be missing or different
 export type UnifiedUser = app__api__routes__admin_auth__UserSummary | any;
@@ -63,6 +63,9 @@ export interface UnifiedTimelineProps {
   
   /** Handler for editing a timeline item */
   onEditItem?: (itemId: string) => void;
+
+  /** Handler for editing a linked task shown on a parent case timeline */
+  onEditLinkedTask?: (task: TaskRead) => void;
   
   /** Handler for deleting a timeline item */
   onDeleteItem?: (itemId: string) => void;
@@ -86,8 +89,9 @@ export interface UnifiedTimelineProps {
 
   /** Handler for closing a case with linked alert closure updates and closure tags */
   onCloseCaseWithDetails?: (payload: {
-    alert_closure_updates: Array<{ alert_id: number; status: AlertStatus }>;
+    alert_updates: LinkedAlertResolutionUpdate[];
     tags: string[];
+    note?: string;
   }) => void;
   
   /** Handler for reopening a closed entity */
@@ -188,6 +192,9 @@ export interface UnifiedTimelineProps {
   
   /** Whether reject recommendation is in progress */
   isRejectingRecommendation?: boolean;
+
+  /** Error message from the last triage recommendation accept attempt */
+  acceptRecommendationError?: string | null;
   
   /**
    * Handler for retrying a failed triage recommendation

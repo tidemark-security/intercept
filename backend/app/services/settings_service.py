@@ -497,10 +497,8 @@ class SettingsService:
         await self.db.refresh(setting)
 
         logger.info(
-            "Updated setting: key=%s, old=%s, new=%s",
-            key,
-            old_snapshot.get("value"),
-            new_snapshot.get("value"),
+            "Updated setting: value_changed=%s",
+            "value" in update_data,
         )
 
         setting_dict = setting.model_dump()

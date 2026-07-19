@@ -12,6 +12,8 @@ export type LinkTemplateUpdate = {
     url_template?: (string | null);
     field_names?: (Array<string> | null);
     conditions?: (Record<string, any> | null);
+    surface_scopes?: (Array<'entity' | 'timeline_item'> | null);
+    entity_types?: (Array<'alert' | 'case' | 'task'> | null);
     enabled?: (boolean | null);
     display_order?: (number | null);
 };

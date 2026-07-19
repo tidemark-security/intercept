@@ -1,7 +1,7 @@
 """Add MCP OAuth 2.1 persistence.
 
-Revision ID: 005_mcp_oauth
-Revises: 004_timeline_graphs
+Revision ID: 013_mcp_oauth
+Revises: 012_nhi_override_timestamps
 Create Date: 2026-05-31
 """
 from __future__ import annotations
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision: str = "005_mcp_oauth"
-down_revision: Union[str, None] = "004_timeline_graphs"
+revision: str = "013_mcp_oauth"
+down_revision: Union[str, None] = "012_nhi_override_timestamps"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

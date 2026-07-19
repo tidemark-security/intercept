@@ -6,18 +6,12 @@
  */
 
 import React from 'react';
-import { Badge } from '@/components/data-display/Badge';
-import { Tag } from '@/components/data-display/Tag';
-import { Priority } from '@/components/misc/Priority';
-import { State } from '@/components/misc/State';
-import { useTheme } from '@/contexts/ThemeContext';
-import { cn } from '@/utils/cn';
 
 import { CopyableTimestamp } from '@/components/data-display/CopyableTimestamp';
 import { RelativeTime } from '@/components/data-display/RelativeTime';
+import { MenuCard } from '@/components/cards/MenuCard';
 import { TimelineItemSnippet, hasDisplayableContent } from '@/components/search/TimelineItemSnippet';
 import { SearchHighlight } from '@/components/search/SearchHighlight';
-import { User } from 'lucide-react';
 import { 
   ExtendedSearchResultItem, 
   mapPriority, 
@@ -32,6 +26,8 @@ interface SearchResultRowProps {
   onClick: () => void;
   /** Search query for highlighting matches */
   searchQuery?: string;
+  /** Active tag filters used for tag chip highlighting */
+  selectedTags?: string[];
   /** Whether this row is currently selected (for keyboard navigation) */
   isSelected?: boolean;
   /** Mouse enter handler (for keyboard navigation) */
@@ -40,6 +36,67 @@ interface SearchResultRowProps {
   icon?: React.ReactNode;
   /** ARIA role for accessibility */
   role?: 'button' | 'option';
+}
+
+function getTimelineTagMatches(item: ExtendedSearchResultItem) {
+  const seen = new Set<string>();
+  return (item.tag_matches || []).filter((match) => {
+    if (match.source !== 'timeline') return false;
+    const key = `${String(match.tag || '').toLowerCase()}|${String(match.filter || '').toLowerCase()}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function getTimelineSnippetTags(item: ExtendedSearchResultItem) {
+  const timelineItem = tryParseTimelineItemJson(item.snippet || '');
+  const tags = timelineItem?.tags;
+  if (!Array.isArray(tags)) return [];
+
+  return tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0);
+}
+
+function getSearchResultTags(item: ExtendedSearchResultItem) {
+  const timelineTags = new Set<string>();
+  const childTags = [
+    ...getTimelineTagMatches(item).map((match) => match.tag),
+    ...getTimelineSnippetTags(item),
+  ].filter((tag) => {
+    const key = tag.toLowerCase();
+    if (timelineTags.has(key)) return false;
+    timelineTags.add(key);
+    return true;
+  });
+
+  return [
+    ...(item.tags || []),
+    ...childTags.map((tag) => ({
+      tag,
+      source: 'timeline' as const,
+    })),
+  ];
+}
+
+function getTagHighlightTerms(searchQuery?: string, selectedTags: string[] = []) {
+  const terms = new Set<string>();
+
+  selectedTags.forEach((tag) => {
+    const value = tag.trim();
+    if (value) terms.add(value);
+  });
+
+  const query = searchQuery?.trim();
+  if (!query || query === "*") return Array.from(terms);
+
+  terms.add(query);
+  query
+    .split(/\s+/)
+    .map((term) => term.replace(/^[`"'([{<]+|[`"')\]}>.,:;!?]+$/g, "").trim())
+    .filter((term) => term && term !== "*")
+    .forEach((term) => terms.add(term));
+
+  return Array.from(terms);
 }
 
 /**
@@ -92,92 +149,50 @@ export function SearchResultRow({
   item,
   onClick,
   searchQuery,
+  selectedTags = [],
   isSelected = false,
   onMouseEnter,
   icon,
   role = 'button',
 }: SearchResultRowProps) {
-  const { resolvedTheme } = useTheme();
-  const isDarkTheme = resolvedTheme === 'dark';
-
-  const baseClassName = "group flex w-full cursor-pointer items-start gap-3 rounded-md px-4 py-4 transition-colors";
-  const selectedClassName = cn('border border-solid', {
-    'bg-neutral-100 border-transparent': isSelected && isDarkTheme,
-    'bg-neutral-300 border-transparent': isSelected && !isDarkTheme,
-    'border-neutral-border hover:bg-neutral-50': !isSelected && isDarkTheme,
-    'border-neutral-border hover:bg-neutral-100 hover:border-neutral-200': !isSelected && !isDarkTheme,
-  });
-  const visibleTags = item.tags?.slice(0, 3) || [];
-  const additionalTagCount = item.tags && item.tags.length > 3 ? item.tags.length - 3 : 0;
+  const variant = isSelected ? 'selected' : 'default';
+  const tags = getSearchResultTags(item);
+  const highlightedTags = getTagHighlightTerms(searchQuery, selectedTags);
   
   return (
-    <div
+    <MenuCard
+      id={item.human_id}
+      title={item.title}
+      timestamp={
+        <CopyableTimestamp
+          value={item.created_at}
+          showFull={false}
+        />
+      }
+      assignee={item.assignee || 'Unassigned'}
+      tags={tags}
+      highlightedTags={highlightedTags}
+      state={item.status ? mapState(item.status, item.entity_type) : undefined}
+      priority={item.priority ? mapPriority(item.priority) : undefined}
+      variant={variant}
+      leadingContent={icon}
+      bodyContent={
+        <>
+          <SmartSnippet snippet={item.snippet} searchQuery={searchQuery} />
+          <RelativeTime
+            value={item.updated_at || item.created_at}
+            className="text-caption font-caption text-subtext-color"
+          />
+        </>
+      }
       role={role}
       tabIndex={role === 'button' ? 0 : undefined}
       aria-selected={role === 'option' ? isSelected : undefined}
-      className={`${baseClassName} ${selectedClassName}`}
+      className="group w-full cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand-primary"
       onClick={onClick}
       onMouseEnter={onMouseEnter}
       onKeyDown={role === 'button' ? (e) => e.key === 'Enter' && onClick() : undefined}
-    >
-      {icon && (
-        <div className="flex-shrink-0">
-          {icon}
-        </div>
-      )}
-      <div className="flex min-w-0 grow shrink-0 basis-0 flex-col items-start justify-center gap-1 self-stretch">
-        <div className="flex w-full min-w-0 items-start gap-1 pb-1">
-          <span
-            className={cn(
-              'min-w-0 grow shrink basis-0 text-body-bold font-body-bold text-default-font line-clamp-1',
-              {
-                'group-hover:text-brand-400': isDarkTheme,
-                'text-accent-1-400': isSelected && isDarkTheme,
-              }
-            )}
-          >
-            {item.title}
-          </span>
-          <div className="flex max-w-full flex-shrink-0 flex-wrap items-center justify-end gap-2">
-            {item.priority && (
-              <Priority priority={mapPriority(item.priority)} size="mini" />
-            )}
-            {item.status && (
-              <State state={mapState(item.status, item.entity_type)} variant="mini" />
-            )}
-            <CopyableTimestamp value={item.created_at} showFull={false} className="hidden md:flex" />
-            <Badge className="h-6 flex-none" variant="neutral">
-              {item.human_id}
-            </Badge>
-          </div>
-        </div>
-        <SmartSnippet snippet={item.snippet} searchQuery={searchQuery} />
-        {visibleTags.length > 0 && (
-          <div className="flex w-full flex-wrap items-center gap-1 pt-1">
-            {visibleTags.map((tag) => (
-              <Tag key={tag} tagText={tag} showDelete={false} p="0" />
-            ))}
-            {additionalTagCount > 0 && (
-              <span className="text-caption font-caption text-subtext-color">+{additionalTagCount} more</span>
-            )}
-          </div>
-        )}
-        <div className="flex w-full flex-col items-start gap-1 pt-1 sm:flex-row sm:items-center">
-          <div className="flex w-full min-w-0 grow shrink basis-0 flex-wrap items-center gap-1 self-stretch">
-            <User className="text-body font-body text-default-font h-3 w-3" />
-            <span className="line-clamp-1 min-w-0 grow shrink basis-0 text-caption font-caption text-default-font">
-              {item.assignee || 'Unassigned'}
-            </span>
-          </div>
-          <div className="flex w-full items-center justify-start gap-1 sm:ml-auto sm:w-auto sm:justify-end">
-            <RelativeTime
-              value={item.updated_at || item.created_at}
-              className="text-caption font-caption text-default-font text-left sm:text-right"
-            />
-          </div>
-        </div>
-      </div>
-    </div>
+    />
   );
 }
 
