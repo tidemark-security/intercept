@@ -41,6 +41,13 @@ function renderToolbar(
         { tag: "vip", count: 1 },
       ]}
     />,
+    {
+      sessionValue: {
+        status: "authenticated",
+        session: null,
+        user: { username: "analyst" },
+      } as any,
+    },
   );
 
   return { onFilterChange, ...renderResult };
