@@ -2145,6 +2145,127 @@ class ApiKeyCreateResponse(ApiKeyRead):
 
 
 # ---------------------------------------------------------------------------
+# MCP OAuth models & schemas
+# ---------------------------------------------------------------------------
+
+
+class MCPOAuthClient(SQLModel, table=True):
+    """OAuth public client registered for remote MCP access."""
+
+    __tablename__ = "mcp_oauth_clients"  # type: ignore
+    __table_args__ = (
+        Index("ix_mcp_oauth_clients_client_id", "client_id", unique=True),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    client_id: str = Field(sa_column=Column(String(2048), nullable=False))
+    client_name: str = Field(max_length=200)
+    client_uri: Optional[str] = Field(default=None, max_length=2048)
+    logo_uri: Optional[str] = Field(default=None, max_length=2048)
+    redirect_uris: List[str] = Field(default_factory=list, sa_column=Column(JSONB))
+    scope: str = Field(default="mcp:access", max_length=255)
+    grant_types: List[str] = Field(default_factory=list, sa_column=Column(JSONB))
+    response_types: List[str] = Field(default_factory=list, sa_column=Column(JSONB))
+    token_endpoint_auth_method: str = Field(default="none", max_length=64)
+    contacts: List[str] = Field(default_factory=list, sa_column=Column(JSONB))
+    jwks_uri: Optional[str] = Field(default=None, max_length=2048)
+    client_metadata: Dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSONB))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+    last_seen_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    revoked_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+
+
+class MCPOAuthConsent(SQLModel, table=True):
+    """Remembered user authorization for an MCP OAuth client."""
+
+    __tablename__ = "mcp_oauth_consents"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint("user_id", "client_db_id", "scope", name="uq_mcp_oauth_consent_user_client_scope"),
+        Index("ix_mcp_oauth_consents_user", "user_id"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    user_id: UUID = Field(foreign_key="user_accounts.id", index=True)
+    client_db_id: UUID = Field(foreign_key="mcp_oauth_clients.id", index=True)
+    scope: str = Field(default="mcp:access", max_length=255)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+    last_authorized_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+    revoked_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+
+
+class MCPOAuthAuthorizationCode(SQLModel, table=True):
+    """Short-lived OAuth authorization code for MCP PKCE exchange."""
+
+    __tablename__ = "mcp_oauth_authorization_codes"  # type: ignore
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    code_hash: str = Field(sa_column=Column(String(128), unique=True, index=True))
+    client_db_id: UUID = Field(foreign_key="mcp_oauth_clients.id", index=True)
+    user_id: UUID = Field(foreign_key="user_accounts.id", index=True)
+    redirect_uri: str = Field(max_length=2048)
+    code_challenge: str = Field(max_length=256)
+    code_challenge_method: str = Field(default="S256", max_length=16)
+    scope: str = Field(default="mcp:access", max_length=255)
+    resource: str = Field(max_length=2048)
+    expires_at: datetime = Field(sa_column=Column(UTCDateTime(), index=True))
+    consumed_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+
+
+class MCPOAuthToken(SQLModel, table=True):
+    """Opaque OAuth access or refresh token for remote MCP access."""
+
+    __tablename__ = "mcp_oauth_tokens"  # type: ignore
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    token_hash: str = Field(sa_column=Column(String(128), unique=True, index=True))
+    token_type: str = Field(max_length=16)
+    client_db_id: UUID = Field(foreign_key="mcp_oauth_clients.id", index=True)
+    user_id: UUID = Field(foreign_key="user_accounts.id", index=True)
+    scope: str = Field(default="mcp:access", max_length=255)
+    resource: str = Field(max_length=2048)
+    refresh_token_id: Optional[UUID] = Field(default=None, foreign_key="mcp_oauth_tokens.id", index=True)
+    rotated_from_token_id: Optional[UUID] = Field(default=None, foreign_key="mcp_oauth_tokens.id")
+    expires_at: datetime = Field(sa_column=Column(UTCDateTime(), index=True))
+    last_used_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    revoked_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+
+
+class MCPOAuthClientRead(SQLModel):
+    """User-facing connected MCP client metadata."""
+
+    id: UUID
+    client_id: str
+    client_name: str
+    client_uri: Optional[str] = None
+    redirect_uris: List[str] = []
+    scope: str
+    created_at: datetime
+    last_authorized_at: datetime
+    last_used_at: Optional[datetime] = None
+
+
+# ---------------------------------------------------------------------------
 # File Upload API Models
 # ---------------------------------------------------------------------------
 

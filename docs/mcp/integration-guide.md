@@ -14,14 +14,43 @@ The MCP server provides **7 purpose-built tools** designed for AI agent workflow
 
 - Tidemark Intercept backend running
 - User account with appropriate permissions
-- API key for authentication
-- MCP client (Claude Desktop, custom client, etc.)
+- OAuth-capable MCP client for human-operated local agents, or an API key for machine-to-machine use
+- MCP client (Codex, Claude Code, Claude Desktop, custom client, etc.)
 
 ## Setup
 
-### 1. Create an API Key
+### Option A: Human-Operated Local Agent with OAuth
 
-API keys are required for MCP authentication. You can create them via the web interface or API.
+Use OAuth 2.1 with PKCE when a person is using a local agent and should authenticate with their normal Intercept account.
+
+1. Enable MCP OAuth on the backend:
+
+```bash
+MCP_OAUTH_ENABLED=true
+MCP_OAUTH_PUBLIC_BASE_URL=http://localhost:8000
+MCP_OAUTH_LOGIN_BASE_URL=http://localhost:5173
+```
+
+2. Configure your MCP client with the MCP URL:
+
+```text
+http://localhost:8000/mcp/streamable/
+```
+
+3. Start the MCP client connection.
+4. The client discovers Intercept's OAuth metadata and opens your browser.
+5. Sign in to Intercept as usual and approve the local MCP client.
+6. The browser redirects back to the client's loopback callback so the client can exchange the authorization code for tokens. The client/browser completion page should indicate when the tab can be closed.
+
+For the quickstart Docker Compose setup, OAuth is enabled by default with:
+
+- Backend/OAuth issuer: `http://localhost:8000`
+- Frontend login: `http://localhost`
+- MCP URL: `http://localhost:8000/mcp/streamable/`
+
+### Option B: Machine-to-Machine API Key
+
+Use API keys for automation, service accounts, and other non-human identity integrations. You can create them via the web interface or API.
 
 #### Via Web Interface
 
@@ -67,7 +96,7 @@ Response includes the API key (one-time only):
 }
 ```
 
-### 2. Configure Your MCP Client
+### Configure Your MCP Client with an API Key
 
 #### Claude Desktop
 
@@ -96,7 +125,8 @@ Restart Claude Desktop after updating the configuration.
 Any MCP-compatible client can connect using:
 - **URL**: `http://localhost:8000/mcp/streamable/`
 - **Transport**: Streamable HTTP
-- **Authentication**: `Authorization: Bearer <api_key>` header
+- **Human authentication**: OAuth 2.1 with PKCE, discovered from the MCP protected-resource metadata
+- **Machine authentication**: `Authorization: Bearer <api_key>` header
 
 Legacy SSE clients can continue using `/mcp/sse`.
 
@@ -212,6 +242,7 @@ related = await mcp.call_tool("find_related", {
 for match in related["matches"]:
     print(f"{match['human_id']}: {match['why']}")
     # Output: "CAS-0000789: ['shared_ip:10.0.0.1', 'same_source_title']"
+```
 
 ### Pattern 4: Diagram Validation
 
@@ -224,7 +255,6 @@ result = await mcp.call_tool("validate_mermaid", {
 
 if not result["valid"]:
   raise ValueError(result["errors"])
-```
 ```
 
 ## Dry-Run Mode
@@ -276,7 +306,17 @@ await mcp.call_tool("get_summary", {"kind": "alert", "id": "ALT-123"})
 
 ### Common Errors
 
-**401 Unauthorized - Missing API Key**
+**401 Unauthorized - Missing Credential**
+
+With OAuth enabled, the response includes a `WWW-Authenticate` header similar to:
+
+```http
+WWW-Authenticate: Bearer resource_metadata="http://localhost:8000/.well-known/oauth-protected-resource/mcp", scope="mcp:access"
+```
+
+**Solution**: Use an OAuth-capable MCP client, or configure an API key for machine-to-machine access.
+
+With OAuth disabled, the response body is:
 
 ```json
 {
@@ -284,9 +324,7 @@ await mcp.call_tool("get_summary", {"kind": "alert", "id": "ALT-123"})
 }
 ```
 
-**Solution**: Add Authorization header to your MCP client config
-
-**401 Unauthorized - Invalid/Expired API Key**
+**401 Unauthorized - Invalid/Expired API Key or OAuth Token**
 
 ```json
 {
@@ -294,7 +332,7 @@ await mcp.call_tool("get_summary", {"kind": "alert", "id": "ALT-123"})
 }
 ```
 
-**Solution**: Verify API key, check expiration date
+**Solution**: Verify the API key, check expiration, or re-run the OAuth browser flow.
 
 **403 Forbidden - User Inactive**
 
@@ -317,7 +355,7 @@ async def call_tool_safe(mcp, tool_name: str, arguments: dict):
     except Exception as e:
         error_msg = str(e)
         if "401" in error_msg:
-            return {"success": False, "error": "Authentication failed - check API key"}
+            return {"success": False, "error": "Authentication failed - check OAuth or API key"}
         elif "403" in error_msg:
             return {"success": False, "error": "Permission denied"}
         elif "404" in error_msg:
@@ -328,26 +366,32 @@ async def call_tool_safe(mcp, tool_name: str, arguments: dict):
 
 ## Security Best Practices
 
-1. **Protect API Keys**
+1. **Use OAuth for Human-Operated Agents**
+   - Prefer OAuth 2.1 with PKCE for local agents started by a person
+   - Approve only clients you launched and recognize
+   - Review connected MCP clients in your profile and revoke unused access
+
+2. **Protect API Keys**
    - Never commit API keys to version control
    - Use environment variables or secure vaults
    - Rotate keys regularly (every 90 days recommended)
 
-2. **Use NHI Accounts for Automation**
+3. **Use NHI Accounts for Automation**
    - Create dedicated non-human accounts
    - Set appropriate role permissions
    - Monitor usage in audit logs
 
-3. **Use Dry-Run Mode**
+4. **Use Dry-Run Mode**
    - Always test write operations in dry-run mode first
    - Verify `suggested_patches` before committing
 
-4. **Validate Input**
+5. **Validate Input**
    - Sanitize data before sending to tools
    - Validate responses before using
 
-5. **Monitor Usage**
+6. **Monitor Usage**
    - Track API key usage
+   - Track OAuth client grants and revocations
    - Alert on unusual patterns
    - Review audit logs regularly
 

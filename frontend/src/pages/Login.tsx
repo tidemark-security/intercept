@@ -45,13 +45,34 @@ function Login() {
   const desktopBrandLogo = resolvedTheme === "dark" ? tidemarkLogoDark : tidemarkLogoNeon;
   const displayError = error ?? oidcError ?? "";
   const showLocalLogin = !oidcEnabled || noSso;
+  const goToPostLoginDestination = React.useCallback(() => {
+    const next = searchParams.get("next");
+    if (next) {
+      try {
+        const destination = new URL(next, window.location.origin);
+        const apiOrigin = new URL(OpenAPI.BASE || window.location.origin, window.location.origin).origin;
+        const allowedOrigins = new Set([window.location.origin, apiOrigin]);
+        if (allowedOrigins.has(destination.origin)) {
+          if (destination.origin === window.location.origin) {
+            navigate(`${destination.pathname}${destination.search}${destination.hash}`);
+          } else {
+            window.location.assign(destination.toString());
+          }
+          return;
+        }
+      } catch {
+        // Fall back to the app home route below.
+      }
+    }
+    navigate("/");
+  }, [navigate, searchParams]);
 
   // Redirect to home if already authenticated (but not if password change is required)
   useEffect(() => {
     if (status === "authenticated" && !mustChangePassword) {
-      navigate("/");
+      goToPostLoginDestination();
     }
-  }, [status, mustChangePassword, navigate]);
+  }, [status, mustChangePassword, goToPostLoginDestination]);
 
   useEffect(() => {
     if (step === "password") {
@@ -178,7 +199,7 @@ function Login() {
             />
           </div>
           {mustChangePassword ? (
-            <ChangePasswordForm logo={loginLogo} onSuccess={() => navigate("/")} />
+            <ChangePasswordForm logo={loginLogo} onSuccess={goToPostLoginDestination} />
           ) : loadingOidcConfig ? (
             <div className="flex w-full max-w-[448px] flex-col items-center justify-center gap-8 rounded-md px-6 py-6">
               <img className="flex-none" src={loginLogo} />

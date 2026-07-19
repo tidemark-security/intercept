@@ -50,7 +50,6 @@ class DashboardService:
         alert_open_statuses = [
             AlertStatus.NEW,
             AlertStatus.IN_PROGRESS,
-            AlertStatus.ESCALATED,
         ]
         case_open_statuses = [CaseStatus.NEW, CaseStatus.IN_PROGRESS]
         task_open_statuses = [TaskStatus.TODO, TaskStatus.IN_PROGRESS]
