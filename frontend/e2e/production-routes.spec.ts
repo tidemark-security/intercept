@@ -241,6 +241,8 @@ function apiResponse(pathname: string): unknown {
     return { success: true, message: "Mocked by production smoke test", checks: [] };
   }
 
+  if (pathname === "/api/v1/mcp/oauth/clients") return [];
+
   if (pathname.startsWith("/api/v1/metrics")) return metricsResponse();
 
   return {};
@@ -328,6 +330,9 @@ test("production bundle loads all major lazy routes", async ({ page }) => {
       expect(response?.status(), `${routePath} document response`).toBeLessThan(400);
 
       await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
+
+      const loadFailures = failures.splice(0);
+      expect(loadFailures, `${routePath} production runtime errors`).toEqual([]);
 
       await expect
         .poll(
