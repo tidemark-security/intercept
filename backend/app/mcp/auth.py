@@ -34,6 +34,7 @@ class MCPDerivedKeys:
 
     jwt_signing_key: bytes
     storage_fernet_key: bytes
+    token_hash_key: bytes
 
 
 def _derive_key(secret_key: str, *, info: bytes) -> bytes:
@@ -48,7 +49,7 @@ def _derive_key(secret_key: str, *, info: bytes) -> bytes:
 
 
 def derive_mcp_keys(secret_key: str) -> MCPDerivedKeys:
-    """Derive independent JWT-signing and storage-encryption keys."""
+    """Derive independent signing, storage, and opaque-secret hashing keys."""
 
     jwt_key = _derive_key(secret_key, info=b"jwt-signing")
     storage_key = base64.urlsafe_b64encode(
@@ -57,6 +58,7 @@ def derive_mcp_keys(secret_key: str) -> MCPDerivedKeys:
     return MCPDerivedKeys(
         jwt_signing_key=jwt_key,
         storage_fernet_key=storage_key,
+        token_hash_key=_derive_key(secret_key, info=b"opaque-token-hashing"),
     )
 
 

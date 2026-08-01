@@ -338,7 +338,7 @@ def compose_http_app(existing_api_app: FastAPI, runtime: Any) -> Starlette:
     )
 
 
-def _local_provider_factory(snapshot: Any) -> Any:
+def _local_provider_factory(snapshot: Any, token_hash_key: bytes) -> Any:
     """Late import keeps local provider persistence out of API-only startup."""
 
     from app.mcp.local_oauth_provider import create_local_oauth_provider
@@ -346,6 +346,7 @@ def _local_provider_factory(snapshot: Any) -> Any:
     return create_local_oauth_provider(
         snapshot=snapshot,
         session_factory=async_session_factory,
+        token_hash_key=token_hash_key,
     )
 
 

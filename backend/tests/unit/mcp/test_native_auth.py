@@ -154,5 +154,10 @@ def test_mcp_keys_are_stable_and_domain_separated() -> None:
 
     assert first == second
     assert first.jwt_signing_key != first.storage_fernet_key
+    assert first.token_hash_key not in {
+        first.jwt_signing_key,
+        first.storage_fernet_key,
+    }
     assert len(first.jwt_signing_key) == 32
     assert len(first.storage_fernet_key) == 44
+    assert len(first.token_hash_key) == 32

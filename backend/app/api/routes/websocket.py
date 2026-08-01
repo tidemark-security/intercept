@@ -189,6 +189,7 @@ async def websocket_endpoint(ws: WebSocket):
         try:
             await heartbeat_task
         except asyncio.CancelledError:
+            # Cancellation is expected after stopping the heartbeat on disconnect.
             pass
         await connection_manager.disconnect(ws)
         logger.info("WebSocket disconnected (active: %d)", connection_manager.active_connections)

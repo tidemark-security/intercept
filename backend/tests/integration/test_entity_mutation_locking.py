@@ -274,6 +274,7 @@ async def test_case_closure_preserves_concurrent_linked_task_timeline_change(
         independent_note = timeline_service.build_note_item(
             description="Independent task note",
             created_by="task-analyst",
+            timestamp="2026-07-19T12:00:00Z",
         )
         timeline_service.add_timeline_item(
             writer_task,
@@ -340,6 +341,7 @@ async def test_linked_alert_resolution_preserves_concurrent_timeline_change(
         independent_note = timeline_service.build_note_item(
             description="Independent alert note",
             created_by="alert-analyst",
+            timestamp="2026-07-19T12:00:00Z",
         )
         timeline_service.add_timeline_item(
             writer_alert,

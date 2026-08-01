@@ -285,7 +285,9 @@ and invocation; the removed `/mcp/v1/tools/*` REST shim is not supported.
 
 - API keys are hashed (Argon2id) in the database
 - Keys have expiration dates and can be revoked
-- Local OAuth tokens are opaque and hashed; OIDC proxy state is encrypted
+- Local OAuth codes and tokens are opaque and indexed with a versioned,
+  `SECRET_KEY`-derived HMAC-SHA-256 digest; legacy unkeyed digests are upgraded
+  on first successful lookup. OIDC proxy state is encrypted.
 - All MCP requests are audited with user context
 - Use NHI (Non-Human Identity) accounts for automation
 

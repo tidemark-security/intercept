@@ -284,7 +284,7 @@ async def test_api_key_only_runtime_captures_auth_before_http_app_construction()
 async def test_local_runtime_installs_operational_and_root_discovery_routes() -> None:
     snapshot = await load_mcp_auth_snapshot(_base_settings())
 
-    def provider_factory(_snapshot):
+    def provider_factory(_snapshot, _token_hash_key):
         return InMemoryOAuthProvider(
             base_url=_snapshot.oauth_base_url,
             resource_base_url=_snapshot.oauth_base_url,

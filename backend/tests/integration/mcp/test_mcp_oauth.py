@@ -60,9 +60,12 @@ async def local_oauth_client(
         database_url="postgresql://unused-in-local-mode",
         secret_key="test-fastmcp-local-oauth-secret",
         session_factory=session_maker,
-        local_provider_factory=lambda snapshot: create_local_oauth_provider(
-            snapshot=snapshot,
-            session_factory=session_maker,
+        local_provider_factory=(
+            lambda snapshot, token_hash_key: create_local_oauth_provider(
+                snapshot=snapshot,
+                session_factory=session_maker,
+                token_hash_key=token_hash_key,
+            )
         ),
     )
     app.install(compose_http_app(api_app, runtime), runtime)

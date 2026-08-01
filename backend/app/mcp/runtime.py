@@ -356,7 +356,9 @@ async def build_mcp_runtime(
     database_url: str,
     secret_key: str,
     session_factory: Callable[..., Any],
-    local_provider_factory: Callable[[MCPAuthSnapshot], AuthProvider] | None = None,
+    local_provider_factory: (
+        Callable[[MCPAuthSnapshot, bytes], AuthProvider] | None
+    ) = None,
 ) -> MCPRuntime:
     """Assemble auth, routes, server, and transport before startup yields."""
 
@@ -399,7 +401,7 @@ async def build_mcp_runtime(
     elif snapshot.mode is MCPAuthMode.LOCAL_OAUTH:
         if local_provider_factory is None:
             raise MCPConfigurationError("Local MCP OAuth provider is not configured")
-        provider = local_provider_factory(snapshot)
+        provider = local_provider_factory(snapshot, keys.token_hash_key)
 
     api_key_verifier = InterceptApiKeyVerifier(
         session_factory=session_factory,

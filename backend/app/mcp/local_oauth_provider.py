@@ -63,8 +63,8 @@ logger = logging.getLogger(__name__)
 class SnapshotMCPOAuthService(MCPOAuthService):
     """Existing OAuth persistence with immutable worker-startup settings."""
 
-    def __init__(self, settings: MCPOAuthSettings) -> None:
-        super().__init__()
+    def __init__(self, settings: MCPOAuthSettings, *, token_hash_key: bytes) -> None:
+        super().__init__(token_hash_key=token_hash_key)
         self.settings = settings
 
     async def get_settings(self, _db: AsyncSession) -> MCPOAuthSettings:
@@ -95,11 +95,14 @@ class PendingAuthorization:
 class PendingAuthorizationStore(Protocol):
     """Persistence seam used by the consent route and OAuth provider."""
 
-    async def create(self, pending: PendingAuthorization) -> None: ...
+    async def create(self, pending: PendingAuthorization) -> None:
+        pass
 
-    async def get(self, request_id: UUID) -> PendingAuthorization | None: ...
+    async def get(self, request_id: UUID) -> PendingAuthorization | None:
+        pass
 
-    async def consume(self, request_id: UUID) -> PendingAuthorization | None: ...
+    async def consume(self, request_id: UUID) -> PendingAuthorization | None:
+        pass
 
 
 class LocalOAuthBackend(Protocol):
@@ -111,40 +114,49 @@ class LocalOAuthBackend(Protocol):
         user: UserAccount,
         *,
         context: AuditContext | None = None,
-    ) -> str: ...
+    ) -> str:
+        pass
 
-    async def get_client(self, client_id: str) -> OAuthClientInformationFull | None: ...
+    async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
+        pass
 
-    async def register_client(self, client_info: OAuthClientInformationFull) -> None: ...
+    async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        pass
 
     async def load_authorization_code(
         self,
         client: OAuthClientInformationFull,
         authorization_code: str,
-    ) -> AuthorizationCode | None: ...
+    ) -> AuthorizationCode | None:
+        pass
 
     async def exchange_authorization_code(
         self,
         client: OAuthClientInformationFull,
         authorization_code: AuthorizationCode,
-    ) -> OAuthToken: ...
+    ) -> OAuthToken:
+        pass
 
     async def load_refresh_token(
         self,
         client: OAuthClientInformationFull,
         refresh_token: str,
-    ) -> RefreshToken | None: ...
+    ) -> RefreshToken | None:
+        pass
 
     async def exchange_refresh_token(
         self,
         client: OAuthClientInformationFull,
         refresh_token: RefreshToken,
         scopes: list[str],
-    ) -> OAuthToken: ...
+    ) -> OAuthToken:
+        pass
 
-    async def load_access_token(self, token: str) -> AccessToken | None: ...
+    async def load_access_token(self, token: str) -> AccessToken | None:
+        pass
 
-    async def revoke_token(self, token: AccessToken | RefreshToken) -> None: ...
+    async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
+        pass
 
 
 class PendingAuthorizationUnavailableError(Exception):
@@ -366,13 +378,10 @@ class MCPOAuthDatabaseBackend:
                 )
             except OAuthInvalidClientError:
                 return None
-            result = await session.execute(
-                select(MCPOAuthAuthorizationCode).where(
-                    MCPOAuthAuthorizationCode.code_hash
-                    == self.service._hash_secret(authorization_code)  # noqa: SLF001
-                )
+            stored = await self.service._load_authorization_code(  # noqa: SLF001
+                session,
+                code=authorization_code,
             )
-            stored = result.scalar_one_or_none()
             if (
                 stored is None
                 or stored.client_db_id != stored_client.id
@@ -403,17 +412,11 @@ class MCPOAuthDatabaseBackend:
                 stored_client = await self.service.resolve_client(
                     session, client.client_id
                 )
-                result = await session.execute(
-                    select(MCPOAuthAuthorizationCode)
-                    .where(
-                        MCPOAuthAuthorizationCode.code_hash
-                        == self.service._hash_secret(  # noqa: SLF001
-                            authorization_code.code
-                        )
-                    )
-                    .with_for_update()
+                stored = await self.service._load_authorization_code(  # noqa: SLF001
+                    session,
+                    code=authorization_code.code,
+                    for_update=True,
                 )
-                stored = result.scalar_one_or_none()
                 if (
                     stored is None
                     or stored.client_db_id != stored_client.id
@@ -446,15 +449,11 @@ class MCPOAuthDatabaseBackend:
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
         now = datetime.now(timezone.utc)
         async with self._session() as session:
-            result = await session.execute(
-                select(MCPOAuthToken)
-                .where(
-                    MCPOAuthToken.token_hash
-                    == self.service._hash_secret(token.token)  # noqa: SLF001
-                )
-                .with_for_update()
+            stored = await self.service._load_token(  # noqa: SLF001
+                session,
+                token=token.token,
+                for_update=True,
             )
-            stored = result.scalar_one_or_none()
             if stored is None:
                 return
 
@@ -515,15 +514,11 @@ class MCPOAuthDatabaseBackend:
                 )
             except OAuthInvalidClientError:
                 return None
-            result = await session.execute(
-                select(MCPOAuthToken)
-                .where(
-                    MCPOAuthToken.token_hash
-                    == self.service._hash_secret(refresh_token)  # noqa: SLF001
-                )
-                .with_for_update()
+            stored = await self.service._load_token(  # noqa: SLF001
+                session,
+                token=refresh_token,
+                for_update=True,
             )
-            stored = result.scalar_one_or_none()
             if (
                 stored is None
                 or stored.token_type != "refresh"
@@ -565,17 +560,11 @@ class MCPOAuthDatabaseBackend:
                 stored_client = await self.service.resolve_client(
                     session, client.client_id
                 )
-                result = await session.execute(
-                    select(MCPOAuthToken)
-                    .where(
-                        MCPOAuthToken.token_hash
-                        == self.service._hash_secret(  # noqa: SLF001
-                            refresh_token.token
-                        )
-                    )
-                    .with_for_update()
+                stored = await self.service._load_token(  # noqa: SLF001
+                    session,
+                    token=refresh_token.token,
+                    for_update=True,
                 )
-                stored = result.scalar_one_or_none()
                 if (
                     stored is None
                     or stored.token_type != "refresh"
@@ -999,6 +988,7 @@ def create_local_oauth_provider(
     *,
     snapshot: object,
     session_factory: async_sessionmaker[AsyncSession],
+    token_hash_key: bytes,
 ) -> InterceptOAuthProvider:
     """Create the startup-snapshotted local provider used by MCP runtime wiring."""
     public_origin = str(getattr(snapshot, "public_origin"))
@@ -1012,7 +1002,8 @@ def create_local_oauth_provider(
                 getattr(snapshot, "access_token_ttl_seconds")
             ),
             refresh_token_ttl_days=int(getattr(snapshot, "refresh_token_ttl_days")),
-        )
+        ),
+        token_hash_key=token_hash_key,
     )
     return InterceptOAuthProvider(
         session_factory=session_factory,

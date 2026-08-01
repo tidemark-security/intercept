@@ -58,22 +58,29 @@ def test_nginx_routes_mcp_and_oauth_discovery_before_the_frontend() -> None:
         config = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
         mcp = _location_block(config, "/mcp/")
         discovery = _location_block(config, "/.well-known/")
+        backend_proxy = (
+            "proxy_pass http://backend:8000;"
+            if relative_path == "dev/nginx.conf"
+            else "proxy_pass $backend_upstream;"
+        )
 
         assert config.index("location ^~ /mcp/") < config.index("location / {")
         assert config.index("location ^~ /.well-known/") < config.index(
             "location / {"
         )
-        assert "proxy_pass http://backend:8000;" in mcp
+        assert backend_proxy in mcp
         assert "proxy_request_buffering off;" in mcp
         assert "proxy_buffering off;" in mcp
-        assert "proxy_pass http://backend:8000;" in discovery
+        assert backend_proxy in discovery
         assert "proxy_buffering off;" not in discovery
         assert "legacy SSE" not in config
 
     production = (PROJECT_ROOT / "frontend/nginx.conf").read_text(encoding="utf-8")
     api = _location_block(production, "/api/")
     assert production.index("location ^~ /api/") < production.index("location / {")
-    assert "proxy_pass http://backend:8000;" in api
+    assert "resolver 127.0.0.11" in production
+    assert "set $backend_upstream http://backend:8000;" in production
+    assert "proxy_pass $backend_upstream;" in api
 
 
 def test_mcp_settings_explain_that_changes_require_a_restart() -> None:

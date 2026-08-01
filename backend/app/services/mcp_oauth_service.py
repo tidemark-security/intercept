@@ -18,6 +18,8 @@ from urllib.parse import quote, urlencode, urlparse
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.settings_registry import get_local
+from app.mcp.auth import derive_mcp_keys
 from app.models.enums import UserStatus
 from app.models.models import (
     MCPOAuthAuthorizationCode,
@@ -39,6 +41,7 @@ AUTH_CODE_PREFIX = "tmoc_"
 CODE_TTL_SECONDS = 300
 MIN_CODE_VERIFIER_LENGTH = 43
 MAX_CODE_VERIFIER_LENGTH = 128
+SECRET_HASH_SCHEME = "hmac-sha256:v1"
 
 
 @dataclass(slots=True)
@@ -115,6 +118,13 @@ class OAuthInactiveUserError(MCPOAuthError):
 
 class MCPOAuthService:
     """Business logic for MCP OAuth registration, authorization, and tokens."""
+
+    def __init__(self, *, token_hash_key: bytes | None = None) -> None:
+        if token_hash_key is not None and len(token_hash_key) < 32:
+            raise OAuthConfigurationError(
+                "MCP OAuth token hashing key must be at least 32 bytes"
+            )
+        self._token_hash_key = token_hash_key
 
     async def get_settings(self, db: AsyncSession) -> MCPOAuthSettings:
         settings = SettingsService(db)
@@ -263,12 +273,10 @@ class MCPOAuthService:
 
         client = await self.resolve_client(db, client_id)
         now = datetime.now(timezone.utc)
-        code_result = await db.execute(
-            select(MCPOAuthAuthorizationCode).where(
-                cast(Any, MCPOAuthAuthorizationCode.code_hash == self._hash_secret(code))
-            )
+        auth_code = await self._load_authorization_code(
+            db,
+            code=code,
         )
-        auth_code = code_result.scalar_one_or_none()
         if auth_code is None:
             raise OAuthInvalidGrantError("Invalid authorization code")
         if auth_code.consumed_at is not None:
@@ -312,12 +320,10 @@ class MCPOAuthService:
         settings = await self.get_enabled_settings(db)
         client = await self.resolve_client(db, client_id)
         now = datetime.now(timezone.utc)
-        result = await db.execute(
-            select(MCPOAuthToken).where(
-                cast(Any, MCPOAuthToken.token_hash == self._hash_secret(refresh_token))
-            )
+        old_refresh = await self._load_token(
+            db,
+            token=refresh_token,
         )
-        old_refresh = result.scalar_one_or_none()
         if old_refresh is None or old_refresh.token_type != "refresh":
             raise OAuthInvalidGrantError("Invalid refresh token")
         if old_refresh.revoked_at is not None:
@@ -358,17 +364,14 @@ class MCPOAuthService:
         settings = await self.get_enabled_settings(db)
         expected_resource = self.resource_url_for_path(settings, request_path)
         now = datetime.now(timezone.utc)
-        result = await db.execute(
-            select(MCPOAuthToken, UserAccount, MCPOAuthClient)
-            .join(UserAccount, cast(Any, UserAccount.id == MCPOAuthToken.user_id))
-            .join(MCPOAuthClient, cast(Any, MCPOAuthClient.id == MCPOAuthToken.client_db_id))
-            .where(cast(Any, MCPOAuthToken.token_hash == self._hash_secret(token)))
-        )
-        row = result.first()
-        if row is None:
+        oauth_token = await self._load_token(db, token=token)
+        if oauth_token is None:
             raise OAuthInvalidTokenError()
 
-        oauth_token, user, client = row
+        user = await db.get(UserAccount, oauth_token.user_id)
+        client = await db.get(MCPOAuthClient, oauth_token.client_db_id)
+        if user is None or client is None:
+            raise OAuthInvalidTokenError()
         if oauth_token.token_type != "access":
             raise OAuthInvalidTokenError()
         if oauth_token.revoked_at is not None:
@@ -412,13 +415,11 @@ class MCPOAuthService:
         context: Optional[AuditContext] = None,
     ) -> None:
         await self.get_enabled_settings(db)
-        token_hash = self._hash_secret(token)
-        result = await db.execute(
-            select(MCPOAuthToken)
-            .where(cast(Any, MCPOAuthToken.token_hash == token_hash))
-            .with_for_update()
+        oauth_token = await self._load_token(
+            db,
+            token=token,
+            for_update=True,
         )
-        oauth_token = result.scalar_one_or_none()
         if oauth_token is None:
             return
         if client_id:
@@ -921,9 +922,82 @@ class MCPOAuthService:
         except ValueError:
             return False
 
+    def _hash_secret(self, secret: str) -> str:
+        """Return the current keyed, deterministic lookup digest."""
+        if self._token_hash_key is None:
+            raise OAuthConfigurationError(
+                "MCP OAuth token hashing key is not configured"
+            )
+        digest = hmac.digest(
+            self._token_hash_key,
+            secret.encode("utf-8"),
+            "sha256",
+        ).hex()
+        return f"{SECRET_HASH_SCHEME}:{digest}"
+
     @staticmethod
-    def _hash_secret(secret: str) -> str:
-        return hashlib.blake2b(secret.encode("utf-8"), digest_size=32).hexdigest()
+    def _legacy_hash_secret(secret: str) -> str:
+        """Reproduce pre-HMAC indexes solely for an opportunistic data upgrade."""
+        # These are 384-bit generated OAuth secrets, not human passwords. Retain
+        # the old digest only for dual-read migration; all new writes use HMAC.
+        return hashlib.blake2b(  # lgtm[py/weak-sensitive-data-hashing]
+            secret.encode("utf-8"),
+            digest_size=32,
+        ).hexdigest()
+
+    def _secret_hashes_for_lookup(self, secret: str) -> tuple[str, str]:
+        return self._hash_secret(secret), self._legacy_hash_secret(secret)
+
+    async def _load_authorization_code(
+        self,
+        db: AsyncSession,
+        *,
+        code: str,
+        for_update: bool = False,
+    ) -> MCPOAuthAuthorizationCode | None:
+        current_hash, legacy_hash = self._secret_hashes_for_lookup(code)
+        statement = select(MCPOAuthAuthorizationCode).where(
+            cast(
+                Any,
+                MCPOAuthAuthorizationCode.code_hash.in_(
+                    (current_hash, legacy_hash)
+                ),
+            )
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        result = await db.execute(statement)
+        authorization_code = result.scalar_one_or_none()
+        if (
+            authorization_code is not None
+            and authorization_code.code_hash == legacy_hash
+        ):
+            authorization_code.code_hash = current_hash
+        return authorization_code
+
+    async def _load_token(
+        self,
+        db: AsyncSession,
+        *,
+        token: str,
+        for_update: bool = False,
+    ) -> MCPOAuthToken | None:
+        current_hash, legacy_hash = self._secret_hashes_for_lookup(token)
+        statement = select(MCPOAuthToken).where(
+            cast(
+                Any,
+                MCPOAuthToken.token_hash.in_(
+                    (current_hash, legacy_hash)
+                ),
+            )
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        result = await db.execute(statement)
+        oauth_token = result.scalar_one_or_none()
+        if oauth_token is not None and oauth_token.token_hash == legacy_hash:
+            oauth_token.token_hash = current_hash
+        return oauth_token
 
     @staticmethod
     def _verify_pkce(code_verifier: str, code_challenge: str) -> bool:
@@ -963,7 +1037,9 @@ class MCPOAuthService:
         return f"{public_base_url}/login?next={quote(authorize_url, safe='')}"
 
 
-mcp_oauth_service = MCPOAuthService()
+mcp_oauth_service = MCPOAuthService(
+    token_hash_key=derive_mcp_keys(str(get_local("secret_key"))).token_hash_key
+)
 
 
 __all__ = [

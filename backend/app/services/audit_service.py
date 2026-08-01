@@ -142,7 +142,7 @@ class AuditService:
         new_value: Any = None,
         performed_by: Optional[str] = None,
         context: Optional[AuditContext] = None,
-        extra_payload: Optional[dict[str, Any]] = None,
+        item_type: Optional[str] = None,
     ) -> AuditLog:
         audit_context = context or AuditContext()
         audit_log = AuditLog(
@@ -171,8 +171,8 @@ class AuditService:
             "performed_at": audit_log.performed_at.isoformat(),
         }
         payload.update(audit_context.to_payload())
-        if extra_payload:
-            payload.update(extra_payload)
+        if item_type is not None:
+            payload["item_type"] = item_type
         self._logger.info(event_type, extra={"audit": payload})
         return audit_log
 
@@ -236,7 +236,7 @@ class AuditService:
             new_value=new_value,
             performed_by=user,
             context=context,
-            extra_payload={"item_type": item_type},
+            item_type=item_type,
         )
 
     async def log_timeline_item_deleted(
@@ -259,7 +259,7 @@ class AuditService:
             old_value=old_value,
             performed_by=user,
             context=context,
-            extra_payload={"item_type": item_type},
+            item_type=item_type,
         )
 
     async def log_timeline_edit(
@@ -284,7 +284,7 @@ class AuditService:
             new_value=after,
             performed_by=user,
             context=context,
-            extra_payload={"item_type": item_type},
+            item_type=item_type,
         )
 
     async def login_success(

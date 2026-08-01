@@ -10,8 +10,10 @@ import pytest
 from mcp.server.auth.provider import AuthorizationParams, AuthorizeError, TokenError
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyUrl
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.mcp.auth import derive_mcp_keys
 from app.mcp.local_oauth_provider import (
     InterceptOAuthProvider,
     PendingAuthorization,
@@ -19,7 +21,8 @@ from app.mcp.local_oauth_provider import (
     SQLAlchemyPendingAuthorizationStore,
     create_local_oauth_provider,
 )
-from app.services.mcp_oauth_service import mcp_oauth_service
+from app.models.models import MCPOAuthAuthorizationCode, MCPOAuthToken
+from app.services.mcp_oauth_service import MCPOAuthService
 
 
 FIXED_NOW = datetime(2026, 7, 19, 3, 0, tzinfo=timezone.utc)
@@ -38,6 +41,7 @@ async def test_factory_freezes_token_and_origin_settings_from_startup_snapshot()
             refresh_token_ttl_days=17,
         ),
         session_factory=object(),
+        token_hash_key=derive_mcp_keys("factory-test-secret").token_hash_key,
     )
 
     settings = await provider._backend.service.get_enabled_settings(None)
@@ -313,6 +317,83 @@ async def test_authorization_code_exchange_returns_native_identity_claims(
 
 
 @pytest.mark.asyncio
+async def test_legacy_code_and_token_hashes_are_upgraded_during_lookup(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MCP_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("MCP_OAUTH_PUBLIC_BASE_URL", "http://localhost:8080")
+    service = MCPOAuthService(token_hash_key=b"migration-test-key" * 2)
+    pending_store = RecordingPendingAuthorizations()
+    provider = InterceptOAuthProvider(
+        session_factory=session_maker,
+        pending_authorizations=pending_store,
+        public_base_url="http://localhost:8080",
+        service=service,
+    )
+    client = _client()
+    user = analyst_user_factory()
+    async with session_maker() as session:
+        session.add(user)
+        await session.commit()
+    await provider.register_client(client)
+    await provider.authorize(
+        client,
+        AuthorizationParams(
+            state=None,
+            scopes=["mcp:access"],
+            code_challenge="pkce-challenge",
+            redirect_uri=AnyUrl(REDIRECT_URI),
+            redirect_uri_provided_explicitly=True,
+            resource=RESOURCE,
+        ),
+    )
+    callback = await provider.complete_authorization(
+        next(iter(pending_store.records)),
+        user=user,
+        approved=True,
+    )
+    raw_code = parse_qs(urlparse(callback).query)["code"][0]
+
+    async with session_maker() as session:
+        code_row = (
+            await session.execute(select(MCPOAuthAuthorizationCode))
+        ).scalar_one()
+        assert code_row.code_hash == service._hash_secret(raw_code)
+        code_row.code_hash = service._legacy_hash_secret(raw_code)
+        await session.commit()
+
+    authorization_code = await provider.load_authorization_code(client, raw_code)
+    assert authorization_code is not None
+    async with session_maker() as session:
+        code_row = (
+            await session.execute(select(MCPOAuthAuthorizationCode))
+        ).scalar_one()
+        assert code_row.code_hash == service._hash_secret(raw_code)
+
+    token_pair = await provider.exchange_authorization_code(client, authorization_code)
+    async with session_maker() as session:
+        access_row = (
+            await session.execute(
+                select(MCPOAuthToken).where(MCPOAuthToken.token_type == "access")
+            )
+        ).scalar_one()
+        assert access_row.token_hash == service._hash_secret(token_pair.access_token)
+        access_row.token_hash = service._legacy_hash_secret(token_pair.access_token)
+        await session.commit()
+
+    assert await provider.load_access_token(token_pair.access_token) is not None
+    async with session_maker() as session:
+        access_row = (
+            await session.execute(
+                select(MCPOAuthToken).where(MCPOAuthToken.token_type == "access")
+            )
+        ).scalar_one()
+        assert access_row.token_hash == service._hash_secret(token_pair.access_token)
+
+
+@pytest.mark.asyncio
 async def test_refresh_exchange_rotates_once_under_concurrency(
     session_maker: async_sessionmaker[AsyncSession],
     analyst_user_factory,
@@ -431,7 +512,7 @@ async def test_revoking_rotated_refresh_token_revokes_descendant_family(
     assert await provider.load_refresh_token(client, rotated.refresh_token) is not None
 
     async with session_maker() as session:
-        await mcp_oauth_service.revoke_token(
+        await provider._backend.service.revoke_token(
             session,
             token=original.refresh_token,
             client_id=client.client_id,
@@ -500,7 +581,7 @@ async def test_revoking_access_token_revokes_ancestors_and_descendants(
     assert second_rotation.refresh_token is not None
 
     async with session_maker() as session:
-        await mcp_oauth_service.revoke_token(
+        await provider._backend.service.revoke_token(
             session,
             token=first_rotation.access_token,
             client_id=client.client_id,
