@@ -14,7 +14,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.routing import APIRoute
 from fastapi_pagination import add_pagination
-from fastapi_pagination.cursor import CursorParams  # noqa: F401 - pagination model registration
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Mount
@@ -58,7 +57,6 @@ from app.core.security import initialize_encryption_service
 from app.core.settings_registry import get_local
 from app.mcp.runtime import build_mcp_runtime, load_mcp_auth_snapshot
 from app.mcp.server import mcp  # schema-only server retained for code/tests importing it
-from app.models import models  # noqa: F401 - register SQLModel metadata
 from app.services.enrichment.providers import register_providers
 from app.services.settings_service import SettingsService
 from app.services.task_queue_service import (

@@ -35,7 +35,6 @@ from starlette.routing import Route
 
 from app.models.enums import UserStatus
 from app.models.models import (
-    MCPOAuthAuthorizationCode,
     MCPOAuthClient,
     MCPOAuthPendingAuthorization,
     MCPOAuthToken,

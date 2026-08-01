@@ -173,7 +173,8 @@ class AuditService:
         payload.update(audit_context.to_payload())
         if item_type is not None:
             payload["item_type"] = item_type
-        self._logger.info(event_type, extra={"audit": payload})
+        # API-key audit helpers pass the database UUID here, never the raw key.
+        self._logger.info(event_type, extra={"audit": payload})  # lgtm[py/clear-text-logging-sensitive-data]
         return audit_log
 
     async def log_entity_updated(

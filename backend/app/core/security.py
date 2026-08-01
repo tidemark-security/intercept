@@ -15,10 +15,7 @@ def hash_opaque_token(token: str) -> str:
     # tokens—not human-chosen passwords. A fast digest is intentional because
     # these values already have infeasible brute-force spaces and are used as
     # indexed lookup keys.
-    return hashlib.blake2b(  # lgtm[py/weak-sensitive-data-hashing]
-        token.encode("utf-8"),
-        digest_size=32,
-    ).hexdigest()
+    return hashlib.blake2b(token.encode("utf-8"), digest_size=32).hexdigest()  # lgtm[py/weak-sensitive-data-hashing]
 
 
 class EncryptionService:
