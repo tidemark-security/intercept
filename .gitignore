@@ -120,6 +120,9 @@ keys/
 # Project Specific
 # =============================================================================
 
+# Local documentation
+/docs/
+
 # GitHub Speckit files
 .specify
 
