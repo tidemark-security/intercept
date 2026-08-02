@@ -45,9 +45,9 @@ class InvalidCredentialsError(Exception):
 
 
 class AccountLockedError(Exception):
-    """Raised when an account is locked out due to repeated failures."""
+    """Raised when an account is administratively or temporarily locked."""
 
-    def __init__(self, *, lockout_expires_at: datetime) -> None:
+    def __init__(self, *, lockout_expires_at: datetime | None) -> None:
         super().__init__("Account is locked")
         self.lockout_expires_at = lockout_expires_at
 
@@ -258,6 +258,20 @@ class AuthService:
                 metadata=metadata,
             )
             raise AccountDisabledError()
+
+        # An administrator-controlled lock has no expiry. Only temporary
+        # brute-force locks carry a lockout_expires_at value and may clear
+        # themselves after that timestamp passes.
+        if user.status == UserStatus.LOCKED and user.lockout_expires_at is None:
+            await self._audit_login_failure(
+                db,
+                username=normalized_username,
+                user=user,
+                reason="account_locked",
+                attempts_remaining=0,
+                metadata=metadata,
+            )
+            raise AccountLockedError(lockout_expires_at=None)
 
         # Reset lockout if expired
         if user.lockout_expires_at and user.lockout_expires_at <= now:

@@ -240,6 +240,12 @@ class AdminAuthService:
         user.status = new_status
         user.updated_at = datetime.now(timezone.utc)
 
+        # Explicit administrative locks are indefinite. Clear any temporary
+        # brute-force lock metadata so password login cannot later self-unlock.
+        if new_status == UserStatus.LOCKED:
+            user.lockout_expires_at = None
+            user.failed_login_attempts = 0
+
         # If disabling, revoke all active sessions
         if new_status == UserStatus.DISABLED:
             await self._revoke_user_sessions(

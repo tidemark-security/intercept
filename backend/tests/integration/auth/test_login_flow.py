@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
@@ -123,3 +123,62 @@ async def test_login_lockout_after_repeated_failures(
 
     data = response.json()
     assert data["message"] == "Unable to sign in with the provided credentials."
+
+
+@pytest.mark.asyncio
+async def test_administratively_locked_account_cannot_self_unlock(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    user = analyst_user_factory()
+    user.status = UserStatus.LOCKED
+    user.lockout_expires_at = None
+
+    async with session_maker() as session:
+        session.add(user)
+        await session.commit()
+
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"username": user.username, "password": DEFAULT_TEST_PASSWORD},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["message"] == "Unable to sign in with the provided credentials."
+
+    async with session_maker() as session:
+        refreshed = await session.get(UserAccount, user.id)
+        assert refreshed is not None
+        assert refreshed.status == UserStatus.LOCKED
+        assert refreshed.lockout_expires_at is None
+        assert refreshed.last_login_at is None
+
+
+@pytest.mark.asyncio
+async def test_expired_temporary_lock_allows_login(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    user = analyst_user_factory()
+    user.status = UserStatus.LOCKED
+    user.failed_login_attempts = 5
+    user.lockout_expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+    async with session_maker() as session:
+        session.add(user)
+        await session.commit()
+
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={"username": user.username, "password": DEFAULT_TEST_PASSWORD},
+    )
+
+    assert response.status_code == 200, response.text
+    async with session_maker() as session:
+        refreshed = await session.get(UserAccount, user.id)
+        assert refreshed is not None
+        assert refreshed.status == UserStatus.ACTIVE
+        assert refreshed.failed_login_attempts == 0
+        assert refreshed.lockout_expires_at is None

@@ -471,6 +471,37 @@ async def test_admin_enable_user_success(
 
 
 @pytest.mark.asyncio
+async def test_admin_lock_user_creates_indefinite_lock(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+    analyst_user_factory,
+) -> None:
+    admin = admin_user_factory()
+    analyst = analyst_user_factory()
+    analyst.lockout_expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+
+    async with session_maker() as session:
+        session.add_all([admin, analyst])
+        await session.commit()
+        analyst_id = analyst.id
+
+    session_cookie = await _login_and_get_cookie(client, admin.username)
+    response = await client.patch(
+        f"/api/v1/admin/auth/users/{analyst_id}/status",
+        json={"status": "LOCKED"},
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 204
+    async with session_maker() as session:
+        refreshed = await session.get(UserAccount, analyst_id)
+        assert refreshed is not None
+        assert refreshed.status == UserStatus.LOCKED
+        assert refreshed.lockout_expires_at is None
+
+
+@pytest.mark.asyncio
 async def test_admin_update_human_user_success(
     client: AsyncClient,
     session_maker: async_sessionmaker[AsyncSession],
