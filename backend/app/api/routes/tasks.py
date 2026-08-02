@@ -74,12 +74,15 @@ async def create_task(
         migration=migration,
         created_at=task_data.created_at,
     )
-    return await task_service.create_task(
-        db,
-        task_data,
-        current_user.username,
-        created_at_override=created_at_override,
-    )
+    try:
+        return await task_service.create_task(
+            db,
+            task_data,
+            current_user.username,
+            created_at_override=created_at_override,
+        )
+    except TaskValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("", response_model=Page[TaskRead])

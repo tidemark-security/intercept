@@ -45,9 +45,11 @@ from app.services.case_runbook_service import case_runbook_service
 from app.services.committed_response import reset_post_commit_session
 from app.services.realtime_service import emit_event
 from app.services.tag_filter_utils import (
+    ProtectedTagMutationError,
     merge_persisted_tags,
     normalize_persisted_tags,
     persisted_tag_delta,
+    validate_protected_tag_mutation,
 )
 from app.services.timeline_service import timeline_service
 
@@ -718,6 +720,10 @@ def _apply_recommendation_to_alert(
         after_tags = [
             tag for tag in current_tags if tag.lower() not in remove_tag_keys
         ]
+        try:
+            after_tags = validate_protected_tag_mutation(before_tags, after_tags)
+        except ProtectedTagMutationError as exc:
+            raise TriageRecommendationValidationError(str(exc)) from exc
         added_tags, removed_tags = persisted_tag_delta(before_tags, after_tags)
         applied_changes.extend(
             {"field": "tags", "action": "add", "value": tag}

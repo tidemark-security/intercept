@@ -85,13 +85,16 @@ async def create_case(
         supplied="closed_at" in case_data.model_fields_set,
         allow_null=True,
     )
-    return await case_service.create_case(
-        db,
-        case_data,
-        current_user.username,
-        created_at_override=created_at_override,
-        closed_at_override=closed_at_override,
-    )
+    try:
+        return await case_service.create_case(
+            db,
+            case_data,
+            current_user.username,
+            created_at_override=created_at_override,
+            closed_at_override=closed_at_override,
+        )
+    except CaseValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("", response_model=Page[CaseRead])

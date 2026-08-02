@@ -3,6 +3,34 @@ from typing import Any, List, Optional
 from sqlalchemy import not_
 
 
+DUMMY_DATA_TAG = "tmi_dummy_data"
+
+
+class ProtectedTagMutationError(ValueError):
+    """An ordinary entity mutation attempted to change a protected tag."""
+
+
+def validate_protected_tag_mutation(
+    before: Optional[List[Any]],
+    after: Optional[List[Any]],
+) -> List[str]:
+    """Normalize tags while requiring protected tag values to remain unchanged."""
+    normalized_before = normalize_persisted_tags(before)
+    normalized_after = normalize_persisted_tags(after)
+    protected_key = DUMMY_DATA_TAG.casefold()
+    before_protected = {
+        tag for tag in normalized_before if tag.casefold() == protected_key
+    }
+    after_protected = {
+        tag for tag in normalized_after if tag.casefold() == protected_key
+    }
+    if before_protected != after_protected:
+        raise ProtectedTagMutationError(
+            f"The protected '{DUMMY_DATA_TAG}' tag may only be managed by the dummy-data service"
+        )
+    return normalized_after
+
+
 def normalize_tag_filters(tags: Optional[List[str]]) -> List[str]:
     """Trim, deduplicate, and drop blank tag filters while preserving order."""
     normalized: List[str] = []

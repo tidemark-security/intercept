@@ -35,7 +35,13 @@ from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
 from app.services import triage_recommendation_service
 from app.services.date_filter_utils import DateFilterValidationError, parse_datetime_filter
-from app.services.tag_filter_utils import append_tag_filters, merge_persisted_tags, normalize_persisted_tags
+from app.services.tag_filter_utils import (
+    ProtectedTagMutationError,
+    append_tag_filters,
+    merge_persisted_tags,
+    normalize_persisted_tags,
+    validate_protected_tag_mutation,
+)
 from app.services.committed_response import (
     detach_committed_state,
     load_committed_response,
@@ -363,7 +369,10 @@ class AlertService:
             for field, value in update_data.items():
                 if hasattr(db_alert, field):
                     if field == "tags":
-                        value = normalize_persisted_tags(value)
+                        try:
+                            value = validate_protected_tag_mutation(db_alert.tags, value)
+                        except ProtectedTagMutationError as exc:
+                            raise AlertValidationError(str(exc)) from exc
                     if field == 'status' and value != old_status:
                         status_changed = True
                         new_status = value
@@ -873,7 +882,11 @@ class AlertService:
         _context: _BulkActionContext,
         _performed_by: str,
     ) -> None:
-        alert.tags = merge_persisted_tags(alert.tags, request.tags)
+        next_tags = merge_persisted_tags(alert.tags, request.tags)
+        try:
+            alert.tags = validate_protected_tag_mutation(alert.tags, next_tags)
+        except ProtectedTagMutationError as exc:
+            raise AlertValidationError(str(exc)) from exc
         alert.updated_at = datetime.now(timezone.utc)
 
     def _apply_bulk_assign(

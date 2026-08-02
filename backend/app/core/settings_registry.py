@@ -196,6 +196,15 @@ _register(
         ],
     ),
     _def(
+        "dummy_data.enabled",
+        env_var="DUMMY_DATA_ENABLED",
+        value_type=SettingType.BOOLEAN,
+        local_only=True,
+        category="bootstrap",
+        description="Mount development-only dummy-data API routes",
+        default=False,
+    ),
+    _def(
         "worker.concurrency",
         env_var="WORKER_CONCURRENCY",
         value_type=SettingType.NUMBER,

@@ -28,7 +28,12 @@ from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
 from app.services import triage_recommendation_service
 from app.services.date_filter_utils import DateFilterValidationError, parse_datetime_filter
-from app.services.tag_filter_utils import append_tag_filters, normalize_persisted_tags
+from app.services.tag_filter_utils import (
+    ProtectedTagMutationError,
+    append_tag_filters,
+    normalize_persisted_tags,
+    validate_protected_tag_mutation,
+)
 from app.services.committed_response import load_committed_response
 
 logger = logging.getLogger(__name__)
@@ -64,13 +69,17 @@ class CaseService:
     ) -> Case:
         """Create a new case."""
         try:
+            try:
+                normalized_tags = validate_protected_tag_mutation(None, case_data.tags)
+            except ProtectedTagMutationError as exc:
+                raise CaseValidationError(str(exc)) from exc
             # Create case
             case_kwargs = {
                 "title": case_data.title,
                 "description": case_data.description,
                 "priority": case_data.priority,
                 "assignee": case_data.assignee,
-                "tags": normalize_persisted_tags(case_data.tags),
+                "tags": normalized_tags,
                 "timeline_items": {},  # Initialize empty timeline as object-backed storage
                 "created_by": created_by,
             }
@@ -306,7 +315,13 @@ class CaseService:
             for field, new_value in update_data.items():
                 if hasattr(db_case, field):
                     if field == "tags":
-                        new_value = normalize_persisted_tags(new_value)
+                        try:
+                            new_value = validate_protected_tag_mutation(
+                                db_case.tags,
+                                new_value,
+                            )
+                        except ProtectedTagMutationError as exc:
+                            raise CaseValidationError(str(exc)) from exc
                     old_value = getattr(db_case, field)
                     if old_value != new_value:
                         changes.append((field, str(old_value), str(new_value)))

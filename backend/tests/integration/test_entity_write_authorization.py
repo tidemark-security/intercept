@@ -495,7 +495,37 @@ async def test_auditor_cannot_mutate_dummy_data(
     )
 
     assert response.status_code == 403
-    assert _detail_message(response) == "Auditor accounts have read-only access"
+    assert _detail_message(response) == "Admin role required for this operation"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("post", "/api/v1/dummy-data/populate?cases_count=1&alerts_count=1"),
+        ("delete", "/api/v1/dummy-data/clear?confirm=true"),
+        ("post", "/api/v1/dummy-data/generate-cases?count=1"),
+        ("post", "/api/v1/dummy-data/generate-alerts?count=1"),
+        ("get", "/api/v1/dummy-data/stats"),
+    ],
+)
+async def test_analyst_cannot_access_dummy_data_routes(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    method: str,
+    path: str,
+) -> None:
+    session_cookie, _ = await _login_and_get_session_cookie(
+        client, session_maker, analyst_user_factory
+    )
+
+    response = await getattr(client, method)(
+        path, cookies={"intercept_session": session_cookie}
+    )
+
+    assert response.status_code == 403
+    assert _detail_message(response) == "Admin role required for this operation"
 
 
 @pytest.mark.asyncio

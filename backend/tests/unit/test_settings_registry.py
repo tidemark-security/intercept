@@ -31,3 +31,11 @@ def test_get_setting_default_rejects_unknown_keys() -> None:
 
     with pytest.raises(KeyError, match="unknown\\.setting"):
         get_setting_default("unknown.setting")
+
+
+def test_dummy_data_routes_require_explicit_local_enablement() -> None:
+    definition = SETTINGS_REGISTRY["dummy_data.enabled"]
+
+    assert definition.env_var == "DUMMY_DATA_ENABLED"
+    assert definition.local_only is True
+    assert definition.default is False

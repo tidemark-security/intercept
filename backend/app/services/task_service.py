@@ -21,7 +21,12 @@ from app.services.timeline_service import TimelineValidationError, timeline_serv
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
 from app.services.date_filter_utils import DateFilterValidationError, parse_datetime_filter
-from app.services.tag_filter_utils import append_tag_filters, normalize_persisted_tags
+from app.services.tag_filter_utils import (
+    ProtectedTagMutationError,
+    append_tag_filters,
+    normalize_persisted_tags,
+    validate_protected_tag_mutation,
+)
 from app.services.committed_response import load_committed_response
 
 logger = logging.getLogger(__name__)
@@ -100,6 +105,10 @@ class TaskService:
         created_at_override: Optional[datetime] = None,
     ) -> Task:
         """Create and flush a task while leaving commit ownership to the caller."""
+        try:
+            normalized_tags = validate_protected_tag_mutation(None, task_data.tags)
+        except ProtectedTagMutationError as exc:
+            raise TaskValidationError(str(exc)) from exc
         assignee = task_data.assignee if task_data.assignee else created_by
         task_kwargs = {
             "title": task_data.title,
@@ -112,7 +121,7 @@ class TaskService:
             "case_id": task_data.case_id,
             "linked_at": datetime.now(timezone.utc) if task_data.case_id else None,
             "created_by": created_by,
-            "tags": normalize_persisted_tags(task_data.tags),
+            "tags": normalized_tags,
         }
         if created_at_override is not None:
             task_kwargs["created_at"] = created_at_override
@@ -335,7 +344,13 @@ class TaskService:
             if not hasattr(db_task, field):
                 continue
             if field == "tags":
-                new_value = normalize_persisted_tags(new_value)
+                try:
+                    new_value = validate_protected_tag_mutation(
+                        db_task.tags,
+                        new_value,
+                    )
+                except ProtectedTagMutationError as exc:
+                    raise TaskValidationError(str(exc)) from exc
             setattr(db_task, field, new_value)
 
         if db_task.case_id and not old_case_id:

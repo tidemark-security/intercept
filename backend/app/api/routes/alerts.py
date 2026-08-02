@@ -164,9 +164,12 @@ async def update_alert(
     current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Update an alert."""
-    db_alert = await alert_service.update_alert(
-        db, alert_id, alert_update, updated_by=current_user.username
-    )
+    try:
+        db_alert = await alert_service.update_alert(
+            db, alert_id, alert_update, updated_by=current_user.username
+        )
+    except AlertValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not db_alert:
         raise HTTPException(status_code=404, detail="Alert not found")
     return db_alert

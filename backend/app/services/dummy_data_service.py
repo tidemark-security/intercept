@@ -32,16 +32,12 @@ from app.models.enums import (
 )
 from app.services.alert_service import alert_service
 from app.services.alert_triage_apply_service import mark_alert_escalated
+from app.services.tag_filter_utils import DUMMY_DATA_TAG
 from app.services.task_service import task_service
 from app.models.models import AlertTriageRequest
 
 
 logger = logging.getLogger(__name__)
-
-
-# Sentinel tag applied to every entity created by this service.
-# ``clear_all_data`` deletes **only** rows carrying this tag.
-DUMMY_DATA_TAG = "tmi_dummy_data"
 
 
 class DummyDataService:

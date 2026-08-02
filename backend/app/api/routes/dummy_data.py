@@ -8,21 +8,18 @@ from typing import Dict, Any
 
 from app.core.database import get_db
 from app.services.dummy_data_service import dummy_data_service
-from app.api.routes.admin_auth import (
-    require_authenticated_user,
-    require_non_auditor_user,
-)
+from app.api.routes.admin_auth import require_admin_user
 
 router = APIRouter(
     prefix="/dummy-data",
     tags=["dummy-data"],
+    dependencies=[Depends(require_admin_user)],
 )
 
 
 @router.post(
     "/populate",
     response_model=Dict[str, Any],
-    dependencies=[Depends(require_non_auditor_user)],
 )
 async def populate_dummy_data(
     cases_count: int = Query(10, ge=1, le=1000, description="Number of cases to create"),
@@ -58,7 +55,6 @@ async def populate_dummy_data(
 @router.delete(
     "/clear",
     response_model=Dict[str, Any],
-    dependencies=[Depends(require_non_auditor_user)],
 )
 async def clear_all_data(
     confirm: bool = Query(False, description="Must be true to confirm data deletion"),
@@ -85,7 +81,6 @@ async def clear_all_data(
 @router.post(
     "/generate-cases",
     response_model=Dict[str, Any],
-    dependencies=[Depends(require_non_auditor_user)],
 )
 async def generate_cases_only(
     count: int = Query(5, ge=1, le=50, description="Number of cases to create"),
@@ -112,7 +107,6 @@ async def generate_cases_only(
 @router.post(
     "/generate-alerts",
     response_model=Dict[str, Any],
-    dependencies=[Depends(require_non_auditor_user)],
 )
 async def generate_alerts_only(
     count: int = Query(
@@ -148,7 +142,6 @@ async def generate_alerts_only(
 @router.get(
     "/stats",
     response_model=Dict[str, Any],
-    dependencies=[Depends(require_authenticated_user)],
 )
 async def get_data_stats(db: AsyncSession = Depends(get_db)):
     """

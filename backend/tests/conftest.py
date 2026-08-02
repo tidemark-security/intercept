@@ -9,6 +9,9 @@ from urllib.parse import urlparse
 
 # Disable CSRF for tests (matches CI env) unless explicitly set
 os.environ.setdefault("CSRF_ENABLED", "false")
+# Dummy-data routes are disabled by default and mounted explicitly for the
+# integration tests that exercise their development-only behavior.
+os.environ.setdefault("DUMMY_DATA_ENABLED", "true")
 
 import httpx
 import pytest

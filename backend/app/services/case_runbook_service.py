@@ -34,7 +34,11 @@ from app.services.case_runbook_validation import (
     normalize_runbook_title,
     validate_case_runbook_payload,
 )
-from app.services.tag_filter_utils import normalize_persisted_tags
+from app.services.tag_filter_utils import (
+    ProtectedTagMutationError,
+    normalize_persisted_tags,
+    validate_protected_tag_mutation,
+)
 from app.services.timeline_service import timeline_service
 
 
@@ -285,6 +289,12 @@ class CaseRunbookService:
             applied_by=user,
             applied_at=now,
         )
+        try:
+            validate_protected_tag_mutation(case.tags, plan.case_tags_after)
+            for planned in plan.tasks:
+                validate_protected_tag_mutation(None, planned.definition.tags)
+        except ProtectedTagMutationError as exc:
+            raise CaseRunbookValidationError(str(exc)) from exc
 
         created_task_ids: list[int] = []
         for planned in plan.tasks:

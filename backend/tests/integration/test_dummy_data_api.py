@@ -55,11 +55,11 @@ async def _login_and_get_session_cookie(
 async def test_populate_dummy_data_persists_generated_alerts(
     client: AsyncClient,
     session_maker: async_sessionmaker[AsyncSession],
-    analyst_user_factory,
+    admin_user_factory,
     link_alerts: bool,
     expected_linked_count: int,
 ) -> None:
-    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, admin_user_factory)
 
     response = await client.post(
         f"/api/v1/dummy-data/populate?cases_count=1&alerts_count=1&link_alerts={str(link_alerts).lower()}",
