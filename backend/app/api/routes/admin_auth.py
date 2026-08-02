@@ -260,7 +260,11 @@ async def _authenticate_from_request(
         )
     
     try:
-        login_result = await auth_service.validate_session(db, session_token=session_token)
+        login_result = await auth_service.validate_session(
+            db,
+            session_token=session_token,
+            allow_password_change_required=True,
+        )
         return login_result.user
     except SessionNotFoundError:
         raise HTTPException(
@@ -283,7 +287,16 @@ async def require_authenticated_user(
     Raises:
         HTTPException: 401 if not authenticated
     """
-    return await _authenticate_from_request(request, db)
+    user = await _authenticate_from_request(request, db)
+    if user.must_change_password:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ValidationErrorResponse(
+                message="Password change required before accessing this resource",
+                fields=[],
+            ).model_dump(),
+        )
+    return user
 
 
 async def require_admin_user(

@@ -20,7 +20,11 @@ from app.core.database import get_db
 from app.core.settings_registry import get_local
 from app.mcp.local_oauth_provider import PendingAuthorizationUnavailableError
 from app.models.models import MCPOAuthClientRead, UserAccount
-from app.services.auth_service import SessionNotFoundError, auth_service
+from app.services.auth_service import (
+    PasswordChangeRequiredError,
+    SessionNotFoundError,
+    auth_service,
+)
 from app.services.mcp_oauth_service import OAuthInvalidRequestError, mcp_oauth_service
 
 
@@ -54,7 +58,7 @@ async def _current_session_user(
             db,
             session_token=session_token,
         )
-    except SessionNotFoundError:
+    except (SessionNotFoundError, PasswordChangeRequiredError):
         return None
     return login_result.user
 

@@ -16,7 +16,12 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.core.database import async_session_factory
 from app.core.settings_registry import get_local
-from app.services.auth_service import LoginResult, auth_service, SessionNotFoundError
+from app.services.auth_service import (
+    LoginResult,
+    PasswordChangeRequiredError,
+    SessionNotFoundError,
+    auth_service,
+)
 from app.services.realtime_service import connection_manager, HEARTBEAT_INTERVAL
 
 logger = logging.getLogger(__name__)
@@ -70,7 +75,7 @@ async def _authenticate(ws: WebSocket) -> LoginResult | None:
             login_result = await auth_service.validate_session(db, session_token=session_token)
             await db.commit()
         return login_result
-    except SessionNotFoundError:
+    except (SessionNotFoundError, PasswordChangeRequiredError):
         return None
 
 
@@ -81,7 +86,7 @@ async def _revalidate_session(session_token: str) -> bool:
             await auth_service.validate_session(db, session_token=session_token)
             await db.commit()
         return True
-    except SessionNotFoundError:
+    except (SessionNotFoundError, PasswordChangeRequiredError):
         return False
 
 

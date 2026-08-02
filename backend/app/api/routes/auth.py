@@ -29,6 +29,7 @@ from app.services.auth_service import (
     LoginResult,
     NHIPasswordLoginError,
     PasswordLoginDisabledError,
+    PasswordChangeRequiredError,
     PasswordPolicyViolation,
     SessionNotFoundError,
     auth_service,
@@ -132,6 +133,13 @@ async def _require_human_session_user(request: Request, db: AsyncSession) -> Log
     if session.user.account_type != AccountType.HUMAN:
         raise AccountDisabledError()
     return session
+
+
+def _password_change_required_response() -> JSONResponse:
+    return _validation_error(
+        message="Password change required before accessing this resource",
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
 
 
 def _to_passkey_read(passkey) -> PasskeyRead:
@@ -324,6 +332,8 @@ async def begin_passkey_registration(
             message="Passkey registration is available only for human accounts.",
             status_code=status.HTTP_403_FORBIDDEN,
         )
+    except PasswordChangeRequiredError:
+        return _password_change_required_response()
 
     try:
         begin_result = await passkey_service.begin_registration(
@@ -359,6 +369,8 @@ async def finish_passkey_registration(
             message="Passkey registration is available only for human accounts.",
             status_code=status.HTTP_403_FORBIDDEN,
         )
+    except PasswordChangeRequiredError:
+        return _password_change_required_response()
 
     try:
         passkey = await passkey_service.finish_registration(
@@ -476,6 +488,8 @@ async def list_own_passkeys(
             message="Passkeys are available only for human accounts.",
             status_code=status.HTTP_403_FORBIDDEN,
         )
+    except PasswordChangeRequiredError:
+        return _password_change_required_response()
 
     passkeys = await passkey_service.list_user_passkeys(db, user_id=login_result.user.id, include_revoked=False)
     return [_to_passkey_read(item) for item in passkeys]
@@ -501,6 +515,8 @@ async def rename_own_passkey(
             message="No active session",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
+    except PasswordChangeRequiredError:
+        return _password_change_required_response()
     except (PasskeyCredentialNotFoundError, PasskeyOwnershipError):
         return _validation_error(
             message="Passkey not found.",
@@ -528,6 +544,8 @@ async def revoke_own_passkey(
             message="No active session",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
+    except PasswordChangeRequiredError:
+        return _password_change_required_response()
     except (PasskeyCredentialNotFoundError, PasskeyOwnershipError):
         return _validation_error(
             message="Passkey not found.",
@@ -566,6 +584,7 @@ async def get_session(
         session_data = await auth_service.validate_session(
             db,
             session_token=session_token,
+            allow_password_change_required=True,
         )
     except SessionNotFoundError:
         error_response = _validation_error(

@@ -68,6 +68,10 @@ class PasswordLoginDisabledError(Exception):
     """Raised when password login is disabled because the user has active passkeys."""
 
 
+class PasswordChangeRequiredError(Exception):
+    """Raised when a forced password change gates ordinary authenticated access."""
+
+
 # ---------------------------------------------------------------------------
 # Sliding window rate limiter (per username/IP)
 # ---------------------------------------------------------------------------
@@ -453,6 +457,7 @@ class AuthService:
         db: AsyncSession,
         *,
         session_token: str,
+        allow_password_change_required: bool = False,
     ) -> LoginResult:
         """
         Validate an existing session token and return user/session details.
@@ -471,6 +476,8 @@ class AuthService:
             user = await db.get(UserAccount, session.user_id)
         if user is None:
             raise SessionNotFoundError()
+        if user.must_change_password and not allow_password_change_required:
+            raise PasswordChangeRequiredError()
         
         return LoginResult(user=user, session=session, session_token=session_token)
 
@@ -585,5 +592,6 @@ __all__ = [
     "SessionNotFoundError",
     "PasswordPolicyViolation",
     "PasswordLoginDisabledError",
+    "PasswordChangeRequiredError",
     "auth_service",
 ]
