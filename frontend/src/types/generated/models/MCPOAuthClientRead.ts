@@ -16,3 +16,4 @@ export type MCPOAuthClientRead = {
     last_authorized_at: string;
     last_used_at?: (string | null);
 };
+

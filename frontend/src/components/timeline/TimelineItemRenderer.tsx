@@ -1047,7 +1047,7 @@ export function TimelineItemRenderer({
       entityType,
       actionButtons: refreshEnrichmentButton,
       enableActionMenu: isGrouped,
-      itemId: timelineCurrentItem.id,
+      itemId: timelineCurrentItem.id ?? undefined,
       onFlag,
       onHighlight,
       onDelete,

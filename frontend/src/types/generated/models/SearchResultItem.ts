@@ -65,3 +65,4 @@ export type SearchResultItem = {
      */
     tag_matches?: Array<SearchTagMatch>;
 };
+

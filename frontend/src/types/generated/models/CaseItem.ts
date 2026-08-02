@@ -12,7 +12,7 @@ export type CaseItem = {
     /**
      * Unique identifier for timeline item
      */
-    id?: string;
+    id?: (string | null);
     type?: string;
     /**
      * Free text description of the timeline item
@@ -29,7 +29,7 @@ export type CaseItem = {
     /**
      * User who created this timeline item
      */
-    created_by?: string;
+    created_by?: (string | null);
     tags?: (Array<string> | null);
     /**
      * Whether this item is flagged as significant
@@ -63,18 +63,18 @@ export type CaseItem = {
      * Response-only audit metadata dynamically coalesced from audit logs
      */
     audit?: (TimelineItemAudit | null);
-    case_id: number;
     title?: (string | null);
-    status?: (CaseStatus | null);
     priority?: (Priority | null);
     assignee?: (string | null);
     /**
-     * Description from the linked case entity; distinct from the timeline link description
+     * Description from the linked entity; distinct from the timeline link description
      */
     entity_description?: (string | null);
     /**
-     * Timeline items from the linked case (populated on read with include_linked_timelines=true)
+     * Timeline items from the linked entity (populated on read with include_linked_timelines=true)
      */
     source_timeline_items?: (Record<string, Record<string, any>> | null);
+    case_id: number;
+    status?: (CaseStatus | null);
 };
 

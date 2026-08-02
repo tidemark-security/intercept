@@ -33,7 +33,7 @@ from app.models.models import UserAccount
         (triage_recommendations.router, "alert_id"),
     ],
 )
-def test_all_human_id_routes_accept_strings_and_receive_http_requests(
+def test_all_human_id_routes_accept_numeric_or_human_ids_and_receive_http_requests(
     router: Any,
     path_param: str,
 ) -> None:
@@ -46,7 +46,7 @@ def test_all_human_id_routes_accept_strings_and_receive_http_requests(
 
     for route in routes:
         parameters = inspect.signature(route.endpoint).parameters
-        assert parameters[path_param].annotation is str, route.path
+        assert parameters[path_param].annotation == (int | str), route.path
         assert any(
             parameter.annotation is Request for parameter in parameters.values()
         ), route.path
@@ -81,6 +81,25 @@ def human_id_app() -> FastAPI:
     ):
         app.dependency_overrides[dependency] = override_current_user
     return app
+
+
+def test_openapi_accepts_numeric_or_human_path_ids_and_returns_integer_entity_ids(
+    human_id_app: FastAPI,
+) -> None:
+    schema = human_id_app.openapi()
+    alert_id_parameter = next(
+        parameter
+        for parameter in schema["paths"]["/api/v1/alerts/{alert_id}"]["get"]["parameters"]
+        if parameter["name"] == "alert_id"
+    )
+
+    assert alert_id_parameter["schema"]["anyOf"] == [
+        {"type": "integer"},
+        {"type": "string"},
+    ]
+    for response_schema in ("AlertRead", "CaseRead", "TaskRead", "CaseRunbookRead"):
+        id_schema = schema["components"]["schemas"][response_schema]["properties"]["id"]
+        assert id_schema["type"] == "integer"
 
 
 async def _request(

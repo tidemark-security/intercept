@@ -89,7 +89,7 @@ export function AddAttachmentForm({ initialData, pendingFiles, onPendingFilesCon
   const fileInputRef = useRef<HTMLInputElement>(null);
   const updateAttachmentMutation = useUpdateTimelineItem(entityId, entityType, {
     onSuccess: () => {
-      onSuccess?.(initialData?.id);
+      onSuccess?.(initialData?.id ?? undefined);
     },
     onError: (error) => {
       console.error("Failed to update attachment metadata:", error);

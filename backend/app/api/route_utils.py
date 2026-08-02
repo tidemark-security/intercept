@@ -257,7 +257,7 @@ def create_human_id_decorator(id_prefix: str, default_param_name: str = "id"):
 
             wrapper.__signature__ = endpoint_signature.replace(  # type: ignore[attr-defined]
                 parameters=[
-                    parameter.replace(annotation=str)
+                    parameter.replace(annotation=int | str)
                     if parameter.name == param_name
                     else parameter
                     for parameter in endpoint_signature.parameters.values()

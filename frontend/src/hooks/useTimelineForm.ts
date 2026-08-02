@@ -84,7 +84,7 @@ interface UseTimelineFormOptions<TFormState, TInitialData> {
  * });
  * ```
  */
-export function useTimelineForm<TFormState extends Record<string, any>, TInitialData extends { id?: string; timestamp?: string; flagged?: boolean; highlighted?: boolean }>({
+export function useTimelineForm<TFormState extends Record<string, any>, TInitialData extends { id?: string | null; timestamp?: string; flagged?: boolean; highlighted?: boolean }>({
   initialData,
   defaultState,
   transformInitialData,
@@ -147,7 +147,7 @@ export function useTimelineForm<TFormState extends Record<string, any>, TInitial
   // Update mutation
   const updateMutation = useUpdateTimelineItem(entityId, context, {
     onSuccess: () => {
-      onSuccess?.(initialData?.id || undefined);
+      onSuccess?.(initialData?.id ?? undefined);
     },
     onError: (error) => {
       console.error(`Failed to update ${itemType}:`, error);

@@ -13,7 +13,7 @@ export type TaskItem = {
     /**
      * Unique identifier for timeline item
      */
-    id?: string;
+    id?: (string | null);
     type?: string;
     /**
      * Free text description of the timeline item
@@ -30,7 +30,7 @@ export type TaskItem = {
     /**
      * User who created this timeline item
      */
-    created_by?: string;
+    created_by?: (string | null);
     tags?: (Array<string> | null);
     /**
      * Whether this item is flagged as significant
@@ -64,22 +64,22 @@ export type TaskItem = {
      * Response-only audit metadata dynamically coalesced from audit logs
      */
     audit?: (TimelineItemAudit | null);
-    task_id?: (number | null);
-    task_human_id?: (string | null);
     title?: (string | null);
-    status?: (TaskStatus | null);
     priority?: (Priority | null);
     assignee?: (string | null);
     /**
-     * Description from the linked task entity; distinct from the timeline link description
+     * Description from the linked entity; distinct from the timeline link description
      */
     entity_description?: (string | null);
+    /**
+     * Timeline items from the linked entity (populated on read with include_linked_timelines=true)
+     */
+    source_timeline_items?: (Record<string, Record<string, any>> | null);
+    task_id?: (number | null);
+    task_human_id?: (string | null);
+    status?: (TaskStatus | null);
     due_date?: (string | null);
     picerl_stage?: (PICERLStage | null);
     source_runbook?: (number | null);
-    /**
-     * Timeline items from the linked task (populated on read with include_linked_timelines=true)
-     */
-    source_timeline_items?: (Record<string, Record<string, any>> | null);
 };
 

@@ -24,9 +24,17 @@ if ! command -v npm >/dev/null 2>&1; then
     exit 1
 fi
 
-# Activate shared project environment
-source $(conda info --base)/etc/profile.d/conda.sh
-conda activate intercept
+# Activate the shared project environment when the caller has not already done
+# so. Conda is commonly a shell function, which is not inherited by this child
+# process, so avoid trying to rediscover it when the environment is active.
+if [ "${CONDA_DEFAULT_ENV:-}" != "intercept" ]; then
+    if ! command -v conda >/dev/null 2>&1; then
+        echo "❌ Error: activate the 'intercept' Conda environment before running this script"
+        exit 1
+    fi
+    eval "$(conda shell.bash hook)"
+    conda activate intercept
+fi
 
 # Ensure frontend dependencies exist (install if missing)
 if [ ! -d "frontend/node_modules" ]; then

@@ -69,10 +69,10 @@ def generate_openapi_spec():
     
     try:
         # Import the FastAPI app
-        from app.main import app
-        
+        from app.main import api_app
+
         # Generate OpenAPI specification
-        openapi_spec = app.openapi()
+        openapi_spec = api_app.openapi()
         
         # Ensure the temp directory exists
         temp_dir = project_root / "temp"
