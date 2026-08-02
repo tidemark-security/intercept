@@ -454,6 +454,26 @@ class AuditService:
             context=context,
         )
 
+    async def oidc_role_changed(
+        self,
+        *,
+        user_id: UUID,
+        username: str,
+        old_role: UserRole | str,
+        new_role: UserRole | str,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.oidc.role_changed",
+            entity_type="user",
+            entity_id=str(user_id),
+            description="OIDC role reconciled",
+            old_value={"role": getattr(old_role, "value", old_role)},
+            new_value={"role": getattr(new_role, "value", new_role)},
+            performed_by=username,
+            context=context,
+        )
+
     async def account_locked(
         self,
         *,

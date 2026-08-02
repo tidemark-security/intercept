@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -89,7 +88,7 @@ async def test_snapshot_jit_policy_cannot_be_changed_mid_worker(
 
 
 @pytest.mark.asyncio
-async def test_snapshot_trusted_issuer_controls_account_linking(
+async def test_snapshot_trusted_issuer_cannot_enable_email_account_linking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(oidc_module, "SettingsService", _settings_must_not_load)
@@ -103,50 +102,34 @@ async def test_snapshot_trusted_issuer_controls_account_linking(
         updated_at=None,
     )
     session = _Session([None, existing_user])
-    audit = SimpleNamespace(oidc_account_linked=AsyncMock())
-    monkeypatch.setattr(oidc_module, "get_audit_service", lambda _db: audit)
 
-    linked = await OIDCService().find_or_create_user(
-        session,
-        claims={"sub": "subject-1", "email": "person@example.com"},
-        issuer="https://issuer.example",
-        identity_policy=_snapshot_policy(),
-    )
+    with pytest.raises(OIDCAuthenticationError, match="email collides"):
+        await OIDCService().find_or_create_user(
+            session,
+            claims={"sub": "subject-1", "email": "person@example.com"},
+            issuer="https://issuer.example",
+            identity_policy=_snapshot_policy(jit_provisioning=True),
+        )
 
-    assert linked is existing_user
-    assert linked.oidc_issuer == "https://issuer.example"
-    assert linked.oidc_subject == "subject-1"
-    assert session.flushed is True
-    audit.oidc_account_linked.assert_awaited_once()
+    assert existing_user.oidc_issuer is None
+    assert existing_user.oidc_subject is None
+    assert session.flushed is False
 
 
 @pytest.mark.asyncio
-async def test_entra_preferred_username_is_used_when_email_claim_is_absent(
+async def test_snapshot_preferred_username_does_not_replace_email_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(oidc_module, "SettingsService", _settings_must_not_load)
-    existing_user = SimpleNamespace(
-        id="user-id",
-        username="person@example.com",
-        email="person@example.com",
-        status=UserStatus.ACTIVE,
-        oidc_issuer=None,
-        oidc_subject=None,
-        updated_at=None,
-    )
-    session = _Session([None, existing_user])
-    audit = SimpleNamespace(oidc_account_linked=AsyncMock())
-    monkeypatch.setattr(oidc_module, "get_audit_service", lambda _db: audit)
+    session = _Session([None])
 
-    linked = await OIDCService().find_or_create_user(
-        session,
-        claims={
-            "sub": "entra-subject",
-            "preferred_username": "Person@Example.com",
-        },
-        issuer="https://issuer.example",
-        identity_policy=_snapshot_policy(),
-    )
-
-    assert linked is existing_user
-    assert linked.oidc_subject == "entra-subject"
+    with pytest.raises(OIDCAuthenticationError, match="did not include an email address"):
+        await OIDCService().find_or_create_user(
+            session,
+            claims={
+                "sub": "entra-subject",
+                "preferred_username": "Person@Example.com",
+            },
+            issuer="https://issuer.example",
+            identity_policy=_snapshot_policy(jit_provisioning=True),
+        )

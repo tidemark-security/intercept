@@ -193,19 +193,10 @@ class OIDCService:
         metadata: Optional[AuditContext] = None,
         identity_policy: OIDCIdentityPolicy | None = None,
     ) -> UserAccount:
-        subject = str(claims.get("sub") or "").strip()
-        if not subject:
+        subject_claim = claims.get("sub")
+        if not isinstance(subject_claim, str) or not subject_claim.strip():
             raise OIDCAuthenticationError("OIDC claims did not include a subject")
-
-        # Microsoft Entra commonly omits the optional `email` claim for member
-        # accounts while providing the sign-in address in
-        # `preferred_username`. Accept that standards-compatible fallback only
-        # when it is a valid email address; web and MCP login share this path.
-        email_claim = claims.get("email") or claims.get("preferred_username")
-        try:
-            email = str(_EMAIL_ADAPTER.validate_python(email_claim)).lower()
-        except (ValidationError, TypeError, ValueError):
-            raise OIDCAuthenticationError("OIDC claims did not include an email address")
+        subject = subject_claim
 
         result = await db.execute(
             select(UserAccount).where(
@@ -217,33 +208,24 @@ class OIDCService:
         if user is not None:
             if user.status != UserStatus.ACTIVE:
                 raise OIDCAuthenticationError("OIDC-linked user account is not active")
-            return user
 
-        result = await db.execute(select(UserAccount).where(cast(Any, UserAccount.email == email)))
-        user = result.scalar_one_or_none()
-        if user is not None:
-            if identity_policy is None:
-                settings = SettingsService(db)  # type: ignore[arg-type]
-                trusted_issuers = await settings.get(
-                    "oidc.trusted_auto_link_issuers", default=[]
-                )
-            else:
-                trusted_issuers = identity_policy.trusted_auto_link_issuers
-            if issuer not in {str(item) for item in (trusted_issuers or [])}:
-                raise OIDCAuthenticationError("OIDC account linking requires a trusted issuer")
-            if user.status != UserStatus.ACTIVE:
-                raise OIDCAuthenticationError("OIDC-linked user account is not active")
-            user.oidc_issuer = issuer
-            user.oidc_subject = subject
-            user.updated_at = datetime.now(timezone.utc)
-            await get_audit_service(db).oidc_account_linked(
-                user_id=user.id,
-                username=user.username,
-                oidc_issuer=issuer,
-                oidc_subject=subject,
-                context=metadata,
+            resolved_role = await self.resolve_role(
+                db,
+                claims=claims,
+                identity_policy=identity_policy,
             )
-            await db.flush()
+            if user.role != resolved_role:
+                old_role = user.role
+                user.role = resolved_role
+                user.updated_at = datetime.now(timezone.utc)
+                await get_audit_service(db).oidc_role_changed(
+                    user_id=user.id,
+                    username=user.username,
+                    old_role=old_role,
+                    new_role=resolved_role,
+                    context=metadata,
+                )
+                await db.flush()
             return user
 
         if identity_policy is None:
@@ -255,6 +237,17 @@ class OIDCService:
             jit_enabled = identity_policy.jit_provisioning
         if not jit_enabled:
             raise OIDCAuthenticationError("OIDC sign-in is not enabled for unprovisioned users")
+
+        email_claim = claims.get("email")
+        try:
+            email = str(_EMAIL_ADAPTER.validate_python(email_claim)).lower()
+        except (ValidationError, TypeError, ValueError):
+            raise OIDCAuthenticationError("OIDC claims did not include an email address")
+
+        result = await db.execute(select(UserAccount).where(cast(Any, UserAccount.email == email)))
+        user = result.scalar_one_or_none()
+        if user is not None:
+            raise OIDCAuthenticationError("OIDC email collides with an existing account")
 
         username = self._derive_username(claims)
         if username is None:
