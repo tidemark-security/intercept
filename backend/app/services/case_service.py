@@ -853,6 +853,7 @@ class CaseService:
         created_by: str,
         created_at_override: Optional[datetime] = None,
         preserve_item_id: bool = False,
+        idempotent: bool = False,
     ) -> Optional[Case]:
         """Add a timeline item to a case."""
         try:
@@ -867,6 +868,7 @@ class CaseService:
                 performed_by=created_by,
                 created_at_override=created_at_override,
                 preserve_item_id=preserve_item_id,
+                idempotent=idempotent,
             )
             if added_item is None:
                 return None

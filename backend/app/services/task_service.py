@@ -503,6 +503,7 @@ class TaskService:
         added_by: str,
         created_at_override: Optional[datetime] = None,
         preserve_item_id: bool = False,
+        idempotent: bool = False,
     ) -> Optional[Task]:
         """Add a single timeline item to a task's timeline.
         
@@ -522,6 +523,7 @@ class TaskService:
                 validate_item=self._validate_task_timeline_item,
                 created_at_override=created_at_override,
                 preserve_item_id=preserve_item_id,
+                idempotent=idempotent,
             )
             if added_item is None:
                 return None

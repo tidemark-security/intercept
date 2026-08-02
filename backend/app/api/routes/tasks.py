@@ -241,12 +241,15 @@ async def add_timeline_item(
             current_user=current_user,
             migration=migration,
         )
+        preserve_supplied_id = migration and bool(typed_item.id)
         db_task = await task_service.add_timeline_item(
             db,
             task_id,
             typed_item,
             current_user.username,
             created_at_override=created_at_override,
+            preserve_item_id=preserve_supplied_id,
+            idempotent=preserve_supplied_id,
         )
         if not db_task:
             raise HTTPException(status_code=404, detail="Task not found")
