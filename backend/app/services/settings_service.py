@@ -22,6 +22,10 @@ from typing import Any, Dict, List, Mapping, Optional
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.oidc_policy_lock import (
+    acquire_oidc_policy_lock,
+    oidc_setting_requires_policy_gate,
+)
 from app.core.security import get_encryption_service
 from app.core.settings_registry import (
     SETTINGS_REGISTRY,
@@ -39,6 +43,10 @@ from app.models.models import (
 from app.services.audit_service import AuditContext, get_audit_service
 
 logger = logging.getLogger(__name__)
+
+_OIDC_LOCAL_CREDENTIAL_POLICY_KEYS = frozenset(
+    {"oidc.enabled", "oidc.sso_bypass_users"}
+)
 
 
 class SettingWriteError(ValueError):
@@ -75,6 +83,22 @@ class SettingsService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
         self._encryption: Optional[Any] = None
+
+    async def _acquire_oidc_policy_write_gate(self, key: str) -> None:
+        if oidc_setting_requires_policy_gate(key):
+            await acquire_oidc_policy_lock(self.db, shared=False)
+
+    async def _reconcile_local_credentials_for_policy_change(
+        self,
+        key: str,
+    ) -> None:
+        if key not in _OIDC_LOCAL_CREDENTIAL_POLICY_KEYS:
+            return
+        from app.services.oidc_local_credential_policy import (
+            oidc_local_credential_policy,
+        )
+
+        await oidc_local_credential_policy.reconcile_linked_users(self.db)
 
     def _audit_value(self, value: Optional[str], *, is_secret: bool, encrypted: bool) -> Optional[str]:
         if value is None:
@@ -419,6 +443,8 @@ class SettingsService:
                 f"environment variable instead."
             )
 
+        await self._acquire_oidc_policy_write_gate(setting_create.key)
+
         existing = await self.db.execute(
             select(AppSetting).where(AppSetting.key == setting_create.key)
         )
@@ -465,6 +491,7 @@ class SettingsService:
             context=audit_context,
         )
         await self.db.flush()
+        await self._reconcile_local_credentials_for_policy_change(setting.key)
         return setting
 
     async def update_setting(
@@ -511,6 +538,8 @@ class SettingsService:
                 f"the admin API. Set it via the {defn.env_var} environment "
                 f"variable instead."
             )
+
+        await self._acquire_oidc_policy_write_gate(key)
 
         res = await self.db.execute(
             select(AppSetting).where(AppSetting.key == key).with_for_update()
@@ -569,6 +598,7 @@ class SettingsService:
             context=audit_context,
         )
         await self.db.flush()
+        await self._reconcile_local_credentials_for_policy_change(key)
         return setting
 
     async def upsert_setting_in_transaction(
@@ -614,6 +644,8 @@ class SettingsService:
                 f"Setting '{key}' is local-only and cannot be deleted."
             )
 
+        await self._acquire_oidc_policy_write_gate(key)
+
         res = await self.db.execute(
             select(AppSetting).where(AppSetting.key == key)
         )
@@ -642,6 +674,8 @@ class SettingsService:
         )
 
         await self.db.delete(setting)
+        await self.db.flush()
+        await self._reconcile_local_credentials_for_policy_change(key)
         await self.db.commit()
         logger.info("Deleted setting: key=%s", key)
         return True

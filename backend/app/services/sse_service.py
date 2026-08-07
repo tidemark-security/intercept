@@ -25,11 +25,14 @@ async def stream_events(
     source: AsyncIterator[dict[str, Any]],
     *,
     on_close: Callable[[], Awaitable[None]] | None = None,
+    before_emit: Callable[[], Awaitable[bool]] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Format source events and release source-scoped resources on disconnect."""
     logger.info("Started SSE stream", extra={"session_id": str(session_id)})
 
     try:
+        if before_emit is not None and not await before_emit():
+            return
         yield _format_event(
             "connected",
             {
@@ -41,6 +44,8 @@ async def stream_events(
         async for event_data in source:
             event_type = event_data.get("event", "message")
             data = event_data.get("data", event_data)
+            if before_emit is not None and not await before_emit():
+                return
             yield _format_event(event_type, data)
 
         logger.info("Completed SSE stream", extra={"session_id": str(session_id)})

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import APIRouter, Depends, FastAPI, Request, status
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +13,8 @@ from app.api.routes import admin_auth
 from app.core.database import get_db
 from app.models.enums import UserRole
 from app.models.models import UserAccount
+from app.services.api_key_service import ApiKeyScopeError
+from app.core.api_key_scopes import API_WRITE_SCOPE
 
 
 @pytest.fixture
@@ -73,7 +76,10 @@ async def test_router_and_role_dependency_authenticate_once(
     async def authenticate(_request: Request, _db: AsyncSession) -> UserAccount:
         nonlocal authentication_calls
         authentication_calls += 1
-        return cast(UserAccount, SimpleNamespace(role=role))
+        return cast(
+            UserAccount,
+            SimpleNamespace(role=role, must_change_password=False),
+        )
 
     monkeypatch.setattr(admin_auth, "_authenticate_from_request", authenticate)
 
@@ -113,3 +119,44 @@ async def test_router_and_role_dependency_preserve_unauthenticated_response(
     assert response.status_code == status.HTTP_401_UNAUTHORIZED
     assert response.json()["detail"]["message"] == "Authentication required"
     assert authentication_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_under_scoped_api_key_never_falls_back_to_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/write",
+            "headers": [
+                (b"authorization", b"Bearer tmi_read_only"),
+                (b"cookie", b"intercept_session=valid-session"),
+            ],
+            "query_string": b"",
+        }
+    )
+    validate_api_key = AsyncMock(
+        side_effect=ApiKeyScopeError({API_WRITE_SCOPE})
+    )
+    validate_session = AsyncMock()
+    monkeypatch.setattr(
+        admin_auth.api_key_service,
+        "validate_api_key",
+        validate_api_key,
+    )
+    monkeypatch.setattr(
+        admin_auth.auth_service,
+        "validate_session",
+        validate_session,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await admin_auth._authenticate_from_request(
+            request,
+            cast(AsyncSession, object()),
+        )
+
+    assert exc_info.value.status_code == 403
+    validate_session.assert_not_awaited()

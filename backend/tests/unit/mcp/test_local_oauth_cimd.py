@@ -3,18 +3,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import httpx
 import pytest
 from fastmcp.server.auth.cimd import CIMDClientManager, CIMDDocument
 from fastmcp.server.auth.oauth_proxy.models import ProxyDCRClient
+from pydantic import AnyUrl
+from mcp.server.auth.provider import AuthorizationParams, AuthorizeError
 from mcp.shared.auth import OAuthClientInformationFull
 from sqlalchemy import select
 from starlette.applications import Starlette
 
 from app.mcp.local_oauth_provider import InterceptOAuthProvider, PendingAuthorization
 from app.models.models import MCPOAuthClient
+from app.services.mcp_registration_service import (
+    MCPAuthorizationCapacityLimitError,
+    MCPRegistrationPolicy,
+    bind_authorization_request,
+    reset_authorization_request,
+)
 
 
 CIMD_CLIENT_ID = "https://mcp-client.example/.well-known/oauth-client.json"
@@ -26,6 +37,14 @@ JWT_BEARER_ASSERTION_TYPE = (
 
 class UnusedPendingAuthorizations:
     pass
+
+
+class UnexpectedDCRLedger:
+    async def require_valid(self, client_id: str) -> bool:
+        raise AssertionError(f"CIMD client consulted DCR ledger: {client_id}")
+
+    async def activate(self, client_id: str) -> bool:
+        raise AssertionError(f"CIMD client activated DCR lease: {client_id}")
 
 
 @dataclass
@@ -127,7 +146,7 @@ def _cimd_client(
 
 @pytest.mark.asyncio
 async def test_https_client_id_uses_native_cimd_before_relational_lookup() -> None:
-    """A CIMD URL is SSRF-validated by FastMCP, then projected for local grants."""
+    """A CIMD URL is validated before any relational grant projection."""
     backend = RecordingBackend()
     cimd_manager = StubCIMDManager(_cimd_client())
     provider = InterceptOAuthProvider(
@@ -142,14 +161,7 @@ async def test_https_client_id_uses_native_cimd_before_relational_lookup() -> No
     assert resolved is cimd_manager.client
     assert cimd_manager.resolved_client_ids == [CIMD_CLIENT_ID]
     assert backend.get_client_ids == []
-    assert len(backend.registered_clients) == 1
-    projection = backend.registered_clients[0]
-    assert projection.client_id == CIMD_CLIENT_ID
-    assert projection.token_endpoint_auth_method == "none"
-    assert [str(uri) for uri in projection.redirect_uris or []] == [
-        LOOPBACK_REDIRECT
-    ]
-    assert projection.scope == "mcp:access"
+    assert backend.registered_clients == []
 
 
 @pytest.mark.asyncio
@@ -180,7 +192,7 @@ async def test_non_url_client_id_preserves_dynamic_registration_lookup() -> None
 
 @pytest.mark.asyncio
 async def test_private_key_cimd_client_is_projected_without_downgrade() -> None:
-    """Exact-redirect CIMD clients retain their native asymmetric auth metadata."""
+    """Lookup retains asymmetric metadata without persisting a projection."""
     backend = RecordingBackend()
     native_client = _cimd_client(token_endpoint_auth_method="private_key_jwt")
     provider = InterceptOAuthProvider(
@@ -193,17 +205,11 @@ async def test_private_key_cimd_client_is_projected_without_downgrade() -> None:
     resolved = await provider.get_client(CIMD_CLIENT_ID)
 
     assert resolved is native_client
-    assert len(backend.registered_clients) == 1
-    projection = backend.registered_clients[0]
-    assert projection.token_endpoint_auth_method == "private_key_jwt"
-    assert projection.jwks == native_client.cimd_document.jwks
-    assert [str(uri) for uri in projection.redirect_uris or []] == [
-        LOOPBACK_REDIRECT
-    ]
+    assert backend.registered_clients == []
 
 
 @pytest.mark.asyncio
-async def test_private_key_cimd_projection_persists_auth_method_and_jwks(
+async def test_private_key_cimd_lookup_defers_relational_projection(
     session_maker,
 ) -> None:
     """The relational grant projection retains metadata needed for reconnects."""
@@ -223,22 +229,21 @@ async def test_private_key_cimd_projection_persists_auth_method_and_jwks(
                     MCPOAuthClient.client_id == CIMD_CLIENT_ID
                 )
             )
-        ).scalar_one()
-    assert stored.token_endpoint_auth_method == "private_key_jwt"
-    assert stored.client_metadata["jwks"] == native_client.cimd_document.jwks
-    assert stored.redirect_uris == [LOOPBACK_REDIRECT]
+        ).scalar_one_or_none()
+    assert stored is None
 
 
 @pytest.mark.asyncio
 async def test_private_key_cimd_exact_redirect_reaches_local_consent() -> None:
     pending_authorizations = RecordingPendingAuthorizations()
+    backend = RecordingBackend()
+    native_client = _cimd_client(token_endpoint_auth_method="private_key_jwt")
     provider = InterceptOAuthProvider(
-        backend=RecordingBackend(),
+        backend=backend,
         pending_authorizations=pending_authorizations,
         public_base_url="http://localhost:8080",
-        cimd_manager=StubCIMDManager(
-            _cimd_client(token_endpoint_auth_method="private_key_jwt")
-        ),
+        cimd_manager=StubCIMDManager(native_client),
+        registration_service=UnexpectedDCRLedger(),
     )
     oauth_app = Starlette(routes=provider.get_routes("/streamable/"))
 
@@ -269,6 +274,209 @@ async def test_private_key_cimd_exact_redirect_reaches_local_consent() -> None:
         pending_authorizations.created[0].resource
         == "http://localhost:8080/mcp/streamable/"
     )
+    assert len(backend.registered_clients) == 1
+    projection = backend.registered_clients[0]
+    assert projection.token_endpoint_auth_method == "private_key_jwt"
+    assert projection.jwks == native_client.cimd_document.jwks
+
+
+@pytest.mark.asyncio
+async def test_cimd_fetch_is_rejected_before_network_when_capacity_is_full() -> None:
+    class FullCapacity:
+        async def reserve(self, **_kwargs: Any) -> None:
+            raise MCPAuthorizationCapacityLimitError("full")
+
+    manager = StubCIMDManager(_cimd_client())
+    provider = InterceptOAuthProvider(
+        backend=RecordingBackend(),
+        pending_authorizations=UnusedPendingAuthorizations(),
+        public_base_url="http://localhost:8080",
+        cimd_manager=manager,
+        registration_policy=MCPRegistrationPolicy(),
+        authorization_capacity_service=FullCapacity(),  # type: ignore[arg-type]
+    )
+    token = bind_authorization_request()
+    try:
+        resolved = await provider.get_client(CIMD_CLIENT_ID)
+    finally:
+        reset_authorization_request(token)
+
+    assert resolved is None
+    assert manager.resolved_client_ids == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ("success", "none", "error"))
+async def test_non_authorization_cimd_fetch_releases_transient_capacity(
+    outcome: str,
+) -> None:
+    class OutcomeManager(StubCIMDManager):
+        async def get_client(self, client_id: str) -> ProxyDCRClient | None:
+            self.resolved_client_ids.append(client_id)
+            if outcome == "error":
+                raise RuntimeError("fetch failed")
+            if outcome == "none":
+                return None
+            return self.client
+
+    class RecordingCapacity:
+        def __init__(self) -> None:
+            self.reservations: list[dict[str, Any]] = []
+            self.releases: list[str] = []
+
+        async def reserve(self, **kwargs: Any) -> None:
+            self.reservations.append(kwargs)
+
+        async def release(self, reservation_id: str) -> None:
+            self.releases.append(reservation_id)
+
+    capacity = RecordingCapacity()
+    provider = InterceptOAuthProvider(
+        backend=RecordingBackend(),
+        pending_authorizations=UnusedPendingAuthorizations(),
+        public_base_url="http://localhost:8080",
+        cimd_manager=OutcomeManager(_cimd_client()),
+        registration_policy=MCPRegistrationPolicy(),
+        authorization_capacity_service=capacity,  # type: ignore[arg-type]
+    )
+
+    if outcome == "error":
+        with pytest.raises(RuntimeError, match="fetch failed"):
+            await provider.get_client(CIMD_CLIENT_ID)
+    else:
+        resolved = await provider.get_client(CIMD_CLIENT_ID)
+        assert (resolved is not None) is (outcome == "success")
+
+    assert len(capacity.reservations) == 1
+    assert capacity.releases == [
+        capacity.reservations[0]["reservation_id"]
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repeated_cimd_lookup_preserves_prefetch_reservation_for_authorize() -> None:
+    class CachingCIMDManager(StubCIMDManager):
+        def __init__(self, client: ProxyDCRClient) -> None:
+            super().__init__(client)
+            self._fetcher = SimpleNamespace(_cache={})
+
+        async def get_client(self, client_id: str) -> ProxyDCRClient | None:
+            resolved = await super().get_client(client_id)
+            self._fetcher._cache[client_id] = SimpleNamespace(
+                must_revalidate=False,
+                expires_at=datetime.now(timezone.utc).timestamp() + 60,
+            )
+            return resolved
+
+    class RecordingCapacity:
+        def __init__(self) -> None:
+            self.reservations: list[dict[str, Any]] = []
+            self.promotions: list[dict[str, Any]] = []
+            self.releases: list[str] = []
+
+        async def reserve(self, **kwargs: Any) -> None:
+            self.reservations.append(kwargs)
+
+        async def promote(self, **kwargs: Any) -> None:
+            self.promotions.append(kwargs)
+
+        async def release(self, reservation_id: str) -> None:
+            self.releases.append(reservation_id)
+
+    request_id = UUID("16ad90ad-4cf0-4c56-b4e2-9f39c44ca099")
+    capacity = RecordingCapacity()
+    pending = RecordingPendingAuthorizations()
+    provider = InterceptOAuthProvider(
+        backend=RecordingBackend(),
+        pending_authorizations=pending,
+        public_base_url="http://localhost:8080",
+        cimd_manager=CachingCIMDManager(_cimd_client()),
+        registration_policy=MCPRegistrationPolicy(),
+        authorization_capacity_service=capacity,  # type: ignore[arg-type]
+        request_id_factory=lambda: request_id,
+    )
+    token = bind_authorization_request()
+    try:
+        first = await provider.get_client(CIMD_CLIENT_ID)
+        second = await provider.get_client(CIMD_CLIENT_ID)
+        assert first is not None
+        assert second is first
+        assert capacity.releases == []
+        await provider.authorize(
+            second,
+            AuthorizationParams(
+                state="state",
+                scopes=["mcp:access"],
+                code_challenge="a" * 43,
+                redirect_uri=AnyUrl(LOOPBACK_REDIRECT),
+                redirect_uri_provided_explicitly=True,
+                resource="http://localhost:8080/mcp/streamable/",
+            ),
+        )
+    finally:
+        reset_authorization_request(token)
+
+    assert len(capacity.reservations) == 1
+    assert capacity.releases == []
+    assert capacity.promotions == [
+        {
+            "reservation_id": capacity.reservations[0]["reservation_id"],
+            "pending_id": str(request_id),
+            "client_id": CIMD_CLIENT_ID,
+            "ttl_seconds": 300,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cimd_authorize_releases_prefetch_when_promotion_fails() -> None:
+    class RecordingCapacity:
+        def __init__(self) -> None:
+            self.reservations: list[dict[str, Any]] = []
+            self.releases: list[str] = []
+
+        async def reserve(self, **kwargs: Any) -> None:
+            self.reservations.append(kwargs)
+
+        async def promote(self, **_kwargs: Any) -> None:
+            raise MCPAuthorizationCapacityLimitError("reservation expired")
+
+        async def release(self, reservation_id: str) -> None:
+            self.releases.append(reservation_id)
+
+    capacity = RecordingCapacity()
+    provider = InterceptOAuthProvider(
+        backend=RecordingBackend(),
+        pending_authorizations=RecordingPendingAuthorizations(),
+        public_base_url="http://localhost:8080",
+        cimd_manager=StubCIMDManager(_cimd_client()),
+        registration_policy=MCPRegistrationPolicy(),
+        authorization_capacity_service=capacity,  # type: ignore[arg-type]
+    )
+    token = bind_authorization_request()
+    try:
+        client = await provider.get_client(CIMD_CLIENT_ID)
+        assert client is not None
+        assert capacity.releases == []
+        with pytest.raises(AuthorizeError, match="reservation expired"):
+            await provider.authorize(
+                client,
+                AuthorizationParams(
+                    state="state",
+                    scopes=["mcp:access"],
+                    code_challenge="a" * 43,
+                    redirect_uri=AnyUrl(LOOPBACK_REDIRECT),
+                    redirect_uri_provided_explicitly=True,
+                    resource="http://localhost:8080/mcp/streamable/",
+                ),
+            )
+    finally:
+        reset_authorization_request(token)
+
+    assert len(capacity.reservations) == 1
+    assert capacity.releases == [
+        capacity.reservations[0]["reservation_id"]
+    ]
 
 
 @pytest.mark.asyncio

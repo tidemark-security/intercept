@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -24,11 +25,14 @@ class _Session:
         self.user = user
         self.committed = False
 
-    async def get(self, model, user_id):
+    async def get(self, model, user_id, **_kwargs):
         return self.user if self.user is not None and self.user.id == user_id else None
 
     async def commit(self) -> None:
         self.committed = True
+
+    async def rollback(self) -> None:
+        return None
 
 
 def _session_factory(session: _Session):
@@ -46,6 +50,7 @@ async def test_require_mcp_principal_reloads_user_and_audits_request_context() -
         id=user_id,
         username="analyst",
         status=UserStatus.ACTIVE,
+        must_change_password=False,
     )
     session = _Session(user)
     audit = SimpleNamespace(log_event=AsyncMock())
@@ -87,6 +92,37 @@ async def test_require_mcp_principal_reloads_user_and_audits_request_context() -
 
 
 @pytest.mark.asyncio
+async def test_require_mcp_principal_allows_temporary_password_lock() -> None:
+    user_id = uuid4()
+    user = SimpleNamespace(
+        id=user_id,
+        username="temporarily-password-locked-admin",
+        status=UserStatus.LOCKED,
+        lockout_expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+        must_change_password=False,
+    )
+    session = _Session(user)
+    audit = SimpleNamespace(log_event=AsyncMock())
+    token = AccessToken(
+        token="reference-token",
+        client_id="client",
+        scopes=[MCP_ACCESS_SCOPE],
+        claims={"intercept_user_id": str(user_id), "auth_source": "oidc"},
+    )
+
+    principal = await require_mcp_principal(
+        access_token=token,
+        request=None,
+        session_factory=_session_factory(session),
+        audit_service_factory=lambda _db: audit,
+    )
+
+    assert principal.user is user
+    audit.log_event.assert_awaited_once()
+    assert session.committed is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", [UserStatus.DISABLED, UserStatus.LOCKED])
 async def test_require_mcp_principal_rejects_inactive_users(status: UserStatus) -> None:
     user_id = uuid4()
@@ -106,6 +142,34 @@ async def test_require_mcp_principal_rejects_inactive_users(status: UserStatus) 
         )
 
     assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_require_mcp_principal_rejects_forced_password_change_users() -> None:
+    user_id = uuid4()
+    session = _Session(
+        SimpleNamespace(
+            id=user_id,
+            status=UserStatus.ACTIVE,
+            must_change_password=True,
+        )
+    )
+    token = AccessToken(
+        token="reference-token",
+        client_id="client",
+        scopes=[MCP_ACCESS_SCOPE],
+        claims={"intercept_user_id": str(user_id), "auth_source": "api_key"},
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await require_mcp_principal(
+            access_token=token,
+            request=None,
+            session_factory=_session_factory(session),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Password change required"
 
 
 @pytest.mark.asyncio
@@ -140,7 +204,8 @@ async def test_principal_middleware_binds_every_protocol_request(
     )
     resolver = AsyncMock(return_value=principal)
     monkeypatch.setattr("app.mcp.principal.require_mcp_principal", resolver)
-    middleware = MCPPrincipalMiddleware(session_factory=object())
+    session = _Session(None)
+    middleware = MCPPrincipalMiddleware(session_factory=_session_factory(session))
 
     async def call_next(_context):
         assert get_current_mcp_principal() is principal

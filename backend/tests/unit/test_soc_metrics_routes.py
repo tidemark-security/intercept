@@ -19,6 +19,7 @@ ENDPOINT_CASES = [
         soc_metrics.get_metrics,
         "get_soc_metrics",
         {
+            "request": SimpleNamespace(scope={}),
             "type": "soc",
             "priority": None,
             "source": None,

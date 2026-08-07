@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -10,7 +11,8 @@ from sqlmodel import select, col
 
 import app.api.routes.langflow as langflow_routes
 from app.core.settings_registry import get_local
-from app.models.enums import AccountType, SettingType, UserRole
+from app.core.api_key_scopes import API_ADMIN_SCOPE, API_READ_SCOPE
+from app.models.enums import AccountType, SettingType, UserRole, UserStatus
 from app.models.models import ApiKey, AppSetting, UserAccount
 from app.services.langflow_service import (
     LangFlowCheckResult,
@@ -20,6 +22,54 @@ from app.services.langflow_service import (
     LangFlowSummaryResult,
 )
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
+
+
+@pytest.mark.asyncio
+async def test_langflow_nhi_downgrade_permanently_revokes_admin_scoped_keys(
+    session_maker: Any,
+) -> None:
+    user = UserAccount(
+        username="tidemark_ai_scope_reconcile",
+        account_type=AccountType.NHI,
+        role=UserRole.ADMIN,
+        status=UserStatus.ACTIVE,
+    )
+    api_key = ApiKey(
+        user_id=user.id,
+        name="pre-existing LangFlow administrator key",
+        prefix="tmi_lfscope1",
+        key_hash="langflow-scope-reconciliation-hash",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+        scopes=[API_READ_SCOPE, API_ADMIN_SCOPE],
+    )
+    async with session_maker() as session:
+        session.add_all([user, api_key])
+        await session.commit()
+
+    async with session_maker() as session:
+        reconciled, disposition = await langflow_routes._ensure_langflow_nhi_account(
+            session,
+            user.username,
+        )
+        await session.commit()
+        assert disposition == "updated"
+        assert reconciled.role is UserRole.ANALYST
+
+    async with session_maker() as session:
+        revoked = await session.get(ApiKey, api_key.id)
+        assert revoked is not None
+        assert revoked.revoked_at is not None
+        revoked_at = revoked.revoked_at
+
+        persisted_user = await session.get(UserAccount, user.id)
+        assert persisted_user is not None
+        persisted_user.role = UserRole.ADMIN
+        await session.commit()
+
+    async with session_maker() as session:
+        still_revoked = await session.get(ApiKey, api_key.id)
+        assert still_revoked is not None
+        assert still_revoked.revoked_at == revoked_at
 
 
 def test_langflow_bundled_assets_live_under_backend_static() -> None:

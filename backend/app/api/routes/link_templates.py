@@ -9,7 +9,11 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.routes.admin_auth import require_admin_user, require_authenticated_user
+from app.api.routes.admin_auth import (
+    require_admin_user,
+    require_authenticated_user,
+    require_non_auditor_user,
+)
 from app.core.database import get_db
 from app.services.settings_service import SettingsService
 from app.models.models import (
@@ -521,7 +525,7 @@ async def export_personal_link_templates(
 async def import_personal_link_templates(
     payload: Any = Body(...),
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user),
+    current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     """Import current-user personal templates from a portable single-template or bundle payload."""
     return await _import_templates(
@@ -547,7 +551,7 @@ async def get_personal_link_template(
 async def create_personal_link_template(
     template_data: PersonalLinkTemplateCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user),
+    current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     """Create a current-user personal link template."""
     await _validate_url_template_allowed(db, template_data.url_template)
@@ -582,7 +586,7 @@ async def update_personal_link_template(
     template_id: int,
     template_data: PersonalLinkTemplateUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user),
+    current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     """Update a current-user personal link template."""
     template = await _get_owned_personal_template(template_id, db, current_user)
@@ -603,7 +607,7 @@ async def update_personal_link_template(
 async def delete_personal_link_template(
     template_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user),
+    current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     """Delete a current-user personal link template."""
     template = await _get_owned_personal_template(template_id, db, current_user)

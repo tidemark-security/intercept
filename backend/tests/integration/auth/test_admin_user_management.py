@@ -1,9 +1,10 @@
 """Integration tests for admin user management endpoints."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import AsyncClient
@@ -11,7 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import select
 
 from app.models.enums import AccountType, UserRole, UserStatus
-from app.models.models import AdminResetRequest, AuthSession, UserAccount
+from app.models.models import AdminResetRequest, AuditLog, AuthSession, UserAccount
+from app.services.admin_auth_service import AdminAuthBusyError, admin_auth_service
+from app.services.audit_service import AuditContext
+from app.services.auth_service import (
+    AuthenticationConcurrencyError,
+    SessionNotFoundError,
+    auth_service,
+)
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -24,6 +32,159 @@ async def _login_and_get_cookie(client: AsyncClient, username: str) -> str:
     session_cookie = response.cookies.get("intercept_session")
     assert session_cookie is not None
     return session_cookie
+
+
+@pytest.mark.asyncio
+async def test_reciprocal_admin_updates_fail_fast_instead_of_deadlocking(
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    admin_a = admin_user_factory(username="reciprocal-admin-a")
+    admin_b = admin_user_factory(username="reciprocal-admin-b")
+    async with session_maker() as setup_db:
+        setup_db.add_all([admin_a, admin_b])
+        await setup_db.commit()
+
+    async with session_maker() as db_a, session_maker() as db_b:
+        locked_a = await db_a.get(UserAccount, admin_a.id, with_for_update=True)
+        locked_b = await db_b.get(UserAccount, admin_b.id, with_for_update=True)
+        assert locked_a is not None
+        assert locked_b is not None
+
+        async def reciprocal_update(
+            db: AsyncSession,
+            *,
+            actor: UserAccount,
+            target: UserAccount,
+        ) -> None:
+            await admin_auth_service.update_user(
+                admin_user_id=actor.id,
+                target_user_id=target.id,
+                description="reciprocal update",
+                request_metadata=AuditContext(),
+                db=db,
+            )
+
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                reciprocal_update(db_a, actor=admin_a, target=admin_b),
+                reciprocal_update(db_b, actor=admin_b, target=admin_a),
+                return_exceptions=True,
+            ),
+            timeout=2,
+        )
+        assert all(isinstance(result, AdminAuthBusyError) for result in results)
+        await db_a.rollback()
+        await db_b.rollback()
+
+
+@pytest.mark.asyncio
+async def test_reciprocal_admin_password_resets_fail_fast_instead_of_deadlocking(
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    admin_a = admin_user_factory(username="reciprocal-reset-admin-a")
+    admin_b = admin_user_factory(username="reciprocal-reset-admin-b")
+    async with session_maker() as setup_db:
+        setup_db.add_all([admin_a, admin_b])
+        await setup_db.commit()
+
+    async with session_maker() as db_a, session_maker() as db_b:
+        locked_a = await db_a.get(UserAccount, admin_a.id, with_for_update=True)
+        locked_b = await db_b.get(UserAccount, admin_b.id, with_for_update=True)
+        assert locked_a is not None
+        assert locked_b is not None
+
+        async def reciprocal_reset(
+            db: AsyncSession,
+            *,
+            actor: UserAccount,
+            target: UserAccount,
+        ) -> None:
+            await admin_auth_service.issue_password_reset(
+                admin_user_id=actor.id,
+                target_user_id=target.id,
+                request_metadata=AuditContext(),
+                db=db,
+            )
+
+        results = await asyncio.wait_for(
+            asyncio.gather(
+                reciprocal_reset(db_a, actor=admin_a, target=admin_b),
+                reciprocal_reset(db_b, actor=admin_b, target=admin_a),
+                return_exceptions=True,
+            ),
+            timeout=2,
+        )
+        assert all(isinstance(result, AdminAuthBusyError) for result in results)
+        await db_a.rollback()
+        await db_b.rollback()
+
+
+@pytest.mark.asyncio
+async def test_admin_disable_eventually_wins_over_overlapping_target_reads(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+    analyst_user_factory,
+) -> None:
+    """Queued emergency writes must not be starved by a stream of readers."""
+    admin = admin_user_factory(username="writer-progress-admin")
+    target = analyst_user_factory(username="writer-progress-target")
+    async with session_maker() as setup_db:
+        setup_db.add_all([admin, target])
+        await setup_db.commit()
+
+    admin_cookie = await _login_and_get_cookie(client, admin.username)
+    target_cookie = await _login_and_get_cookie(client, target.username)
+
+    async with session_maker() as first_reader_db:
+        await auth_service.validate_session(
+            first_reader_db,
+            session_token=target_cookie,
+            shared_lock=True,
+        )
+
+        disable_task = asyncio.create_task(
+            client.patch(
+                f"/api/v1/admin/auth/users/{target.id}/status",
+                json={"status": "DISABLED"},
+                cookies={"intercept_session": admin_cookie},
+            )
+        )
+        await asyncio.sleep(0.2)
+        assert not disable_task.done()
+
+        # Once the writer is queued, later readers fail fast rather than
+        # consuming database-pool connections behind the emergency change.
+        async def overlapping_read() -> None:
+            async with session_maker() as overlapping_reader_db:
+                await auth_service.validate_session(
+                    overlapping_reader_db,
+                    session_token=target_cookie,
+                    shared_lock=True,
+                )
+                await overlapping_reader_db.commit()
+
+        overlapping_read_task = asyncio.create_task(overlapping_read())
+        with pytest.raises(AuthenticationConcurrencyError):
+            await asyncio.wait_for(overlapping_read_task, timeout=0.5)
+
+        await first_reader_db.commit()
+        response = await asyncio.wait_for(disable_task, timeout=3)
+
+    assert response.status_code == 204, response.text
+    async with session_maker() as retry_db:
+        with pytest.raises(SessionNotFoundError):
+            await auth_service.validate_session(
+                retry_db,
+                session_token=target_cookie,
+                shared_lock=True,
+            )
+    async with session_maker() as read_db:
+        stored_target = await read_db.get(UserAccount, target.id)
+        assert stored_target is not None
+        assert stored_target.status == UserStatus.DISABLED
 
 
 @pytest.mark.asyncio
@@ -92,6 +253,250 @@ async def test_admin_create_user_success(
 
 
 @pytest.mark.asyncio
+async def test_admin_preprovisions_exact_oidc_identity_without_local_password_setup(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+) -> None:
+    admin = admin_user_factory(username="oidc.provisioning.admin")
+    async with session_maker() as session:
+        session.add(admin)
+        await session.commit()
+
+    session_cookie = await _login_and_get_cookie(client, admin.username)
+    response = await client.post(
+        "/api/v1/admin/auth/users/oidc",
+        json={
+            "username": "preprovisioned.oidc.user",
+            "email": "preprovisioned.oidc.user@example.com",
+            "role": "AUDITOR",
+            "description": "Externally authenticated auditor",
+            "oidc_issuer": "https://Issuer.example/Tenant",
+            "oidc_subject": "Case-Sensitive-Subject",
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 201, response.text
+    user_id = UUID(response.json()["userId"])
+
+    async with session_maker() as session:
+        created_user = await session.get(UserAccount, user_id)
+        reset_requests = (
+            await session.execute(
+                select(AdminResetRequest).where(
+                    AdminResetRequest.target_user_id == user_id,
+                )
+            )
+        ).scalars().all()
+        audit_events = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.event_type == "auth.oidc.account_preprovisioned",
+                    AuditLog.entity_id == str(user_id),
+                )
+            )
+        ).scalars().all()
+
+        assert created_user is not None
+        assert created_user.account_type is AccountType.HUMAN
+        assert created_user.username == "preprovisioned.oidc.user"
+        assert str(created_user.email) == "preprovisioned.oidc.user@example.com"
+        assert created_user.role is UserRole.AUDITOR
+        assert created_user.description == "Externally authenticated auditor"
+        assert created_user.oidc_issuer == "https://Issuer.example/Tenant"
+        assert created_user.oidc_subject == "Case-Sensitive-Subject"
+        assert created_user.password_hash is None
+        assert created_user.password_updated_at is None
+        assert created_user.created_by_admin_id == admin.id
+        assert reset_requests == []
+        assert len(audit_events) == 1
+        assert audit_events[0].performed_by == str(admin.id)
+
+
+@pytest.mark.asyncio
+async def test_oidc_preprovisioning_requires_authentication(
+    client: AsyncClient,
+) -> None:
+    response = await client.post(
+        "/api/v1/admin/auth/users/oidc",
+        json={
+            "username": "unauthenticated.oidc.user",
+            "email": "unauthenticated.oidc.user@example.com",
+            "role": "ANALYST",
+            "oidc_issuer": "https://issuer.example",
+            "oidc_subject": "unauthenticated-subject",
+        },
+    )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_oidc_preprovisioning_requires_admin_role(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    analyst = analyst_user_factory(username="oidc.provisioning.nonadmin")
+    async with session_maker() as session:
+        session.add(analyst)
+        await session.commit()
+
+    session_cookie = await _login_and_get_cookie(client, analyst.username)
+    response = await client.post(
+        "/api/v1/admin/auth/users/oidc",
+        json={
+            "username": "nonadmin.oidc.user",
+            "email": "nonadmin.oidc.user@example.com",
+            "role": "ANALYST",
+            "oidc_issuer": "https://issuer.example",
+            "oidc_subject": "nonadmin-subject",
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("collision", "message_fragment"),
+    [
+        ("identity", "OIDC identity"),
+        ("username", "Username"),
+        ("email", "Email"),
+    ],
+)
+async def test_admin_oidc_preprovisioning_rejects_account_collisions(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+    analyst_user_factory,
+    collision: str,
+    message_fragment: str,
+) -> None:
+    admin = admin_user_factory(username=f"oidc.collision.admin.{collision}")
+    existing = analyst_user_factory(
+        username=f"existing.oidc.{collision}",
+        email=f"existing.oidc.{collision}@example.com",
+    )
+    existing.oidc_issuer = "https://issuer.example/Tenant"
+    existing.oidc_subject = f"existing-subject-{collision}"
+    async with session_maker() as session:
+        session.add_all([admin, existing])
+        await session.commit()
+
+    payload = {
+        "username": f"new.oidc.{collision}",
+        "email": f"new.oidc.{collision}@example.com",
+        "role": "ANALYST",
+        "oidc_issuer": "https://new-issuer.example/Tenant",
+        "oidc_subject": f"new-subject-{collision}",
+    }
+    if collision == "identity":
+        payload["oidc_issuer"] = existing.oidc_issuer
+        payload["oidc_subject"] = existing.oidc_subject
+    elif collision == "username":
+        payload["username"] = existing.username
+    else:
+        payload["email"] = str(existing.email)
+
+    session_cookie = await _login_and_get_cookie(client, admin.username)
+    response = await client.post(
+        "/api/v1/admin/auth/users/oidc",
+        json=payload,
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 400, response.text
+    assert message_fragment in response.json()["detail"]["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "invalid_value", "case_name"),
+    [
+        ("oidc_issuer", " https://issuer.example/Tenant", "issuer-leading-space"),
+        ("oidc_issuer", "https://issuer.example/Tenant ", "issuer-trailing-space"),
+        ("oidc_issuer", "http://issuer.example/Tenant", "issuer-http"),
+        ("oidc_issuer", "https://user@issuer.example/Tenant", "issuer-userinfo"),
+        ("oidc_issuer", "https://issuer.example/Tenant?query=1", "issuer-query"),
+        ("oidc_issuer", "https://issuer.example/Tenant#fragment", "issuer-fragment"),
+        ("oidc_subject", " subject-with-spaces", "subject-leading-space"),
+        ("oidc_subject", "subject-with-spaces ", "subject-trailing-space"),
+    ],
+)
+async def test_admin_oidc_preprovisioning_rejects_invalid_exact_identity_values(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+    field: str,
+    invalid_value: str,
+    case_name: str,
+) -> None:
+    admin = admin_user_factory(username=f"oidc.validation.admin.{case_name}")
+    async with session_maker() as session:
+        session.add(admin)
+        await session.commit()
+
+    payload = {
+        "username": f"invalid.oidc.{case_name}",
+        "email": f"invalid.oidc.{case_name}@example.com",
+        "role": "ANALYST",
+        "oidc_issuer": "https://issuer.example/Tenant",
+        "oidc_subject": f"subject-{case_name}",
+    }
+    payload[field] = invalid_value
+    session_cookie = await _login_and_get_cookie(client, admin.username)
+    response = await client.post(
+        "/api/v1/admin/auth/users/oidc",
+        json=payload,
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.asyncio
+async def test_generic_user_update_rejects_oidc_identity_fields(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+    analyst_user_factory,
+) -> None:
+    admin = admin_user_factory(username="oidc.immutability.admin")
+    user = analyst_user_factory(
+        username="oidc.immutable.user",
+        email="oidc.immutable.user@example.com",
+    )
+    user.oidc_issuer = "https://issuer.example/original"
+    user.oidc_subject = "original-subject"
+    async with session_maker() as session:
+        session.add_all([admin, user])
+        await session.commit()
+
+    session_cookie = await _login_and_get_cookie(client, admin.username)
+    response = await client.patch(
+        f"/api/v1/admin/auth/users/{user.id}",
+        json={
+            "description": "must not be partially applied",
+            "oidc_issuer": "https://issuer.example/replacement",
+            "oidc_subject": "replacement-subject",
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 422, response.text
+    async with session_maker() as session:
+        persisted = await session.get(UserAccount, user.id)
+        assert persisted is not None
+        assert persisted.description is None
+        assert persisted.oidc_issuer == "https://issuer.example/original"
+        assert persisted.oidc_subject == "original-subject"
+
+
+@pytest.mark.asyncio
 async def test_admin_create_nhi_with_override_timestamps(
     client: AsyncClient,
     session_maker: async_sessionmaker[AsyncSession],
@@ -123,6 +528,7 @@ async def test_admin_create_nhi_with_override_timestamps(
     )
 
     assert response.status_code == 201, response.text
+    assert response.json()["apiKey"]["scopes"] == ["api:read"]
 
     async with session_maker() as session:
         result = await session.execute(
@@ -259,6 +665,8 @@ async def test_non_admin_can_get_users_summary(
     """Authenticated non-admin users can load active human users for assignee dropdowns."""
     analyst = analyst_user_factory(username="analyst.viewer")
     admin = admin_user_factory(username="admin.visible")
+    admin.oidc_issuer = "https://issuer.example"
+    admin.oidc_subject = "admin-visible-subject"
     disabled_user = analyst_user_factory(username="analyst.disabled")
     disabled_user.status = UserStatus.DISABLED
 
@@ -283,6 +691,8 @@ async def test_non_admin_can_get_users_summary(
     assert admin.username in usernames
     assert disabled_user.username not in usernames
     assert all(item["accountType"] == "HUMAN" for item in payload)
+    assert all("oidcIssuer" not in item for item in payload)
+    assert all("oidcSubject" not in item for item in payload)
 
 
 @pytest.mark.asyncio

@@ -39,7 +39,6 @@ def _snapshot_policy(**updates) -> OIDCIdentityPolicy:
         "default_role": "ANALYST",
         "role_claim_path": "groups",
         "role_mapping": {"security-auditors": "AUDITOR"},
-        "trusted_auto_link_issuers": ("https://issuer.example",),
     }
     values.update(updates)
     return OIDCIdentityPolicy(**values)

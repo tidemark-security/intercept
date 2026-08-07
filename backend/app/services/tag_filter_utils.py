@@ -62,6 +62,16 @@ def normalize_persisted_tags(tags: Optional[List[Any]]) -> List[str]:
     return normalized
 
 
+def normalize_derived_entity_tags(tags: Optional[List[Any]]) -> List[str]:
+    """Normalize inherited tags without copying protected service sentinels."""
+    protected_key = DUMMY_DATA_TAG.casefold()
+    return [
+        tag
+        for tag in normalize_persisted_tags(tags)
+        if tag.casefold() != protected_key
+    ]
+
+
 def merge_persisted_tags(
     existing_tags: Optional[List[Any]],
     new_tags: Optional[List[Any]],

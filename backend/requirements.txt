@@ -26,6 +26,7 @@ uvicorn[standard]==0.44.0
 
 # MCP
 fastmcp==3.4.4
+mcp==1.27.2
 py-key-value-aio[postgresql,wrappers-encryption]==0.4.4
 
 # File upload dependencies

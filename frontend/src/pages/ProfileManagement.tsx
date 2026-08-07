@@ -41,6 +41,10 @@ import { formatAbsoluteTime } from "@/utils/dateFormatters";
 import type { ThemePreference } from "@/utils/themePreference";
 import type { TimezonePreference } from "@/utils/timezonePreference";
 import {
+  allowedApiKeyScopesForRole,
+  type ApiKeyScope,
+} from "@/utils/apiKeyScopes";
+import {
   getVisualFilterLimits,
   type VisualFilterPreference,
 } from "@/utils/visualFilterPreference";
@@ -124,7 +128,20 @@ function ProfileManagement() {
   const { themePreference, setThemePreference, resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === "dark";
   const breakpoint = useBreakpoint();
-  const { localCredentialManagementAllowed = true } = useSession();
+  const {
+    user,
+    localCredentialManagementAllowed = true,
+    passwordLoginAllowed,
+    passkeyAllowed,
+    apiKeyAllowed,
+  } = useSession();
+  const canManagePassword = passwordLoginAllowed ?? localCredentialManagementAllowed;
+  const canUsePasskeys = passkeyAllowed ?? localCredentialManagementAllowed;
+  const canCreateApiKeys = apiKeyAllowed ?? localCredentialManagementAllowed;
+  const availableApiKeyScopes = React.useMemo(
+    () => allowedApiKeyScopesForRole(user?.role),
+    [user?.role],
+  );
   const { timezonePreference, setTimezonePreference } = useTimezonePreference();
   const {
     visualFilterPreference,
@@ -141,6 +158,9 @@ function ProfileManagement() {
   const [showCreateApiKeyModal, setShowCreateApiKeyModal] = React.useState(false);
   const [apiKeyNameInput, setApiKeyNameInput] = React.useState("");
   const [apiKeyExpiresAtInput, setApiKeyExpiresAtInput] = React.useState("");
+  const [apiKeyScopes, setApiKeyScopes] = React.useState<ApiKeyScope[]>([
+    "api:read",
+  ]);
   const [createdApiKey, setCreatedApiKey] = React.useState<ApiKeyCreateResponse | null>(null);
   const [showCreatedApiKeyValue, setShowCreatedApiKeyValue] = React.useState(true);
   const [createdApiKeyCopied, setCreatedApiKeyCopied] = React.useState(false);
@@ -273,12 +293,14 @@ function ProfileManagement() {
   }, []);
 
   const openCreateApiKeyModal = () => {
+    if (!canCreateApiKeys) return;
     const defaultExpiry = new Date();
     defaultExpiry.setDate(defaultExpiry.getDate() + 30);
     setApiKeyNameInput("");
     setApiKeyExpiresAtInput(
       normalizeDatetimeLocalValue(formatForDatetimeLocal(defaultExpiry), "display"),
     );
+    setApiKeyScopes(["api:read"]);
     setShowCreateApiKeyModal(true);
   };
 
@@ -286,6 +308,7 @@ function ProfileManagement() {
     setShowCreateApiKeyModal(false);
     setApiKeyNameInput("");
     setApiKeyExpiresAtInput("");
+    setApiKeyScopes(["api:read"]);
   };
 
   const closeCreatedApiKeyModal = () => {
@@ -295,8 +318,16 @@ function ProfileManagement() {
   };
 
   const handleCreateApiKey = async () => {
+    if (!canCreateApiKeys) {
+      showToast("Not allowed", "Local API key creation is disabled for this account", "error");
+      return;
+    }
     if (!apiKeyNameInput.trim() || !apiKeyExpiresAtInput) {
       showToast("Validation Error", "Name and expiration date are required", "error");
+      return;
+    }
+    if (apiKeyScopes.length === 0) {
+      showToast("Validation Error", "Select at least one API key permission", "error");
       return;
     }
 
@@ -312,6 +343,7 @@ function ProfileManagement() {
         requestBody: {
           name: apiKeyNameInput.trim(),
           expires_at: expiresAtDate.toISOString(),
+          scopes: apiKeyScopes,
         },
       });
 
@@ -365,6 +397,7 @@ function ProfileManagement() {
   };
 
   const openRegisterPasskeyModal = () => {
+    if (!canUsePasskeys) return;
     if (!browserSupportsPasskeys()) {
       showToast("Unsupported", "This browser does not support passkeys", "error");
       return;
@@ -829,6 +862,15 @@ function ProfileManagement() {
                   title="Password"
                 />
 
+              {!canManagePassword ? (
+                <Alert
+                  variant="neutral"
+                  icon={<Shield />}
+                  title="Managed by SSO"
+                  description="Local password changes are disabled for this OIDC-linked account."
+                />
+              ) : null}
+
               <div className="flex w-full flex-col items-start gap-4">
                 <TextField
                   className="h-auto w-full flex-none"
@@ -837,6 +879,7 @@ function ProfileManagement() {
                 >
                   <TextField.Input
                     type="password"
+                    disabled={!canManagePassword}
                     placeholder="Enter current password"
                     value={currentPassword}
                     onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
@@ -852,6 +895,7 @@ function ProfileManagement() {
                 >
                   <TextField.Input
                     type="password"
+                    disabled={!canManagePassword}
                     placeholder="Enter new password"
                     value={newPassword}
                     onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
@@ -867,6 +911,7 @@ function ProfileManagement() {
                 >
                   <TextField.Input
                     type="password"
+                    disabled={!canManagePassword}
                     placeholder="Confirm new password"
                     value={confirmPassword}
                     onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
@@ -877,7 +922,11 @@ function ProfileManagement() {
               </div>
 
               <div className="flex w-full flex-col items-end gap-6">
-                <Button icon={<Key />} onClick={handleChangePassword} disabled={isChangingPassword}>
+                <Button
+                  icon={<Key />}
+                  onClick={handleChangePassword}
+                  disabled={isChangingPassword || !canManagePassword}
+                >
                   {isChangingPassword ? "Changing..." : "Change Password"}
                 </Button>
               </div>
@@ -888,15 +937,26 @@ function ProfileManagement() {
                   icon={<Key className="text-[20px] text-subtext-color" />}
                   title="API Keys"
                   action={
-                    <Button icon={<Plus />} onClick={openCreateApiKeyModal} disabled={isCreatingApiKey}>
-                      Create New API Key
-                    </Button>
+                    canCreateApiKeys ? (
+                      <Button icon={<Plus />} onClick={openCreateApiKeyModal} disabled={isCreatingApiKey}>
+                        Create New API Key
+                      </Button>
+                    ) : undefined
                   }
                 />
 
               <span className="text-body font-body text-subtext-color">
                 API keys are for programmatic access to your account.
               </span>
+
+              {!canCreateApiKeys ? (
+                <Alert
+                  variant="neutral"
+                  icon={<Shield />}
+                  title="Managed by SSO"
+                  description="Local API key creation is disabled for this OIDC-linked account."
+                />
+              ) : null}
 
               <div className="flex w-full flex-col items-start gap-4">
                 {isLoadingApiKeys ? (
@@ -914,6 +974,7 @@ function ProfileManagement() {
                     expiresAt={apiKey.expires_at}
                     lastUsedAt={apiKey.last_used_at}
                     revokedAt={apiKey.revoked_at}
+                    scopes={apiKey.scopes}
                     isExpired={isApiKeyExpired(apiKey.expires_at)}
                     formatDate={formatApiKeyDate}
                     onRevoke={() => handleRevokeApiKey(apiKey.id)}
@@ -974,7 +1035,7 @@ function ProfileManagement() {
                   icon={<Fingerprint className="text-[20px] text-subtext-color" />}
                   title="Passkeys"
                   action={
-                    localCredentialManagementAllowed ? (
+                    canUsePasskeys ? (
                       <Button icon={<Plus />} onClick={openRegisterPasskeyModal} disabled={isRegisteringPasskey}>
                         {isRegisteringPasskey ? "Registering..." : "Register New Passkey"}
                       </Button>
@@ -986,6 +1047,15 @@ function ProfileManagement() {
                 Passkeys are a more secure alternative to passwords. Use your
                 device biometrics or security key to sign in.
               </span>
+
+              {!canUsePasskeys ? (
+                <Alert
+                  variant="neutral"
+                  icon={<Shield />}
+                  title="Managed by SSO"
+                  description="Local passkey registration is disabled for this OIDC-linked account."
+                />
+              ) : null}
 
               <div className="flex w-full flex-col items-start gap-4">
                 {isLoadingPasskeys ? (
@@ -1028,7 +1098,7 @@ function ProfileManagement() {
                 ))}
               </div>
 
-              {localCredentialManagementAllowed ? (
+              {canUsePasskeys ? (
                 <Alert
                   variant="neutral"
                   icon={<Shield />}
@@ -1143,7 +1213,12 @@ function ProfileManagement() {
             >
               Cancel
             </Button>
-            <Button className="flex-1" onClick={handleCreateApiKey} loading={isCreatingApiKey}>
+            <Button
+              className="flex-1"
+              onClick={handleCreateApiKey}
+              loading={isCreatingApiKey}
+              disabled={apiKeyScopes.length === 0}
+            >
               Create Key
             </Button>
           </div>
@@ -1152,8 +1227,11 @@ function ProfileManagement() {
         <CreateApiKeyModalContent
           keyName={apiKeyNameInput}
           expiresAt={apiKeyExpiresAtInput}
+          scopes={apiKeyScopes}
+          availableScopes={availableApiKeyScopes}
           onKeyNameChange={setApiKeyNameInput}
           onExpiresAtChange={setApiKeyExpiresAtInput}
+          onScopesChange={setApiKeyScopes}
           onCancel={closeCreateApiKeyModal}
           onSubmit={handleCreateApiKey}
           loading={isCreatingApiKey}

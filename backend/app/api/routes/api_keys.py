@@ -13,15 +13,19 @@ from app.api.error_schemas import ValidationErrorResponse
 from app.api.request_metadata import build_audit_context
 from app.api.routes.admin_auth import (
     require_authenticated_user,
+    require_api_key_admin_scope,
 )
 from app.core.csrf import extract_api_key
 from app.core.database import get_db
+from app.core.api_key_scopes import API_READ_SCOPE
 from app.models.models import ApiKeyCreateResponse, ApiKeyRead, UserAccount
 from app.models.enums import AccountType
 from app.services.api_key_service import (
     ApiKeyExpirationError,
     ApiKeyNotFoundError,
+    ApiKeyPolicyError,
     ApiKeyRevokedError,
+    ApiKeyScopeValidationError,
     ApiKeyUserNotFoundError,
     api_key_service,
 )
@@ -43,6 +47,11 @@ class CreateApiKeyRequest(BaseModel):
     """Request to create a new API key."""
     name: str = Field(min_length=1, max_length=100, description="User-defined name for this API key")
     expires_at: datetime = Field(description="Expiration date (required)")
+    scopes: List[str] = Field(
+        default_factory=lambda: [API_READ_SCOPE],
+        min_length=1,
+        description="Explicit permissions granted to the API key",
+    )
     
     # Optional: for admins creating keys for other users
     user_id: Optional[UUID] = Field(
@@ -97,6 +106,7 @@ async def create_api_key(
                     message="Admin role required to create API keys for other users",
                 ).model_dump(),
             )
+        require_api_key_admin_scope(request)
 
         target_user = await db.get(UserAccount, target_user_id)
         if not target_user:
@@ -121,6 +131,7 @@ async def create_api_key(
             user_id=target_user_id,
             name=body.name,
             expires_at=body.expires_at,
+            scopes=body.scopes,
             created_by_user_id=current_user.id,
             context=audit_context,
         )
@@ -132,6 +143,16 @@ async def create_api_key(
     except ApiKeyExpirationError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ValidationErrorResponse(message=str(exc)).model_dump(),
+        ) from exc
+    except ApiKeyScopeValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ValidationErrorResponse(message=str(exc)).model_dump(),
+        ) from exc
+    except ApiKeyPolicyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
             detail=ValidationErrorResponse(message=str(exc)).model_dump(),
         ) from exc
     
@@ -175,6 +196,7 @@ async def list_api_keys(
                     message="Admin role required to list API keys for other users",
                 ).model_dump(),
             )
+        require_api_key_admin_scope(request)
     
     keys = await api_key_service.list_user_api_keys(
         db,
@@ -219,6 +241,7 @@ async def get_api_key(
                     message="You can only view your own API keys",
                 ).model_dump(),
             )
+        require_api_key_admin_scope(request)
     
     return ApiKeyRead.model_validate(api_key)
 
@@ -261,6 +284,7 @@ async def revoke_api_key(
                     message="You can only revoke your own API keys",
                 ).model_dump(),
             )
+        require_api_key_admin_scope(request)
     
     try:
         await api_key_service.revoke_api_key(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,7 @@ from app.mcp.runtime import (
     load_mcp_auth_snapshot,
     normalize_asyncpg_url,
 )
+from app.services.mcp_registration_service import MCPRegistrationPolicy
 
 
 class _Settings:
@@ -46,7 +48,6 @@ def _base_settings(**overrides: object) -> _Settings:
         "oidc.default_role": "ANALYST",
         "oidc.role_claim_path": "",
         "oidc.role_mapping": {},
-        "oidc.trusted_auto_link_issuers": [],
     }
     values.update(overrides)
     return _Settings(values)
@@ -61,6 +62,94 @@ async def test_local_auth_is_selected_only_when_app_oidc_is_disabled() -> None:
     assert snapshot.login_origin == "https://intercept.example"
     assert snapshot.oauth_base_url == "https://intercept.example/mcp"
     assert snapshot.resource_url == "https://intercept.example/mcp/streamable/"
+    assert snapshot.registration_policy == MCPRegistrationPolicy()
+
+
+@pytest.mark.asyncio
+async def test_registration_limits_are_frozen_and_must_be_positive() -> None:
+    snapshot = await load_mcp_auth_snapshot(
+        _base_settings(
+            **{
+                "mcp.oauth.registration_max_body_bytes": 8192,
+                "mcp.oauth.registration_pending_quota": 75,
+                "mcp.oauth.registration_total_quota": 125,
+                "mcp.oauth.registration_per_ip_quota": 12,
+                "mcp.oauth.registration_rate_window_seconds": 900,
+                "mcp.oauth.registration_abandoned_ttl_seconds": 1800,
+                "mcp.oauth.registration_active_ttl_seconds": 3_000_000,
+                "mcp.oauth.pending_authorization_global_quota": 200,
+                "mcp.oauth.pending_authorization_per_client_quota": 4,
+                "mcp.oauth.pending_authorization_per_source_quota": 9,
+                "mcp.oauth.cimd_fetch_reservation_ttl_seconds": 45,
+                "mcp.oauth.cimd_cache_max_entries": 64,
+            }
+        )
+    )
+
+    assert snapshot.registration_policy == MCPRegistrationPolicy(
+        max_body_bytes=8192,
+        pending_quota=75,
+        total_quota=125,
+        per_ip_quota=12,
+        rate_window_seconds=900,
+        abandoned_ttl_seconds=1800,
+        active_ttl_seconds=3_000_000,
+        pending_authorization_global_quota=200,
+        pending_authorization_per_client_quota=4,
+        pending_authorization_per_source_quota=9,
+        cimd_fetch_reservation_ttl_seconds=45,
+        cimd_cache_max_entries=64,
+    )
+
+    with pytest.raises(MCPConfigurationError, match="registration limits"):
+        await load_mcp_auth_snapshot(
+            _base_settings(
+                **{"mcp.oauth.registration_pending_quota": 0}
+            )
+        )
+
+    with pytest.raises(MCPConfigurationError, match="registration limits"):
+        await load_mcp_auth_snapshot(
+            _base_settings(**{"mcp.oauth.cimd_cache_max_entries": 0})
+        )
+
+    with pytest.raises(MCPConfigurationError, match="registration limits"):
+        await load_mcp_auth_snapshot(
+            _base_settings(
+                **{"mcp.oauth.pending_authorization_per_source_quota": 0}
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_registration_abandoned_ttl_must_cover_rate_window() -> None:
+    with pytest.raises(
+        MCPConfigurationError,
+        match="abandoned.*rate window",
+    ):
+        await load_mcp_auth_snapshot(
+            _base_settings(
+                **{
+                    "mcp.oauth.registration_rate_window_seconds": 3600,
+                    "mcp.oauth.registration_abandoned_ttl_seconds": 60,
+                }
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_registration_activity_ttl_covers_issued_token_lifetimes() -> None:
+    snapshot = await load_mcp_auth_snapshot(
+        _base_settings(
+            **{
+                "mcp.oauth.access_token_ttl_seconds": 7200,
+                "mcp.oauth.refresh_token_ttl_days": 7,
+                "mcp.oauth.registration_active_ttl_seconds": 60,
+            }
+        )
+    )
+
+    assert snapshot.registration_policy.active_ttl_seconds == 7 * 24 * 60 * 60
 
 
 @pytest.mark.asyncio
@@ -79,6 +168,52 @@ async def test_complete_oidc_configuration_selects_proxy_mode() -> None:
     assert snapshot.mode is MCPAuthMode.OIDC_PROXY
     assert snapshot.oidc is not None
     assert snapshot.oidc.client_secret == "client-secret"
+    assert snapshot.oidc.jit_provisioning is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "discovery_url",
+    [
+        "https://user:password@issuer.example/.well-known/openid-configuration",
+        "https://issuer.example/.well-known/openid-configuration#fragment",
+        " https://issuer.example/.well-known/openid-configuration",
+        "https://issuer.example:0/.well-known/openid-configuration",
+        "https://issuer.example:70000/.well-known/openid-configuration",
+    ],
+)
+async def test_oidc_runtime_uses_strict_shared_discovery_url_contract(
+    discovery_url: str,
+) -> None:
+    with pytest.raises(MCPConfigurationError, match="discovery URL"):
+        await load_mcp_auth_snapshot(
+            _base_settings(
+                **{
+                    "oidc.enabled": True,
+                    "oidc.discovery_url": discovery_url,
+                    "oidc.client_id": "client-id",
+                    "oidc.client_secret": "client-secret",
+                }
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_oidc_jit_provisioning_defaults_off_in_runtime_snapshot() -> None:
+    settings = _base_settings(
+        **{
+            "oidc.enabled": True,
+            "oidc.discovery_url": "https://issuer.example/.well-known/openid-configuration",
+            "oidc.client_id": "client-id",
+            "oidc.client_secret": "client-secret",
+        }
+    )
+    settings.values.pop("oidc.jit_provisioning")
+
+    snapshot = await load_mcp_auth_snapshot(settings)
+
+    assert snapshot.oidc is not None
+    assert snapshot.oidc.jit_provisioning is False
 
 
 @pytest.mark.asyncio
@@ -278,6 +413,149 @@ async def test_api_key_only_runtime_captures_auth_before_http_app_construction()
 
     assert unauthorized.status_code == 401
     assert "resource_metadata=" not in unauthorized.headers["www-authenticate"]
+
+
+@pytest.mark.asyncio
+async def test_api_key_recovery_mode_does_not_lock_transport_to_stale_origin() -> None:
+    snapshot = await load_mcp_auth_snapshot(
+        _base_settings(
+            **{
+                "mcp.oauth.enabled": False,
+                "mcp.oauth.public_base_url": "https://stale.example",
+            }
+        )
+    )
+    runtime = await build_mcp_runtime(
+        snapshot=snapshot,
+        database_url="postgresql+asyncpg://user:password@postgres/intercept",
+        secret_key="application-secret",
+        session_factory=lambda: None,
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=runtime.mounted_app),
+        base_url="http://dev-box.internal:8000",
+    ) as client:
+        response = await client.post(
+            "/streamable/",
+            headers={
+                "Origin": "http://dev-box.internal:8000",
+                "Accept": "application/json, text/event-stream",
+            },
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+        )
+
+    assert response.status_code == 401
+
+
+def _in_memory_provider_factory(snapshot, _token_hash_key):
+    return InMemoryOAuthProvider(
+        base_url=snapshot.oauth_base_url,
+        resource_base_url=snapshot.oauth_base_url,
+        required_scopes=["mcp:access"],
+        client_registration_options=ClientRegistrationOptions(
+            enabled=True,
+            valid_scopes=["mcp:access"],
+            default_scopes=["mcp:access"],
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_oauth_transport_rejects_untrusted_host_and_origin() -> None:
+    snapshot = await load_mcp_auth_snapshot(_base_settings())
+    runtime = await build_mcp_runtime(
+        snapshot=snapshot,
+        database_url="postgresql+asyncpg://user:password@postgres/intercept",
+        secret_key="application-secret",
+        session_factory=lambda: None,
+        local_provider_factory=_in_memory_provider_factory,
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=runtime.mounted_app),
+        base_url="https://intercept.example",
+    ) as client:
+        wrong_host = await client.post(
+            "/streamable/",
+            headers={"Host": "attacker.example"},
+        )
+        wrong_origin = await client.post(
+            "/streamable/",
+            headers={"Origin": "https://attacker.example"},
+        )
+        canonical = await client.post(
+            "/streamable/",
+            headers={"Origin": "https://intercept.example"},
+        )
+
+    assert wrong_host.status_code == 421
+    assert wrong_origin.status_code == 403
+    assert canonical.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_direct_asgi_registration_body_cap_rejects_chunked_payload() -> None:
+    snapshot = replace(
+        await load_mcp_auth_snapshot(_base_settings()),
+        registration_policy=MCPRegistrationPolicy(max_body_bytes=128),
+    )
+    runtime = await build_mcp_runtime(
+        snapshot=snapshot,
+        database_url="postgresql+asyncpg://user:password@postgres/intercept",
+        secret_key="application-secret",
+        session_factory=lambda: None,
+        local_provider_factory=_in_memory_provider_factory,
+    )
+
+    async def oversized_body():
+        yield b'{"client_name":"'
+        yield b"x" * 256
+        yield b'"}'
+
+    async with AsyncClient(
+        transport=ASGITransport(app=runtime.mounted_app),
+        base_url="https://intercept.example",
+    ) as client:
+        response = await client.post("/register", content=oversized_body())
+
+    assert response.status_code == 413
+    assert response.json() == {
+        "error": "invalid_client_metadata",
+        "error_description": "MCP registration request body is too large",
+    }
+
+
+@pytest.mark.asyncio
+async def test_direct_asgi_oauth_form_body_cap_rejects_chunked_payload() -> None:
+    snapshot = replace(
+        await load_mcp_auth_snapshot(_base_settings()),
+        registration_policy=MCPRegistrationPolicy(max_body_bytes=128),
+    )
+    runtime = await build_mcp_runtime(
+        snapshot=snapshot,
+        database_url="postgresql+asyncpg://user:password@postgres/intercept",
+        secret_key="application-secret",
+        session_factory=lambda: None,
+        local_provider_factory=_in_memory_provider_factory,
+    )
+
+    async def oversized_body():
+        yield b"client_id="
+        yield b"x" * 256
+
+    async with AsyncClient(
+        transport=ASGITransport(app=runtime.mounted_app),
+        base_url="https://intercept.example",
+    ) as client:
+        for path in ("/token", "/token/", "/revoke", "/revoke/"):
+            response = await client.post(path, content=oversized_body())
+
+            assert response.status_code == 413
+            assert response.json() == {
+                "error": "invalid_request",
+                "error_description": "MCP OAuth request body is too large",
+            }
 
 
 @pytest.mark.asyncio

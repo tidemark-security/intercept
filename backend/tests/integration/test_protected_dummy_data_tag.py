@@ -6,7 +6,9 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.models.enums import AlertStatus
 from app.models.models import Alert, Case, Task
+from app.services.dummy_data_service import dummy_data_service
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -132,3 +134,44 @@ async def test_bulk_alert_action_cannot_add_protected_dummy_tag(
 
     assert response.status_code == 400
     assert "protected" in str(response.json()).lower()
+
+
+@pytest.mark.asyncio
+async def test_normal_alert_escalation_does_not_make_case_dummy_cleanup_eligible(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_analyst(client, session_maker, analyst_user_factory)
+    alert_id = await _create_entity(
+        session_maker,
+        "alerts",
+        [DUMMY_DATA_TAG, "investigation"],
+    )
+
+    response = await client.post(
+        f"/api/v1/alerts/{alert_id}/triage",
+        json={
+            "status": AlertStatus.ESCALATED.value,
+            "triage_notes": "Normal analyst escalation",
+            "escalate_to_case": True,
+            "case_title": "Ordinary derived case",
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200, response.text
+    case_id = response.json()["case_id"]
+    assert case_id is not None
+
+    async with session_maker() as session:
+        derived_case = await session.get(Case, case_id)
+        assert derived_case is not None
+        assert derived_case.tags == ["investigation"]
+
+        cleanup = await dummy_data_service.clear_all_data(session)
+        assert cleanup["data"]["cases_deleted"] == 0
+
+    async with session_maker() as session:
+        assert await session.get(Alert, alert_id) is None
+        assert await session.get(Case, case_id) is not None

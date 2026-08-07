@@ -10,10 +10,21 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.error_schemas import ValidationErrorResponse
 from app.api.request_metadata import build_audit_context
-from app.api.routes.admin_auth import require_admin_user
-from app.api.routes.admin_auth import require_authenticated_user
+from app.api.routes.admin_auth import (
+    _authenticate_from_request,
+    require_admin_user,
+    require_api_key_admin_scope,
+    require_authenticated_user,
+)
+from app.core.csrf import API_KEY_AUTH_RESULT_SCOPE_KEY
 from app.core.database import get_db
+from app.core.oidc_policy_lock import (
+    acquire_oidc_policy_lock,
+    oidc_setting_requires_policy_gate,
+)
+from app.models.enums import UserRole
 from app.models.models import (
     AttachmentLimitsRead,
     AppSettingCreate,
@@ -66,6 +77,42 @@ def _validate_bulk_sync_setting_value(key: str, value: str | None) -> None:
     cron_expression_for_utc_time(normalized)
 
 
+async def _reauthorize_oidc_policy_writer(
+    *,
+    request: Request,
+    key: str,
+    current_user: UserAccount,
+    db: AsyncSession,
+) -> UserAccount:
+    """Put OIDC policy writes before account authentication in lock order."""
+
+    if not oidc_setting_requires_policy_gate(key):
+        return current_user
+
+    expected_user_id = current_user.id
+    # The generic admin dependency authenticates before the route knows which
+    # setting is targeted. Release those account locks, then establish the
+    # global policy->account order used by both writers and callbacks.
+    await db.commit()
+    await acquire_oidc_policy_lock(db, shared=False)
+    request.scope.pop(API_KEY_AUTH_RESULT_SCOPE_KEY, None)
+    reauthorized_user = await _authenticate_from_request(request, db)
+    require_api_key_admin_scope(request)
+    if (
+        reauthorized_user.id != expected_user_id
+        or reauthorized_user.role != UserRole.ADMIN
+        or reauthorized_user.must_change_password
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ValidationErrorResponse(
+                message="Administrator is no longer authorized",
+                fields=[],
+            ).model_dump(),
+        )
+    return reauthorized_user
+
+
 async def _write_setting(
     *,
     request: Request,
@@ -75,6 +122,12 @@ async def _write_setting(
     db: AsyncSession,
 ) -> AppSettingRead:
     """Run the shared route protocol for creating or updating a setting."""
+    current_user = await _reauthorize_oidc_policy_writer(
+        request=request,
+        key=key,
+        current_user=current_user,
+        db=db,
+    )
     service = SettingsService(db)  # type: ignore[arg-type]
     audit_context = build_audit_context(request)
 
@@ -239,6 +292,12 @@ async def delete_setting(
     Requires ADMIN role.
     Returns 204 No Content on success.
     """
+    current_user = await _reauthorize_oidc_policy_writer(
+        request=request,
+        key=key,
+        current_user=current_user,
+        db=db,
+    )
     service = SettingsService(db)  # type: ignore[arg-type]
     audit_context = build_audit_context(request)
     

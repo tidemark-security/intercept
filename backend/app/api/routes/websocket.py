@@ -15,8 +15,10 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.core.database import async_session_factory
+from app.core.authentication_activity import flush_deferred_authentication_activity
 from app.core.settings_registry import get_local
 from app.services.auth_service import (
+    AuthenticationConcurrencyError,
     LoginResult,
     PasswordChangeRequiredError,
     SessionNotFoundError,
@@ -72,10 +74,20 @@ async def _authenticate(ws: WebSocket) -> LoginResult | None:
 
     try:
         async with async_session_factory() as db:
-            login_result = await auth_service.validate_session(db, session_token=session_token)
+            login_result = await auth_service.validate_session(
+                db,
+                session_token=session_token,
+                shared_lock=True,
+            )
             await db.commit()
+            if await flush_deferred_authentication_activity(db):
+                await db.commit()
         return login_result
-    except (SessionNotFoundError, PasswordChangeRequiredError):
+    except (
+        AuthenticationConcurrencyError,
+        SessionNotFoundError,
+        PasswordChangeRequiredError,
+    ):
         return None
 
 
@@ -83,11 +95,26 @@ async def _revalidate_session(session_token: str) -> bool:
     """Re-validate the session token. Returns True if still valid."""
     try:
         async with async_session_factory() as db:
-            await auth_service.validate_session(db, session_token=session_token)
+            await auth_service.validate_session_for_realtime(
+                db,
+                session_token=session_token,
+            )
             await db.commit()
+            if await flush_deferred_authentication_activity(db):
+                await db.commit()
         return True
-    except (SessionNotFoundError, PasswordChangeRequiredError):
+    except (
+        AuthenticationConcurrencyError,
+        SessionNotFoundError,
+        PasswordChangeRequiredError,
+    ):
         return False
+
+
+# Inject the database-backed validator after both modules are initialized. This
+# keeps the realtime manager independent of the authentication service while
+# ensuring the production singleton fails closed on every command and send.
+connection_manager.set_session_validator(_revalidate_session)
 
 
 async def _close_for_session_validation_failure(ws: WebSocket) -> None:
@@ -156,6 +183,9 @@ async def websocket_endpoint(ws: WebSocket):
     try:
         while True:
             raw = await ws.receive_text()
+            if not await connection_manager.validate_connection(ws):
+                return
+
             msg = _parse_message(raw)
             if msg is None:
                 await ws.send_json({"type": "error", "payload": {"message": "Invalid JSON"}})
@@ -173,7 +203,8 @@ async def websocket_endpoint(ws: WebSocket):
                     continue
                 entity_type, entity_id = target
                 subscription_action = getattr(connection_manager, msg_type)
-                await subscription_action(ws, entity_type, entity_id)
+                if not await subscription_action(ws, entity_type, entity_id):
+                    return
                 await ws.send_json({
                     "type": f"{msg_type}d",
                     "payload": {"entity_type": entity_type, "entity_id": entity_id},

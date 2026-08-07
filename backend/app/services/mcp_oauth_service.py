@@ -15,12 +15,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, cast
 from urllib.parse import quote, urlencode, urlparse
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.account_authentication import non_password_authentication_allowed
 from app.core.settings_registry import get_local
 from app.mcp.auth import derive_mcp_keys
-from app.models.enums import UserStatus
 from app.models.models import (
     MCPOAuthAuthorizationCode,
     MCPOAuthClient,
@@ -31,6 +31,8 @@ from app.models.models import (
     UserAccount,
 )
 from app.services.audit_service import AuditContext, get_audit_service
+from app.services.credential_invalidation import credential_was_issued_after_cutoff
+from app.services.mcp_oauth_epoch import next_mcp_oauth_grant_epoch
 from app.services.settings_service import SettingsService
 
 
@@ -57,6 +59,13 @@ class MCPOAuthSettings:
 class OAuthTokenValidationResult:
     user: UserAccount
     token: MCPOAuthToken
+    client: MCPOAuthClient
+
+
+@dataclass(slots=True)
+class OAuthProviderGrantValidationResult:
+    consent: MCPOAuthConsent
+    reference: MCPOAuthProviderGrantReference | None
     client: MCPOAuthClient
 
 
@@ -116,6 +125,11 @@ class OAuthInactiveUserError(MCPOAuthError):
     description = "User account is not active"
 
 
+class OAuthPasswordChangeRequiredError(MCPOAuthError):
+    error = "invalid_token"
+    description = "Password change required"
+
+
 class MCPOAuthService:
     """Business logic for MCP OAuth registration, authorization, and tokens."""
 
@@ -125,6 +139,15 @@ class MCPOAuthService:
                 "MCP OAuth token hashing key must be at least 32 bytes"
             )
         self._token_hash_key = token_hash_key
+
+    @staticmethod
+    def require_eligible_user(user: UserAccount | None) -> UserAccount:
+        """Require a current user that may exercise an MCP OAuth grant."""
+        if user is None or not non_password_authentication_allowed(user):
+            raise OAuthInactiveUserError()
+        if user.must_change_password:
+            raise OAuthPasswordChangeRequiredError()
+        return user
 
     async def get_settings(self, db: AsyncSession) -> MCPOAuthSettings:
         settings = SettingsService(db)
@@ -201,6 +224,14 @@ class MCPOAuthService:
         context: Optional[AuditContext] = None,
     ) -> str:
         await self.get_enabled_settings(db)
+        user = self.require_eligible_user(
+            await db.get(
+                UserAccount,
+                user.id,
+                populate_existing=True,
+                with_for_update=True,
+            )
+        )
         self._validate_authorization_request(
             client=client,
             redirect_uri=redirect_uri,
@@ -223,9 +254,16 @@ class MCPOAuthService:
             scope=scope,
             resource=resource,
             expires_at=now + timedelta(seconds=CODE_TTL_SECONDS),
+            created_at=now,
         )
         db.add(auth_code)
-        await self._remember_consent(db, user=user, client=client, scope=scope)
+        await self._remember_consent(
+            db,
+            user=user,
+            client=client,
+            scope=scope,
+            authorized_at=now,
+        )
         await db.flush()
 
         await get_audit_service(db).log_event(
@@ -272,13 +310,32 @@ class MCPOAuthService:
             raise OAuthInvalidGrantError("Invalid resource")
 
         client = await self.resolve_client(db, client_id)
-        now = datetime.now(timezone.utc)
+        user_id = await self._authorization_code_user_id(db, code=code)
+        if user_id is None:
+            raise OAuthInvalidGrantError("Invalid authorization code")
+        user = self.require_eligible_user(
+            await db.get(
+                UserAccount,
+                user_id,
+                populate_existing=True,
+                with_for_update=True,
+            )
+        )
+        consent = await self._get_consent(
+            db,
+            user=user,
+            client=client,
+            scope=MCP_OAUTH_SCOPE,
+            for_update=True,
+        )
         auth_code = await self._load_authorization_code(
             db,
             code=code,
+            for_update=True,
         )
         if auth_code is None:
             raise OAuthInvalidGrantError("Invalid authorization code")
+        now = datetime.now(timezone.utc)
         if auth_code.consumed_at is not None:
             raise OAuthInvalidGrantError("Authorization code has already been used")
         if auth_code.expires_at <= now:
@@ -291,10 +348,19 @@ class MCPOAuthService:
             raise OAuthInvalidGrantError("Resource does not match authorization code")
         if not self._verify_pkce(code_verifier, auth_code.code_challenge):
             raise OAuthInvalidGrantError("PKCE verification failed")
-
-        user = await db.get(UserAccount, auth_code.user_id)
-        if user is None or user.status != UserStatus.ACTIVE:
-            raise OAuthInactiveUserError()
+        if auth_code.user_id != user.id:
+            raise OAuthInvalidGrantError("Invalid authorization code")
+        self._require_current_authorization_epoch(
+            consent=consent,
+            issued_at=auth_code.created_at,
+        )
+        if not credential_was_issued_after_cutoff(
+            user,
+            issued_at=auth_code.created_at,
+        ):
+            raise OAuthInvalidGrantError(
+                "Authorization code predates account credential invalidation"
+            )
 
         auth_code.consumed_at = now
         return await self._issue_token_pair(
@@ -319,26 +385,54 @@ class MCPOAuthService:
     ) -> dict[str, Any]:
         settings = await self.get_enabled_settings(db)
         client = await self.resolve_client(db, client_id)
-        now = datetime.now(timezone.utc)
+        user_id = await self._token_user_id(db, token=refresh_token)
+        if user_id is None:
+            raise OAuthInvalidGrantError("Invalid refresh token")
+        user = self.require_eligible_user(
+            await db.get(
+                UserAccount,
+                user_id,
+                populate_existing=True,
+                with_for_update=True,
+            )
+        )
         old_refresh = await self._load_token(
             db,
             token=refresh_token,
+            for_update=True,
         )
         if old_refresh is None or old_refresh.token_type != "refresh":
             raise OAuthInvalidGrantError("Invalid refresh token")
+        now = datetime.now(timezone.utc)
         if old_refresh.revoked_at is not None:
+            await self._revoke_refresh_family(
+                db,
+                refresh_token_id=old_refresh.id,
+                now=now,
+            )
             raise OAuthInvalidGrantError("Refresh token has been revoked")
         if old_refresh.expires_at <= now:
             old_refresh.revoked_at = now
+            await self._revoke_refresh_family(
+                db,
+                refresh_token_id=old_refresh.id,
+                now=now,
+            )
             raise OAuthInvalidGrantError("Refresh token has expired")
         if old_refresh.client_db_id != client.id:
             raise OAuthInvalidGrantError("Refresh token was issued to a different client")
         if resource and resource != old_refresh.resource:
             raise OAuthInvalidGrantError("Resource does not match refresh token")
 
-        user = await db.get(UserAccount, old_refresh.user_id)
-        if user is None or user.status != UserStatus.ACTIVE:
-            raise OAuthInactiveUserError()
+        if old_refresh.user_id != user.id:
+            raise OAuthInvalidGrantError("Invalid refresh token")
+        if not credential_was_issued_after_cutoff(
+            user,
+            issued_at=old_refresh.created_at,
+        ):
+            raise OAuthInvalidGrantError(
+                "Refresh token predates account credential invalidation"
+            )
 
         old_refresh.revoked_at = now
         return await self._issue_token_pair(
@@ -360,11 +454,19 @@ class MCPOAuthService:
         token: str,
         request_path: str,
         context: Optional[AuditContext] = None,
+        for_update: bool = False,
+        skip_locked: bool = False,
+        audit_success: bool = True,
     ) -> OAuthTokenValidationResult:
         settings = await self.get_enabled_settings(db)
         expected_resource = self.resource_url_for_path(settings, request_path)
         now = datetime.now(timezone.utc)
-        oauth_token = await self._load_token(db, token=token)
+        oauth_token = await self._load_token(
+            db,
+            token=token,
+            for_update=for_update,
+            skip_locked=skip_locked,
+        )
         if oauth_token is None:
             raise OAuthInvalidTokenError()
 
@@ -381,8 +483,14 @@ class MCPOAuthService:
             raise OAuthInvalidTokenError("Access token has expired")
         if client.revoked_at is not None:
             raise OAuthInvalidClientError()
-        if user.status != UserStatus.ACTIVE:
-            raise OAuthInactiveUserError()
+        self.require_eligible_user(user)
+        if not credential_was_issued_after_cutoff(
+            user,
+            issued_at=oauth_token.created_at,
+        ):
+            raise OAuthInvalidTokenError(
+                "Access token predates account credential invalidation"
+            )
         if oauth_token.scope != MCP_OAUTH_SCOPE:
             raise OAuthInvalidTokenError("Access token is missing required scope")
         if oauth_token.resource.rstrip("/") != expected_resource.rstrip("/"):
@@ -390,21 +498,117 @@ class MCPOAuthService:
 
         oauth_token.last_used_at = now
         client.last_seen_at = now
-        await get_audit_service(db).log_event(
-            event_type="auth.mcp_oauth.mcp_request",
-            entity_type="mcp_oauth_client",
-            entity_id=str(client.id),
-            description="MCP OAuth request authenticated",
-            new_value={
-                "client_id": client.client_id,
-                "client_name": client.client_name,
-                "path": request_path,
-                "scope": oauth_token.scope,
-            },
-            performed_by=user.username,
-            context=context,
-        )
+        if audit_success:
+            await get_audit_service(db).log_event(
+                event_type="auth.mcp_oauth.mcp_request",
+                entity_type="mcp_oauth_client",
+                entity_id=str(client.id),
+                description="MCP OAuth request authenticated",
+                new_value={
+                    "client_id": client.client_id,
+                    "client_name": client.client_name,
+                    "path": request_path,
+                    "scope": oauth_token.scope,
+                },
+                performed_by=user.username,
+                context=context,
+            )
         return OAuthTokenValidationResult(user=user, token=oauth_token, client=client)
+
+    async def validate_provider_grant_reference(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: Any,
+        client_id: str,
+        provider_reference_hash: str,
+        allow_unprojected: bool = False,
+        for_update: bool = False,
+        skip_locked: bool = False,
+    ) -> OAuthProviderGrantValidationResult | None:
+        """Validate one OIDC token family against its durable revocation state.
+
+        ``allow_unprojected`` exists only for token families created before the
+        durable projection was introduced. A revoked consent or any revoked
+        family reference still fails closed. Tool execution always requires an
+        exact projected reference and holds that row lock until completion.
+        """
+
+        consent_result = await db.execute(
+            select(MCPOAuthConsent, MCPOAuthClient)
+            .join(
+                MCPOAuthClient,
+                cast(Any, MCPOAuthClient.id == MCPOAuthConsent.client_db_id),
+            )
+            .where(cast(Any, MCPOAuthConsent.user_id == user_id))
+            .where(cast(Any, MCPOAuthConsent.scope == MCP_OAUTH_SCOPE))
+            .where(cast(Any, MCPOAuthClient.client_id == client_id))
+        )
+        consent_row = consent_result.first()
+        if consent_row is None:
+            if allow_unprojected:
+                return None
+            raise OAuthInvalidTokenError("OIDC grant is not projected")
+
+        consent, client = consent_row
+        if (
+            consent.provider_mode != "oidc"
+            or consent.revoked_at is not None
+            or client.revoked_at is not None
+        ):
+            raise OAuthInvalidTokenError("OIDC grant has been revoked")
+
+        reference_statement = select(MCPOAuthProviderGrantReference).where(
+            cast(
+                Any,
+                MCPOAuthProviderGrantReference.consent_id == consent.id,
+            ),
+            cast(
+                Any,
+                MCPOAuthProviderGrantReference.provider_reference_hash
+                == provider_reference_hash,
+            ),
+        )
+        if for_update:
+            reference_statement = reference_statement.execution_options(
+                populate_existing=True
+            ).with_for_update(
+                of=MCPOAuthProviderGrantReference,
+                skip_locked=skip_locked,
+            )
+        reference_result = await db.execute(reference_statement)
+        reference = reference_result.scalar_one_or_none()
+        if reference is None:
+            if allow_unprojected:
+                revoked_reference = await db.scalar(
+                    select(MCPOAuthProviderGrantReference.id)
+                    .where(
+                        cast(
+                            Any,
+                            MCPOAuthProviderGrantReference.consent_id
+                            == consent.id,
+                        ),
+                        cast(
+                            Any,
+                            MCPOAuthProviderGrantReference.revoked_at != None,  # noqa: E711
+                        ),
+                    )
+                    .limit(1)
+                )
+                if revoked_reference is None:
+                    return OAuthProviderGrantValidationResult(
+                        consent=consent,
+                        reference=None,
+                        client=client,
+                    )
+            raise OAuthInvalidTokenError("OIDC grant reference is not active")
+        if reference.revoked_at is not None:
+            raise OAuthInvalidTokenError("OIDC grant reference has been revoked")
+        return OAuthProviderGrantValidationResult(
+            consent=consent,
+            reference=reference,
+            client=client,
+        )
 
     async def revoke_token(
         self,
@@ -492,17 +696,37 @@ class MCPOAuthService:
         consent_id: Any,
         context: Optional[AuditContext] = None,
     ) -> None:
+        locked_user = await db.get(
+            UserAccount,
+            user.id,
+            populate_existing=True,
+            with_for_update=True,
+        )
+        if locked_user is None:
+            raise OAuthInvalidRequestError("Connected MCP client not found")
         consent, client = await self.resolve_connected_client(
             db,
-            user=user,
+            user=locked_user,
             consent_id=consent_id,
+            for_update=True,
         )
         now = datetime.now(timezone.utc)
+        revocation_epoch = await next_mcp_oauth_grant_epoch(db)
         consent.revoked_at = now
+        consent.revocation_epoch = revocation_epoch
+        await db.execute(
+            update(MCPOAuthAuthorizationCode)
+            .where(
+                cast(Any, MCPOAuthAuthorizationCode.user_id == locked_user.id),
+                cast(Any, MCPOAuthAuthorizationCode.client_db_id == client.id),
+                cast(Any, MCPOAuthAuthorizationCode.consumed_at == None),  # noqa: E711
+            )
+            .values(consumed_at=now)
+        )
         if consent.provider_mode == "local":
             await self._revoke_user_client_tokens(
                 db,
-                user=user,
+                user=locked_user,
                 client=client,
                 now=now,
             )
@@ -519,8 +743,64 @@ class MCPOAuthService:
             entity_id=str(client.id),
             description="MCP OAuth client access revoked",
             new_value={"client_id": client.client_id, "client_name": client.client_name},
-            performed_by=user.username,
+            performed_by=locked_user.username,
             context=context,
+        )
+
+    async def invalidate_user_grants(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: Any,
+        invalidated_at: datetime,
+    ) -> None:
+        """Permanently invalidate persisted MCP grants for one account."""
+
+        revocation_epoch = await next_mcp_oauth_grant_epoch(db)
+
+        await db.execute(
+            update(MCPOAuthAuthorizationCode)
+            .where(
+                cast(Any, MCPOAuthAuthorizationCode.user_id == user_id),
+                cast(Any, MCPOAuthAuthorizationCode.consumed_at == None),  # noqa: E711
+            )
+            .values(consumed_at=invalidated_at)
+        )
+        await db.execute(
+            update(MCPOAuthToken)
+            .where(
+                cast(Any, MCPOAuthToken.user_id == user_id),
+                cast(Any, MCPOAuthToken.revoked_at == None),  # noqa: E711
+            )
+            .values(revoked_at=invalidated_at)
+        )
+        consent_ids = select(MCPOAuthConsent.id).where(
+            cast(Any, MCPOAuthConsent.user_id == user_id)
+        )
+        await db.execute(
+            update(MCPOAuthProviderGrantReference)
+            .where(
+                cast(
+                    Any,
+                    MCPOAuthProviderGrantReference.consent_id.in_(consent_ids),
+                ),
+                cast(
+                    Any,
+                    MCPOAuthProviderGrantReference.revoked_at == None,  # noqa: E711
+                ),
+            )
+            .values(revoked_at=invalidated_at)
+        )
+        await db.execute(
+            update(MCPOAuthConsent)
+            .where(cast(Any, MCPOAuthConsent.user_id == user_id))
+            .values(
+                revoked_at=func.coalesce(
+                    MCPOAuthConsent.revoked_at,
+                    invalidated_at,
+                ),
+                revocation_epoch=revocation_epoch,
+            )
         )
 
     async def resolve_connected_client(
@@ -529,15 +809,21 @@ class MCPOAuthService:
         *,
         user: UserAccount,
         consent_id: Any,
+        for_update: bool = False,
     ) -> tuple[MCPOAuthConsent, MCPOAuthClient]:
         """Load a user-owned connected-client projection for provider actions."""
 
-        result = await db.execute(
+        statement = (
             select(MCPOAuthConsent, MCPOAuthClient)
             .join(MCPOAuthClient, cast(Any, MCPOAuthClient.id == MCPOAuthConsent.client_db_id))
             .where(cast(Any, MCPOAuthConsent.id == consent_id))
             .where(cast(Any, MCPOAuthConsent.user_id == user.id))
         )
+        if for_update:
+            statement = statement.execution_options(
+                populate_existing=True
+            ).with_for_update(of=MCPOAuthConsent)
+        result = await db.execute(statement)
         row = result.first()
         if row is None:
             raise OAuthInvalidRequestError("Connected MCP client not found")
@@ -570,6 +856,36 @@ class MCPOAuthService:
         )
         return list(result.scalars().all())
 
+    async def lock_active_provider_grant_reference(
+        self,
+        db: AsyncSession,
+        *,
+        consent_id: Any,
+        reference_id: Any,
+    ) -> MCPOAuthProviderGrantReference | None:
+        """Reacquire one family lock after a prior progress commit."""
+
+        result = await db.execute(
+            select(MCPOAuthProviderGrantReference)
+            .where(
+                cast(
+                    Any,
+                    MCPOAuthProviderGrantReference.id == reference_id,
+                ),
+                cast(
+                    Any,
+                    MCPOAuthProviderGrantReference.consent_id == consent_id,
+                ),
+                cast(
+                    Any,
+                    MCPOAuthProviderGrantReference.revoked_at == None,  # noqa: E711
+                ),
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def _issue_token_pair(
         self,
         db: AsyncSession,
@@ -583,6 +899,7 @@ class MCPOAuthService:
         event_type: str,
         rotated_from_token_id: Any = None,
     ) -> dict[str, Any]:
+        self.require_eligible_user(user)
         now = datetime.now(timezone.utc)
         access_token = f"{ACCESS_TOKEN_PREFIX}{secrets.token_urlsafe(48)}"
         refresh_token = f"{REFRESH_TOKEN_PREFIX}{secrets.token_urlsafe(48)}"
@@ -644,20 +961,31 @@ class MCPOAuthService:
         user: UserAccount,
         client: MCPOAuthClient,
         scope: str,
+        authorized_at: datetime | None = None,
     ) -> MCPOAuthConsent:
-        now = datetime.now(timezone.utc)
-        consent = await self._get_consent(db, user=user, client=client, scope=scope)
+        now = authorized_at or datetime.now(timezone.utc)
+        authorization_epoch = await next_mcp_oauth_grant_epoch(db)
+        consent = await self._get_consent(
+            db,
+            user=user,
+            client=client,
+            scope=scope,
+            for_update=True,
+        )
         if consent is None:
             consent = MCPOAuthConsent(
                 user_id=user.id,
                 client_db_id=client.id,
                 scope=scope,
                 last_authorized_at=now,
+                last_authorization_epoch=authorization_epoch,
             )
             db.add(consent)
         else:
             consent.revoked_at = None
+            consent.revocation_epoch = None
             consent.last_authorized_at = now
+            consent.last_authorization_epoch = authorization_epoch
             consent.provider_mode = "local"
             consent.provider_reference_hash = None
             references = await self.list_active_provider_grant_references(
@@ -675,14 +1003,37 @@ class MCPOAuthService:
         user: UserAccount,
         client: MCPOAuthClient,
         scope: str,
+        for_update: bool = False,
     ) -> MCPOAuthConsent | None:
-        result = await db.execute(
+        statement = (
             select(MCPOAuthConsent)
             .where(cast(Any, MCPOAuthConsent.user_id == user.id))
             .where(cast(Any, MCPOAuthConsent.client_db_id == client.id))
             .where(cast(Any, MCPOAuthConsent.scope == scope))
         )
+        if for_update:
+            statement = statement.execution_options(
+                populate_existing=True
+            ).with_for_update()
+        result = await db.execute(statement)
         return result.scalar_one_or_none()
+
+    @staticmethod
+    def _require_current_authorization_epoch(
+        *,
+        consent: MCPOAuthConsent | None,
+        issued_at: datetime,
+    ) -> None:
+        """Reject a code that does not belong to the active consent epoch."""
+
+        if (
+            consent is None
+            or consent.revoked_at is not None
+            or issued_at < consent.last_authorized_at
+        ):
+            raise OAuthInvalidGrantError(
+                "Authorization code predates connected-client authorization"
+            )
 
     async def _last_used_at(
         self,
@@ -965,7 +1316,9 @@ class MCPOAuthService:
             )
         )
         if for_update:
-            statement = statement.with_for_update()
+            statement = statement.execution_options(
+                populate_existing=True
+            ).with_for_update()
         result = await db.execute(statement)
         authorization_code = result.scalar_one_or_none()
         if (
@@ -975,12 +1328,34 @@ class MCPOAuthService:
             authorization_code.code_hash = current_hash
         return authorization_code
 
+    async def _authorization_code_user_id(
+        self,
+        db: AsyncSession,
+        *,
+        code: str,
+    ) -> Any | None:
+        """Resolve a code owner without mutating or locking the grant row."""
+
+        current_hash, legacy_hash = self._secret_hashes_for_lookup(code)
+        result = await db.execute(
+            select(MCPOAuthAuthorizationCode.user_id).where(
+                cast(
+                    Any,
+                    MCPOAuthAuthorizationCode.code_hash.in_(
+                        (current_hash, legacy_hash)
+                    ),
+                )
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def _load_token(
         self,
         db: AsyncSession,
         *,
         token: str,
         for_update: bool = False,
+        skip_locked: bool = False,
     ) -> MCPOAuthToken | None:
         current_hash, legacy_hash = self._secret_hashes_for_lookup(token)
         statement = select(MCPOAuthToken).where(
@@ -992,12 +1367,33 @@ class MCPOAuthService:
             )
         )
         if for_update:
-            statement = statement.with_for_update()
+            statement = statement.execution_options(
+                populate_existing=True
+            ).with_for_update(skip_locked=skip_locked)
         result = await db.execute(statement)
         oauth_token = result.scalar_one_or_none()
         if oauth_token is not None and oauth_token.token_hash == legacy_hash:
             oauth_token.token_hash = current_hash
         return oauth_token
+
+    async def _token_user_id(
+        self,
+        db: AsyncSession,
+        *,
+        token: str,
+    ) -> Any | None:
+        """Resolve a token owner without mutating or locking the grant row."""
+
+        current_hash, legacy_hash = self._secret_hashes_for_lookup(token)
+        result = await db.execute(
+            select(MCPOAuthToken.user_id).where(
+                cast(
+                    Any,
+                    MCPOAuthToken.token_hash.in_((current_hash, legacy_hash)),
+                )
+            )
+        )
+        return result.scalar_one_or_none()
 
     @staticmethod
     def _verify_pkce(code_verifier: str, code_challenge: str) -> bool:
@@ -1052,6 +1448,8 @@ __all__ = [
     "OAuthInvalidGrantError",
     "OAuthInvalidRequestError",
     "OAuthInvalidTokenError",
+    "OAuthPasswordChangeRequiredError",
+    "OAuthProviderGrantValidationResult",
     "OAuthTokenValidationResult",
     "mcp_oauth_service",
 ]

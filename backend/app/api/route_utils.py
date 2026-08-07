@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from math import ceil
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
@@ -814,19 +815,22 @@ def _cookie_kwargs(
     max_age: Optional[int] = None,
     httponly: Optional[bool] = None,
     samesite: Optional[str] = None,
+    secure: Optional[bool] = None,
+    include_configured_domain: bool = True,
 ) -> dict:
     """Build cookie attributes, aligning ``Max-Age`` with an absolute expiry."""
     kwargs: dict[str, object] = {
         "key": key,
         "httponly": get_local("auth.session.cookie_http_only") if httponly is None else httponly,
-        "secure": get_local("auth.session.cookie_secure"),
+        "secure": get_local("auth.session.cookie_secure") if secure is None else secure,
         "samesite": get_local("auth.session.cookie_same_site") if samesite is None else samesite,
         "path": path,
     }
 
-    domain = get_local("auth.session.cookie_domain")
-    if domain:
-        kwargs["domain"] = domain
+    if include_configured_domain:
+        domain = get_local("auth.session.cookie_domain")
+        if domain:
+            kwargs["domain"] = domain
 
     expiry = _normalize_cookie_expiry(expires_at)
     if isinstance(expiry, datetime):
@@ -848,13 +852,29 @@ def _cookie_kwargs(
     return kwargs
 
 
-def _delete_cookie(response: Response, *, key: str, path: str) -> None:
-    cookie_domain = get_local("auth.session.cookie_domain")
+def _delete_cookie(
+    response: Response,
+    *,
+    key: str,
+    path: str,
+    secure: bool = False,
+    include_configured_domain: bool = True,
+) -> None:
+    cookie_domain = (
+        get_local("auth.session.cookie_domain")
+        if include_configured_domain
+        else None
+    )
 
     if cookie_domain:
-        response.delete_cookie(key=key, path=path, domain=cookie_domain)
+        response.delete_cookie(
+            key=key,
+            path=path,
+            domain=cookie_domain,
+            secure=secure,
+        )
     else:
-        response.delete_cookie(key=key, path=path)
+        response.delete_cookie(key=key, path=path, secure=secure)
 
 
 def issue_session_cookie(response: Response, session_token: str, expires_at: datetime) -> None:
@@ -945,6 +965,23 @@ def read_session_cookie(request: Request) -> Optional[str]:
     return request.cookies.get(get_local("auth.session.cookie_name"))
 
 
+def _oidc_browser_binding_cookie_secure() -> bool:
+    return urlsplit(str(get_local("oidc.redirect_uri"))).scheme.lower() == "https"
+
+
+def _oidc_browser_binding_cookie_name() -> str:
+    """Return a cookie-tossing-resistant name for secure deployments."""
+
+    configured_name = str(get_local("oidc.browser_binding.cookie_name"))
+    if _oidc_browser_binding_cookie_secure():
+        if configured_name.startswith("__Host-"):
+            return configured_name
+        return f"__Host-{configured_name}"
+    # __Host- cookies require Secure. Preserve loopback HTTP development flows
+    # when an operator carries a production-prefixed name into local settings.
+    return configured_name.removeprefix("__Host-")
+
+
 def issue_oidc_browser_binding_cookie(response: Response, browser_binding_token: str, expires_at: datetime) -> None:
     """Attach the short-lived OIDC browser-binding cookie to the response."""
 
@@ -953,10 +990,19 @@ def issue_oidc_browser_binding_cookie(response: Response, browser_binding_token:
 
     expiry = _normalize_cookie_expiry(expires_at)
     kwargs = _cookie_kwargs(
-        key=get_local("oidc.browser_binding.cookie_name"),
-        path="/api/v1/auth/oidc",
+        key=_oidc_browser_binding_cookie_name(),
+        # __Host- cookies require Path=/ and prohibit Domain. The broader path
+        # does not expose the HttpOnly value to script and the five-minute
+        # lifetime bounds its use.
+        path="/",
         expires_at=expiry,
         httponly=True,
+        # The authorization response is a top-level cross-site navigation
+        # from the IdP. A Strict transaction cookie would suppress the PKCE
+        # verifier and make every otherwise-valid callback fail.
+        samesite="lax",
+        secure=_oidc_browser_binding_cookie_secure(),
+        include_configured_domain=False,
     )
     response.set_cookie(value=browser_binding_token, **kwargs)
 
@@ -966,12 +1012,14 @@ def revoke_oidc_browser_binding_cookie(response: Response) -> None:
 
     _delete_cookie(
         response,
-        key=get_local("oidc.browser_binding.cookie_name"),
-        path="/api/v1/auth/oidc",
+        key=_oidc_browser_binding_cookie_name(),
+        path="/",
+        secure=_oidc_browser_binding_cookie_secure(),
+        include_configured_domain=False,
     )
 
 
 def read_oidc_browser_binding_cookie(request: Request) -> Optional[str]:
     """Return the OIDC browser-binding token from the incoming request, if present."""
 
-    return request.cookies.get(get_local("oidc.browser_binding.cookie_name"))
+    return request.cookies.get(_oidc_browser_binding_cookie_name())

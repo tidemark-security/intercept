@@ -12,6 +12,8 @@ export type { AcceptRecommendationResponse } from './models/AcceptRecommendation
 export type { AccountType } from './models/AccountType';
 export type { AdminCreateNHIRequest } from './models/AdminCreateNHIRequest';
 export type { AdminCreateNHIResponse } from './models/AdminCreateNHIResponse';
+export type { AdminCreateOIDCUserRequest } from './models/AdminCreateOIDCUserRequest';
+export type { AdminCreateOIDCUserResponse } from './models/AdminCreateOIDCUserResponse';
 export type { AdminCreateUserRequest } from './models/AdminCreateUserRequest';
 export type { AdminCreateUserResponse } from './models/AdminCreateUserResponse';
 export type { AdminPasskeyRead } from './models/AdminPasskeyRead';
@@ -215,7 +217,6 @@ export { CasesService } from './services/CasesService';
 export { ContextEntriesService } from './services/ContextEntriesService';
 export { DashboardService } from './services/DashboardService';
 export { DefaultService } from './services/DefaultService';
-export { DummyDataService } from './services/DummyDataService';
 export { EnrichmentsService } from './services/EnrichmentsService';
 export { FeaturesService } from './services/FeaturesService';
 export { LangflowService } from './services/LangflowService';

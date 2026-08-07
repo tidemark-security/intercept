@@ -119,6 +119,11 @@ async def test_admin_routes_map_only_typed_domain_errors(
     error: Exception,
     expected_status: int,
 ) -> None:
+    monkeypatch.setattr(
+        admin_auth_routes,
+        "_reauthorize_admin_target_mutation",
+        AsyncMock(),
+    )
     method_name = {
         "create": "create_user",
         "status": "update_user_status",
@@ -147,6 +152,11 @@ async def test_admin_routes_do_not_misclassify_unexpected_value_errors(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
 ) -> None:
+    monkeypatch.setattr(
+        admin_auth_routes,
+        "_reauthorize_admin_target_mutation",
+        AsyncMock(),
+    )
     method_name = {
         "create": "create_user",
         "status": "update_user_status",

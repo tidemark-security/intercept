@@ -5,7 +5,17 @@ from typing import Optional, List, Dict, Any, Union, Literal, TypeAlias
 from uuid import UUID, uuid4
 
 from sqlmodel import SQLModel, Field, Relationship, Column
-from sqlalchemy import DateTime, UniqueConstraint, String, Enum as SAEnum, Index, text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    Enum as SAEnum,
+    Index,
+    Sequence,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import TypeDecorator
 from pydantic import EmailStr, computed_field, field_validator, model_validator
@@ -43,6 +53,10 @@ from app.models.enums import (
     MessageFeedback,
     ContextCriterionType,
 )
+
+# Migration 026 owns this sequence. Keep it detached from SQLModel metadata so
+# the filtered baseline schema in migration 001 cannot create it prematurely.
+MCP_OAUTH_GRANT_EPOCH_SEQUENCE = Sequence("mcp_oauth_grant_epoch_seq")
 
 TimelineGraphEntityType = Literal["case", "task"]
 TimelineGraphEdgeMarker = Literal["none", "forward", "reverse", "bidirectional"]
@@ -1673,6 +1687,13 @@ class UserAccount(UserAccountBase, table=True):
     __tablename__ = "user_accounts"  # type: ignore
     __table_args__ = (
         UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_user_accounts_oidc_identity"),
+        CheckConstraint(
+            "(oidc_issuer IS NULL AND oidc_subject IS NULL) OR "
+            "(oidc_issuer IS NOT NULL AND oidc_subject IS NOT NULL "
+            "AND length(btrim(oidc_issuer, E' \\011\\012\\013\\014\\015')) > 0 "
+            "AND length(btrim(oidc_subject, E' \\011\\012\\013\\014\\015')) > 0)",
+            name="ck_user_accounts_oidc_identity_pair",
+        ),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
@@ -1735,6 +1756,13 @@ class UserAccount(UserAccountBase, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(UTCDateTime()),
     )
+    credentials_invalidated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(UTCDateTime(), nullable=True),
+        description=(
+            "Credentials issued at or before this time are permanently invalid"
+        ),
+    )
     created_by_admin_id: Optional[UUID] = Field(
         default=None,
         foreign_key="user_accounts.id",
@@ -1761,10 +1789,20 @@ class UserAccount(UserAccountBase, table=True):
     @model_validator(mode="after")
     def _validate_account_type_fields(self) -> "UserAccount":
         """Enforce field requirements based on account type."""
-        if self.account_type == AccountType.HUMAN:
-            if self.oidc_subject and not self.oidc_issuer:
-                raise ValueError("oidc_issuer is required when oidc_subject is set")
-        elif self.account_type == AccountType.NHI:
+        issuer_present = self.oidc_issuer is not None
+        subject_present = self.oidc_subject is not None
+        invalid_pair = issuer_present != subject_present
+        if self.oidc_issuer is not None and self.oidc_subject is not None:
+            invalid_pair = (
+                not self.oidc_issuer.strip()
+                or not self.oidc_subject.strip()
+            )
+        if invalid_pair:
+            raise ValueError(
+                "OIDC issuer and subject must be provided together and cannot be blank"
+            )
+
+        if self.account_type == AccountType.NHI:
             if self.email is not None:
                 raise ValueError("email must be null for NHI accounts")
             if self.password_hash is not None:
@@ -1852,12 +1890,26 @@ class PasskeyCredential(PasskeyCredentialBase, table=True):
 
 class WebAuthnChallenge(SQLModel, table=True):
     __tablename__ = "webauthn_challenges"  # type: ignore
+    __table_args__ = (
+        Index(
+            "ix_webauthn_challenges_source_created",
+            "source_fingerprint",
+            "created_at",
+        ),
+        Index(
+            "ix_webauthn_challenges_user_fingerprint_created",
+            "user_fingerprint",
+            "created_at",
+        ),
+    )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
     challenge: str = Field(max_length=512, index=True)
     flow_type: str = Field(max_length=32, index=True)
     user_id: Optional[UUID] = Field(default=None, foreign_key="user_accounts.id", index=True)
     username: Optional[str] = Field(default=None, max_length=64)
+    source_fingerprint: Optional[str] = Field(default=None, max_length=64)
+    user_fingerprint: Optional[str] = Field(default=None, max_length=64)
     expires_at: datetime = Field(sa_column=Column(UTCDateTime(), index=True))
     consumed_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
     created_at: datetime = Field(
@@ -1869,16 +1921,107 @@ class WebAuthnChallenge(SQLModel, table=True):
 
 class OIDCAuthRequest(SQLModel, table=True):
     __tablename__ = "oidc_auth_requests"  # type: ignore
+    __table_args__ = (
+        Index(
+            "ix_oidc_auth_requests_source_created",
+            "source_fingerprint",
+            "created_at",
+        ),
+        Index("ix_oidc_auth_requests_created_at", "created_at"),
+    )
 
     state: str = Field(primary_key=True, max_length=255)
     nonce: str = Field(max_length=255)
     browser_binding_hash: str = Field(max_length=64)
+    source_fingerprint: str = Field(max_length=64)
     redirect_to: str = Field(max_length=2048)
     expires_at: datetime = Field(sa_column=Column(UTCDateTime(), index=True))
     consumed_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        sa_column=Column(UTCDateTime()),
+        sa_column=Column(UTCDateTime(), nullable=False),
+    )
+
+
+class PasswordLoginAttempt(SQLModel, table=True):
+    """Bounded durable admission ledger for password-login initiations."""
+
+    __tablename__ = "password_login_attempts"  # type: ignore
+    __table_args__ = (
+        Index(
+            "ix_password_login_attempts_source_created",
+            "source_fingerprint",
+            "created_at",
+        ),
+        Index("ix_password_login_attempts_created_at", "created_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    source_fingerprint: str = Field(max_length=64)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime(), nullable=False),
+    )
+
+
+class PasswordHashWorkLease(SQLModel, table=True):
+    """Short-lived cross-worker reservation for expensive Argon2 work."""
+
+    __tablename__ = "password_hash_work_leases"  # type: ignore
+    __table_args__ = (
+        Index("ix_password_hash_work_leases_expires_at", "expires_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    work_kind: str = Field(max_length=32)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime(), nullable=False),
+    )
+    expires_at: datetime = Field(sa_column=Column(UTCDateTime(), nullable=False))
+
+
+class PasswordLoginFailureCounter(SQLModel, table=True):
+    """Pending password failures isolated from account authorization locks."""
+
+    __tablename__ = "password_login_failure_counters"  # type: ignore
+
+    user_id: UUID = Field(
+        foreign_key="user_accounts.id",
+        primary_key=True,
+    )
+    password_fingerprint: str = Field(max_length=64, primary_key=True)
+    failed_attempts: int = Field(default=0, ge=0)
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime(), nullable=False),
+    )
+
+
+class ApiKeyFailureSample(SQLModel, table=True):
+    """Durable admission ledger for sampled API-key authentication failures."""
+
+    __tablename__ = "api_key_failure_samples"  # type: ignore
+    __table_args__ = (
+        Index(
+            "ix_api_key_failure_samples_source_created",
+            "source_fingerprint",
+            "created_at",
+        ),
+        Index(
+            "ix_api_key_failure_samples_failure_created",
+            "failure_fingerprint",
+            "created_at",
+        ),
+        Index("ix_api_key_failure_samples_created_at", "created_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    source_fingerprint: str = Field(max_length=64)
+    failure_fingerprint: str = Field(max_length=64)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime(), nullable=False),
     )
 
 
@@ -1942,6 +2085,16 @@ class ApiKeyBase(SQLModel):
         sa_column=Column(UTCDateTime(), index=True),
         description="Expiration date (required for all API keys)",
     )
+    scopes: List[str] = Field(
+        default_factory=lambda: [
+            "api:admin",
+            "api:read",
+            "api:write",
+            "mcp:access",
+        ],
+        sa_column=Column(JSONB, nullable=False),
+        description="Explicit permissions granted to this API key",
+    )
 
 
 class ApiKey(ApiKeyBase, table=True):
@@ -1982,6 +2135,9 @@ class ApiKey(ApiKeyBase, table=True):
 
 class ApiKeyRead(ApiKeyBase):
     """Schema for reading API key metadata (never includes the actual key)."""
+    scopes: List[str] = Field(
+        description="Explicit permissions granted to this API key",
+    )
     id: UUID
     user_id: UUID
     prefix: str
@@ -2035,6 +2191,70 @@ class MCPOAuthClient(SQLModel, table=True):
     revoked_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
 
 
+class MCPDCRRegistration(SQLModel, table=True):
+    """Durable abuse-control record for one dynamic client registration."""
+
+    __tablename__ = "mcp_oauth_dcr_registrations"  # type: ignore
+    __table_args__ = (
+        Index(
+            "ix_mcp_oauth_dcr_registrations_expiry",
+            "expires_at",
+        ),
+        Index(
+            "ix_mcp_oauth_dcr_registrations_source_created",
+            "source_ip",
+            "created_at",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    client_id: str = Field(
+        sa_column=Column(String(2048), nullable=False, unique=True)
+    )
+    provider_mode: str = Field(max_length=32)
+    source_ip: str = Field(max_length=64)
+    created_at: datetime = Field(sa_column=Column(UTCDateTime(), nullable=False))
+    expires_at: datetime = Field(sa_column=Column(UTCDateTime(), nullable=False))
+    activated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(UTCDateTime()),
+    )
+
+
+class MCPOAuthAuthorizationCapacity(SQLModel, table=True):
+    """Durable reservation for an unauthenticated OAuth authorization flow."""
+
+    __tablename__ = "mcp_oauth_authorization_capacity"  # type: ignore
+    __table_args__ = (
+        Index(
+            "ix_mcp_oauth_authorization_capacity_expiry",
+            "expires_at",
+        ),
+        Index(
+            "ix_mcp_oauth_authorization_capacity_client_expiry",
+            "client_id",
+            "expires_at",
+        ),
+        Index(
+            "ix_mcp_oauth_authorization_capacity_source_expiry",
+            "source_ip",
+            "expires_at",
+        ),
+    )
+
+    reservation_id: str = Field(
+        sa_column=Column(String(128), primary_key=True, nullable=False)
+    )
+    client_id: str = Field(sa_column=Column(String(2048), nullable=False))
+    provider_mode: str = Field(max_length=32)
+    source_ip: str = Field(max_length=64)
+    authorization_epoch: int = Field(
+        sa_column=Column(BigInteger, nullable=False)
+    )
+    created_at: datetime = Field(sa_column=Column(UTCDateTime(), nullable=False))
+    expires_at: datetime = Field(sa_column=Column(UTCDateTime(), nullable=False))
+
+
 class MCPOAuthPendingAuthorization(SQLModel, table=True):
     """Short-lived browser handoff for a local MCP OAuth authorization request."""
 
@@ -2084,8 +2304,20 @@ class MCPOAuthConsent(SQLModel, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(UTCDateTime()),
     )
+    last_authorization_epoch: int = Field(
+        default=0,
+        sa_column=Column(
+            BigInteger,
+            nullable=False,
+            server_default=text("0"),
+        ),
+    )
     last_used_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
     revoked_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    revocation_epoch: Optional[int] = Field(
+        default=None,
+        sa_column=Column(BigInteger),
+    )
 
 
 class MCPOAuthProviderGrantReference(SQLModel, table=True):

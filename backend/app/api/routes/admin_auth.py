@@ -6,31 +6,58 @@ from typing import List, NoReturn, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, EmailStr, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.error_schemas import ValidationErrorResponse
 from app.api.request_metadata import build_audit_context
 from app.api.route_utils import read_session_cookie
+from app.core.account_authentication import non_password_authentication_allowed
 from app.core.csrf import API_KEY_AUTH_RESULT_SCOPE_KEY, extract_api_key
+from app.core.authorization_lock import acquire_authorization_lock
+from app.core.api_key_scopes import (
+    API_ADMIN_SCOPE,
+    API_READ_SCOPE,
+    API_WRITE_SCOPE,
+)
 from app.core.database import get_db
 from app.models.enums import AccountType, UserRole, UserStatus
 from app.models.models import ApiKeyCreateResponse, ApiKeyRead, UserAccount
 from app.services.admin_auth_service import (
+    AdminAuthBusyError,
     AdminAuthError,
     AdminAuthNotFoundError,
+    AdminAuthPolicyError,
+    AdminAuthValidationError,
     admin_auth_service,
+    validate_oidc_preprovisioning_issuer,
+    validate_oidc_preprovisioning_subject,
 )
 from app.services.api_key_service import (
     ApiKeyExpirationError,
     ApiKeyExpiredError,
     ApiKeyNotFoundError,
+    ApiKeyPolicyError,
     ApiKeyRevokedError,
+    ApiKeyScopeError,
+    ApiKeyScopeValidationError,
     UserInactiveError,
     api_key_service,
 )
 from app.services.audit_service import get_audit_service
-from app.services.auth_service import SessionNotFoundError, auth_service
+from app.services.auth_service import (
+    AuthenticationConcurrencyError,
+    PasswordChangeRequiredError,
+    SessionNotFoundError,
+    auth_service,
+)
 from app.services.passkey_service import (
     PasskeyCredentialNotFoundError,
     PasskeyOwnershipError,
@@ -64,6 +91,51 @@ class AdminCreateUserResponse(BaseModel):
     resetToken: str = Field(description="One-time password setup token")
 
 
+class AdminCreateOIDCUserRequest(BaseModel):
+    """Request to pre-provision an OIDC-only human account."""
+
+    username: str = Field(min_length=3, max_length=64, description="Unique username")
+    email: Optional[EmailStr] = Field(default=None, description="Optional user email")
+    role: UserRole = Field(description="User role (ANALYST, ADMIN, AUDITOR)")
+    description: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="User title or role description",
+    )
+    oidc_issuer: str = Field(
+        min_length=1,
+        max_length=500,
+        description="Exact case-sensitive OIDC issuer",
+    )
+    oidc_subject: str = Field(
+        min_length=1,
+        max_length=255,
+        description="Exact case-sensitive OIDC subject",
+    )
+
+    @field_validator("oidc_issuer")
+    @classmethod
+    def validate_exact_issuer(cls, value: str) -> str:
+        try:
+            return validate_oidc_preprovisioning_issuer(value)
+        except AdminAuthError as exc:
+            raise ValueError(str(exc)) from exc
+
+    @field_validator("oidc_subject")
+    @classmethod
+    def validate_exact_subject(cls, value: str) -> str:
+        try:
+            return validate_oidc_preprovisioning_subject(value)
+        except AdminAuthError as exc:
+            raise ValueError(str(exc)) from exc
+
+
+class AdminCreateOIDCUserResponse(BaseModel):
+    """Response after exact OIDC account pre-provisioning."""
+
+    userId: UUID = Field(description="ID of the created user")
+
+
 class AdminUpdateStatusRequest(BaseModel):
     """Request to update user account status."""
 
@@ -72,6 +144,8 @@ class AdminUpdateStatusRequest(BaseModel):
 
 class AdminUpdateUserRequest(BaseModel):
     """Request to update editable user account fields."""
+
+    model_config = ConfigDict(extra="forbid")
 
     username: Optional[str] = Field(
         default=None,
@@ -132,8 +206,6 @@ class UserSummary(BaseModel):
     accountType: AccountType = Field(description="Account type (HUMAN, NHI)")
     assignable: bool = Field(default=False, description="Whether this account can be assigned work")
     overrideTimestamps: bool = Field(default=False, description="Whether this account can override timestamps")
-    oidcIssuer: Optional[str] = Field(default=None, description="OIDC issuer for linked SSO identities")
-    oidcSubject: Optional[str] = Field(default=None, description="OIDC subject for linked SSO identities")
 
 
 
@@ -159,6 +231,11 @@ class AdminCreateNHIRequest(BaseModel):
     )
     initial_api_key_expires_at: datetime = Field(
         description="Expiration date for the initial API key (required)",
+    )
+    initial_api_key_scopes: List[str] = Field(
+        default_factory=lambda: [API_READ_SCOPE],
+        min_length=1,
+        description="Explicit scopes for the initial API key; defaults to read-only",
     )
 
 
@@ -205,9 +282,23 @@ async def _authenticate_from_request(
     """
     audit_context = build_audit_context(request)
     
+    required_api_key_scope = (
+        API_READ_SCOPE
+        if request.method.upper() in {"GET", "HEAD"}
+        else API_WRITE_SCOPE
+    )
+    shared_auth_lock = request.method.upper() in {"GET", "HEAD"}
+
     # Try API key authentication first
     cached_api_key_result = request.scope.get(API_KEY_AUTH_RESULT_SCOPE_KEY)
     if cached_api_key_result is not None:
+        if required_api_key_scope not in set(cached_api_key_result.api_key.scopes or []):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ValidationErrorResponse(
+                    message=f"API key lacks required scope: {required_api_key_scope}",
+                ).model_dump(),
+            )
         return cached_api_key_result.user
 
     api_key = extract_api_key(request.headers)
@@ -216,8 +307,12 @@ async def _authenticate_from_request(
             result = await api_key_service.validate_api_key(
                 db,
                 raw_key=api_key,
+                required_scopes={required_api_key_scope},
                 context=audit_context,
+                skip_locked=True,
+                shared_lock=shared_auth_lock,
             )
+            request.scope[API_KEY_AUTH_RESULT_SCOPE_KEY] = result
             return result.user
         except ApiKeyNotFoundError:
             raise HTTPException(
@@ -238,6 +333,18 @@ async def _authenticate_from_request(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=ValidationErrorResponse(
                     message="API key has been revoked",
+                ).model_dump(),
+            )
+        except ApiKeyScopeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ValidationErrorResponse(message=str(exc)).model_dump(),
+            )
+        except ApiKeyPolicyError:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ValidationErrorResponse(
+                    message="Local API keys are disabled for this account",
                 ).model_dump(),
             )
         except UserInactiveError:
@@ -264,6 +371,7 @@ async def _authenticate_from_request(
             db,
             session_token=session_token,
             allow_password_change_required=True,
+            shared_lock=shared_auth_lock,
         )
         return login_result.user
     except SessionNotFoundError:
@@ -271,6 +379,144 @@ async def _authenticate_from_request(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=ValidationErrorResponse(
                 message="Invalid or expired session",
+            ).model_dump(),
+        )
+
+
+async def _reauthorize_admin_target_mutation(
+    *,
+    request: Request,
+    db: AsyncSession,
+    admin_user_id: UUID,
+    target_user_id: UUID,
+) -> None:
+    """Revalidate an admin mutation with canonical actor/target row locking.
+
+    The normal mutating-request dependency holds the acting user's row while
+    the route runs. Reciprocal A→B/B→A operations would therefore deadlock if
+    both then waited for the other target. Release that initial transaction,
+    reacquire actor and target in UUID order, and revalidate the presented
+    credential while those locks remain held. A queued target writer then also
+    receives PostgreSQL lock-queue priority over later shared readers.
+    """
+    if admin_user_id == target_user_id:
+        raise AdminAuthValidationError(
+            "Cannot modify your own account through the admin panel"
+        )
+
+    raw_api_key = extract_api_key(request.headers)
+    session_token = read_session_cookie(request)
+
+    # Release locks acquired by the generic authentication dependency before
+    # entering the canonical multi-user lock order below.
+    await db.commit()
+
+    locked_users: dict[UUID, UserAccount] = {}
+    for user_id in sorted((admin_user_id, target_user_id), key=lambda value: value.int):
+        await acquire_authorization_lock(
+            db,
+            user_id=user_id,
+            shared=user_id == admin_user_id,
+        )
+        lock_options: bool | dict[str, bool]
+        if user_id == admin_user_id:
+            lock_options = {"read": True}
+        else:
+            lock_options = True
+        user = await db.get(
+            UserAccount,
+            user_id,
+            populate_existing=True,
+            with_for_update=lock_options,
+        )
+        if user is None:
+            if user_id == target_user_id:
+                raise AdminAuthNotFoundError(
+                    f"User with ID {target_user_id} not found"
+                )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ValidationErrorResponse(
+                    message="Authenticated administrator no longer exists",
+                    fields=[],
+                ).model_dump(),
+            )
+        locked_users[user_id] = user
+
+    if raw_api_key:
+        try:
+            credential = await api_key_service.validate_api_key(
+                db,
+                raw_key=raw_api_key,
+                required_scopes={API_WRITE_SCOPE, API_ADMIN_SCOPE},
+                context=build_audit_context(request),
+                audit_success=False,
+                shared_lock=True,
+            )
+        except (ApiKeyExpiredError, ApiKeyNotFoundError, ApiKeyRevokedError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ValidationErrorResponse(
+                    message="Administrative API key is no longer valid",
+                    fields=[],
+                ).model_dump(),
+            ) from exc
+        except (ApiKeyPolicyError, ApiKeyScopeError, UserInactiveError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ValidationErrorResponse(
+                    message="Administrative API key is no longer authorized",
+                    fields=[],
+                ).model_dump(),
+            ) from exc
+        credential_user = credential.user
+    elif session_token:
+        try:
+            credential = await auth_service.validate_session(
+                db,
+                session_token=session_token,
+                shared_lock=True,
+            )
+        except AuthenticationConcurrencyError:
+            raise
+        except SessionNotFoundError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=ValidationErrorResponse(
+                    message="Administrative session is no longer valid",
+                    fields=[],
+                ).model_dump(),
+            ) from exc
+        except PasswordChangeRequiredError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ValidationErrorResponse(
+                    message="Password change required",
+                    fields=[],
+                ).model_dump(),
+            ) from exc
+        credential_user = credential.user
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ValidationErrorResponse(
+                message="Administrative authentication is required",
+                fields=[],
+            ).model_dump(),
+        )
+
+    locked_admin = locked_users[admin_user_id]
+    if (
+        credential_user.id != locked_admin.id
+        or not non_password_authentication_allowed(locked_admin)
+        or locked_admin.role != UserRole.ADMIN
+        or locked_admin.must_change_password
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ValidationErrorResponse(
+                message="Administrator is no longer authorized",
+                fields=[],
             ).model_dump(),
         )
 
@@ -300,6 +546,7 @@ async def require_authenticated_user(
 
 
 async def require_admin_user(
+    request: Request,
     user: UserAccount = Depends(require_authenticated_user),
 ) -> UserAccount:
     """
@@ -310,6 +557,8 @@ async def require_admin_user(
     Raises:
         HTTPException: 401 if not authenticated, 403 if not admin
     """
+    require_api_key_admin_scope(request)
+
     if user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -320,6 +569,23 @@ async def require_admin_user(
         )
     
     return user
+
+
+def require_api_key_admin_scope(request: Request) -> None:
+    """Require explicit administrative scope when this request uses an API key."""
+
+    api_key_result = request.scope.get(API_KEY_AUTH_RESULT_SCOPE_KEY)
+    if api_key_result is None or API_ADMIN_SCOPE in set(
+        api_key_result.api_key.scopes or []
+    ):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=ValidationErrorResponse(
+            message=f"API key lacks required scope: {API_ADMIN_SCOPE}",
+            fields=[],
+        ).model_dump(),
+    )
 
 
 async def require_non_auditor_user(
@@ -363,11 +629,13 @@ router = APIRouter(
 
 def _raise_admin_auth_http_error(error: AdminAuthError) -> NoReturn:
     """Translate an expected admin-auth failure at the HTTP seam."""
-    status_code = (
-        status.HTTP_404_NOT_FOUND
-        if isinstance(error, AdminAuthNotFoundError)
-        else status.HTTP_400_BAD_REQUEST
-    )
+    status_code = status.HTTP_400_BAD_REQUEST
+    if isinstance(error, AdminAuthNotFoundError):
+        status_code = status.HTTP_404_NOT_FOUND
+    elif isinstance(error, AdminAuthBusyError):
+        status_code = status.HTTP_409_CONFLICT
+    elif isinstance(error, AdminAuthPolicyError):
+        status_code = status.HTTP_403_FORBIDDEN
     raise HTTPException(
         status_code=status_code,
         detail=ValidationErrorResponse(
@@ -420,6 +688,36 @@ async def create_user(
         _raise_admin_auth_http_error(error)
 
 
+@router.post(
+    "/users/oidc",
+    response_model=AdminCreateOIDCUserResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Pre-provision an OIDC user account",
+    description="Admin endpoint to provision a human account bound to an exact OIDC identity",
+)
+async def create_oidc_user(
+    request: Request,
+    payload: AdminCreateOIDCUserRequest,
+    db: AsyncSession = Depends(get_db),
+    admin_user: UserAccount = Depends(require_admin_user),
+) -> AdminCreateOIDCUserResponse:
+    try:
+        result = await admin_auth_service.create_oidc_user(
+            admin_user_id=admin_user.id,
+            username=payload.username,
+            email=str(payload.email) if payload.email is not None else None,
+            role=payload.role,
+            description=payload.description,
+            oidc_issuer=payload.oidc_issuer,
+            oidc_subject=payload.oidc_subject,
+            request_metadata=build_audit_context(request),
+            db=db,
+        )
+        return AdminCreateOIDCUserResponse(userId=result.user_id)
+    except AdminAuthError as error:
+        _raise_admin_auth_http_error(error)
+
+
 @router.patch(
     "/users/{user_id}/status",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -440,6 +738,12 @@ async def update_user_status(
     Disabling a user will revoke all their active sessions.
     """
     try:
+        await _reauthorize_admin_target_mutation(
+            request=request,
+            db=db,
+            admin_user_id=admin_user.id,
+            target_user_id=user_id,
+        )
         metadata = build_audit_context(request)
         await admin_auth_service.update_user_status(
             admin_user_id=admin_user.id,
@@ -468,6 +772,12 @@ async def update_user(
     admin_user: UserAccount = Depends(require_admin_user),
 ) -> None:
     try:
+        await _reauthorize_admin_target_mutation(
+            request=request,
+            db=db,
+            admin_user_id=admin_user.id,
+            target_user_id=user_id,
+        )
         metadata = build_audit_context(request)
         await admin_auth_service.update_user(
             admin_user_id=admin_user.id,
@@ -530,10 +840,17 @@ async def list_user_passkeys(
 async def revoke_user_passkey(
     user_id: UUID,
     passkey_id: UUID,
+    request: Request,
     admin_user: UserAccount = Depends(require_admin_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     try:
+        await _reauthorize_admin_target_mutation(
+            request=request,
+            db=db,
+            admin_user_id=admin_user.id,
+            target_user_id=user_id,
+        )
         await passkey_service.revoke_passkey(
             db,
             passkey_id=passkey_id,
@@ -569,6 +886,12 @@ async def issue_password_reset(
     Issue an admin-initiated password reset for a user.
     """
     try:
+        await _reauthorize_admin_target_mutation(
+            request=request,
+            db=db,
+            admin_user_id=admin_user.id,
+            target_user_id=payload.userId,
+        )
         metadata = build_audit_context(request)
         result = await admin_auth_service.issue_password_reset(
             admin_user_id=admin_user.id,
@@ -629,8 +952,6 @@ async def get_users_summary(
             accountType=user.account_type,
             assignable=user.assignable,
             overrideTimestamps=user.override_timestamps,
-            oidcIssuer=user.oidc_issuer,
-            oidcSubject=user.oidc_subject,
         )
         for user in users
     ]
@@ -750,6 +1071,7 @@ async def create_nhi_account(
             user_id=nhi_account.id,
             name=payload.initial_api_key_name,
             expires_at=payload.initial_api_key_expires_at,
+            scopes=payload.initial_api_key_scopes,
             created_by_user_id=admin_user.id,
             context=audit_context,
         )
@@ -757,8 +1079,13 @@ async def create_nhi_account(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ValidationErrorResponse(
-                message="API key expiration date must be in the future",
+                message=str(exc),
             ).model_dump(),
+        ) from exc
+    except ApiKeyScopeValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ValidationErrorResponse(message=str(exc)).model_dump(),
         ) from exc
     
     # Audit log for NHI creation

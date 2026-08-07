@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
+import ipaddress
 import logging
 import secrets
 from typing import Any, Optional, cast
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlsplit, urlunsplit
 
 import httpx
 import jwt
@@ -14,12 +17,31 @@ from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.account_authentication import non_password_authentication_allowed
+from app.core.authorization_lock import acquire_authorization_lock
+from app.core.oidc_policy_lock import acquire_oidc_policy_lock
 from app.core.security import hash_opaque_token
 from app.core.settings_registry import get_local
 from app.models.enums import AccountType, UserRole, UserStatus
 from app.models.models import OIDCAuthRequest, USERNAME_REGEX, UserAccount
 from app.services import get_audit_service
 from app.services.audit_service import AuditContext
+from app.services.credential_invalidation import credential_was_issued_after_cutoff
+from app.services.oidc_auth_request_service import (
+    OIDCAuthRequestPolicy,
+    oidc_auth_request_service,
+    oidc_source_fingerprint,
+)
+from app.services.oidc_claim_contract import (
+    OIDCClaimContractError,
+    validate_oidc_claim_contract,
+    validate_oidc_clock_skew,
+)
+from app.services.oidc_discovery_cache import OIDCDiscoveryCache
+from app.services.oidc_local_credential_policy import (
+    oidc_local_credential_policy,
+)
+from app.services.password_login_request_service import password_login_request_service
 from app.services.settings_service import SettingsService
 
 
@@ -35,8 +57,152 @@ class OIDCAuthenticationError(Exception):
     pass
 
 
+class OIDCConsumedStateError(OIDCAuthenticationError):
+    """Authentication failed only after a valid OIDC state was consumed."""
+
+
 class OIDCStateError(Exception):
     pass
+
+
+def validate_oidc_redirect_uri(value: str) -> str:
+    """Validate the exact externally registered OIDC callback URI."""
+
+    redirect_uri = str(value or "").strip()
+    parsed = urlparse(redirect_uri)
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise OIDCConfigurationError("OIDC redirect URI has an invalid port") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise OIDCConfigurationError("OIDC redirect URI is invalid")
+
+    is_loopback = parsed.hostname.lower() == "localhost"
+    if not is_loopback:
+        try:
+            is_loopback = ipaddress.ip_address(parsed.hostname).is_loopback
+        except ValueError:
+            is_loopback = False
+    if parsed.scheme != "https" and not is_loopback:
+        raise OIDCConfigurationError(
+            "OIDC redirect URI must use HTTPS except for loopback hosts"
+        )
+    return redirect_uri
+
+
+def oidc_redirect_origin(redirect_uri: str) -> str:
+    """Return the canonical public origin for an exact callback URI."""
+
+    parsed = urlparse(validate_oidc_redirect_uri(redirect_uri))
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _validate_oidc_https_url(
+    value: Any,
+    *,
+    field_name: str,
+    allow_query: bool,
+) -> str:
+    """Require a discovery-provided URL that is safe for browser/server use."""
+
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise OIDCConfigurationError(f"OIDC {field_name} is invalid")
+    if any(character.isspace() for character in value):
+        raise OIDCConfigurationError(f"OIDC {field_name} is invalid")
+
+    parsed = urlparse(value)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise OIDCConfigurationError(
+            f"OIDC {field_name} has an invalid port"
+        ) from exc
+    authority = parsed.netloc.rsplit("@", 1)[-1]
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or authority.endswith(":")
+        or port == 0
+        or parsed.fragment
+        or (parsed.query and not allow_query)
+    ):
+        raise OIDCConfigurationError(
+            f"OIDC {field_name} must be an absolute HTTPS URL"
+        )
+    return value
+
+
+def validate_oidc_discovery_url(value: Any) -> str:
+    """Validate the operator-configured OIDC discovery document URL.
+
+    Query parameters are deliberately supported because some tenant-aware
+    providers select policy at discovery time. Credentials and fragments are
+    never meaningful for the outbound request and are rejected.
+    """
+
+    return _validate_oidc_https_url(
+        value,
+        field_name="discovery URL",
+        allow_query=True,
+    )
+
+
+def validate_oidc_provider_metadata(
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate the security-sensitive URLs in an OIDC discovery document."""
+
+    if not isinstance(metadata, dict):
+        raise OIDCConfigurationError("OIDC discovery document must be a JSON object")
+
+    validated = dict(metadata)
+    validated["issuer"] = _validate_oidc_https_url(
+        metadata.get("issuer"),
+        field_name="issuer",
+        allow_query=False,
+    )
+    for field_name in (
+        "authorization_endpoint",
+        "token_endpoint",
+        "jwks_uri",
+    ):
+        validated[field_name] = _validate_oidc_https_url(
+            metadata.get(field_name),
+            field_name=field_name,
+            allow_query=True,
+        )
+    return validated
+
+
+def _pkce_s256_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _authorization_url_with_params(
+    authorization_endpoint: str,
+    params: dict[str, str],
+) -> str:
+    """Merge required request parameters into a discovery endpoint query."""
+
+    parsed = urlsplit(authorization_endpoint)
+    generated_names = set(params)
+    existing_params = [
+        (name, value)
+        for name, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if name not in generated_names
+    ]
+    query = urlencode([*existing_params, *params.items()])
+    return urlunsplit(parsed._replace(query=query))
 
 
 @dataclass(slots=True)
@@ -50,6 +216,24 @@ class OIDCProviderConfiguration:
     client_secret: Optional[str]
     scopes: str
     provider_name: str
+    redirect_uri: str
+
+    def authorization_snapshot(self) -> tuple[str | None, ...]:
+        """Return fields that affect protocol or identity authorization."""
+
+        # provider_name is deliberately display-only and does not invalidate an
+        # authentication already in progress.
+        return (
+            self.discovery_url,
+            self.issuer,
+            self.authorization_endpoint,
+            self.token_endpoint,
+            self.jwks_uri,
+            self.client_id,
+            self.client_secret,
+            self.scopes,
+            self.redirect_uri,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,10 +250,22 @@ class OIDCIdentityPolicy:
     default_role: str
     role_claim_path: str
     role_mapping: dict[str, Any]
-    trusted_auto_link_issuers: tuple[str, ...]
 
 
 class OIDCService:
+    def __init__(
+        self,
+        *,
+        discovery_cache: OIDCDiscoveryCache | None = None,
+        auth_request_policy: OIDCAuthRequestPolicy | None = None,
+    ) -> None:
+        self._discovery_cache = discovery_cache or OIDCDiscoveryCache()
+        self._auth_request_policy = auth_request_policy or OIDCAuthRequestPolicy()
+        self._auth_request_service = oidc_auth_request_service
+
+    def canonical_origin(self) -> str:
+        return oidc_redirect_origin(str(get_local("oidc.redirect_uri")))
+
     async def get_public_config(self, db: AsyncSession) -> dict[str, Any]:
         settings = SettingsService(db)  # type: ignore[arg-type]
         enabled = bool(await settings.get("oidc.enabled", default=False))
@@ -77,23 +273,18 @@ class OIDCService:
         return {"enabled": enabled, "providerName": provider_name}
 
     async def is_password_login_allowed(self, db: AsyncSession, *, user: UserAccount) -> bool:
-        if user.role == UserRole.ADMIN:
-            return True
-
-        settings = SettingsService(db)  # type: ignore[arg-type]
-        bypass_users = await settings.get("oidc.sso_bypass_users", default=[])
-        if isinstance(bypass_users, str):
-            bypass_users = [bypass_users]
-
-        normalized = {str(item).strip().lower() for item in bypass_users if str(item).strip()}
-        return user.username in normalized
+        capabilities = await oidc_local_credential_policy.capabilities_for(
+            db,
+            user=user,
+        )
+        return capabilities.password_login_allowed
 
     async def begin_login(
         self,
         db: AsyncSession,
         *,
         redirect_to: str,
-        callback_url: str,
+        source_address: str | None = None,
     ) -> tuple[str, datetime, str]:
         provider = await self._load_provider_configuration(db)
         state = secrets.token_urlsafe(32)
@@ -105,21 +296,31 @@ class OIDCService:
             state=state,
             nonce=nonce,
             browser_binding_hash=hash_opaque_token(browser_binding_token),
+            source_fingerprint=oidc_source_fingerprint(source_address),
             redirect_to=redirect_to,
             expires_at=expires_at,
         )
-        db.add(auth_request)
-        await db.flush()
+        await self._auth_request_service.reserve(
+            db,
+            auth_request=auth_request,
+            policy=self._auth_request_policy,
+        )
 
         params = {
             "client_id": provider.client_id,
-            "redirect_uri": callback_url,
+            "redirect_uri": provider.redirect_uri,
             "response_type": "code",
             "scope": provider.scopes,
             "state": state,
             "nonce": nonce,
+            "code_challenge": _pkce_s256_challenge(browser_binding_token),
+            "code_challenge_method": "S256",
         }
-        return f"{provider.authorization_endpoint}?{urlencode(params)}", expires_at, browser_binding_token
+        return (
+            _authorization_url_with_params(provider.authorization_endpoint, params),
+            expires_at,
+            browser_binding_token,
+        )
 
     async def exchange_code(
         self,
@@ -127,7 +328,6 @@ class OIDCService:
         *,
         code: str,
         state: str,
-        callback_url: str,
         browser_binding_token: Optional[str],
     ) -> tuple[UserAccount, str, str, str]:
         auth_request = await self._consume_auth_request(
@@ -135,13 +335,59 @@ class OIDCService:
             state=state,
             browser_binding_token=browser_binding_token,
         )
+        try:
+            return await self._exchange_consumed_code(
+                db,
+                code=code,
+                browser_binding_token=browser_binding_token,
+                auth_request=auth_request,
+            )
+        except OIDCConsumedStateError:
+            raise
+        except (OIDCConfigurationError, OIDCAuthenticationError) as exc:
+            raise OIDCConsumedStateError(str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise OIDCConsumedStateError(
+                "OIDC provider token validation failed"
+            ) from exc
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise OIDCConsumedStateError(
+                "OIDC provider returned an invalid token response"
+            ) from exc
+
+    async def consume_authorization_error(
+        self,
+        db: AsyncSession,
+        *,
+        state: str,
+        browser_binding_token: Optional[str],
+    ) -> None:
+        """Consume a browser-bound request after an IdP authorization error."""
+
+        await self._consume_auth_request(
+            db,
+            state=state,
+            browser_binding_token=browser_binding_token,
+        )
+
+    async def _exchange_consumed_code(
+        self,
+        db: AsyncSession,
+        *,
+        code: str,
+        browser_binding_token: Optional[str],
+        auth_request: OIDCAuthRequest,
+    ) -> tuple[UserAccount, str, str, str]:
+        """Finish a flow whose durable state has already been consumed."""
+
         provider = await self._load_provider_configuration(db)
 
         token_data = {
             "grant_type": "authorization_code",
             "code": code,
-            "redirect_uri": callback_url,
+            "redirect_uri": provider.redirect_uri,
             "client_id": provider.client_id,
+            "code_verifier": browser_binding_token,
         }
         auth: Optional[httpx.BasicAuth] = None
         if provider.client_secret:
@@ -163,7 +409,7 @@ class OIDCService:
             jwks_response.raise_for_status()
             jwks = jwks_response.json()
 
-        claims = self._validate_id_token(
+        claims = self.validate_id_token(
             id_token=id_token,
             jwks=jwks,
             issuer=provider.issuer,
@@ -171,7 +417,43 @@ class OIDCService:
             expected_nonce=auth_request.nonce,
         )
 
+        # Linearize callback authorization against oidc.enabled writers before
+        # taking any account lock or provisioning a JIT identity.  This shared
+        # transaction lock remains held while the route creates and commits the
+        # application session.  Settings writers take the exclusive form
+        # through reconciliation and commit.
+        await acquire_oidc_policy_lock(db, shared=True)
+        if not await SettingsService(db).get("oidc.enabled", default=False):
+            raise OIDCAuthenticationError(
+                "OIDC sign-in was disabled before authentication completed"
+            )
+
+        # Settings may have changed while the remote token/JWKS requests were
+        # in flight. Reload after taking the policy gate (the normal unchanged
+        # path reuses the warmed discovery cache) and reject a mixed-provider
+        # exchange rather than combining old cryptographic validation with new
+        # provisioning policy.
+        current_provider = await self._load_provider_configuration(db)
+        if (
+            current_provider.authorization_snapshot()
+            != provider.authorization_snapshot()
+        ):
+            raise OIDCAuthenticationError(
+                "OIDC provider configuration changed during authentication"
+            )
+        if not await self.is_safe_redirect_target(db, auth_request.redirect_to):
+            raise OIDCAuthenticationError(
+                "OIDC return target is no longer allowed"
+            )
+
         user = await self.find_or_create_user(db, claims=claims, issuer=provider.issuer)
+        if not credential_was_issued_after_cutoff(
+            user,
+            issued_at=auth_request.created_at,
+        ):
+            raise OIDCAuthenticationError(
+                "OIDC credential predates account credential invalidation"
+            )
         return user, provider.issuer, str(claims["sub"]), auth_request.redirect_to
 
     async def test_discovery(self, db: AsyncSession) -> dict[str, str | bool]:
@@ -198,15 +480,33 @@ class OIDCService:
             raise OIDCAuthenticationError("OIDC claims did not include a subject")
         subject = subject_claim
 
-        result = await db.execute(
-            select(UserAccount).where(
-                cast(Any, UserAccount.oidc_issuer == issuer),
-                cast(Any, UserAccount.oidc_subject == subject),
-            )
+        identity_filters = (
+            cast(Any, UserAccount.oidc_issuer == issuer),
+            cast(Any, UserAccount.oidc_subject == subject),
         )
-        user = result.scalar_one_or_none()
+        candidate_result = await db.execute(
+            select(UserAccount.id).where(*identity_filters)
+        )
+        candidate_user_id = candidate_result.scalar_one_or_none()
+        user = None
+        if candidate_user_id is not None:
+            # IdP role reconciliation is an authorization writer. Queue it
+            # ahead of later authenticated readers so downgrades cannot be
+            # starved by a continuous request stream.
+            await acquire_authorization_lock(
+                db,
+                user_id=candidate_user_id,
+                shared=False,
+            )
+            result = await db.execute(
+                select(UserAccount)
+                .where(*identity_filters)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+            user = result.scalar_one_or_none()
         if user is not None:
-            if user.status != UserStatus.ACTIVE:
+            if not non_password_authentication_allowed(user):
                 raise OIDCAuthenticationError("OIDC-linked user account is not active")
 
             resolved_role = await self.resolve_role(
@@ -216,6 +516,10 @@ class OIDCService:
             )
             if user.role != resolved_role:
                 old_role = user.role
+                await password_login_request_service.clear_pending_failures(
+                    db,
+                    user_id=user.id,
+                )
                 user.role = resolved_role
                 user.updated_at = datetime.now(timezone.utc)
                 await get_audit_service(db).oidc_role_changed(
@@ -226,12 +530,16 @@ class OIDCService:
                     context=metadata,
                 )
                 await db.flush()
+            await oidc_local_credential_policy.revoke_impermissible_credentials(
+                db,
+                user=user,
+            )
             return user
 
         if identity_policy is None:
             settings = SettingsService(db)  # type: ignore[arg-type]
             jit_enabled = bool(
-                await settings.get("oidc.jit_provisioning", default=True)
+                await settings.get("oidc.jit_provisioning", default=False)
             )
         else:
             jit_enabled = identity_policy.jit_provisioning
@@ -289,6 +597,10 @@ class OIDCService:
             oidc_subject=subject,
             context=metadata,
         )
+        await oidc_local_credential_policy.revoke_impermissible_credentials(
+            db,
+            user=user,
+        )
         return user
 
     async def resolve_role(
@@ -334,29 +646,28 @@ class OIDCService:
         client_secret = await settings.get("oidc.client_secret")
         scopes = str(await settings.get("oidc.scopes", default="openid email profile"))
         provider_name = str(await settings.get("oidc.provider_name", default="SSO"))
+        redirect_uri = validate_oidc_redirect_uri(
+            str(get_local("oidc.redirect_uri"))
+        )
 
         if not discovery_url or not client_id:
             raise OIDCConfigurationError("OIDC discovery URL and client ID must be configured")
-        if urlparse(str(discovery_url)).scheme != "https":
-            raise OIDCConfigurationError("OIDC discovery URL must use HTTPS")
+        validated_discovery_url = validate_oidc_discovery_url(discovery_url)
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(str(discovery_url))
-            response.raise_for_status()
-            metadata = response.json()
+        async def load_validated_metadata() -> dict[str, object]:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(validated_discovery_url)
+                response.raise_for_status()
+                raw_metadata = response.json()
+            return validate_oidc_provider_metadata(raw_metadata)
 
-        missing_fields = [
-            field_name
-            for field_name in ("issuer", "authorization_endpoint", "token_endpoint", "jwks_uri")
-            if not metadata.get(field_name)
-        ]
-        if missing_fields:
-            raise OIDCConfigurationError(
-                f"OIDC discovery document is missing required fields: {', '.join(missing_fields)}"
-            )
+        metadata = await self._discovery_cache.get(
+            validated_discovery_url,
+            load_validated_metadata,
+        )
 
         return OIDCProviderConfiguration(
-            discovery_url=str(discovery_url),
+            discovery_url=validated_discovery_url,
             issuer=str(metadata["issuer"]),
             authorization_endpoint=str(metadata["authorization_endpoint"]),
             token_endpoint=str(metadata["token_endpoint"]),
@@ -365,6 +676,7 @@ class OIDCService:
             client_secret=str(client_secret) if client_secret else None,
             scopes=scopes,
             provider_name=provider_name,
+            redirect_uri=redirect_uri,
         )
 
     async def _consume_auth_request(
@@ -374,7 +686,12 @@ class OIDCService:
         state: str,
         browser_binding_token: Optional[str],
     ) -> OIDCAuthRequest:
-        auth_request = await db.get(OIDCAuthRequest, state)
+        result = await db.execute(
+            select(OIDCAuthRequest)
+            .where(cast(Any, OIDCAuthRequest.state == state))
+            .with_for_update()
+        )
+        auth_request = result.scalar_one_or_none()
         now = datetime.now(timezone.utc)
         if auth_request is None or auth_request.consumed_at is not None or auth_request.expires_at <= now:
             raise OIDCStateError("OIDC state is invalid or expired")
@@ -391,7 +708,7 @@ class OIDCService:
         await db.commit()
         return auth_request
 
-    def _validate_id_token(
+    def validate_id_token(
         self,
         *,
         id_token: str,
@@ -400,6 +717,13 @@ class OIDCService:
         audience: str,
         expected_nonce: str,
     ) -> dict[str, Any]:
+        try:
+            clock_skew_seconds = validate_oidc_clock_skew(
+                get_local("oidc.clock_skew_seconds")
+            )
+        except ValueError as exc:
+            raise OIDCConfigurationError(str(exc)) from exc
+
         try:
             header = jwt.get_unverified_header(id_token)
             alg = str(header.get("alg") or "")
@@ -413,17 +737,32 @@ class OIDCService:
                 algorithms=[alg],
                 issuer=issuer,
                 audience=audience,
-                options={"verify_at_hash": False},
+                leeway=clock_skew_seconds,
+                options={
+                    "verify_at_hash": False,
+                    "require": ["iss", "aud", "exp", "iat", "sub", "nonce"],
+                },
             )
         except ExpiredSignatureError as exc:
             raise OIDCAuthenticationError("OIDC ID token has expired") from exc
         except PyJWTError as exc:
             raise OIDCAuthenticationError("OIDC ID token validation failed") from exc
 
-        nonce = str(claims.get("nonce") or "")
-        if nonce != expected_nonce:
-            raise OIDCAuthenticationError("OIDC nonce validation failed")
-        return claims
+        try:
+            return validate_oidc_claim_contract(
+                claims,
+                issuer=issuer,
+                audience=audience,
+                expected_nonce=expected_nonce,
+                require_nonce=True,
+                clock_skew_seconds=clock_skew_seconds,
+            )
+        except OIDCClaimContractError as exc:
+            raise OIDCAuthenticationError(str(exc)) from exc
+
+    # Retain the former internal seam for downstream extensions while new code
+    # and tests use the public protocol-contract validator above.
+    _validate_id_token = validate_id_token
 
     @staticmethod
     def _select_jwk(jwks: dict[str, Any], kid: Optional[str], alg: str) -> dict[str, Any]:
@@ -514,8 +853,13 @@ oidc_service = OIDCService()
 __all__ = [
     "OIDCAuthenticationError",
     "OIDCConfigurationError",
+    "OIDCConsumedStateError",
     "OIDCIdentityPolicy",
     "OIDCStateError",
     "OIDCService",
+    "oidc_redirect_origin",
     "oidc_service",
+    "validate_oidc_discovery_url",
+    "validate_oidc_provider_metadata",
+    "validate_oidc_redirect_uri",
 ]

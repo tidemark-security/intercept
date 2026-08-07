@@ -25,6 +25,8 @@ from sqlalchemy.pool import NullPool
 from sqlmodel import SQLModel
 
 from app.core.database import get_db
+from app.core.authentication_activity import flush_deferred_authentication_activity
+from app.models.models import MCP_OAUTH_GRANT_EPOCH_SEQUENCE
 from app.main import api_app, app, compose_http_app
 from app.mcp.runtime import MCPAuthMode, MCPAuthSnapshot, build_mcp_runtime
 import app.main as app_main_module
@@ -50,6 +52,7 @@ MAXMIND_TEST_DB_FILES = [
     "GeoIP2-Enterprise-Test.mmdb",
     "GeoIP2-ISP-Test.mmdb",
 ]
+
 
 if not TEST_DATABASE_URL.startswith("postgresql+asyncpg://"):
     raise RuntimeError(
@@ -132,6 +135,19 @@ def _truncate_sqlmodel_tables(sync_connection) -> None:
     sync_connection.execute(text(f"TRUNCATE TABLE {table_names} RESTART IDENTITY CASCADE"))
 
 
+def _create_migration_managed_test_objects(sync_connection) -> None:
+    """Create non-metadata objects normally provisioned by Alembic."""
+
+    # Production receives this sequence from migration 026. Integration tests
+    # construct the current table schema directly from SQLModel metadata, so
+    # they must provision the migration-owned sequence explicitly.
+    MCP_OAUTH_GRANT_EPOCH_SEQUENCE.create(sync_connection, checkfirst=True)
+
+
+def _drop_migration_managed_test_objects(sync_connection) -> None:
+    MCP_OAUTH_GRANT_EPOCH_SEQUENCE.drop(sync_connection, checkfirst=True)
+
+
 def _download_maxmind_test_data(target_dir: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     headers = {"User-Agent": "intercept-tests"}
@@ -174,12 +190,15 @@ async def async_engine() -> AsyncGenerator[AsyncEngine, None]:
     engine = create_async_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.drop_all)
+        await conn.run_sync(_drop_migration_managed_test_objects)
         await conn.run_sync(SQLModel.metadata.create_all)
+        await conn.run_sync(_create_migration_managed_test_objects)
     try:
         yield engine
     finally:
         async with engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.drop_all)
+            await conn.run_sync(_drop_migration_managed_test_objects)
         await engine.dispose()
 
 
@@ -333,6 +352,8 @@ async def client(
             try:
                 yield session
                 await session.commit()
+                if await flush_deferred_authentication_activity(session):
+                    await session.commit()
             except Exception:
                 await session.rollback()
                 raise

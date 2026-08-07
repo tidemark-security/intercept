@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, AsyncIterator, Callable, Protocol
@@ -33,13 +34,19 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.routing import Route
 
-from app.models.enums import UserStatus
+from app.mcp.auth import normalize_public_dcr_client
+from app.mcp.cimd import (
+    BoundedCIMDClientManager,
+    cimd_fetch_requires_network,
+    trim_cimd_cache,
+)
 from app.models.models import (
     MCPOAuthClient,
     MCPOAuthPendingAuthorization,
     MCPOAuthToken,
     UserAccount,
 )
+from app.services.credential_invalidation import credential_was_issued_after_cutoff
 from app.services.mcp_oauth_service import (
     MCP_OAUTH_SCOPE,
     MCPOAuthSettings,
@@ -49,6 +56,15 @@ from app.services.mcp_oauth_service import (
     OAuthInvalidClientError,
     OAuthInvalidGrantError,
     mcp_oauth_service,
+)
+from app.services.mcp_registration_service import (
+    MCPAuthorizationCapacityLimitError,
+    MCPDCRRegistrationService,
+    MCPOAuthAuthorizationCapacityService,
+    MCPRegistrationExpiredError,
+    MCPRegistrationLimitError,
+    MCPRegistrationPolicy,
+    authorization_request_active,
 )
 
 if TYPE_CHECKING:
@@ -89,6 +105,15 @@ class PendingAuthorization:
     resource: str | None
     created_at: datetime
     expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _CIMDResolution:
+    """Request-local CIMD projection and its pre-fetch capacity reservation."""
+
+    client_id: str
+    projection: OAuthClientInformationFull
+    reservation_id: str | None
 
 
 class PendingAuthorizationStore(Protocol):
@@ -405,17 +430,40 @@ class MCPOAuthDatabaseBackend:
     ) -> OAuthToken:
         if client.client_id is None:
             raise TokenError("invalid_client", "OAuth client_id is required")
-        now = datetime.now(timezone.utc)
         try:
             async with self._session() as session:
                 stored_client = await self.service.resolve_client(
                     session, client.client_id
+                )
+                user_id = await self.service._authorization_code_user_id(  # noqa: SLF001
+                    session,
+                    code=authorization_code.code,
+                )
+                if user_id is None:
+                    raise OAuthInvalidGrantError(
+                        "Authorization code is invalid or expired"
+                    )
+                user = self.service.require_eligible_user(
+                    await session.get(
+                        UserAccount,
+                        user_id,
+                        populate_existing=True,
+                        with_for_update=True,
+                    )
+                )
+                consent = await self.service._get_consent(  # noqa: SLF001
+                    session,
+                    user=user,
+                    client=stored_client,
+                    scope=MCP_OAUTH_SCOPE,
+                    for_update=True,
                 )
                 stored = await self.service._load_authorization_code(  # noqa: SLF001
                     session,
                     code=authorization_code.code,
                     for_update=True,
                 )
+                now = datetime.now(timezone.utc)
                 if (
                     stored is None
                     or stored.client_db_id != stored_client.id
@@ -425,9 +473,21 @@ class MCPOAuthDatabaseBackend:
                     raise OAuthInvalidGrantError(
                         "Authorization code is invalid or expired"
                     )
-                user = await session.get(UserAccount, stored.user_id)
-                if user is None or user.status != UserStatus.ACTIVE:
-                    raise OAuthInvalidGrantError("Intercept user is not active")
+                if stored.user_id != user.id:
+                    raise OAuthInvalidGrantError(
+                        "Authorization code is invalid or expired"
+                    )
+                self.service._require_current_authorization_epoch(  # noqa: SLF001
+                    consent=consent,
+                    issued_at=stored.created_at,
+                )
+                if not credential_was_issued_after_cutoff(
+                    user,
+                    issued_at=stored.created_at,
+                ):
+                    raise OAuthInvalidGrantError(
+                        "Authorization code predates account credential invalidation"
+                    )
 
                 stored.consumed_at = now
                 settings = await self.service.get_enabled_settings(session)
@@ -553,50 +613,17 @@ class MCPOAuthDatabaseBackend:
                 "invalid_scope", "Requested scopes exceed the refresh token grant"
             )
         resource = getattr(refresh_token, "resource", None)
-        failure_description: str | None = None
         try:
             async with self._session() as session:
-                stored_client = await self.service.resolve_client(
-                    session, client.client_id
-                )
-                stored = await self.service._load_token(  # noqa: SLF001
+                payload = await self.service.refresh_access_token(
                     session,
-                    token=refresh_token.token,
-                    for_update=True,
+                    refresh_token=refresh_token.token,
+                    client_id=client.client_id,
+                    resource=resource,
                 )
-                if (
-                    stored is None
-                    or stored.token_type != "refresh"
-                    or stored.client_db_id != stored_client.id
-                    or (resource is not None and stored.resource != resource)
-                ):
-                    failure_description = "Refresh token is invalid"
-                elif (
-                    stored.revoked_at is not None
-                    or stored.expires_at <= datetime.now(timezone.utc)
-                ):
-                    replayed_at = datetime.now(timezone.utc)
-                    stored.revoked_at = stored.revoked_at or replayed_at
-                    await self.service._revoke_refresh_family(  # noqa: SLF001
-                        session,
-                        refresh_token_id=stored.id,
-                        now=replayed_at,
-                    )
-                    failure_description = "Refresh token is invalid or already used"
-                else:
-                    payload = await self.service.refresh_access_token(
-                        session,
-                        refresh_token=refresh_token.token,
-                        client_id=client.client_id,
-                        resource=resource,
-                    )
-                    return OAuthToken.model_validate(payload)
+                return OAuthToken.model_validate(payload)
         except MCPOAuthError as exc:
             raise TokenError("invalid_grant", exc.description) from exc
-        raise TokenError(
-            "invalid_grant",
-            failure_description or "Refresh token is invalid",
-        )
 
     @staticmethod
     def _client_information(client: object) -> OAuthClientInformationFull:
@@ -637,6 +664,11 @@ class InterceptOAuthProvider(OAuthProvider):
         now: Callable[[], datetime] | None = None,
         request_id_factory: Callable[[], UUID] = uuid4,
         cimd_manager: CIMDClientManager | None = None,
+        registration_policy: MCPRegistrationPolicy | None = None,
+        registration_service: MCPDCRRegistrationService | None = None,
+        authorization_capacity_service: (
+            MCPOAuthAuthorizationCapacityService | None
+        ) = None,
     ) -> None:
         public_origin = public_base_url.rstrip("/")
         oauth_base_url = f"{public_origin}/mcp"
@@ -678,13 +710,47 @@ class InterceptOAuthProvider(OAuthProvider):
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._request_id_factory = request_id_factory
         self._canonical_resource_url = f"{oauth_base_url}/streamable/"
+        self._registration_service = registration_service
+        if (
+            self._registration_service is None
+            and registration_policy is not None
+            and session_factory is not None
+        ):
+            self._registration_service = MCPDCRRegistrationService(
+                session_factory=session_factory,
+                policy=registration_policy,
+            )
+        self._registration_policy = registration_policy or MCPRegistrationPolicy()
+        self._authorization_capacity_service = authorization_capacity_service
+        if (
+            self._authorization_capacity_service is None
+            and registration_policy is not None
+            and session_factory is not None
+        ):
+            self._authorization_capacity_service = (
+                MCPOAuthAuthorizationCapacityService(
+                    session_factory=session_factory,
+                    policy=registration_policy,
+                    now=now,
+                )
+            )
+        self._cimd_resolution: ContextVar[_CIMDResolution | None] = ContextVar(
+            f"intercept_local_cimd_resolution_{id(self)}",
+            default=None,
+        )
         # FastMCP owns CIMD URL detection, SSRF-safe fetching, schema validation,
         # and HTTP caching. The relational grant store is only a projection used
         # by the local authorization-code and consent flows.
-        self._cimd_manager = cimd_manager or CIMDClientManager(
+        self._cimd_manager = cimd_manager or BoundedCIMDClientManager(
             enable_cimd=True,
             default_scope=MCP_OAUTH_SCOPE,
+            max_cache_entries=self._registration_policy.cimd_cache_max_entries,
         )
+
+    def _uses_dcr_lease(self, client_id: str) -> bool:
+        """Return whether this SDK-resolved client is governed by DCR limits."""
+
+        return not self._cimd_manager.is_cimd_client_id(client_id)
 
     async def authorize(
         self,
@@ -694,6 +760,17 @@ class InterceptOAuthProvider(OAuthProvider):
         """Persist the OAuth request and hand the browser to Intercept consent."""
         if client.client_id is None:  # pragma: no cover - SDK always supplies it
             raise ValueError("OAuth client_id is required")
+        if (
+            self._registration_service is not None
+            and self._uses_dcr_lease(client.client_id)
+        ):
+            try:
+                await self._registration_service.require_valid(client.client_id)
+            except MCPRegistrationExpiredError as exc:
+                raise AuthorizeError(
+                    "invalid_request",
+                    "The MCP client registration has expired",
+                ) from exc
 
         requested_resource = str(params.resource) if params.resource else None
         if (
@@ -724,10 +801,88 @@ class InterceptOAuthProvider(OAuthProvider):
             created_at=created_at,
             expires_at=created_at + self.pending_ttl,
         )
-        await self.pending_authorizations.create(pending)
+        resolution = self._cimd_resolution.get()
+        uses_cimd = not self._uses_dcr_lease(client.client_id)
+        reservation_id = str(request_id)
+        reservation_to_release: str | None = None
+        try:
+            if self._authorization_capacity_service is not None:
+                if (
+                    uses_cimd
+                    and resolution is not None
+                    and resolution.client_id == client.client_id
+                    and resolution.reservation_id is not None
+                ):
+                    reservation_to_release = resolution.reservation_id
+                    await self._authorization_capacity_service.promote(
+                        reservation_id=resolution.reservation_id,
+                        pending_id=reservation_id,
+                        client_id=client.client_id,
+                        ttl_seconds=max(int(self.pending_ttl.total_seconds()), 1),
+                    )
+                    reservation_to_release = reservation_id
+                else:
+                    await self._authorization_capacity_service.reserve(
+                        reservation_id=reservation_id,
+                        client_id=client.client_id,
+                        provider_mode="local",
+                        ttl_seconds=max(int(self.pending_ttl.total_seconds()), 1),
+                    )
+                    reservation_to_release = reservation_id
+
+            if uses_cimd:
+                projection = (
+                    resolution.projection
+                    if resolution is not None
+                    and resolution.client_id == client.client_id
+                    else self._cimd_projection(client.client_id, client)
+                )
+                if projection is None:
+                    raise AuthorizeError(
+                        "invalid_request",
+                        "The MCP CIMD client metadata is invalid",
+                    )
+                await self._backend.register_client(projection)
+
+            await self.pending_authorizations.create(pending)
+        except MCPAuthorizationCapacityLimitError as exc:
+            if (
+                reservation_to_release is not None
+                and self._authorization_capacity_service is not None
+            ):
+                await self._authorization_capacity_service.release(
+                    reservation_to_release
+                )
+            raise AuthorizeError("invalid_request", str(exc)) from exc
+        except Exception:
+            if (
+                reservation_to_release is not None
+                and self._authorization_capacity_service is not None
+            ):
+                await self._authorization_capacity_service.release(
+                    reservation_to_release
+                )
+            raise
+        finally:
+            self._cimd_resolution.set(None)
         return f"{self.consent_base_url}/{request_id}"
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
+        resolution = self._cimd_resolution.get()
+        if not (
+            authorization_request_active()
+            and resolution is not None
+            and resolution.client_id == client_id
+        ):
+            self._cimd_resolution.set(None)
+            if (
+                resolution is not None
+                and resolution.reservation_id is not None
+                and self._authorization_capacity_service is not None
+            ):
+                await self._authorization_capacity_service.release(
+                    resolution.reservation_id
+                )
         if self._cimd_manager.is_cimd_client_id(client_id):
             return await self._get_cimd_client(client_id)
         return await self._backend.get_client(client_id)
@@ -735,16 +890,85 @@ class InterceptOAuthProvider(OAuthProvider):
     async def _get_cimd_client(
         self, client_id: str
     ) -> OAuthClientInformationFull | None:
-        """Resolve and project exact-redirect native CIMD client metadata.
+        """Resolve exact-redirect CIMD metadata after durable fetch admission.
 
         ``CIMDClientManager`` performs the untrusted network fetch and all SSRF and
-        document validation. Intercept persists a token-free projection for local
-        consent and grant ownership. Wildcard redirect documents fail closed because
-        the exact URI must survive the pending-consent and authorization-code flow.
+        document validation. The relational projection is deferred until authorize,
+        after the request owns a durable capacity slot.
         """
-        client = await self._cimd_manager.get_client(client_id)
-        if client is None:
-            return None
+        existing_resolution = (
+            self._cimd_resolution.get() if authorization_request_active() else None
+        )
+        reservation_id = (
+            existing_resolution.reservation_id
+            if existing_resolution is not None
+            and existing_resolution.client_id == client_id
+            else None
+        )
+        # A cold lookup owns only a transient fetch slot. An actual authorize
+        # request may transfer that slot into ``_cimd_resolution`` for promotion.
+        created_reservation_id: str | None = None
+        if (
+            self._authorization_capacity_service is not None
+            and cimd_fetch_requires_network(self._cimd_manager, client_id)
+            and reservation_id is None
+        ):
+            reservation_id = uuid4().hex
+            try:
+                await self._authorization_capacity_service.reserve(
+                    reservation_id=reservation_id,
+                    client_id=client_id,
+                    provider_mode="local-cimd-fetch",
+                    ttl_seconds=(
+                        self._registration_policy.cimd_fetch_reservation_ttl_seconds
+                    ),
+                )
+                created_reservation_id = reservation_id
+            except MCPAuthorizationCapacityLimitError:
+                logger.warning("Local OAuth rejected CIMD fetch at capacity")
+                return None
+
+        retain_created_reservation = False
+        try:
+            client = await self._cimd_manager.get_client(client_id)
+            if client is None:
+                return None
+
+            projection = self._cimd_projection(client_id, client)
+            if projection is None:
+                return None
+            if authorization_request_active():
+                self._cimd_resolution.set(
+                    _CIMDResolution(
+                        client_id=client_id,
+                        projection=projection,
+                        reservation_id=reservation_id,
+                    )
+                )
+                retain_created_reservation = created_reservation_id is not None
+            return client
+        finally:
+            try:
+                trim_cimd_cache(
+                    self._cimd_manager,
+                    max_entries=self._registration_policy.cimd_cache_max_entries,
+                )
+            finally:
+                if (
+                    created_reservation_id is not None
+                    and not retain_created_reservation
+                    and self._authorization_capacity_service is not None
+                ):
+                    await self._authorization_capacity_service.release(
+                        created_reservation_id
+                    )
+
+    @staticmethod
+    def _cimd_projection(
+        client_id: str,
+        client: OAuthClientInformationFull,
+    ) -> OAuthClientInformationFull | None:
+        """Validate and normalize the local relational CIMD projection."""
 
         document = getattr(client, "cimd_document", None)
         if not isinstance(document, CIMDDocument):
@@ -781,7 +1005,7 @@ class InterceptOAuthProvider(OAuthProvider):
             )
             return None
 
-        projection = OAuthClientInformationFull(
+        return OAuthClientInformationFull(
             client_id=client_id,
             redirect_uris=document.redirect_uris,
             token_endpoint_auth_method=document.token_endpoint_auth_method,
@@ -799,16 +1023,6 @@ class InterceptOAuthProvider(OAuthProvider):
             software_id=document.software_id,
             software_version=document.software_version,
         )
-        try:
-            await self._backend.register_client(projection)
-        except RegistrationError as exc:
-            logger.warning(
-                "Local OAuth could not persist native CIMD client %s: %s",
-                client_id,
-                exc.error_description or exc.error,
-            )
-            return None
-        return client
 
     def get_routes(self, mcp_path: str | None = None) -> list[Route]:
         """Expose FastMCP's native CIMD client-authentication contract.
@@ -898,7 +1112,31 @@ class InterceptOAuthProvider(OAuthProvider):
         return result
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
-        await self._backend.register_client(client_info)
+        normalized = normalize_public_dcr_client(client_info)
+        client_id = normalized.client_id
+        if client_id is None:  # pragma: no cover - SDK registration guarantees this
+            raise RegistrationError(
+                error="invalid_client_metadata",
+                error_description="MCP registration did not include client_id",
+            )
+
+        if self._registration_service is not None:
+            try:
+                await self._registration_service.reserve(
+                    client_id=client_id,
+                    provider_mode="local",
+                )
+            except MCPRegistrationLimitError as exc:
+                raise RegistrationError(
+                    error="invalid_client_metadata",
+                    error_description=str(exc),
+                ) from exc
+        try:
+            await self._backend.register_client(normalized)
+        except Exception:
+            if self._registration_service is not None:
+                await self._registration_service.release(client_id)
+            raise
 
     async def load_authorization_code(
         self,
@@ -912,9 +1150,23 @@ class InterceptOAuthProvider(OAuthProvider):
         client: OAuthClientInformationFull,
         authorization_code: AuthorizationCode,
     ) -> OAuthToken:
-        return await self._backend.exchange_authorization_code(
+        if (
+            self._registration_service is not None
+            and client.client_id is not None
+            and self._uses_dcr_lease(client.client_id)
+        ):
+            try:
+                await self._registration_service.require_valid(client.client_id)
+            except MCPRegistrationExpiredError as exc:
+                raise TokenError(
+                    "invalid_grant",
+                    "The MCP client registration has expired",
+                ) from exc
+        token = await self._backend.exchange_authorization_code(
             client, authorization_code
         )
+        await self._touch_registration_after_token(client, token)
+        return token
 
     async def load_access_token(self, token: str) -> AccessToken | None:
         return await self._backend.load_access_token(token)
@@ -932,9 +1184,71 @@ class InterceptOAuthProvider(OAuthProvider):
         refresh_token: RefreshToken,
         scopes: list[str],
     ) -> OAuthToken:
-        return await self._backend.exchange_refresh_token(
+        if (
+            self._registration_service is not None
+            and client.client_id is not None
+            and self._uses_dcr_lease(client.client_id)
+        ):
+            try:
+                await self._registration_service.require_valid(client.client_id)
+            except MCPRegistrationExpiredError as exc:
+                raise TokenError(
+                    "invalid_grant",
+                    "The MCP client registration has expired",
+                ) from exc
+        token = await self._backend.exchange_refresh_token(
             client, refresh_token, scopes
         )
+        await self._touch_registration_after_token(client, token)
+        return token
+
+    async def _touch_registration_after_token(
+        self,
+        client: OAuthClientInformationFull,
+        token: OAuthToken,
+    ) -> None:
+        if (
+            self._registration_service is not None
+            and client.client_id is not None
+            and self._uses_dcr_lease(client.client_id)
+        ):
+            try:
+                await self._registration_service.activate(client.client_id)
+            except MCPRegistrationExpiredError as exc:
+                await self._revoke_issued_token_pair(client, token)
+                raise TokenError(
+                    "invalid_grant",
+                    "The MCP client registration has expired",
+                ) from exc
+            except Exception as exc:
+                try:
+                    await self._revoke_issued_token_pair(client, token)
+                except Exception:
+                    logger.exception(
+                        "Could not revoke rejected MCP token pair for client %s",
+                        client.client_id,
+                    )
+                raise TokenError(
+                    "server_error",
+                    "The MCP client lease could not be persisted",
+                ) from exc
+
+    async def _revoke_issued_token_pair(
+        self,
+        client: OAuthClientInformationFull,
+        token: OAuthToken,
+    ) -> None:
+        if token.refresh_token:
+            refresh = await self._backend.load_refresh_token(
+                client,
+                token.refresh_token,
+            )
+            if refresh is not None:
+                await self._backend.revoke_token(refresh)
+                return
+        access = await self._backend.load_access_token(token.access_token)
+        if access is not None:
+            await self._backend.revoke_token(access)
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
         await self._backend.revoke_token(token)
@@ -949,32 +1263,65 @@ class InterceptOAuthProvider(OAuthProvider):
     ) -> str:
         """Consume a browser decision and return the MCP client's callback URL."""
         pending = await self.pending_authorizations.consume(request_id)
-        if pending is None or pending.expires_at <= self._now():
-            raise PendingAuthorizationUnavailableError(
-                "OAuth authorization request is missing, expired, or already used"
-            )
+        try:
+            if pending is None or pending.expires_at <= self._now():
+                raise PendingAuthorizationUnavailableError(
+                    "OAuth authorization request is missing, expired, or already used"
+                )
 
-        if not approved:
+            if not approved:
+                return construct_redirect_uri(
+                    pending.redirect_uri,
+                    error="access_denied",
+                    state=pending.state,
+                )
+            if user is None:
+                raise PendingAuthorizationUnavailableError(
+                    "An authenticated Intercept user is required to approve MCP access"
+                )
+
+            if (
+                self._registration_service is not None
+                and self._uses_dcr_lease(pending.client_id)
+            ):
+                try:
+                    await self._registration_service.require_valid(pending.client_id)
+                except MCPRegistrationExpiredError as exc:
+                    raise PendingAuthorizationUnavailableError(
+                        "MCP client registration has expired"
+                    ) from exc
+
+            try:
+                code = await self._backend.create_authorization_code(
+                    pending,
+                    user,
+                    context=context,
+                )
+            except MCPOAuthError as exc:
+                raise PendingAuthorizationUnavailableError(
+                    "MCP authorization is no longer available"
+                ) from exc
+            if (
+                self._registration_service is not None
+                and self._uses_dcr_lease(pending.client_id)
+            ):
+                try:
+                    await self._registration_service.activate(pending.client_id)
+                except MCPRegistrationExpiredError as exc:
+                    raise PendingAuthorizationUnavailableError(
+                        "MCP client registration has expired"
+                    ) from exc
             return construct_redirect_uri(
                 pending.redirect_uri,
-                error="access_denied",
+                code=code,
                 state=pending.state,
             )
-        if user is None:
-            raise PendingAuthorizationUnavailableError(
-                "An authenticated Intercept user is required to approve MCP access"
-            )
-
-        code = await self._backend.create_authorization_code(
-            pending,
-            user,
-            context=context,
-        )
-        return construct_redirect_uri(
-            pending.redirect_uri,
-            code=code,
-            state=pending.state,
-        )
+        finally:
+            if self._authorization_capacity_service is not None:
+                await self._authorization_capacity_service.release(
+                    str(request_id),
+                    cleanup_pending=True,
+                )
 
     async def get_pending_authorization(
         self, request_id: UUID
@@ -988,6 +1335,7 @@ def create_local_oauth_provider(
     snapshot: object,
     session_factory: async_sessionmaker[AsyncSession],
     token_hash_key: bytes,
+    registration_service: MCPDCRRegistrationService | None = None,
 ) -> InterceptOAuthProvider:
     """Create the startup-snapshotted local provider used by MCP runtime wiring."""
     public_origin = str(getattr(snapshot, "public_origin"))
@@ -1009,6 +1357,12 @@ def create_local_oauth_provider(
         service=snapshot_service,
         public_base_url=public_origin,
         consent_base_url=f"{login_origin.rstrip('/')}/api/v1/mcp/oauth/consent",
+        registration_policy=getattr(
+            snapshot,
+            "registration_policy",
+            MCPRegistrationPolicy(),
+        ),
+        registration_service=registration_service,
     )
 
 

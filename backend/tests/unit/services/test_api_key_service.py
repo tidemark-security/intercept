@@ -11,17 +11,26 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.security import hash_opaque_token
+from app.core.api_key_scopes import (
+    API_ADMIN_SCOPE,
+    API_READ_SCOPE,
+    API_WRITE_SCOPE,
+)
 from app.models.enums import AccountType, UserStatus
 from app.models.models import ApiKey, AuditLog, UserAccount
 from app.services.api_key_service import (
     ApiKeyExpiredError,
     ApiKeyExpirationError,
+    ApiKeyPolicyError,
+    ApiKeyScopeError,
+    ApiKeyScopeValidationError,
     ApiKeyNotFoundError,
     ApiKeyRevokedError,
     ApiKeyService,
     ApiKeyUserNotFoundError,
     UserInactiveError,
 )
+from app.services.oidc_local_credential_policy import LocalCredentialCapabilities
 
 
 class _IndependentAuditSession:
@@ -35,8 +44,15 @@ class _IndependentAuditSession:
     async def __aexit__(self, *_: object) -> None:
         return None
 
-    def add(self, audit_log: AuditLog) -> None:
-        self.pending.append(audit_log)
+    async def execute(self, *_: object, **__: object) -> None:
+        return None
+
+    async def scalar(self, *_: object, **__: object) -> int:
+        return 0
+
+    def add(self, item: object) -> None:
+        if isinstance(item, AuditLog):
+            self.pending.append(item)
 
     async def flush(self) -> None:
         return None
@@ -44,6 +60,16 @@ class _IndependentAuditSession:
     async def commit(self) -> None:
         self.committed.extend(self.pending)
         self.pending.clear()
+
+    async def rollback(self) -> None:
+        self.pending.clear()
+
+
+class _EncodingForbiddenApiKey(str):
+    """A large credential that exposes any attempt to hash its full value."""
+
+    def encode(self, *_: object, **__: object) -> bytes:
+        raise AssertionError("overlong API keys must be rejected before hashing")
 
 
 def _service_dependencies() -> tuple[SimpleNamespace, UserAccount, SimpleNamespace]:
@@ -85,6 +111,12 @@ async def test_create_api_key_normalizes_aware_future_expiration_to_utc(
     assert api_key.expires_at == expected
     assert api_key.expires_at.tzinfo is timezone.utc
     assert audit_service.api_key_created.await_args.kwargs["expires_at"] == expected
+    db.get.assert_awaited_once_with(
+        UserAccount,
+        user.id,
+        populate_existing=True,
+        with_for_update=True,
+    )
 
 
 @pytest.mark.asyncio
@@ -153,6 +185,103 @@ async def test_create_api_key_uses_typed_error_for_missing_user() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_api_key_rejects_inactive_owner() -> None:
+    db, user, _ = _service_dependencies()
+    user.status = UserStatus.DISABLED
+
+    with pytest.raises(ApiKeyPolicyError, match="active account"):
+        await ApiKeyService().create_api_key(
+            db,
+            user_id=user.id,
+            name="inactive-owner",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        )
+
+    db.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_persists_explicit_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, user, audit_service = _service_dependencies()
+    monkeypatch.setattr(
+        "app.services.api_key_service.get_audit_service",
+        lambda _: audit_service,
+    )
+
+    api_key, _ = await ApiKeyService().create_api_key(
+        db,
+        user_id=user.id,
+        name="read-write",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        scopes={API_WRITE_SCOPE, API_READ_SCOPE},
+    )
+
+    assert api_key.scopes == [API_READ_SCOPE, API_WRITE_SCOPE]
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_rejects_scope_above_owner_role() -> None:
+    db, user, _ = _service_dependencies()
+
+    with pytest.raises(ApiKeyScopeValidationError, match="not permitted"):
+        await ApiKeyService().create_api_key(
+            db,
+            user_id=user.id,
+            name="over-scoped",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+            scopes={API_ADMIN_SCOPE},
+        )
+
+    db.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_rejects_expiration_beyond_configured_maximum() -> None:
+    db, user, _ = _service_dependencies()
+
+    with pytest.raises(ApiKeyExpirationError, match="90 days"):
+        await ApiKeyService(max_lifetime_days=90).create_api_key(
+            db,
+            user_id=user.id,
+            name="too-long",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=91),
+            scopes={API_READ_SCOPE},
+        )
+
+    db.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_enforces_oidc_local_credential_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db, user, _ = _service_dependencies()
+    monkeypatch.setattr(
+        "app.services.api_key_service.oidc_local_credential_policy.capabilities_for",
+        AsyncMock(
+            return_value=LocalCredentialCapabilities(
+                password_login_allowed=False,
+                passkey_allowed=False,
+                api_key_allowed=False,
+            )
+        ),
+    )
+
+    with pytest.raises(ApiKeyPolicyError):
+        await ApiKeyService().create_api_key(
+            db,
+            user_id=user.id,
+            name="forbidden-local-key",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+            scopes={API_READ_SCOPE},
+        )
+
+    db.add.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_validate_api_key_treats_naive_persisted_expiration_as_utc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -164,12 +293,14 @@ async def test_validate_api_key_treats_naive_persisted_expiration_as_utc(
         prefix="tmi_legacy12",
         key_hash=hash_opaque_token("legacy-key"),
         expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=1),
+        scopes=[API_READ_SCOPE],
     )
     api_key.user = user
     db = SimpleNamespace(
         execute=AsyncMock(
             return_value=SimpleNamespace(scalar_one_or_none=lambda: api_key),
         ),
+        get=AsyncMock(return_value=user),
     )
     monkeypatch.setattr(
         "app.services.api_key_service.get_audit_service",
@@ -180,6 +311,41 @@ async def test_validate_api_key_treats_naive_persisted_expiration_as_utc(
 
     assert result.api_key is api_key
     assert api_key.expires_at.tzinfo is timezone.utc
+
+
+@pytest.mark.asyncio
+async def test_validate_api_key_rejects_missing_required_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, user, _ = _service_dependencies()
+    api_key = ApiKey(
+        user_id=user.id,
+        name="read-only",
+        prefix="tmi_readonly",
+        key_hash=hash_opaque_token("read-only-key"),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+        scopes=[API_READ_SCOPE],
+    )
+    api_key.user = user
+    outer_db = SimpleNamespace(
+        execute=AsyncMock(
+            return_value=SimpleNamespace(scalar_one_or_none=lambda: api_key),
+        ),
+        get=AsyncMock(return_value=user),
+        rollback=AsyncMock(),
+    )
+    audit_db = _IndependentAuditSession()
+    service = ApiKeyService(audit_session_factory=lambda: audit_db)
+
+    with pytest.raises(ApiKeyScopeError) as exc_info:
+        await service.validate_api_key(
+            outer_db,
+            raw_key="read-only-key",
+            required_scopes={API_WRITE_SCOPE},
+        )
+
+    assert exc_info.value.missing_scopes == frozenset({API_WRITE_SCOPE})
+    assert api_key.last_used_at is None
 
 
 @pytest.mark.asyncio
@@ -205,6 +371,27 @@ async def test_invalid_api_key_audit_survives_caller_rollback_without_committing
 
 
 @pytest.mark.asyncio
+async def test_overlong_api_key_is_rejected_before_hashing() -> None:
+    outer_db = SimpleNamespace(
+        execute=AsyncMock(),
+        commit=AsyncMock(),
+        rollback=AsyncMock(),
+    )
+    audit_db = _IndependentAuditSession()
+    service = ApiKeyService(audit_session_factory=lambda: audit_db)
+    raw_key = _EncodingForbiddenApiKey("x" * 4096)
+
+    with pytest.raises(ApiKeyNotFoundError):
+        await service.validate_api_key(outer_db, raw_key=raw_key)
+
+    outer_db.execute.assert_not_awaited()
+    outer_db.commit.assert_not_awaited()
+    outer_db.rollback.assert_awaited_once()
+    assert len(audit_db.committed) == 1
+    assert '"reason": "key_not_found"' in (audit_db.committed[0].new_value or "")
+
+
+@pytest.mark.asyncio
 async def test_expired_api_key_audit_survives_caller_rollback() -> None:
     _, user, _ = _service_dependencies()
     api_key = ApiKey(
@@ -224,6 +411,7 @@ async def test_expired_api_key_audit_survives_caller_rollback() -> None:
         execute=AsyncMock(
             return_value=SimpleNamespace(scalar_one_or_none=lambda: api_key),
         ),
+        get=AsyncMock(return_value=user),
         add=outer_pending.append,
         flush=AsyncMock(),
         commit=AsyncMock(),
@@ -234,6 +422,53 @@ async def test_expired_api_key_audit_survives_caller_rollback() -> None:
 
     with pytest.raises(ApiKeyExpiredError):
         await service.validate_api_key(outer_db, raw_key="expired-key")
+
+    outer_db.commit.assert_not_awaited()
+    outer_db.rollback.assert_awaited_once()
+    assert outer_pending == []
+    assert len(audit_db.committed) == 1
+    assert '"reason": "key_expired"' in (audit_db.committed[0].new_value or "")
+
+
+@pytest.mark.asyncio
+async def test_legacy_long_lived_api_key_expires_at_configured_maximum() -> None:
+    _, user, _ = _service_dependencies()
+    now = datetime.now(timezone.utc)
+    api_key = ApiKey(
+        user_id=user.id,
+        name="legacy-long-lived-key",
+        prefix="tmi_legacylg",
+        key_hash=hash_opaque_token("legacy-long-lived-key"),
+        created_at=now - timedelta(days=91),
+        expires_at=now + timedelta(days=274),
+    )
+    api_key.user = user
+    outer_pending: list[AuditLog] = []
+
+    async def rollback() -> None:
+        outer_pending.clear()
+
+    outer_db = SimpleNamespace(
+        execute=AsyncMock(
+            return_value=SimpleNamespace(scalar_one_or_none=lambda: api_key),
+        ),
+        get=AsyncMock(return_value=user),
+        add=outer_pending.append,
+        flush=AsyncMock(),
+        commit=AsyncMock(),
+        rollback=AsyncMock(side_effect=rollback),
+    )
+    audit_db = _IndependentAuditSession()
+    service = ApiKeyService(
+        audit_session_factory=lambda: audit_db,
+        max_lifetime_days=90,
+    )
+
+    with pytest.raises(ApiKeyExpiredError):
+        await service.validate_api_key(
+            outer_db,
+            raw_key="legacy-long-lived-key",
+        )
 
     outer_db.commit.assert_not_awaited()
     outer_db.rollback.assert_awaited_once()
@@ -263,6 +498,7 @@ async def test_revoked_api_key_audit_survives_caller_rollback() -> None:
         execute=AsyncMock(
             return_value=SimpleNamespace(scalar_one_or_none=lambda: api_key),
         ),
+        get=AsyncMock(return_value=user),
         add=outer_pending.append,
         flush=AsyncMock(),
         commit=AsyncMock(),
@@ -302,6 +538,7 @@ async def test_inactive_user_api_key_audit_survives_caller_rollback() -> None:
         execute=AsyncMock(
             return_value=SimpleNamespace(scalar_one_or_none=lambda: api_key),
         ),
+        get=AsyncMock(return_value=user),
         add=outer_pending.append,
         flush=AsyncMock(),
         commit=AsyncMock(),

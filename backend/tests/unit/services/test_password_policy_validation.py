@@ -1,5 +1,4 @@
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -67,17 +66,6 @@ async def test_auth_service_preserves_password_policy_errors_before_mutation(
     hasher.hash_calls.clear()
     db = AsyncMock(spec=AsyncSession)
     audit_factory = Mock()
-    session = SimpleNamespace(user=SimpleNamespace(password_hash="current-hash"))
-    event_loop = SimpleNamespace(run_in_executor=AsyncMock(return_value=True))
-    monkeypatch.setattr(
-        service,
-        "_resolve_active_session",
-        AsyncMock(return_value=session),
-    )
-    monkeypatch.setattr(
-        "app.services.auth_service.asyncio.get_running_loop",
-        lambda: event_loop,
-    )
     monkeypatch.setattr(
         "app.services.auth_service.get_audit_service",
         audit_factory,

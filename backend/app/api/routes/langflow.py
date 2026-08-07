@@ -24,8 +24,17 @@ import httpx
 from sqlalchemy import delete as sql_delete, func
 
 from app.api.request_metadata import build_audit_context
-from app.api.routes.admin_auth import require_admin_user, require_authenticated_user, require_non_auditor_user
+from app.api.route_utils import read_session_cookie
+from app.api.routes.admin_auth import (
+    require_admin_user,
+    require_api_key_admin_scope,
+    require_authenticated_user,
+    require_non_auditor_user,
+)
+from app.core.authentication_activity import flush_deferred_authentication_activity
 from app.core.database import get_db
+from app.core.api_key_scopes import API_WRITE_SCOPE, MCP_ACCESS_SCOPE
+from app.core.csrf import API_KEY_AUTH_RESULT_SCOPE_KEY, extract_api_key
 from app.models.models import (
     ApiKeyRead,
     AppSettingCreate,
@@ -56,8 +65,25 @@ from app.services.langflow_service import (
     LangFlowError,
     LangFlowSetupConfigurationError,
 )
-from app.services.api_key_service import api_key_service
+from app.services.api_key_service import (
+    ApiKeyExpiredError,
+    ApiKeyNotFoundError,
+    ApiKeyPolicyError,
+    ApiKeyRevokedError,
+    ApiKeyScopeError,
+    UserInactiveError,
+    api_key_service,
+)
 from app.services.audit_service import AuditContext
+from app.services.auth_service import (
+    AuthenticationConcurrencyError,
+    PasswordChangeRequiredError,
+    SessionNotFoundError,
+    auth_service,
+)
+from app.services.oidc_local_credential_policy import (
+    oidc_local_credential_policy,
+)
 from app.services.settings_service import (
     SettingConfigurationError,
     SettingNotFoundError,
@@ -150,7 +176,7 @@ class LangFlowConnectionCheck(BaseModel):
 
 
 def _default_langflow_api_key_expires_at() -> datetime:
-    return datetime.now(timezone.utc) + timedelta(days=365)
+    return datetime.now(timezone.utc) + timedelta(days=30)
 
 
 class LangFlowSetupRequest(BaseModel):
@@ -367,7 +393,10 @@ async def _ensure_langflow_nhi_account(
 ) -> tuple[UserAccount, str]:
     normalized_username = username.strip().lower()
     result = await db.execute(
-        select(UserAccount).where(col(UserAccount.username) == normalized_username)
+        select(UserAccount)
+        .where(col(UserAccount.username) == normalized_username)
+        .execution_options(populate_existing=True)
+        .with_for_update()
     )
     existing = result.scalar_one_or_none()
     now = datetime.now(timezone.utc)
@@ -389,6 +418,11 @@ async def _ensure_langflow_nhi_account(
         if existing.description != LANGFLOW_SETUP_NHI_DESCRIPTION:
             existing.description = LANGFLOW_SETUP_NHI_DESCRIPTION
             updated = True
+
+        await oidc_local_credential_policy.revoke_impermissible_credentials(
+            db,
+            user=existing,
+        )
 
         if updated:
             existing.updated_at = now
@@ -488,7 +522,52 @@ async def verify_session_access(
     return session
 
 
+async def _stream_credential_authorizes_user(
+    db: AsyncSession,
+    *,
+    expected_user_id: UUID,
+    raw_api_key: str | None,
+    session_token: str | None,
+    audit_context: AuditContext,
+) -> bool:
+    """Revalidate one captured stream credential against current account state."""
+    try:
+        if raw_api_key is not None:
+            result = await api_key_service.validate_api_key(
+                db,
+                raw_key=raw_api_key,
+                required_scopes={API_WRITE_SCOPE},
+                context=audit_context,
+                audit_success=False,
+                skip_locked=True,
+                shared_lock=True,
+            )
+        elif session_token is not None:
+            result = await auth_service.validate_session(
+                db,
+                session_token=session_token,
+                shared_lock=True,
+            )
+        else:
+            return False
+    except (
+        ApiKeyExpiredError,
+        ApiKeyNotFoundError,
+        ApiKeyPolicyError,
+        ApiKeyRevokedError,
+        ApiKeyScopeError,
+        AuthenticationConcurrencyError,
+        PasswordChangeRequiredError,
+        SessionNotFoundError,
+        UserInactiveError,
+    ):
+        return False
+
+    return result.user.id == expected_user_id and result.user.role != UserRole.AUDITOR
+
+
 async def resolve_target_chat_user(
+    request: Request,
     current_user: UserAccount,
     db: AsyncSession,
     username: Optional[str],
@@ -509,6 +588,7 @@ async def resolve_target_chat_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only admins can query chats for other users"
         )
+    require_api_key_admin_scope(request)
 
     result = await db.execute(
         select(UserAccount).where(col(UserAccount.username) == normalized_username)
@@ -571,6 +651,7 @@ async def setup_intercept_mcp_server(
             user_id=nhi_user.id,
             name=payload.api_key_name,
             expires_at=payload.api_key_expires_at,
+            scopes={MCP_ACCESS_SCOPE},
             created_by_user_id=current_user.id,
             context=audit_context,
         )
@@ -833,6 +914,7 @@ async def create_session(
 
 @router.get("/sessions", response_model=List[LangFlowSessionRead])
 async def list_sessions(
+    request: Request,
     skip: int = 0,
     limit: int = 50,
     username: Optional[str] = None,
@@ -846,7 +928,7 @@ async def list_sessions(
     Supports pagination with skip and limit parameters. Admin users may provide
     a username query parameter to list sessions for a specific user.
     """
-    target_user = await resolve_target_chat_user(current_user, db, username)
+    target_user = await resolve_target_chat_user(request, current_user, db, username)
 
     message_count = (
         select(func.count(LangFlowMessage.id))
@@ -883,6 +965,7 @@ async def list_sessions(
 
 @router.get("/sessions/{session_id}", response_model=LangFlowSessionRead)
 async def get_session(
+    request: Request,
     session_id: UUID,
     username: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
@@ -894,7 +977,7 @@ async def get_session(
     Requires authentication. Users can only access their own sessions.
     Admin users may provide a username query parameter to get sessions for a specific user.
     """
-    target_user = await resolve_target_chat_user(current_user, db, username)
+    target_user = await resolve_target_chat_user(request, current_user, db, username)
     session = await verify_session_access(
         session_id,
         current_user,
@@ -982,6 +1065,7 @@ async def delete_session(
 
 @router.get("/sessions/{session_id}/messages", response_model=List[LangFlowMessageRead])
 async def get_session_messages(
+    request: Request,
     session_id: UUID,
     username: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
@@ -994,7 +1078,7 @@ async def get_session_messages(
     Returns messages in chronological order. Admin users may provide a username
     query parameter to access messages for sessions belonging to a specific user.
     """
-    target_user = await resolve_target_chat_user(current_user, db, username)
+    target_user = await resolve_target_chat_user(request, current_user, db, username)
 
     # Verify access
     await verify_session_access(
@@ -1309,6 +1393,7 @@ async def test_langflow_connection(
 async def stream_langflow_response(
     session_id: UUID,
     body: StreamChatRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_authenticated_user),
 ):
@@ -1341,18 +1426,57 @@ async def stream_langflow_response(
         class_=AsyncSession,
         expire_on_commit=False,
     )
-    langflow_service = await get_langflow_service(db)
     flow_id = session.flow_id
     session_context = dict(session.context)
     current_user_id = current_user.id
+    audit_context = build_audit_context(request)
+
+    api_key_authenticated = request.scope.get(API_KEY_AUTH_RESULT_SCOPE_KEY) is not None
+    raw_api_key = extract_api_key(request.headers) if api_key_authenticated else None
+    session_token = None if api_key_authenticated else read_session_cookie(request)
+    if raw_api_key is None and session_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication credential unavailable for stream revalidation",
+        )
+    langflow_service = await get_langflow_service(db)
+
+    # Streaming uses its own database session. Release authentication row
+    # locks and the request connection before returning the long-lived SSE
+    # response; the generator reopens only the state it needs.
+    await db.commit()
+
+    async def revalidate_stream_credential(stream_db: AsyncSession) -> bool:
+        return await _stream_credential_authorizes_user(
+            stream_db,
+            expected_user_id=current_user_id,
+            raw_api_key=raw_api_key,
+            session_token=session_token,
+            audit_context=audit_context,
+        )
+
+    async def authorize_sse_emit() -> bool:
+        async with stream_session_factory() as auth_db:
+            authorized = await revalidate_stream_credential(auth_db)
+            if authorized:
+                await auth_db.commit()
+                if await flush_deferred_authentication_activity(auth_db):
+                    await auth_db.commit()
+            return authorized
 
     async def event_generator():
         """Generate SSE events from LangFlow stream."""
         try:
             async with stream_session_factory() as stream_db:
+                if not await revalidate_stream_credential(stream_db):
+                    return
                 stream_session = await stream_db.get(LangFlowSession, session_id)
-                if stream_session is None:
-                    raise RuntimeError("LangFlow session no longer exists")
+                if (
+                    stream_session is None
+                    or stream_session.user_id != current_user_id
+                    or stream_session.status != SessionStatus.ACTIVE
+                ):
+                    return
 
                 user_message = LangFlowMessage(
                     session_id=session_id,
@@ -1362,6 +1486,8 @@ async def stream_langflow_response(
                 )
                 stream_db.add(user_message)
                 await stream_db.commit()
+                if await flush_deferred_authentication_activity(stream_db):
+                    await stream_db.commit()
 
                 logger.info(
                     "Starting LangFlow stream",
@@ -1371,53 +1497,63 @@ async def stream_langflow_response(
                     },
                 )
 
-                assistant_content = ""
+            assistant_content = ""
 
-                async for chunk in langflow_service.stream_message(
-                    flow_id=flow_id,
-                    message=body.message,
-                    session_id=session_id,
-                    context=session_context,
+            async for chunk in langflow_service.stream_message(
+                flow_id=flow_id,
+                message=body.message,
+                session_id=session_id,
+                context=session_context,
+            ):
+                # LangFlow SSE events have multiple types:
+                # 1. {'event': 'add_message', 'data': {'sender': 'User'|'Machine', 'text': '...', 'properties': {'state': 'partial'|'complete'}}}
+                # 2. {'event': 'token', 'data': {'chunk': '...'}} - streaming tokens
+                # 3. {'event': 'end', 'data': {...}} - stream complete
+
+                event_type = chunk.get("event", "")
+                event_data = chunk.get("data", {})
+
+                if event_type == "token":
+                    token_content = event_data.get("chunk", "")
+                    if token_content:
+                        assistant_content += token_content
+                        yield {
+                            "event": "message",
+                            "data": {
+                                "content": token_content,
+                                "partial": True,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            },
+                        }
+                    continue
+
+                if event_type == "add_message":
+                    sender = event_data.get("sender", "")
+                    if sender == "User":
+                        logger.debug("Skipping user message echo")
+                        continue
+
+                    properties = event_data.get("properties", {})
+                    if properties.get("state", "") == "complete":
+                        complete_text = event_data.get("text", "")
+                        if complete_text:
+                            assistant_content = complete_text
+                    continue
+
+                if event_type == "end":
+                    logger.debug("Received end event from LangFlow")
+                    continue
+
+            async with stream_session_factory() as stream_db:
+                if not await revalidate_stream_credential(stream_db):
+                    return
+                stream_session = await stream_db.get(LangFlowSession, session_id)
+                if (
+                    stream_session is None
+                    or stream_session.user_id != current_user_id
+                    or stream_session.status != SessionStatus.ACTIVE
                 ):
-                    # LangFlow SSE events have multiple types:
-                    # 1. {'event': 'add_message', 'data': {'sender': 'User'|'Machine', 'text': '...', 'properties': {'state': 'partial'|'complete'}}}
-                    # 2. {'event': 'token', 'data': {'chunk': '...'}} - streaming tokens
-                    # 3. {'event': 'end', 'data': {...}} - stream complete
-
-                    event_type = chunk.get("event", "")
-                    event_data = chunk.get("data", {})
-
-                    if event_type == "token":
-                        token_content = event_data.get("chunk", "")
-                        if token_content:
-                            assistant_content += token_content
-                            yield {
-                                "event": "message",
-                                "data": {
-                                    "content": token_content,
-                                    "partial": True,
-                                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                                },
-                            }
-                        continue
-
-                    if event_type == "add_message":
-                        sender = event_data.get("sender", "")
-                        if sender == "User":
-                            logger.debug("Skipping user message echo")
-                            continue
-
-                        properties = event_data.get("properties", {})
-                        if properties.get("state", "") == "complete":
-                            complete_text = event_data.get("text", "")
-                            if complete_text:
-                                assistant_content = complete_text
-                        continue
-
-                    if event_type == "end":
-                        logger.debug("Received end event from LangFlow")
-                        continue
-
+                    return
                 assistant_message = LangFlowMessage(
                     session_id=session_id,
                     role=MessageRole.ASSISTANT,
@@ -1427,23 +1563,26 @@ async def stream_langflow_response(
                 stream_db.add(assistant_message)
                 stream_session.updated_at = datetime.now(timezone.utc)
                 await stream_db.commit()
+                if await flush_deferred_authentication_activity(stream_db):
+                    await stream_db.commit()
+                assistant_message_id = assistant_message.id
 
-                logger.info(
-                    "Completed LangFlow stream",
-                    extra={
-                        "session_id": str(session_id),
-                        "response_length": len(assistant_content),
-                    },
-                )
+            logger.info(
+                "Completed LangFlow stream",
+                extra={
+                    "session_id": str(session_id),
+                    "response_length": len(assistant_content),
+                },
+            )
 
-                yield {
-                    "event": "complete",
-                    "data": {
-                        "message_id": str(assistant_message.id),
-                        "content": assistant_content,
-                        "partial": False,
-                    },
-                }
+            yield {
+                "event": "complete",
+                "data": {
+                    "message_id": str(assistant_message_id),
+                    "content": assistant_content,
+                    "partial": False,
+                },
+            }
 
         except LangFlowError:
             logger.warning(
@@ -1462,6 +1601,7 @@ async def stream_langflow_response(
             session_id,
             event_generator(),
             on_close=langflow_service.close,
+            before_emit=authorize_sse_emit,
         ),
         media_type="text/event-stream",
         headers={

@@ -17,6 +17,7 @@ from app.api import route_utils
 from app.api.routes import auth as auth_routes
 from app.models.enums import UserRole, UserStatus
 from app.services.auth_service import LoginResult
+from app.services.password_hash_work_service import PasswordHashWorkCapacityError
 
 
 def _request(path: str) -> Request:
@@ -77,6 +78,9 @@ def _assert_login_payload(
     assert payload.session.expiresAt == login_result.session.expires_at
     assert payload.mustChangePassword is True
     assert payload.localCredentialManagementAllowed is False
+    assert payload.passwordLoginAllowed is False
+    assert payload.passkeyAllowed is False
+    assert payload.apiKeyAllowed is False
 
 
 def _assert_authenticated_cookie_contract(response: Response) -> None:
@@ -110,9 +114,12 @@ async def test_password_login_builds_payload_and_cookies_after_authentication(
     db = cast(AsyncSession, object())
     events: list[str] = []
 
-    async def check_rate_limit(received_db: AsyncSession, key: str):
+    async def check_rate_limit(
+        received_db: AsyncSession,
+        source_address: str | None,
+    ):
         assert received_db is db
-        assert key == "route.user:203.0.113.20"
+        assert source_address == "203.0.113.20"
         events.append("rate-limit")
         return True, None
 
@@ -134,9 +141,13 @@ async def test_password_login_builds_payload_and_cookies_after_authentication(
         events.append("cookies")
         return real_issue_cookies(*args)
 
-    async def credential_management_allowed(*_args, **_kwargs):
+    async def credential_capabilities(*_args, **_kwargs):
         events.append("credential-policy")
-        return False
+        return SimpleNamespace(
+            password_login_allowed=False,
+            passkey_allowed=False,
+            api_key_allowed=False,
+        )
 
     monkeypatch.setattr(auth_routes.auth_service, "check_rate_limit", check_rate_limit)
     monkeypatch.setattr(auth_routes.auth_service, "login", authenticate)
@@ -147,8 +158,8 @@ async def test_password_login_builds_payload_and_cookies_after_authentication(
     )
     monkeypatch.setattr(
         auth_routes,
-        "_local_credential_management_allowed",
-        credential_management_allowed,
+        "_local_credential_capabilities",
+        credential_capabilities,
     )
     monkeypatch.setattr(route_utils, "generate_csrf_token", lambda: "fixed-csrf-token")
 
@@ -168,6 +179,37 @@ async def test_password_login_builds_payload_and_cookies_after_authentication(
         "cookies",
         "credential-policy",
     ]
+
+
+@pytest.mark.asyncio
+async def test_password_login_returns_retryable_capacity_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = Response()
+    db = cast(AsyncSession, object())
+
+    async def check_rate_limit(*_args, **_kwargs):
+        return True, None
+
+    async def capacity_full(*_args, **_kwargs):
+        raise PasswordHashWorkCapacityError(retry_after_seconds=17)
+
+    monkeypatch.setattr(auth_routes.auth_service, "check_rate_limit", check_rate_limit)
+    monkeypatch.setattr(auth_routes.auth_service, "login", capacity_full)
+
+    result = await auth_routes.login(
+        request=_request("/api/v1/auth/login"),
+        response=response,
+        body=auth_routes.LoginRequest(username="Route.User", password="password"),
+        db=db,
+    )
+
+    assert result.status_code == 429
+    assert result.headers["Retry-After"] == "17"
+    assert json.loads(result.body) == {
+        "message": "Password processing is busy. Please try again later.",
+        "fields": [],
+    }
 
 
 @pytest.mark.asyncio
@@ -205,9 +247,13 @@ async def test_passkey_login_builds_payload_and_cookies_after_session_audit(
         events.append("cookies")
         return real_issue_cookies(*args)
 
-    async def credential_management_allowed(*_args, **_kwargs):
+    async def credential_capabilities(*_args, **_kwargs):
         events.append("credential-policy")
-        return False
+        return SimpleNamespace(
+            password_login_allowed=False,
+            passkey_allowed=False,
+            api_key_allowed=False,
+        )
 
     monkeypatch.setattr(
         auth_routes.passkey_service,
@@ -226,8 +272,8 @@ async def test_passkey_login_builds_payload_and_cookies_after_session_audit(
     )
     monkeypatch.setattr(
         auth_routes,
-        "_local_credential_management_allowed",
-        credential_management_allowed,
+        "_local_credential_capabilities",
+        credential_capabilities,
     )
     monkeypatch.setattr(route_utils, "generate_csrf_token", lambda: "fixed-csrf-token")
 

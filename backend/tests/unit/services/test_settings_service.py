@@ -1,6 +1,8 @@
 """Targeted regression tests for settings refactor behavior."""
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import select
@@ -8,6 +10,7 @@ from sqlmodel import select
 from app.core.security import initialize_encryption_service
 from app.models.enums import SettingType
 from app.models.models import AppSetting, AppSettingCreate
+from app.services.oidc_local_credential_policy import oidc_local_credential_policy
 from app.services.settings_service import SettingsService
 
 
@@ -148,3 +151,33 @@ async def test_get_many_matches_get_for_legacy_secret_metadata(
         assert await service.get_many({"langflow.api_key": "fallback"}) == {
             "langflow.api_key": "legacy-plaintext"
         }
+
+
+@pytest.mark.asyncio
+async def test_delete_oidc_enabled_reconciles_local_credentials(
+    session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch,
+) -> None:
+    async with session_maker() as session:
+        session.add(
+            AppSetting(
+                key="oidc.enabled",
+                value="true",
+                value_type=SettingType.BOOLEAN,
+                is_secret=False,
+                category="oidc",
+            )
+        )
+        await session.commit()
+
+        reconcile = AsyncMock()
+        monkeypatch.setattr(
+            oidc_local_credential_policy,
+            "reconcile_linked_users",
+            reconcile,
+        )
+
+        deleted = await SettingsService(session).delete_setting("oidc.enabled")
+
+        assert deleted is True
+        reconcile.assert_awaited_once_with(session)

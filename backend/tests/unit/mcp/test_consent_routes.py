@@ -69,9 +69,10 @@ def consent_app(monkeypatch: pytest.MonkeyPatch):
         ),
     )
     app.include_router(mcp_oauth.consent_router, prefix="/api/v1")
+    db = SimpleNamespace(commit=AsyncMock())
 
     async def fake_db():
-        yield object()
+        yield db
 
     app.dependency_overrides[mcp_oauth.get_db] = fake_db
     user = SimpleNamespace(id=UUID("26ad90ad-4cf0-4c56-b4e2-9f39c44ca002"))
@@ -179,13 +180,22 @@ async def test_oidc_connected_client_revokes_native_grant_before_projection(
         provider_reference_hash="reference-hash",
     )
     references = [
-        SimpleNamespace(provider_reference_hash="reference-one", revoked_at=None),
-        SimpleNamespace(provider_reference_hash="reference-two", revoked_at=None),
+        SimpleNamespace(
+            id=UUID("66ad90ad-4cf0-4c56-b4e2-9f39c44ca006"),
+            provider_reference_hash="reference-one",
+            revoked_at=None,
+        ),
+        SimpleNamespace(
+            id=UUID("76ad90ad-4cf0-4c56-b4e2-9f39c44ca007"),
+            provider_reference_hash="reference-two",
+            revoked_at=None,
+        ),
     ]
     native_provider = SimpleNamespace(revoke_projected_client=AsyncMock(return_value=True))
     db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
     resolve_projection = AsyncMock(return_value=(consent, SimpleNamespace()))
     list_references = AsyncMock(return_value=references)
+    lock_reference = AsyncMock(return_value=references[1])
     mark_projection = AsyncMock()
     monkeypatch.setattr(
         mcp_oauth.mcp_oauth_service,
@@ -196,6 +206,11 @@ async def test_oidc_connected_client_revokes_native_grant_before_projection(
         mcp_oauth.mcp_oauth_service,
         "list_active_provider_grant_references",
         list_references,
+    )
+    monkeypatch.setattr(
+        mcp_oauth.mcp_oauth_service,
+        "lock_active_provider_grant_reference",
+        lock_reference,
     )
     monkeypatch.setattr(
         mcp_oauth.mcp_oauth_service,
@@ -228,6 +243,11 @@ async def test_oidc_connected_client_revokes_native_grant_before_projection(
         call(user_id=user.id, provider_reference_hash="reference-two"),
     ]
     assert all(reference.revoked_at is not None for reference in references)
+    lock_reference.assert_awaited_once_with(
+        db,
+        consent_id=consent.id,
+        reference_id=references[1].id,
+    )
     mark_projection.assert_awaited_once()
     assert db.commit.await_count == 3
 
@@ -243,6 +263,7 @@ async def test_oidc_connected_client_keeps_projection_when_native_revoke_fails(
         provider_reference_hash="reference-hash",
     )
     reference = SimpleNamespace(
+        id=UUID("86ad90ad-4cf0-4c56-b4e2-9f39c44ca008"),
         provider_reference_hash="reference-hash",
         revoked_at=None,
     )

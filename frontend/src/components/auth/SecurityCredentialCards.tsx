@@ -4,7 +4,12 @@ import { DateTimeManager } from "@/components/forms/DateTimeManager";
 import { IconButton } from "@/components/buttons/IconButton";
 import { IconWithBackground } from "@/components/misc/IconWithBackground";
 import { TextField } from "@/components/forms/TextField";
+import { Switch } from "@/components/forms/Switch";
 import type { ApiKeyCreateResponse } from "@/types/generated/models/ApiKeyCreateResponse";
+import {
+  API_KEY_SCOPE_OPTIONS,
+  type ApiKeyScope,
+} from "@/utils/apiKeyScopes";
 import {
   AlertCircle,
   Bluetooth,
@@ -26,6 +31,7 @@ interface ApiKeySecurityCardProps {
   expiresAt?: string | null;
   lastUsedAt?: string | null;
   revokedAt?: string | null;
+  scopes?: string[];
   isExpired: boolean;
   formatDate: (dateValue?: string | null) => string;
   onRevoke?: () => void;
@@ -39,6 +45,7 @@ export function ApiKeySecurityCard({
   expiresAt,
   lastUsedAt,
   revokedAt,
+  scopes,
   isExpired,
   formatDate,
   onRevoke,
@@ -82,6 +89,18 @@ export function ApiKeySecurityCard({
               </span>
             )}
           </div>
+          {scopes && scopes.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {scopes.map((scope) => (
+                <code
+                  key={scope}
+                  className="rounded-md border border-neutral-border bg-page-background px-2 py-0.5 text-caption font-mono text-subtext-color"
+                >
+                  {scope}
+                </code>
+              ))}
+            </div>
+          ) : null}
         </div>
 
         {!revokedAt && onRevoke && (
@@ -285,6 +304,12 @@ export function ApiKeyCreatedContent({
           <span>Name:</span>
           <span className="text-default-font">{createdApiKey.name}</span>
         </div>
+        <div className="flex items-start justify-between gap-4">
+          <span>Scopes:</span>
+          <span className="text-right text-default-font">
+            {createdApiKey.scopes.join(", ")}
+          </span>
+        </div>
         <div className="flex justify-between">
           <span>Prefix:</span>
           <code className="text-default-font">{createdApiKey.prefix}</code>
@@ -307,8 +332,11 @@ export function ApiKeyCreatedContent({
 interface CreateApiKeyModalContentProps {
   keyName: string;
   expiresAt: string;
+  scopes: ApiKeyScope[];
+  availableScopes: ApiKeyScope[];
   onKeyNameChange: (value: string) => void;
   onExpiresAtChange: (value: string) => void;
+  onScopesChange: (value: ApiKeyScope[]) => void;
   onCancel: () => void;
   onSubmit: () => void;
   loading?: boolean;
@@ -321,8 +349,11 @@ interface CreateApiKeyModalContentProps {
 export function CreateApiKeyModalContent({
   keyName,
   expiresAt,
+  scopes,
+  availableScopes,
   onKeyNameChange,
   onExpiresAtChange,
+  onScopesChange,
   onCancel,
   onSubmit,
   loading = false,
@@ -355,6 +386,56 @@ export function CreateApiKeyModalContent({
         onChange={onExpiresAtChange}
         showNowButton={false}
       />
+
+      <div className="flex w-full flex-col gap-2">
+        <span className="text-body-bold font-body-bold text-default-font">
+          Permissions
+        </span>
+        <span className="text-caption font-caption text-subtext-color">
+          Grant only the access this key needs.
+        </span>
+        <div className="flex w-full flex-col divide-y divide-neutral-border rounded-md border border-neutral-border bg-default-background">
+          {API_KEY_SCOPE_OPTIONS.filter((option) =>
+            availableScopes.includes(option.value),
+          ).map((option) => {
+            const checked = scopes.includes(option.value);
+            return (
+              <label
+                key={option.value}
+                className="flex w-full items-center gap-3 px-3 py-3"
+              >
+                <Switch
+                  checked={checked}
+                  onCheckedChange={(nextChecked) =>
+                    onScopesChange(
+                      nextChecked
+                        ? [...scopes, option.value]
+                        : scopes.filter((scope) => scope !== option.value),
+                    )
+                  }
+                  aria-label={`${checked ? "Remove" : "Grant"} ${option.label}`}
+                />
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="text-body-bold font-body-bold text-default-font">
+                    {option.label}
+                  </span>
+                  <span className="text-caption font-caption text-subtext-color">
+                    {option.description}
+                  </span>
+                </span>
+                <code className="text-caption font-mono text-subtext-color">
+                  {option.value}
+                </code>
+              </label>
+            );
+          })}
+        </div>
+        {scopes.length === 0 ? (
+          <span className="text-caption font-caption text-error-500">
+            Select at least one permission.
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 

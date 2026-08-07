@@ -13,7 +13,7 @@ from uuid import UUID
 from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import apaginate
 from sqlalchemy import String, and_, cast, or_, select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from app.models.enums import SessionRevokedReason, UserRole, UserStatus
@@ -454,6 +454,34 @@ class AuditService:
             context=context,
         )
 
+    async def oidc_account_preprovisioned(
+        self,
+        *,
+        admin_user_id: UUID,
+        user_id: UUID,
+        username: str,
+        email: Optional[str],
+        role: UserRole | str,
+        oidc_issuer: str,
+        oidc_subject: str,
+        context: Optional[AuditContext] = None,
+    ) -> AuditLog:
+        return await self.log_event(
+            event_type="auth.oidc.account_preprovisioned",
+            entity_type="user",
+            entity_id=str(user_id),
+            description="Administrator pre-provisioned OIDC account",
+            new_value={
+                "username": username,
+                "email": email,
+                "role": getattr(role, "value", role),
+                "oidc_issuer": oidc_issuer,
+                "oidc_subject": oidc_subject,
+            },
+            performed_by=str(admin_user_id),
+            context=context,
+        )
+
     async def oidc_role_changed(
         self,
         *,
@@ -690,14 +718,30 @@ class AuditService:
         self,
         *,
         reason: str,
+        api_key_id: Optional[UUID] = None,
         api_key_prefix: Optional[str] = None,
+        source_fingerprint: Optional[str] = None,
+        failure_fingerprint: Optional[str] = None,
+        sampled: bool = False,
         context: Optional[AuditContext] = None,
     ) -> AuditLog:
+        payload: dict[str, Any] = {
+            "reason": reason,
+            "api_key_id": str(api_key_id) if api_key_id is not None else None,
+            "api_key_prefix": api_key_prefix,
+        }
+        if source_fingerprint is not None:
+            payload["source_fingerprint"] = source_fingerprint
+        if failure_fingerprint is not None:
+            payload["failure_fingerprint"] = failure_fingerprint
+        if sampled:
+            payload["sampled"] = True
         return await self.log_event(
             event_type="auth.api_key.auth_failure",
             entity_type="api_key",
+            entity_id=str(api_key_id) if api_key_id is not None else None,
             description="API key authentication failed",
-            new_value={"reason": reason, "api_key_prefix": api_key_prefix},
+            new_value=payload,
             context=context,
         )
 
@@ -735,46 +779,9 @@ def get_audit_service(db: AsyncSession) -> AuditService:
     return AuditService(db)
 
 
-async def persist_api_key_auth_failure(
-    source_db: AsyncSession,
-    *,
-    reason: str,
-    api_key_prefix: Optional[str],
-    context: Optional[AuditContext],
-    session_factory: Optional[AuditSessionFactory] = None,
-) -> AuditLog:
-    """Persist an authentication failure after ending the rejected request transaction.
-
-    API-key validation performs a lookup before it can reject a credential, so the
-    source session already owns a connection. Release that connection before opening
-    the independent audit transaction; otherwise concurrent rejections can exhaust a
-    bounded pool while every request waits for a second connection.
-    """
-    if session_factory is None:
-        if source_db.bind is None:
-            raise RuntimeError("Cannot persist API key audit without a database bind")
-        session_factory = async_sessionmaker(
-            bind=source_db.bind,
-            class_=AsyncSession,
-            expire_on_commit=False,
-        )
-
-    await source_db.rollback()
-
-    async with session_factory() as audit_db:
-        audit_log = await get_audit_service(audit_db).api_key_auth_failure(
-            reason=reason,
-            api_key_prefix=api_key_prefix,
-            context=context,
-        )
-        await audit_db.commit()
-        return audit_log
-
-
 __all__ = [
     "AuditContext",
     "AuditService",
     "AuditSessionFactory",
     "get_audit_service",
-    "persist_api_key_auth_failure",
 ]

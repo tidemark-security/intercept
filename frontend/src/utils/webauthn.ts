@@ -67,6 +67,32 @@ export const browserSupportsPasskeys = (): boolean => {
   return typeof window !== 'undefined' && typeof window.PublicKeyCredential !== 'undefined';
 };
 
+export type PasskeyPromptErrorClassification = "cancelled" | "unavailable" | "failed";
+
+export const classifyPasskeyPromptError = (
+  error: unknown,
+): PasskeyPromptErrorClassification => {
+  if (typeof DOMException !== "undefined" && error instanceof DOMException) {
+    if (error.name === "AbortError") {
+      return "cancelled";
+    }
+    if (error.name === "NotAllowedError") {
+      // Browsers use NotAllowedError when no discoverable credential is
+      // available as well as when the WebAuthn prompt times out. In the
+      // username-first screen both cases must fall back without revealing
+      // whether that username has a registered passkey.
+      return "unavailable";
+    }
+  }
+  if (
+    error instanceof Error
+    && /cancelled|canceled/i.test(error.message)
+  ) {
+    return "cancelled";
+  }
+  return "failed";
+};
+
 export const createPasskeyCredential = async (options: Record<string, any>): Promise<Record<string, any>> => {
   const publicKey = {
     ...options,

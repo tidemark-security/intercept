@@ -10,7 +10,7 @@ import pytest
 from mcp.server.auth.provider import AuthorizationParams, AuthorizeError, TokenError
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyUrl
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.mcp.auth import derive_mcp_keys
@@ -23,6 +23,10 @@ from app.mcp.local_oauth_provider import (
 )
 from app.models.models import MCPOAuthAuthorizationCode, MCPOAuthToken
 from app.services.mcp_oauth_service import MCPOAuthService
+from app.services.mcp_registration_service import (
+    MCPDCRRegistrationService,
+    MCPRegistrationPolicy,
+)
 
 
 FIXED_NOW = datetime(2026, 7, 19, 3, 0, tzinfo=timezone.utc)
@@ -83,6 +87,29 @@ class RecordingBackend:
     ) -> str:
         self.created_codes.append((pending, user))
         return "native-authorization-code"
+
+
+class FailableRegistrationSessionFactory:
+    """Inject a one-shot database outage at the registration-service boundary."""
+
+    def __init__(
+        self,
+        delegate: async_sessionmaker[AsyncSession],
+    ) -> None:
+        self._delegate = delegate
+        self._successful_calls_before_failure: int | None = None
+
+    def fail_after_successful_calls(self, count: int) -> None:
+        self._successful_calls_before_failure = count
+
+    def __call__(self):
+        remaining = self._successful_calls_before_failure
+        if remaining is not None:
+            if remaining == 0:
+                self._successful_calls_before_failure = None
+                raise RuntimeError("simulated registration database outage")
+            self._successful_calls_before_failure = remaining - 1
+        return self._delegate()
 
 
 def _client() -> OAuthClientInformationFull:
@@ -314,6 +341,89 @@ async def test_authorization_code_exchange_returns_native_identity_claims(
         "auth_source": "oauth",
         "client_id": "native-mcp-client-id",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("grant_type", ["authorization_code", "refresh_token"])
+async def test_token_exchange_revokes_issued_pair_when_lease_activation_fails(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    grant_type: str,
+) -> None:
+    monkeypatch.setenv("MCP_OAUTH_ENABLED", "true")
+    monkeypatch.setenv("MCP_OAUTH_PUBLIC_BASE_URL", "http://localhost:8080")
+    pending_store = RecordingPendingAuthorizations()
+    registration_sessions = FailableRegistrationSessionFactory(session_maker)
+    registration_service = MCPDCRRegistrationService(
+        session_factory=registration_sessions,  # type: ignore[arg-type]
+        policy=MCPRegistrationPolicy(),
+    )
+    provider = InterceptOAuthProvider(
+        session_factory=session_maker,
+        pending_authorizations=pending_store,
+        public_base_url="http://localhost:8080",
+        registration_service=registration_service,
+    )
+    client = _client()
+    user = analyst_user_factory()
+    async with session_maker() as session:
+        session.add(user)
+        await session.commit()
+    await provider.register_client(client)
+    await provider.authorize(
+        client,
+        AuthorizationParams(
+            state=None,
+            scopes=["mcp:access"],
+            code_challenge="pkce-challenge",
+            redirect_uri=AnyUrl(REDIRECT_URI),
+            redirect_uri_provided_explicitly=True,
+            resource=RESOURCE,
+        ),
+    )
+    callback = await provider.complete_authorization(
+        next(iter(pending_store.records)),
+        user=user,
+        approved=True,
+    )
+    raw_code = parse_qs(urlparse(callback).query)["code"][0]
+    authorization_code = await provider.load_authorization_code(client, raw_code)
+    assert authorization_code is not None
+
+    if grant_type == "refresh_token":
+        original = await provider.exchange_authorization_code(
+            client,
+            authorization_code,
+        )
+        assert original.refresh_token is not None
+        refresh_token = await provider.load_refresh_token(
+            client,
+            original.refresh_token,
+        )
+        assert refresh_token is not None
+
+    # The pre-exchange lease check succeeds; the post-issuance activation then
+    # encounters the simulated database outage.
+    registration_sessions.fail_after_successful_calls(1)
+    with pytest.raises(TokenError) as raised:
+        if grant_type == "authorization_code":
+            await provider.exchange_authorization_code(client, authorization_code)
+        else:
+            await provider.exchange_refresh_token(
+                client,
+                refresh_token,
+                ["mcp:access"],
+            )
+
+    assert raised.value.error == "server_error"
+    async with session_maker() as session:
+        active_tokens = await session.scalar(
+            select(func.count())
+            .select_from(MCPOAuthToken)
+            .where(MCPOAuthToken.revoked_at.is_(None))
+        )
+    assert active_tokens == 0
 
 
 @pytest.mark.asyncio

@@ -20,9 +20,13 @@ from app.services.realtime_service import (
 class MockWebSocket:
     def __init__(self) -> None:
         self.messages: list[dict[str, Any]] = []
+        self.closed_with: tuple[int, str] | None = None
 
     async def send_json(self, message: dict[str, Any]) -> None:
         self.messages.append(message)
+
+    async def close(self, *, code: int, reason: str) -> None:
+        self.closed_with = (code, reason)
 
 
 class MockPgConnection:
@@ -61,6 +65,78 @@ async def test_broadcast_list_sends_to_all_clients_except_excluded() -> None:
 
     assert cast(Any, included).messages == [message]
     assert cast(Any, excluded).messages == []
+
+
+@pytest.mark.asyncio
+async def test_invalidated_session_cannot_subscribe_after_connect() -> None:
+    valid_tokens = {"session-token"}
+
+    async def validate_session(session_token: str) -> bool:
+        return session_token in valid_tokens
+
+    async def publish(_: dict[str, Any]) -> None:
+        return None
+
+    manager = ConnectionManager(
+        node_id="node-a",
+        presence_publisher=publish,
+        session_validator=validate_session,
+    )
+    ws = cast(WebSocket, MockWebSocket())
+    await manager.connect(ws, "session-token", "Glenn")
+    valid_tokens.clear()
+
+    subscribed = await manager.subscribe(ws, "case", 12)
+
+    assert subscribed is False
+    assert manager.active_connections == 0
+    assert cast(Any, ws).messages == []
+    assert cast(Any, ws).closed_with == (4001, "Session expired")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("invalid_state", "expected_close"),
+    [
+        ("invalid", (4001, "Session expired")),
+        ("backend-error", (1011, "Session validation unavailable")),
+    ],
+)
+async def test_invalidated_session_cannot_receive_broadcast_after_subscribe(
+    invalid_state: str,
+    expected_close: tuple[int, str],
+) -> None:
+    validation_state = "valid"
+
+    async def validate_session(_session_token: str) -> bool:
+        if validation_state == "backend-error":
+            raise RuntimeError("session backend unavailable")
+        return validation_state == "valid"
+
+    async def publish(_: dict[str, Any]) -> None:
+        return None
+
+    manager = ConnectionManager(
+        node_id="node-a",
+        presence_publisher=publish,
+        session_validator=validate_session,
+    )
+    ws = cast(WebSocket, MockWebSocket())
+    await manager.connect(ws, "session-token", "Glenn")
+    assert await manager.subscribe(ws, "case", 12) is True
+    cast(Any, ws).messages.clear()
+    validation_state = invalid_state
+
+    notified = await manager.broadcast(
+        "case",
+        12,
+        {"type": "event", "payload": {"entity_id": 12}},
+    )
+
+    assert notified == set()
+    assert manager.active_connections == 0
+    assert cast(Any, ws).messages == []
+    assert cast(Any, ws).closed_with == expected_close
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,7 @@ import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional, Set
 
 import asyncpg
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,6 +66,7 @@ async def _publish_realtime_message(payload: Dict[str, Any]) -> None:
 
 
 PresencePublisher = Callable[[Dict[str, Any]], Awaitable[None]]
+SessionValidator = Callable[[str], Awaitable[bool]]
 
 
 class ConnectionManager:
@@ -76,9 +77,11 @@ class ConnectionManager:
         *,
         node_id: Optional[str] = None,
         presence_publisher: Optional[PresencePublisher] = None,
+        session_validator: Optional[SessionValidator] = None,
     ) -> None:
         self.node_id = node_id or str(uuid.uuid4())
         self._presence_publisher = presence_publisher or _publish_realtime_message
+        self._session_validator = session_validator
         # ws → set of subscription keys ("alert:5", "case:12")
         self._connections: Dict[WebSocket, Set[str]] = {}
         # subscription key → set of WebSockets
@@ -97,11 +100,71 @@ class ConnectionManager:
     def active_connections(self) -> int:
         return len(self._connections)
 
+    def set_session_validator(self, validator: SessionValidator) -> None:
+        """Configure the production session validator without an import cycle."""
+        self._session_validator = validator
+
     async def connect(self, ws: WebSocket, session_token: str, username: str) -> None:
         async with self._lock:
             self._connections[ws] = set()
             self._session_tokens[ws] = session_token
             self._usernames[ws] = username
+
+    async def validate_connection(self, ws: WebSocket) -> bool:
+        """Fail closed when a connected WebSocket's stored session is invalid."""
+        async with self._lock:
+            session_token = self._session_tokens.get(ws)
+
+        if session_token is None:
+            return False
+
+        validator = self._session_validator
+        if validator is None:
+            # Tests and isolated manager consumers may intentionally omit a
+            # validator. The production singleton is configured by the
+            # WebSocket route after its database-backed validator is defined.
+            return True
+
+        try:
+            session_valid = await validator(session_token)
+        except Exception:
+            logger.exception("WebSocket session validation error")
+            await self._reject_connection(
+                ws,
+                code=1011,
+                reason="Session validation unavailable",
+            )
+            return False
+
+        if not session_valid:
+            await self._reject_connection(
+                ws,
+                code=4001,
+                reason="Session expired",
+            )
+            return False
+
+        # Do not authorize a command or send if the connection was removed or
+        # replaced while the asynchronous validator was running.
+        async with self._lock:
+            return self._session_tokens.get(ws) == session_token
+
+    async def _reject_connection(
+        self,
+        ws: WebSocket,
+        *,
+        code: int,
+        reason: str,
+    ) -> None:
+        """Remove and close a connection whose session cannot be trusted."""
+        try:
+            await self.disconnect(ws)
+        finally:
+            try:
+                await ws.close(code=code, reason=reason)
+            except (RuntimeError, WebSocketDisconnect):
+                # The peer may have disconnected while validation was in progress.
+                pass
 
     async def disconnect(self, ws: WebSocket) -> None:
         affected_keys: list[str] = []
@@ -121,12 +184,15 @@ class ConnectionManager:
             await self._broadcast_presence_for_key(key)
             await self._publish_presence_for_key(key)
 
-    async def subscribe(self, ws: WebSocket, entity_type: str, entity_id: int) -> None:
+    async def subscribe(self, ws: WebSocket, entity_type: str, entity_id: int) -> bool:
+        if not await self.validate_connection(ws):
+            return False
+
         key = f"{entity_type}:{entity_id}"
         should_broadcast = False
         async with self._lock:
             if ws not in self._connections:
-                return
+                return False
             self._connections[ws].add(key)
             self._subscriptions.setdefault(key, set()).add(ws)
             should_broadcast = True
@@ -135,8 +201,12 @@ class ConnectionManager:
             await self._broadcast_presence_for_key(key)
             await self._publish_presence_for_key(key)
             await self._publish_presence_request(key)
+        return True
 
-    async def unsubscribe(self, ws: WebSocket, entity_type: str, entity_id: int) -> None:
+    async def unsubscribe(self, ws: WebSocket, entity_type: str, entity_id: int) -> bool:
+        if not await self.validate_connection(ws):
+            return False
+
         key = f"{entity_type}:{entity_id}"
         should_broadcast = False
         async with self._lock:
@@ -153,6 +223,7 @@ class ConnectionManager:
         if should_broadcast:
             await self._broadcast_presence_for_key(key)
             await self._publish_presence_for_key(key)
+        return True
 
     def get_session_token(self, ws: WebSocket) -> Optional[str]:
         return self._session_tokens.get(ws)
@@ -232,6 +303,7 @@ class ConnectionManager:
             return
         entity_type, entity_id = entity
 
+        await self._prune_invalid_connections_for_key(key)
         async with self._lock:
             local_viewers = sorted(self._get_local_viewers_for_key(key))
 
@@ -296,6 +368,7 @@ class ConnectionManager:
             return
         entity_type, entity_id = entity
 
+        await self._prune_invalid_connections_for_key(key)
         async with self._lock:
             subscribers = list(self._subscriptions.get(key, set()))
             viewers = sorted(self._get_local_viewers_for_key(key) | self._get_remote_viewers_for_key(key))
@@ -321,8 +394,7 @@ class ConnectionManager:
         async with self._lock:
             subscribers = list(self._subscriptions.get(key, set()))
 
-        await self._send_to_many(subscribers, message)
-        return set(subscribers)
+        return await self._send_to_many(subscribers, message)
 
     async def broadcast_list(
         self,
@@ -342,15 +414,31 @@ class ConnectionManager:
 
         await self._send_to_many(subscriber_list, message)
 
-    async def _send_to_many(self, subscribers: list[WebSocket], message: dict) -> None:
-        stale: list[WebSocket] = []
+    async def _prune_invalid_connections_for_key(self, key: str) -> None:
+        """Remove invalid subscribers before deriving a presence snapshot."""
+        async with self._lock:
+            subscribers = list(self._subscriptions.get(key, set()))
         for ws in subscribers:
+            await self.validate_connection(ws)
+
+    async def _send_to_many(
+        self,
+        subscribers: list[WebSocket],
+        message: dict,
+    ) -> set[WebSocket]:
+        stale: list[WebSocket] = []
+        notified: set[WebSocket] = set()
+        for ws in subscribers:
+            if not await self.validate_connection(ws):
+                continue
             try:
                 await ws.send_json(message)
+                notified.add(ws)
             except Exception:
                 stale.append(ws)
         for ws in stale:
             await self.disconnect(ws)
+        return notified
 
 
 class NotificationListener:

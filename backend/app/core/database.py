@@ -7,6 +7,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.core.settings_registry import get_local
+from app.core.authentication_activity import flush_deferred_authentication_activity
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,17 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
+            try:
+                if await flush_deferred_authentication_activity(session):
+                    await session.commit()
+                else:
+                    await session.rollback()
+            except Exception:
+                await session.rollback()
+                logger.warning(
+                    "Unable to persist deferred authentication activity",
+                    exc_info=True,
+                )
         except Exception:
             await session.rollback()
             raise

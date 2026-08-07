@@ -109,6 +109,11 @@ async def test_admin_update_does_not_rehydrate_after_commit(
 
     db = SimpleNamespace(execute=execute, commit=commit, refresh=refresh)
     monkeypatch.setattr(admin_auth_module, "get_audit_service", lambda _db: _AuditService())
+    monkeypatch.setattr(
+        admin_auth_module.oidc_local_credential_policy,
+        "revoke_impermissible_credentials",
+        AsyncMock(),
+    )
 
     result = await AdminAuthService(password_hasher=SimpleNamespace()).update_user(
         admin_user_id=admin_id,

@@ -15,6 +15,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.routing import APIRoute
 from fastapi_pagination import add_pagination
 from starlette.applications import Starlette
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import JSONResponse
 from starlette.routing import Mount
 from starlette.types import Receive, Scope, Send
@@ -51,13 +52,24 @@ from app.api.routes.admin_auth import (
     require_authenticated_user,
     require_non_auditor_user,
 )
+from app.core.client_address import client_address_resolver
 from app.core.csrf import CSRFMiddleware
 from app.core.database import async_session_factory, engine, test_db_connection
+from app.core.deployment_security import validate_dev_compose_public_exposure
+from app.core.request_body_limit import (
+    PASSKEY_REQUEST_MAX_BODY_BYTES,
+    PASSKEY_REQUEST_PATHS,
+    PASSWORD_LOGIN_REQUEST_MAX_BODY_BYTES,
+    PASSWORD_LOGIN_REQUEST_PATHS,
+    RequestBodyLimitMiddleware,
+)
 from app.core.security import initialize_encryption_service
 from app.core.settings_registry import get_local
 from app.mcp.runtime import build_mcp_runtime, load_mcp_auth_snapshot
 from app.mcp.server import mcp  # schema-only server retained for code/tests importing it
 from app.services.enrichment.providers import register_providers
+from app.services.auth_service import AuthenticationConcurrencyError
+from app.services.oidc_local_credential_policy import oidc_local_credential_policy
 from app.services.settings_service import SettingsService
 from app.services.task_queue_service import (
     initialize_task_queue_service,
@@ -85,6 +97,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _load_trusted_hosts() -> list[str]:
+    raw_hosts = get_local("http.trusted_hosts")
+    if not isinstance(raw_hosts, list):
+        raise RuntimeError("HTTP_TRUSTED_HOSTS must be a JSON array")
+    hosts = [str(host).strip() for host in raw_hosts if str(host).strip()]
+    if not hosts or "*" in hosts:
+        raise RuntimeError(
+            "HTTP_TRUSTED_HOSTS must contain explicit hosts and cannot use '*'"
+        )
+    return hosts
+
+
+TRUSTED_HOSTS = _load_trusted_hosts()
+
+
 @asynccontextmanager
 async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Initialize and close Intercept's non-MCP application resources."""
@@ -93,6 +120,7 @@ async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     try:
         logger.info("Starting Tidemark Intercept...")
+        validate_dev_compose_public_exposure()
         logger.info("Initializing encryption service...")
         initialize_encryption_service(get_local("secret_key").encode())
 
@@ -101,6 +129,10 @@ async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
             raise RuntimeError(
                 "Database connection failed - see error message above for solutions"
             )
+
+        async with async_session_factory() as db:
+            await oidc_local_credential_policy.reconcile_linked_users(db)
+            await db.commit()
 
         # The API process only enqueues jobs; the worker process executes them.
         register_providers()
@@ -152,6 +184,7 @@ api_app = FastAPI(
     redoc_url="/redoc",
     redirect_slashes=True,
 )
+api_app.state.client_address_resolver = client_address_resolver
 
 
 AUTH_DEPENDENCIES = {
@@ -226,6 +259,20 @@ api_app.add_middleware(
     CSRFMiddleware,
     session_factory_provider=lambda: async_session_factory,
 )
+api_app.add_middleware(
+    RequestBodyLimitMiddleware,
+    max_body_bytes=PASSKEY_REQUEST_MAX_BODY_BYTES,
+    paths=PASSKEY_REQUEST_PATHS,
+)
+api_app.add_middleware(
+    RequestBodyLimitMiddleware,
+    max_body_bytes=PASSWORD_LOGIN_REQUEST_MAX_BODY_BYTES,
+    paths=PASSWORD_LOGIN_REQUEST_PATHS,
+)
+api_app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=TRUSTED_HOSTS,
+)
 
 api_app.include_router(cases.router, prefix="/api/v1")
 api_app.include_router(case_runbooks.router, prefix="/api/v1")
@@ -286,6 +333,19 @@ async def options_handler(path: str) -> dict[str, str]:
     return {"message": "OK"}
 
 
+@api_app.exception_handler(AuthenticationConcurrencyError)
+async def authentication_concurrency_handler(
+    _request: Any,
+    _exc: AuthenticationConcurrencyError,
+) -> JSONResponse:
+    """Fail closed without queueing connections behind credential mutations."""
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Authentication state is busy; retry the request"},
+        headers={"Retry-After": "1"},
+    )
+
+
 @api_app.exception_handler(Exception)
 async def global_exception_handler(request: Any, exc: Exception) -> JSONResponse:
     """Log unexpected failures while keeping internal details out of responses."""
@@ -328,13 +388,18 @@ class RuntimeApplication:
 def compose_http_app(existing_api_app: FastAPI, runtime: Any) -> Starlette:
     """Order discovery and MCP routes ahead of the API/SPA application."""
 
-    return Starlette(
+    composed = Starlette(
         routes=[
             *runtime.well_known_routes,
             Mount("/mcp", app=runtime.mounted_app),
             Mount("/", app=existing_api_app),
         ]
     )
+    composed.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=TRUSTED_HOSTS,
+    )
+    return composed
 
 
 def _local_provider_factory(snapshot: Any, token_hash_key: bytes) -> Any:

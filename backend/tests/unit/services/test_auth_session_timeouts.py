@@ -5,7 +5,9 @@ from uuid import uuid4
 
 import pytest
 
+from app.core.security import hash_opaque_token
 from app.models.enums import SessionRevokedReason, UserStatus
+from app.models.models import AuthSession, UserAccount
 from app.services import auth_service as auth_service_module
 from app.services.audit_service import AuditContext
 from app.services.auth_service import AuthService, SessionNotFoundError
@@ -50,15 +52,29 @@ async def test_new_session_stores_absolute_expiration(monkeypatch: pytest.Monkey
 @pytest.mark.asyncio
 async def test_session_is_revoked_after_idle_timeout() -> None:
     now = datetime.now(timezone.utc)
+    user = SimpleNamespace(id=uuid4(), status=UserStatus.ACTIVE)
     session = SimpleNamespace(
+        id=uuid4(),
+        user_id=user.id,
+        session_token_hash=hash_opaque_token("token"),
         revoked_at=None,
         revoked_reason=None,
+        issued_at=now - timedelta(hours=2),
         expires_at=now + timedelta(hours=10),
         last_seen_at=now - timedelta(hours=1, seconds=1),
-        user=SimpleNamespace(status=UserStatus.ACTIVE),
+        user=None,
     )
     db = SimpleNamespace(
-        execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: session))
+        execute=AsyncMock(
+            return_value=SimpleNamespace(
+                one_or_none=lambda: (session.id, user.id),
+            )
+        ),
+        get=AsyncMock(
+            side_effect=lambda model, _id, **_kwargs: (
+                user if model is UserAccount else session if model is AuthSession else None
+            )
+        ),
     )
 
     with pytest.raises(SessionNotFoundError):
@@ -72,15 +88,29 @@ async def test_session_is_revoked_after_idle_timeout() -> None:
 async def test_active_session_refreshes_idle_window_without_extending_absolute_expiration() -> None:
     now = datetime.now(timezone.utc)
     absolute_expiration = now + timedelta(hours=2)
+    user = SimpleNamespace(id=uuid4(), status=UserStatus.ACTIVE)
     session = SimpleNamespace(
+        id=uuid4(),
+        user_id=user.id,
+        session_token_hash=hash_opaque_token("token"),
         revoked_at=None,
         revoked_reason=None,
+        issued_at=now - timedelta(hours=1),
         expires_at=absolute_expiration,
         last_seen_at=now - timedelta(minutes=30),
-        user=SimpleNamespace(status=UserStatus.ACTIVE),
+        user=None,
     )
     db = SimpleNamespace(
-        execute=AsyncMock(return_value=SimpleNamespace(scalar_one_or_none=lambda: session))
+        execute=AsyncMock(
+            return_value=SimpleNamespace(
+                one_or_none=lambda: (session.id, user.id),
+            )
+        ),
+        get=AsyncMock(
+            side_effect=lambda model, _id, **_kwargs: (
+                user if model is UserAccount else session if model is AuthSession else None
+            )
+        ),
     )
 
     resolved = await _service()._resolve_active_session(db, "token")
@@ -88,30 +118,3 @@ async def test_active_session_refreshes_idle_window_without_extending_absolute_e
     assert resolved is session
     assert session.last_seen_at >= now
     assert session.expires_at == absolute_expiration
-
-
-@pytest.mark.asyncio
-async def test_rate_limiter_rebuilds_when_hot_settings_change(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = {
-        "auth.login.rate_limit_attempts": 1,
-        "auth.login.rate_limit_window_seconds": 60,
-    }
-
-    async def fake_get(self, key: str, default=None):
-        return settings.get(key, default)
-
-    monkeypatch.setattr(
-        "app.services.settings_service.SettingsService.get",
-        fake_get,
-    )
-    service = _service()
-    db = SimpleNamespace()
-
-    assert await service.check_rate_limit(db, "analyst:127.0.0.1") == (True, None)
-    allowed, _ = await service.check_rate_limit(db, "analyst:127.0.0.1")
-    assert allowed is False
-
-    settings["auth.login.rate_limit_attempts"] = 2
-
-    assert await service.check_rate_limit(db, "analyst:127.0.0.1") == (True, None)
-    assert service._rate_limiter_config == (2, 60)

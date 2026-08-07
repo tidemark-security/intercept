@@ -2,6 +2,7 @@
 
 from fastapi import Request
 
+from app.core.client_address import request_client_address
 from app.core.request_context import get_correlation_id
 from app.services.audit_service import AuditContext
 
@@ -9,7 +10,7 @@ from app.services.audit_service import AuditContext
 def build_audit_context(request: Request) -> AuditContext:
     """Build the canonical service-layer context from an HTTP request."""
     return AuditContext(
-        ip_address=request.client.host if request.client else None,
+        ip_address=request_client_address(request),
         user_agent=request.headers.get("user-agent"),
         correlation_id=get_correlation_id(request.headers),
     )

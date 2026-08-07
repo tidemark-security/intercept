@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, AsyncIterator, Callable
 from urllib.parse import urlsplit
@@ -22,6 +22,7 @@ from app.mcp.auth import (
     MCP_ACCESS_SCOPE,
     MCPConfigurationError,
     InterceptApiKeyVerifier,
+    MCPRegistrationRequestMiddleware,
     XApiKeyToBearerMiddleware,
     derive_mcp_keys,
     validate_public_origin,
@@ -29,7 +30,12 @@ from app.mcp.auth import (
 from app.mcp.oidc_provider import InterceptOIDCProxy
 from app.mcp.server import create_mcp_server
 from app.models.enums import UserRole
-from app.services.oidc_service import OIDCIdentityPolicy
+from app.services.oidc_service import (
+    OIDCConfigurationError,
+    OIDCIdentityPolicy,
+    validate_oidc_discovery_url,
+)
+from app.services.mcp_registration_service import MCPRegistrationPolicy
 
 
 class MCPAuthMode(str, Enum):
@@ -49,7 +55,6 @@ class OIDCAuthSnapshot:
     default_role: str
     role_claim_path: str
     role_mapping: dict[str, Any]
-    trusted_auto_link_issuers: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +66,9 @@ class MCPAuthSnapshot:
     access_token_ttl_seconds: int
     refresh_token_ttl_days: int
     oidc: OIDCAuthSnapshot | None
+    registration_policy: MCPRegistrationPolicy = field(
+        default_factory=MCPRegistrationPolicy
+    )
 
     @property
     def oauth_base_url(self) -> str:
@@ -194,19 +202,125 @@ async def load_mcp_auth_snapshot(settings: Any) -> MCPAuthSnapshot:
     if access_ttl <= 0 or refresh_ttl_days <= 0:
         raise MCPConfigurationError("MCP OAuth token lifetimes must be positive")
 
+    registration_policy = MCPRegistrationPolicy(
+        max_body_bytes=int(
+            await settings.get(
+                "mcp.oauth.registration_max_body_bytes",
+                default=64 * 1024,
+            )
+        ),
+        pending_quota=int(
+            await settings.get(
+                "mcp.oauth.registration_pending_quota",
+                default=1_000,
+            )
+        ),
+        total_quota=int(
+            await settings.get(
+                "mcp.oauth.registration_total_quota",
+                default=5_000,
+            )
+        ),
+        per_ip_quota=int(
+            await settings.get(
+                "mcp.oauth.registration_per_ip_quota",
+                default=600,
+            )
+        ),
+        rate_window_seconds=int(
+            await settings.get(
+                "mcp.oauth.registration_rate_window_seconds",
+                default=60 * 60,
+            )
+        ),
+        abandoned_ttl_seconds=int(
+            await settings.get(
+                "mcp.oauth.registration_abandoned_ttl_seconds",
+                default=60 * 60,
+            )
+        ),
+        active_ttl_seconds=max(
+            int(
+                await settings.get(
+                    "mcp.oauth.registration_active_ttl_seconds",
+                    default=30 * 24 * 60 * 60,
+                )
+            ),
+            access_ttl,
+            refresh_ttl_days * 24 * 60 * 60,
+        ),
+        pending_authorization_global_quota=int(
+            await settings.get(
+                "mcp.oauth.pending_authorization_global_quota",
+                default=1_000,
+            )
+        ),
+        pending_authorization_per_client_quota=int(
+            await settings.get(
+                "mcp.oauth.pending_authorization_per_client_quota",
+                default=10,
+            )
+        ),
+        pending_authorization_per_source_quota=int(
+            await settings.get(
+                "mcp.oauth.pending_authorization_per_source_quota",
+                default=50,
+            )
+        ),
+        cimd_fetch_reservation_ttl_seconds=int(
+            await settings.get(
+                "mcp.oauth.cimd_fetch_reservation_ttl_seconds",
+                default=60,
+            )
+        ),
+        cimd_cache_max_entries=int(
+            await settings.get(
+                "mcp.oauth.cimd_cache_max_entries",
+                default=256,
+            )
+        ),
+    )
+    if any(
+        value <= 0
+        for value in (
+            registration_policy.max_body_bytes,
+            registration_policy.pending_quota,
+            registration_policy.total_quota,
+            registration_policy.per_ip_quota,
+            registration_policy.rate_window_seconds,
+            registration_policy.abandoned_ttl_seconds,
+            registration_policy.active_ttl_seconds,
+            registration_policy.pending_authorization_global_quota,
+            registration_policy.pending_authorization_per_client_quota,
+            registration_policy.pending_authorization_per_source_quota,
+            registration_policy.cimd_fetch_reservation_ttl_seconds,
+            registration_policy.cimd_cache_max_entries,
+        )
+    ):
+        raise MCPConfigurationError("MCP registration limits must be positive")
+    if (
+        registration_policy.abandoned_ttl_seconds
+        < registration_policy.rate_window_seconds
+    ):
+        raise MCPConfigurationError(
+            "MCP registration abandoned TTL must be at least the rate window"
+        )
+
     oidc_enabled = bool(await settings.get("oidc.enabled", default=False))
     oidc_snapshot: OIDCAuthSnapshot | None = None
     if oidc_enabled:
-        discovery_url = _required_text(await settings.get("oidc.discovery_url"))
+        raw_discovery_url = await settings.get("oidc.discovery_url")
+        discovery_url = _required_text(raw_discovery_url)
         client_id = _required_text(await settings.get("oidc.client_id"))
         client_secret = _required_text(await settings.get("oidc.client_secret"))
         if not discovery_url or not client_id or not client_secret:
             raise MCPConfigurationError(
                 "OIDC is enabled, but discovery URL, client ID, and client secret are required"
             )
-        discovery = urlsplit(discovery_url)
-        if discovery.scheme != "https" or not discovery.netloc:
-            raise MCPConfigurationError("OIDC discovery URL must be an absolute HTTPS URL")
+        try:
+            discovery_url = validate_oidc_discovery_url(raw_discovery_url)
+        except OIDCConfigurationError as exc:
+            raise MCPConfigurationError(str(exc)) from exc
 
         role_mapping = await settings.get("oidc.role_mapping", default={})
         if not isinstance(role_mapping, dict):
@@ -232,13 +346,6 @@ async def load_mcp_auth_snapshot(settings: Any) -> MCPAuthSnapshot:
                 raise MCPConfigurationError(
                     f"OIDC role mapping contains invalid role {mapped_role!r}"
                 ) from exc
-        trusted_issuers = await settings.get(
-            "oidc.trusted_auto_link_issuers",
-            default=[],
-        )
-        if not isinstance(trusted_issuers, (list, tuple)):
-            raise MCPConfigurationError("OIDC trusted auto-link issuers must be a list")
-
         oidc_snapshot = OIDCAuthSnapshot(
             discovery_url=discovery_url,
             client_id=client_id,
@@ -248,16 +355,13 @@ async def load_mcp_auth_snapshot(settings: Any) -> MCPAuthSnapshot:
                 await settings.get("oidc.provider_name", default="SSO")
             ),
             jit_provisioning=bool(
-                await settings.get("oidc.jit_provisioning", default=True)
+                await settings.get("oidc.jit_provisioning", default=False)
             ),
             default_role=default_role,
             role_claim_path=_required_text(
                 await settings.get("oidc.role_claim_path", default="")
             ),
             role_mapping=dict(role_mapping),
-            trusted_auto_link_issuers=tuple(
-                str(item) for item in trusted_issuers if str(item).strip()
-            ),
         )
 
     if oidc_snapshot is not None:
@@ -273,6 +377,7 @@ async def load_mcp_auth_snapshot(settings: Any) -> MCPAuthSnapshot:
         access_token_ttl_seconds=access_ttl,
         refresh_token_ttl_days=refresh_ttl_days,
         oidc=oidc_snapshot,
+        registration_policy=registration_policy,
     )
 
 
@@ -388,15 +493,13 @@ async def build_mcp_runtime(
                 default_role=snapshot.oidc.default_role,
                 role_claim_path=snapshot.oidc.role_claim_path,
                 role_mapping=dict(snapshot.oidc.role_mapping),
-                trusted_auto_link_issuers=tuple(
-                    snapshot.oidc.trusted_auto_link_issuers
-                ),
             ),
             fastmcp_access_token_expiry_seconds=snapshot.access_token_ttl_seconds,
             fallback_access_token_expiry_seconds=snapshot.access_token_ttl_seconds,
             fallback_refresh_token_expiry_seconds=(
                 snapshot.refresh_token_ttl_days * 24 * 60 * 60
             ),
+            registration_policy=snapshot.registration_policy,
         )
     elif snapshot.mode is MCPAuthMode.LOCAL_OAUTH:
         if local_provider_factory is None:
@@ -422,6 +525,15 @@ async def build_mcp_runtime(
     http_app = server.http_app(
         path="/streamable/",
         transport="streamable-http",
+        host_origin_protection=True if snapshot.oauth_enabled else "auto",
+        allowed_hosts=(
+            [urlsplit(snapshot.public_origin).netloc]
+            if snapshot.oauth_enabled
+            else None
+        ),
+        allowed_origins=(
+            [snapshot.public_origin] if snapshot.oauth_enabled else None
+        ),
     )
     well_known_routes = _align_protected_resource_metadata_routes(
         http_app,
@@ -436,7 +548,10 @@ async def build_mcp_runtime(
         for route in http_app.router.routes
         if not getattr(route, "path", "").startswith("/.well-known/")
     ]
-    mounted_app = XApiKeyToBearerMiddleware(http_app)
+    mounted_app = MCPRegistrationRequestMiddleware(
+        XApiKeyToBearerMiddleware(http_app),
+        max_body_bytes=snapshot.registration_policy.max_body_bytes,
+    )
     return MCPRuntime(
         snapshot=snapshot,
         provider=provider,

@@ -10,7 +10,7 @@ Supports three metric types:
 from datetime import datetime
 from typing import Optional, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -30,7 +30,11 @@ from app.services.date_filter_utils import (
     parse_datetime_filter,
 )
 from app.services.metrics_service import metrics_service
-from app.api.routes.admin_auth import require_authenticated_user, require_admin_user
+from app.api.routes.admin_auth import (
+    require_api_key_admin_scope,
+    require_authenticated_user,
+    require_admin_user,
+)
 
 router = APIRouter(
     prefix="/metrics",
@@ -88,6 +92,7 @@ Query SOC operational metrics aggregated in 15-minute windows.
 """,
 )
 async def get_metrics(
+    request: Request,
     type: MetricType = Query(
         ...,
         description="Metric type: 'soc' for SOC summary, 'analyst' for per-analyst (admin only), 'alert' for detection engineering"
@@ -151,6 +156,7 @@ async def get_metrics(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Analyst metrics require admin role"
             )
+        require_api_key_admin_scope(request)
         return await metrics_service.get_analyst_metrics(
             db=db,
             start_time=start_time,

@@ -93,6 +93,7 @@ async def test_setup_closes_langflow_service_after_success(
         name="Intercept Langflow MCP",
         prefix="tmi_12345678",
         expires_at=now,
+        scopes=["api:read", "mcp:access"],
         last_used_at=None,
         revoked_at=None,
         created_at=now,

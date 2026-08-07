@@ -36,14 +36,17 @@ class FakeWebSocket:
 async def _run_message(
     monkeypatch: pytest.MonkeyPatch,
     raw_message: str,
+    *,
+    session_valid: bool = True,
 ) -> tuple[FakeWebSocket, SimpleNamespace]:
     ws = FakeWebSocket(raw_message)
     manager = SimpleNamespace(
         active_connections=1,
         connect=AsyncMock(),
         disconnect=AsyncMock(),
-        subscribe=AsyncMock(),
-        unsubscribe=AsyncMock(),
+        subscribe=AsyncMock(return_value=True),
+        unsubscribe=AsyncMock(return_value=True),
+        validate_connection=AsyncMock(return_value=session_valid),
         get_session_token=Mock(return_value="session-token"),
     )
 
@@ -94,6 +97,23 @@ async def test_websocket_unsubscribes_from_valid_target(
             "payload": {"entity_type": "task", "entity_id": 7},
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_invalidated_session_cannot_subscribe_after_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ws, manager = await _run_message(
+        monkeypatch,
+        '{"type":"subscribe","entity_type":"case","entity_id":12}',
+        session_valid=False,
+    )
+
+    assert ws.accepted is True
+    manager.validate_connection.assert_awaited_once_with(cast(WebSocket, ws))
+    manager.subscribe.assert_not_awaited()
+    manager.disconnect.assert_awaited_once_with(cast(WebSocket, ws))
+    assert ws.sent_messages == []
 
 
 @pytest.mark.asyncio

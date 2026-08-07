@@ -8,6 +8,55 @@ from app.services.maxmind_service import maxmind_service
 from app.services.realtime_service import notification_listener
 
 
+class _AsyncSessionContext:
+    def __init__(self, session) -> None:
+        self.session = session
+
+    async def __aenter__(self):
+        return self.session
+
+    async def __aexit__(self, _exc_type, _exc, _traceback) -> None:
+        return None
+
+
+def _patch_startup_reconciliation(monkeypatch):
+    db = Mock()
+    db.commit = AsyncMock()
+    reconcile = AsyncMock()
+    monkeypatch.setattr(
+        main,
+        "oidc_local_credential_policy",
+        Mock(reconcile_linked_users=reconcile),
+    )
+    monkeypatch.setattr(
+        main,
+        "async_session_factory",
+        Mock(return_value=_AsyncSessionContext(db)),
+    )
+    return db, reconcile
+
+
+@pytest.mark.asyncio
+async def test_lifespan_reconciles_local_credentials_before_serving(monkeypatch) -> None:
+    monkeypatch.setattr(main, "initialize_encryption_service", Mock())
+    monkeypatch.setattr(main, "test_db_connection", AsyncMock(return_value=True))
+    monkeypatch.setattr(main, "register_providers", Mock())
+    monkeypatch.setattr(main, "initialize_task_queue_service", AsyncMock())
+    monkeypatch.setattr(main, "register_task_handlers", AsyncMock())
+    monkeypatch.setattr(notification_listener, "start", AsyncMock(return_value=False))
+    monkeypatch.setattr(notification_listener, "stop", AsyncMock())
+    monkeypatch.setattr(main, "shutdown_task_queue_service", AsyncMock())
+    monkeypatch.setattr(maxmind_service, "close_readers", AsyncMock())
+
+    db, reconcile = _patch_startup_reconciliation(monkeypatch)
+
+    async with main.app_lifespan(FastAPI()):
+        pass
+
+    reconcile.assert_awaited_once_with(db)
+    db.commit.assert_awaited_once_with()
+
+
 @pytest.mark.asyncio
 async def test_lifespan_attempts_every_cleanup_after_startup_failure(monkeypatch) -> None:
     monkeypatch.setattr(main, "initialize_encryption_service", lambda _key: None)
@@ -42,6 +91,7 @@ async def test_lifespan_propagates_handler_registration_defects(monkeypatch) -> 
     monkeypatch.setattr(notification_listener, "stop", AsyncMock())
     monkeypatch.setattr(main, "shutdown_task_queue_service", AsyncMock())
     monkeypatch.setattr(maxmind_service, "close_readers", AsyncMock())
+    _patch_startup_reconciliation(monkeypatch)
 
     with pytest.raises(RuntimeError, match="broken handler"):
         async with main.app_lifespan(FastAPI()):
@@ -67,6 +117,7 @@ async def test_lifespan_tolerates_transient_task_queue_connection_failure(monkey
     monkeypatch.setattr(notification_listener, "stop", AsyncMock())
     monkeypatch.setattr(main, "shutdown_task_queue_service", AsyncMock())
     monkeypatch.setattr(maxmind_service, "close_readers", AsyncMock())
+    _patch_startup_reconciliation(monkeypatch)
 
     async with main.app_lifespan(FastAPI()):
         pass

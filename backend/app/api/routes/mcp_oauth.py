@@ -259,6 +259,10 @@ async def decide_consent(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="An authenticated browser session is required",
         )
+    # The OAuth backend uses its own transaction and re-locks/revalidates the
+    # user before issuing a code. Release the browser-session auth lock first;
+    # otherwise this request waits on a row lock held by its own outer session.
+    await db.commit()
     try:
         callback = await provider.complete_authorization(
             request_id,
@@ -319,21 +323,41 @@ async def revoke_connected_mcp_client(
                     consent_id=consent.id,
                 )
             )
-            reference_pairs: list[tuple[Any | None, str]] = [
-                (reference, reference.provider_reference_hash)
+            reference_pairs: list[tuple[Any | None, str, Any | None]] = [
+                (
+                    reference.id,
+                    reference.provider_reference_hash,
+                    reference,
+                )
                 for reference in references
             ]
             # Compatibility for a projection written between migration 014 and
             # normalized family-reference rollout.
             if not reference_pairs and consent.provider_reference_hash:
-                reference_pairs.append((None, consent.provider_reference_hash))
+                reference_pairs.append(
+                    (None, consent.provider_reference_hash, None)
+                )
             if not reference_pairs:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="OIDC grant references are not available for revocation",
                 )
 
-            for reference, reference_hash in reference_pairs:
+            for index, (
+                reference_id,
+                reference_hash,
+                reference,
+            ) in enumerate(reference_pairs):
+                if reference_id is not None and index > 0:
+                    reference = (
+                        await mcp_oauth_service.lock_active_provider_grant_reference(
+                            db,
+                            consent_id=consent.id,
+                            reference_id=reference_id,
+                        )
+                    )
+                    if reference is None:
+                        continue
                 revoked = await revoke_native(
                     user_id=current_user.id,
                     provider_reference_hash=reference_hash,

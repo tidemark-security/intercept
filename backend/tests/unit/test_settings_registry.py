@@ -39,3 +39,30 @@ def test_dummy_data_routes_require_explicit_local_enablement() -> None:
     assert definition.env_var == "DUMMY_DATA_ENABLED"
     assert definition.local_only is True
     assert definition.default is False
+
+
+def test_trusted_proxy_cidrs_are_explicit_local_configuration() -> None:
+    definition = SETTINGS_REGISTRY["http.trusted_proxy_cidrs"]
+
+    assert definition.env_var == "HTTP_TRUSTED_PROXY_CIDRS"
+    assert definition.local_only is True
+    assert definition.default == []
+
+
+def test_password_hash_capacity_is_explicit_local_configuration() -> None:
+    capacity = SETTINGS_REGISTRY["auth.password_work.max_concurrent"]
+    lease = SETTINGS_REGISTRY["auth.password_work.lease_seconds"]
+
+    assert capacity.env_var == "PASSWORD_HASH_MAX_CONCURRENT"
+    assert capacity.local_only is True
+    assert capacity.default == 8
+    assert lease.env_var == "PASSWORD_HASH_LEASE_SECONDS"
+    assert lease.local_only is True
+    assert lease.default == 900
+
+
+def test_oidc_jit_provisioning_requires_explicit_opt_in() -> None:
+    definition = SETTINGS_REGISTRY["oidc.jit_provisioning"]
+
+    assert definition.env_var == "OIDC_JIT_PROVISIONING"
+    assert definition.default is False

@@ -1,12 +1,15 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from app.models.enums import UserRole, UserStatus
 from sqlmodel import select
+from webauthn.helpers.structs import UserVerificationRequirement
 
 from app.models.models import UserAccount, WebAuthnChallenge
-from app.services.passkey_service import PasskeyCredentialNotFoundError, PasskeyService
+from app.services.passkey_service import PasskeyService
 import pytest
 
 
@@ -160,7 +163,7 @@ async def test_create_challenge_deletes_expired_rows(session_maker: Any) -> None
 
 
 @pytest.mark.asyncio
-async def test_begin_authentication_requires_existing_active_passkey(monkeypatch) -> None:
+async def test_begin_authentication_returns_decoy_without_active_passkey(monkeypatch) -> None:
     service = PasskeyService()
     now = datetime.now(timezone.utc)
     user = UserAccount(
@@ -186,11 +189,44 @@ async def test_begin_authentication_requires_existing_active_passkey(monkeypatch
     async def _empty_passkeys(*_args, **_kwargs):
         return []
 
-    async def _fail_load_config(*_args, **_kwargs):
-        raise AssertionError("passkey config should not load without credentials")
+    async def _load_config(*_args, **_kwargs):
+        return SimpleNamespace(
+            rp_id="localhost",
+            timeout_ms=60_000,
+            challenge_ttl_seconds=300,
+            user_verification=UserVerificationRequirement.REQUIRED,
+        )
+
+    admission_id = uuid4()
+    reserve_admission = AsyncMock(return_value=admission_id)
+    finalize_admission = AsyncMock()
 
     monkeypatch.setattr(service, "list_user_passkeys", _empty_passkeys)
-    monkeypatch.setattr(service, "_load_config", _fail_load_config)
+    monkeypatch.setattr(service, "_load_config", _load_config)
+    monkeypatch.setattr(
+        service,
+        "_reserve_authentication_admission",
+        reserve_admission,
+    )
+    monkeypatch.setattr(
+        service,
+        "_finalize_authentication_admission",
+        finalize_admission,
+    )
+    monkeypatch.setattr(
+        "app.services.passkey_service.oidc_local_credential_policy.capabilities_for",
+        AsyncMock(return_value=SimpleNamespace(passkey_allowed=True)),
+    )
 
-    with pytest.raises(PasskeyCredentialNotFoundError):
-        await service.begin_authentication(_Db(), username="admin")  # type: ignore[arg-type]
+    result, selected_user = await service.begin_authentication(  # type: ignore[arg-type]
+        _Db(),
+        username="admin",
+        source_address="198.51.100.10",
+    )
+
+    assert selected_user is None
+    assert result["options"]["allowCredentials"] == []
+    reserve_admission.assert_awaited_once()
+    finalize_admission.assert_awaited_once()
+    assert finalize_admission.await_args.kwargs["admission_id"] == admission_id
+    assert finalize_admission.await_args.kwargs["user_id"] is None
