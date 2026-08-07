@@ -232,6 +232,10 @@ _register(
     _worker_task_timeout_def("directory_sync", default=3600),
     _worker_task_timeout_def("refresh_bulk_sync_schedules"),
     _worker_task_timeout_def("maxmind_update"),
+    _worker_task_timeout_def("collector_poll", default=3600),
+    _worker_task_timeout_def("collector_process", default=3600),
+    _worker_task_timeout_def("collector_refresh_schedules"),
+    _worker_task_timeout_def("collector_reconcile"),
     _def(
         "worker.tasks.retry_initial_delay_seconds",
         value_type=SettingType.NUMBER,
@@ -259,6 +263,26 @@ _register(
         category="worker",
         description="How often running workers refresh task timeout settings from the registry",
         default=30,
+    ),
+)
+
+# ---------------------------------------------------------------------------
+# Alert collectors (provider-specific settings are registered with adapters)
+# ---------------------------------------------------------------------------
+_register(
+    _def(
+        "collectors.reconcile_interval_seconds",
+        value_type=SettingType.NUMBER,
+        category="collectors",
+        description="Interval between durable collector event reconciliation passes",
+        default=300,
+    ),
+    _def(
+        "collectors.processing_stale_seconds",
+        value_type=SettingType.NUMBER,
+        category="collectors",
+        description="Age after which an interrupted collector processing claim is retried",
+        default=1800,
     ),
 )
 

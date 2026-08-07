@@ -36,6 +36,11 @@ from app.core.database import async_session_factory
 from app.core.security import initialize_encryption_service
 from app.services.enrichment.providers import register_providers
 from app.services.enrichment.bulk_sync_schedule_sync import sync_bulk_sync_schedules
+from app.services.collectors.providers import register_providers as register_collector_providers
+from app.services.collectors.schedule_sync import (
+    schedule_collector_reconciliation,
+    sync_collector_schedules,
+)
 from app.services.task_queue_service import (
     initialize_task_queue_service,
     shutdown_task_queue_service,
@@ -183,6 +188,14 @@ class WorkerHealthServer:
             f"worker_queue_size {queue_size}",
             "",
         ]
+
+        try:
+            from app.services.collectors.metrics import render_collector_metrics
+
+            async with async_session_factory() as db:
+                lines.extend(await render_collector_metrics(db))
+        except Exception as e:
+            logger.debug("Could not render collector metrics: %s", e)
         
         # Add last task timestamp if available
         if METRICS.last_task_at:
@@ -254,6 +267,7 @@ async def run_worker():
         service = await initialize_task_queue_service(get_local("database.url"))
 
         register_providers()
+        register_collector_providers()
         
         # Register all task handlers
         logger.info("Registering task handlers...")
@@ -262,6 +276,8 @@ async def run_worker():
         logger.info("Syncing bulk sync schedules...")
         async with async_session_factory() as db:
             await sync_bulk_sync_schedules(db)
+            await sync_collector_schedules(db)
+            await schedule_collector_reconciliation(db)
         
         # Start processing jobs
         logger.info(f"Starting job processing (concurrency={concurrency})...")

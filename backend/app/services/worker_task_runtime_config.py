@@ -20,6 +20,10 @@ KNOWN_WORKER_TASK_NAMES = (
     "directory_sync",
     "refresh_bulk_sync_schedules",
     "maxmind_update",
+    "collector_poll",
+    "collector_process",
+    "collector_refresh_schedules",
+    "collector_reconcile",
 )
 
 DEFAULT_EXECUTION_TIMEOUT_SECONDS = 600.0

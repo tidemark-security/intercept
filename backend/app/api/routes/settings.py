@@ -26,6 +26,10 @@ from app.services.enrichment.bulk_sync_schedule_sync import (
     cron_expression_for_utc_time,
     get_bulk_sync_provider_id_from_setting_key,
 )
+from app.services.collectors.schedule_sync import (
+    get_collector_provider_id_from_setting_key,
+    next_collector_run_at,
+)
 from app.services.settings_service import SettingsService
 
 logger = logging.getLogger(__name__)
@@ -63,6 +67,26 @@ async def _enqueue_bulk_sync_schedule_refresh_if_needed(key: str) -> None:
         )
 
 
+async def _enqueue_collector_schedule_refresh_if_needed(key: str) -> None:
+    provider_id = get_collector_provider_id_from_setting_key(key)
+    if provider_id is None:
+        return
+    try:
+        from app.services.task_queue_service import get_task_queue_service
+        from app.services.tasks import TASK_COLLECTOR_REFRESH_SCHEDULES
+
+        await get_task_queue_service().enqueue(
+            task_name=TASK_COLLECTOR_REFRESH_SCHEDULES,
+            payload={"provider_id": provider_id},
+            dedupe_key="collector_refresh_schedules",
+        )
+    except Exception:
+        logger.exception(
+            "Failed to enqueue collector schedule refresh",
+            extra={"setting_key": key, "provider_id": provider_id},
+        )
+
+
 def _validate_bulk_sync_setting_value(key: str, value: str | None) -> None:
     if not key.endswith(".bulk_sync_time_utc"):
         return
@@ -72,6 +96,13 @@ def _validate_bulk_sync_setting_value(key: str, value: str | None) -> None:
         return
 
     cron_expression_for_utc_time(normalized)
+
+
+def _validate_collector_setting_value(key: str, value: str | None) -> None:
+    if key.endswith(".schedule_time_utc") and key.startswith("collectors."):
+        normalized = (value or "").strip()
+        if normalized:
+            next_collector_run_at(normalized)
 
 
 @authenticated_router.get("/attachment-limits", response_model=AttachmentLimitsRead)
@@ -155,12 +186,14 @@ async def create_setting(
     
     try:
         _validate_bulk_sync_setting_value(setting.key, setting.value)
+        _validate_collector_setting_value(setting.key, setting.value)
         created = await service.create_setting(
             setting,
             performed_by=current_user.username,
             audit_context=audit_context,
         )
         await _enqueue_bulk_sync_schedule_refresh_if_needed(setting.key)
+        await _enqueue_collector_schedule_refresh_if_needed(setting.key)
         return created
     except ValueError as e:
         detail = str(e)
@@ -197,6 +230,7 @@ async def update_setting(
     
     try:
         _validate_bulk_sync_setting_value(key, setting_update.value)
+        _validate_collector_setting_value(key, setting_update.value)
         updated = await service.update_setting(
             key,
             setting_update,
@@ -204,6 +238,7 @@ async def update_setting(
             audit_context=audit_context,
         )
         await _enqueue_bulk_sync_schedule_refresh_if_needed(key)
+        await _enqueue_collector_schedule_refresh_if_needed(key)
         return updated
     except ValueError as e:
         detail = str(e)
@@ -254,5 +289,6 @@ async def delete_setting(
         )
 
     await _enqueue_bulk_sync_schedule_refresh_if_needed(key)
+    await _enqueue_collector_schedule_refresh_if_needed(key)
     
     return None
