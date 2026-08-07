@@ -2604,6 +2604,164 @@ class LinkTemplateResolveRequest(SQLModel):
 
 
 # ============================================================================
+# External alert collector durable state
+# ============================================================================
+
+
+class CollectorRun(SQLModel, table=True):
+    """One scheduled, manual, webhook, or backfill collection attempt."""
+
+    __tablename__ = "collector_runs"  # type: ignore[assignment]
+    __table_args__ = (
+        Index("ix_collector_runs_provider_stream_created", "provider_id", "stream_key", "created_at"),
+        Index("ix_collector_runs_status", "status"),
+        Index("ix_collector_runs_task_id", "task_id", unique=True),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    provider_id: str = Field(max_length=100, index=True)
+    stream_key: str = Field(max_length=255)
+    trigger: str = Field(max_length=30)
+    status: str = Field(default="queued", max_length=30)
+    task_id: Optional[str] = Field(default=None, max_length=255)
+    checkpoint_before: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSONB))
+    checkpoint_after: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSONB))
+    counts: Dict[str, int] = Field(default_factory=dict, sa_column=Column(JSONB, nullable=False))
+    started_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    finished_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    error_code: Optional[str] = Field(default=None, max_length=100)
+    error_summary: Optional[str] = Field(default=None, max_length=500)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class CollectorCheckpoint(SQLModel, table=True):
+    """Current durable checkpoint for one provider stream."""
+
+    __tablename__ = "collector_checkpoints"  # type: ignore[assignment]
+    __table_args__ = (
+        UniqueConstraint("provider_id", "stream_key", name="uq_collector_checkpoints_provider_stream"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    provider_id: str = Field(max_length=100, index=True)
+    stream_key: str = Field(max_length=255)
+    cursor: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSONB))
+    high_watermark: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    version: int = Field(default=1, ge=1)
+    last_successful_run_id: Optional[int] = Field(default=None, foreign_key="collector_runs.id")
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class CollectorEvent(SQLModel, table=True):
+    """Idempotent durable receipt for one external provider event."""
+
+    __tablename__ = "collector_events"  # type: ignore[assignment]
+    __table_args__ = (
+        UniqueConstraint(
+            "provider_id",
+            "stream_key",
+            "external_id",
+            name="uq_collector_events_external_identity",
+        ),
+        Index("ix_collector_events_provider_status", "provider_id", "status"),
+        Index("ix_collector_events_reconcile", "status", "processing_started_at"),
+        Index("ix_collector_events_latest_run", "latest_run_id"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    provider_id: str = Field(max_length=100)
+    stream_key: str = Field(max_length=255)
+    external_id: str = Field(max_length=500)
+    revision: int = Field(default=1, ge=1)
+    external_created_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    external_updated_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    payload_hash: str = Field(max_length=64)
+    normalized_payload: Dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
+    normalized_schema_version: int = Field(default=1, ge=1)
+    status: str = Field(default="DISCOVERED", max_length=40)
+    skip_code: Optional[str] = Field(default=None, max_length=200)
+    error_code: Optional[str] = Field(default=None, max_length=100)
+    error_summary: Optional[str] = Field(default=None, max_length=500)
+    validation_request: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSONB))
+    validation_result: Optional[Dict[str, Any]] = Field(default=None, sa_column=Column(JSONB))
+    latest_run_id: Optional[int] = Field(default=None, foreign_key="collector_runs.id")
+    processor_version: str = Field(max_length=200)
+    processing_started_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class CollectorEventRevision(SQLModel, table=True):
+    """Immutable normalized snapshot retained for each observed event revision."""
+
+    __tablename__ = "collector_event_revisions"  # type: ignore[assignment]
+    __table_args__ = (
+        UniqueConstraint("collector_event_id", "revision", name="uq_collector_event_revisions_event_revision"),
+        Index("ix_collector_event_revisions_event", "collector_event_id", "revision"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    collector_event_id: int = Field(foreign_key="collector_events.id")
+    revision: int = Field(ge=1)
+    payload_hash: str = Field(max_length=64)
+    normalized_payload: Dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
+    external_updated_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    processor_version: str = Field(max_length=200)
+    observed_run_id: Optional[int] = Field(default=None, foreign_key="collector_runs.id")
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+class CollectorFinding(SQLModel, table=True):
+    """One alert-producing target derived from a collector event."""
+
+    __tablename__ = "collector_findings"  # type: ignore[assignment]
+    __table_args__ = (
+        UniqueConstraint("collector_event_id", "finding_key", name="uq_collector_findings_event_key"),
+        UniqueConstraint("alert_id", name="uq_collector_findings_alert_id"),
+        Index("ix_collector_findings_status", "status"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    collector_event_id: int = Field(foreign_key="collector_events.id", index=True)
+    event_revision: int = Field(ge=1)
+    finding_key: str = Field(max_length=500)
+    payload_hash: str = Field(max_length=64)
+    alert_projection: Dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
+    assessment: str = Field(max_length=200)
+    validation_payload: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB, nullable=False))
+    validation_report_ref: Optional[str] = Field(default=None, max_length=1000)
+    validator_version: Optional[str] = Field(default=None, max_length=200)
+    alert_id: Optional[int] = Field(default=None, foreign_key="alerts.id")
+    status: str = Field(default="pending", max_length=40)
+    triage_policy: str = Field(default="standard", max_length=30)
+    triage_status: str = Field(default="not_requested", max_length=30)
+    triage_error_code: Optional[str] = Field(default=None, max_length=100)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+
+
+# ============================================================================
 # LangFlow AI Chat Integration Models
 # ============================================================================
 

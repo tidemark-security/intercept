@@ -27,6 +27,13 @@ from app.services.enrichment.bulk_sync_schedule_sync import (
     sync_bulk_sync_schedules,
 )
 from app.services.maxmind_service import maxmind_service
+from app.services.collectors.models import CollectorErrorCode, CollectorRunTrigger
+from app.services.collectors.schedule_sync import (
+    schedule_collector_reconciliation,
+    sync_collector_schedule_for_stream,
+    sync_collector_schedules,
+)
+from app.services.collectors.service import collector_service
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +47,10 @@ TASK_ENRICH_ITEM = "enrich_item"
 TASK_DIRECTORY_SYNC = "directory_sync"
 TASK_MAXMIND_UPDATE = "maxmind_update"
 TASK_REFRESH_BULK_SYNC_SCHEDULES = "refresh_bulk_sync_schedules"
+TASK_COLLECTOR_POLL = "collector_poll"
+TASK_COLLECTOR_PROCESS = "collector_process"
+TASK_COLLECTOR_REFRESH_SCHEDULES = "collector_refresh_schedules"
+TASK_COLLECTOR_RECONCILE = "collector_reconcile"
 
 
 def _unwrap_terminal_failure(exc: Exception) -> Exception:
@@ -109,6 +120,63 @@ async def _handle_directory_sync_terminal_failure(payload: Dict[str, Any], exc: 
 
     async with async_session_factory() as db:
         await sync_bulk_sync_schedule_for_provider(db, provider_id)
+
+
+async def _handle_collector_poll_terminal_failure(
+    payload: Dict[str, Any],
+    exc: Exception,
+    *,
+    task_id: str | None = None,
+) -> None:
+    async with async_session_factory() as db:
+        if task_id:
+            run = await collector_service.get_or_create_task_run(
+                db,
+                task_id=task_id,
+                provider_id=str(payload["provider_id"]),
+                stream_key=str(payload.get("stream_key") or "default"),
+                trigger=(
+                    CollectorRunTrigger.SCHEDULED
+                    if payload.get("scheduled")
+                    else CollectorRunTrigger.MANUAL
+                ),
+            )
+            if run.id is not None:
+                await collector_service.mark_run_failed(
+                    db,
+                    run.id,
+                    exc,
+                    partial=any((run.counts or {}).values()),
+                    counts=run.counts,
+                )
+        if payload.get("reschedule"):
+            await sync_collector_schedule_for_stream(
+                db,
+                str(payload["provider_id"]),
+                str(payload.get("stream_key") or "default"),
+            )
+
+
+async def _handle_collector_process_terminal_failure(
+    payload: Dict[str, Any],
+    exc: Exception,
+) -> None:
+    async with async_session_factory() as db:
+        await collector_service._set_event_failure(
+            db,
+            int(payload["event_id"]),
+            int(payload["revision"]),
+            CollectorErrorCode.ALERT_INGESTION_FAILED,
+        )
+
+
+async def _handle_collector_reconcile_terminal_failure(
+    payload: Dict[str, Any],
+    exc: Exception,
+) -> None:
+    if payload.get("reschedule"):
+        async with async_session_factory() as db:
+            await schedule_collector_reconciliation(db)
 
 
 async def handle_langflow_chat(payload: Dict[str, Any]):
@@ -542,6 +610,69 @@ async def handle_refresh_bulk_sync_schedules(payload: Dict[str, Any]):
         await sync_bulk_sync_schedules(db)
 
 
+async def handle_collector_poll(
+    payload: Dict[str, Any],
+    *,
+    task_id: str | None = None,
+) -> None:
+    provider_id = str(payload["provider_id"])
+    stream_key = str(payload.get("stream_key") or "default")
+    async with async_session_factory() as db:
+        run_id = payload.get("run_id")
+        if run_id is None and task_id is not None:
+            run = await collector_service.get_or_create_task_run(
+                db,
+                task_id=task_id,
+                provider_id=provider_id,
+                stream_key=stream_key,
+                trigger=(
+                    CollectorRunTrigger.SCHEDULED
+                    if payload.get("scheduled")
+                    else CollectorRunTrigger.MANUAL
+                ),
+            )
+            run_id = run.id
+        since = payload.get("since")
+        await collector_service.poll(
+            db,
+            provider_id=provider_id,
+            stream_key=stream_key,
+            run_id=int(run_id) if run_id is not None else None,
+            trigger=(
+                CollectorRunTrigger.SCHEDULED
+                if payload.get("scheduled")
+                else CollectorRunTrigger.MANUAL
+            ),
+            task_id=task_id,
+            max_pages=int(payload["max_pages"]) if payload.get("max_pages") else None,
+            since=datetime.fromisoformat(since) if since else None,
+        )
+        if payload.get("reschedule"):
+            await sync_collector_schedule_for_stream(db, provider_id, stream_key)
+
+
+async def handle_collector_process(payload: Dict[str, Any]) -> None:
+    async with async_session_factory() as db:
+        await collector_service.process_event(
+            db,
+            event_id=int(payload["event_id"]),
+            revision=int(payload["revision"]),
+        )
+
+
+async def handle_collector_refresh_schedules(payload: Dict[str, Any]) -> None:
+    async with async_session_factory() as db:
+        await sync_collector_schedules(db)
+        await schedule_collector_reconciliation(db)
+
+
+async def handle_collector_reconcile(payload: Dict[str, Any]) -> None:
+    async with async_session_factory() as db:
+        await collector_service.reconcile(db)
+        if payload.get("reschedule"):
+            await schedule_collector_reconciliation(db)
+
+
 async def handle_maxmind_update(payload: Dict[str, Any]):
     """Download and refresh MaxMind MMDB files on workers."""
     reschedule = bool(payload.get("reschedule", False))
@@ -637,6 +768,33 @@ async def register_task_handlers():
             task_name=TASK_MAXMIND_UPDATE,
             handler=handle_maxmind_update,
             max_retries=2,
+        )
+
+        task_queue.register_handler(
+            task_name=TASK_COLLECTOR_POLL,
+            handler=handle_collector_poll,
+            max_retries=3,
+            on_terminal_failure=_handle_collector_poll_terminal_failure,
+        )
+
+        task_queue.register_handler(
+            task_name=TASK_COLLECTOR_PROCESS,
+            handler=handle_collector_process,
+            max_retries=3,
+            on_terminal_failure=_handle_collector_process_terminal_failure,
+        )
+
+        task_queue.register_handler(
+            task_name=TASK_COLLECTOR_REFRESH_SCHEDULES,
+            handler=handle_collector_refresh_schedules,
+            max_retries=1,
+        )
+
+        task_queue.register_handler(
+            task_name=TASK_COLLECTOR_RECONCILE,
+            handler=handle_collector_reconcile,
+            max_retries=2,
+            on_terminal_failure=_handle_collector_reconcile_terminal_failure,
         )
         
         logger.info("Registered all task handlers")

@@ -46,6 +46,35 @@ _BulkActionHandler = Callable[[Alert, AlertBulkActionRequest, _BulkActionContext
 
 
 class AlertService:
+
+    async def persist_alert(
+        self,
+        db: AsyncSession,
+        alert_data: AlertCreate,
+        *,
+        tags: Optional[List[str]] = None,
+        created_at_override: Optional[datetime] = None,
+    ) -> Alert:
+        """Add and flush an alert without committing or enqueueing triage.
+
+        Transactional importers use this primitive so their identity linkage,
+        alert, tags, audit row, and realtime notification commit atomically.
+        """
+
+        alert_kwargs: Dict[str, Any] = {
+            "title": alert_data.title,
+            "description": alert_data.description,
+            "priority": alert_data.priority,
+            "source": alert_data.source,
+            "tags": normalize_persisted_tags(tags or []),
+        }
+        if created_at_override is not None:
+            alert_kwargs["created_at"] = created_at_override
+
+        db_alert = Alert(**alert_kwargs)
+        db.add(db_alert)
+        await db.flush()
+        return db_alert
     
     async def create_alert(
         self, 
@@ -60,18 +89,11 @@ class AlertService:
         automatically enqueues the alert for AI triage.
         """
         try:
-            alert_kwargs = {
-                "title": alert_data.title,
-                "description": alert_data.description,
-                "priority": alert_data.priority,
-                "source": alert_data.source,
-            }
-            if created_at_override is not None:
-                alert_kwargs["created_at"] = created_at_override
-
-            db_alert = Alert(**alert_kwargs)
-            
-            db.add(db_alert)
+            db_alert = await self.persist_alert(
+                db,
+                alert_data,
+                created_at_override=created_at_override,
+            )
             await db.commit()
             await db.refresh(db_alert)
             
@@ -91,7 +113,7 @@ class AlertService:
             logger.error(f"Error creating alert: {e}")
             raise
     
-    async def _auto_enqueue_triage(self, db: AsyncSession, alert_id: int):
+    async def _auto_enqueue_triage(self, db: AsyncSession, alert_id: int) -> str:
         """Auto-enqueue alert for AI triage if enabled.
         
         Checks both langflow.alert_triage_flow_id and triage.auto_enqueue settings.
@@ -109,13 +131,20 @@ class AlertService:
             flow_id = await settings.get_typed_value("langflow.alert_triage_flow_id")
             if not flow_id:
                 logger.debug(f"AI triage not enabled - skipping auto-enqueue for alert {alert_id}")
-                return
+                return "skipped"
             
             # Check if auto-enqueue is enabled (defaults to False)
             auto_enqueue = await settings.get_typed_value("triage.auto_enqueue")
             if auto_enqueue is not True:
                 logger.debug(f"Auto-enqueue disabled - skipping for alert {alert_id}")
-                return
+                return "skipped"
+
+            existing_result = await db.execute(
+                select(TriageRecommendation).where(TriageRecommendation.alert_id == alert_id)
+            )
+            if existing_result.scalar_one_or_none() is not None:
+                logger.debug("Triage recommendation already exists for alert %s", alert_id)
+                return "skipped"
             
             # Create QUEUED placeholder
             recommendation = TriageRecommendation(
@@ -140,6 +169,7 @@ class AlertService:
                     payload={"alert_id": alert_id}
                 )
                 logger.info(f"Auto-enqueued AI triage for alert {alert_id}")
+                return "enqueued"
             except RuntimeError as e:
                 # Task queue not available - mark as failed
                 recommendation.status = RecommendationStatus.FAILED
@@ -147,10 +177,12 @@ class AlertService:
                 db.add(recommendation)
                 await db.commit()
                 logger.warning(f"Failed to auto-enqueue triage for alert {alert_id}: {e}")
+                return "failed"
                 
         except Exception as e:
             # Don't fail alert creation if triage enqueue fails
             logger.warning(f"Auto-enqueue triage failed for alert {alert_id}: {e}")
+            return "failed"
     
     async def _get_alert_model(self, db: AsyncSession, alert_id: int) -> Optional[Alert]:
         """Get the tracked alert model with related entities loaded."""
