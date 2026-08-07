@@ -6,7 +6,7 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import text
+from sqlalchemy import Text, bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.enrichment.providers import BUILTIN_PROVIDERS
@@ -151,7 +151,7 @@ async def _delete_superseded_bulk_sync_jobs(
             "OR left(dedupe_key, length(:run_key_prefix)) = :run_key_prefix) "
             "AND (:preserve_dedupe_key IS NULL OR dedupe_key != :preserve_dedupe_key) "
             "AND status = 'queued'"
-        ),
+        ).bindparams(bindparam("preserve_dedupe_key", type_=Text())),
         {
             "entrypoint": TASK_DIRECTORY_SYNC,
             "legacy_key": legacy_key,
