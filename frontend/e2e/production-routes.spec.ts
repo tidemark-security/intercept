@@ -102,9 +102,9 @@ const fatalConsolePatterns = [
   /unexpected token/i,
 ];
 
-function jsonResponse(body: unknown) {
+function jsonResponse(body: unknown, status = 200) {
   return {
-    status: 200,
+    status,
     contentType: "application/json",
     body: JSON.stringify(body),
   };
@@ -351,4 +351,81 @@ test("production bundle loads all major lazy routes", async ({ page }) => {
       expect(routeFailures, `${routePath} production runtime errors`).toEqual([]);
     });
   }
+});
+
+test("MCP consent keeps its capability out of request URLs and posts FastMCP fields", async ({ page, baseURL }) => {
+  const consentContext = {
+    transaction_id: "transaction-123",
+    csrf_token: "csrf-456",
+    client_name: "Claude Desktop",
+    client_id: "client-789",
+    client_uri: "https://claude.ai/",
+    redirect_uri: "http://127.0.0.1:6274/oauth/callback",
+    scopes: ["mcp:access"],
+    verified_domain: null,
+  };
+  let contextRequest:
+    | { url: string; body: unknown; cookieHeader: string | null }
+    | undefined;
+  let consentDecision: Record<string, string> | undefined;
+
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  await page.context().addCookies([
+    { name: "intercept_session", value: "existing-session", url: baseURL },
+    { name: "XSRF-TOKEN", value: "app-csrf-token", url: baseURL },
+  ]);
+
+  await page.route("**/api/v1/auth/session", async (route) => {
+    await route.fulfill(jsonResponse({ detail: "Not authenticated" }, 401));
+  });
+  await page.route("**/api/v1/mcp/oauth/consent/oidc", async (route) => {
+    const request = route.request();
+    contextRequest = {
+      url: request.url(),
+      body: request.postDataJSON(),
+      cookieHeader: await request.headerValue("cookie"),
+    };
+    await route.fulfill(jsonResponse(consentContext));
+  });
+  await page.route(/^https?:\/\/[^/]+\/mcp\/consent$/, async (route) => {
+    consentDecision = Object.fromEntries(
+      new URLSearchParams(route.request().postData() ?? ""),
+    );
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      headers: {
+        "Cache-Control": "no-store",
+      },
+      body: "<!doctype html><title>Consent forwarded</title><p>Consent forwarded</p>",
+    });
+  });
+
+  const response = await page.goto(
+    "/oauth/mcp/consent#txn_id=transaction-123",
+    { waitUntil: "domcontentloaded" },
+  );
+
+  expect(response?.status()).toBeLessThan(400);
+  await expect(
+    page.getByRole("heading", { name: "Authorize MCP access" }),
+  ).toBeVisible();
+  await expect(page.getByText("Claude Desktop wants to connect")).toBeVisible();
+  await expect(page.getByText(consentContext.redirect_uri).first()).toBeVisible();
+
+  expect(contextRequest).toEqual({
+    url: expect.stringMatching(/\/api\/v1\/mcp\/oauth\/consent\/oidc$/),
+    body: { transaction_id: "transaction-123" },
+    cookieHeader: null,
+  });
+
+  await page.getByRole("button", { name: "Authorize" }).click();
+  await expect(page.getByText("Consent forwarded")).toBeVisible();
+
+  expect(consentDecision).toEqual({
+    txn_id: "transaction-123",
+    csrf_token: "csrf-456",
+    submit: "true",
+    action: "approve",
+  });
 });

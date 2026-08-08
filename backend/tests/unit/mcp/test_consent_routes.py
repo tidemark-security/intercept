@@ -11,6 +11,11 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import AnyUrl
 
 from app.api.routes import mcp_oauth
+from app.core.request_body_limit import (
+    MCP_CONSENT_CONTEXT_REQUEST_MAX_BODY_BYTES,
+    MCP_CONSENT_CONTEXT_REQUEST_PATHS,
+    RequestBodyLimitMiddleware,
+)
 from app.mcp.local_oauth_provider import PendingAuthorization
 
 
@@ -167,6 +172,140 @@ async def test_missing_pending_consent_returns_gone(consent_app) -> None:
         response = await client.get(f"/api/v1/mcp/oauth/consent/{missing}")
 
     assert response.status_code == 410
+
+
+@pytest.mark.asyncio
+async def test_oidc_consent_context_is_validated_and_never_cached() -> None:
+    context = {
+        "transaction_id": "transaction-id",
+        "csrf_token": "csrf-token",
+        "client_name": "VS Code",
+        "client_id": "client-id",
+        "client_uri": "https://code.visualstudio.com/",
+        "redirect_uri": "http://127.0.0.1:49152/callback",
+        "scopes": ["mcp:access"],
+        "verified_domain": None,
+    }
+    provider = SimpleNamespace(
+        get_consent_context=AsyncMock(return_value=context)
+    )
+    app = FastAPI()
+    app.state.mcp_runtime = SimpleNamespace(provider=provider)
+    app.include_router(mcp_oauth.consent_router, prefix="/api/v1")
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://localhost:8080"
+    ) as client:
+        response = await client.post(
+            "/api/v1/mcp/oauth/consent/oidc",
+            json={"transaction_id": "transaction-id"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == context
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["pragma"] == "no-cache"
+    provider.get_consent_context.assert_awaited_once_with("transaction-id")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_state",
+    ["disabled", "expired", "invalid", "unavailable"],
+)
+async def test_oidc_consent_terminal_errors_are_never_cached(
+    provider_state: str,
+) -> None:
+    if provider_state == "disabled":
+        provider = SimpleNamespace()
+        expected_status = 404
+    elif provider_state == "expired":
+        provider = SimpleNamespace(get_consent_context=AsyncMock(return_value=None))
+        expected_status = 410
+    elif provider_state == "unavailable":
+        provider = SimpleNamespace(
+            get_consent_context=AsyncMock(side_effect=RuntimeError("store offline"))
+        )
+        expected_status = 503
+    else:
+        provider = SimpleNamespace(
+            get_consent_context=AsyncMock(return_value={"client_id": "incomplete"})
+        )
+        expected_status = 500
+    app = FastAPI()
+    app.state.mcp_runtime = SimpleNamespace(provider=provider)
+    app.include_router(mcp_oauth.consent_router, prefix="/api/v1")
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://localhost:8080"
+    ) as client:
+        response = await client.post(
+            "/api/v1/mcp/oauth/consent/oidc",
+            json={"transaction_id": "unknown-transaction"},
+        )
+
+    assert response.status_code == expected_status
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["pragma"] == "no-cache"
+
+
+@pytest.mark.asyncio
+async def test_oidc_consent_context_rejects_oversized_body_before_parsing() -> None:
+    app = FastAPI()
+    app.state.mcp_runtime = SimpleNamespace(
+        provider=SimpleNamespace(get_consent_context=AsyncMock(return_value=None))
+    )
+    app.include_router(mcp_oauth.consent_router, prefix="/api/v1")
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        max_body_bytes=MCP_CONSENT_CONTEXT_REQUEST_MAX_BODY_BYTES,
+        paths=MCP_CONSENT_CONTEXT_REQUEST_PATHS,
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://localhost:8080"
+    ) as client:
+        response = await client.post(
+            "/api/v1/mcp/oauth/consent/oidc",
+            content=b"x" * (MCP_CONSENT_CONTEXT_REQUEST_MAX_BODY_BYTES + 1),
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 413
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["pragma"] == "no-cache"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"not-json",
+        b'{"transaction_id":""}',
+        b'{"transaction_id":"' + (b"x" * 257) + b'"}',
+    ],
+)
+async def test_oidc_consent_context_rejects_invalid_body_without_caching(
+    body: bytes,
+) -> None:
+    app = FastAPI()
+    app.state.mcp_runtime = SimpleNamespace(
+        provider=SimpleNamespace(get_consent_context=AsyncMock(return_value=None))
+    )
+    app.include_router(mcp_oauth.consent_router, prefix="/api/v1")
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://localhost:8080"
+    ) as client:
+        response = await client.post(
+            "/api/v1/mcp/oauth/consent/oidc",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+
+    assert response.status_code == 400
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["pragma"] == "no-cache"
 
 
 @pytest.mark.asyncio

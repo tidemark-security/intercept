@@ -23,6 +23,7 @@ from fastmcp.server.auth.auth import (
     TokenHandler,
 )
 from fastmcp.server.auth.oidc_proxy import OIDCProxy
+from fastmcp.server.auth.oauth_proxy.models import ProxyDCRClient
 from key_value.aio.protocols import AsyncKeyValue
 from mcp.server.auth.handlers.metadata import MetadataHandler
 from mcp.server.auth.handlers.revoke import RevocationHandler
@@ -278,6 +279,83 @@ def oidc_authorize_parameters(discovery_url: str) -> dict[str, str]:
 
 class InterceptOIDCProxy(OIDCProxy):
     """OIDCProxy that translates scopes and binds validated users to Intercept."""
+
+    async def _show_consent_page(
+        self,
+        request: Request,
+    ) -> HTMLResponse | RedirectResponse:
+        """Prepare native consent state, then hand presentation to Intercept."""
+
+        response = await super()._show_consent_page(request)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        if not isinstance(response, HTMLResponse) or response.status_code != 200:
+            return response
+
+        transaction_id = request.query_params.get("txn_id")
+        if not transaction_id:
+            return response
+
+        public_base = urlsplit(str(self.base_url))
+        frontend_origin = urlunsplit(
+            (public_base.scheme, public_base.netloc, "", "", "")
+        )
+        redirect = RedirectResponse(
+            url=(
+                f"{frontend_origin}/oauth/mcp/consent#"
+                f"{urlencode({'txn_id': transaction_id})}"
+            ),
+            status_code=302,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+        for header_name, header_value in response.raw_headers:
+            if header_name.lower() == b"set-cookie":
+                redirect.raw_headers.append((header_name, header_value))
+        return redirect
+
+    async def get_consent_context(
+        self,
+        transaction_id: str,
+    ) -> dict[str, object] | None:
+        """Return the authoritative display model for a prepared consent page."""
+
+        transaction = await self._transaction_store.get(key=transaction_id)
+        if transaction is None or not transaction.csrf_token:
+            return None
+
+        client = await self.get_client(transaction.client_id)
+        client_name = str(
+            getattr(client, "client_name", None) or transaction.client_id
+        )
+        client_uri_value = getattr(client, "client_uri", None)
+        client_uri = str(client_uri_value) if client_uri_value else None
+        is_cimd_client = (
+            isinstance(client, ProxyDCRClient) and client.cimd_document is not None
+        )
+        verified_domain = (
+            urlsplit(transaction.client_id).hostname if is_cimd_client else None
+        )
+        return {
+            "transaction_id": transaction_id,
+            "csrf_token": transaction.csrf_token,
+            "client_name": client_name,
+            "client_id": transaction.client_id,
+            "client_uri": client_uri,
+            "redirect_uri": transaction.client_redirect_uri,
+            "scopes": list(transaction.scopes or []),
+            "verified_domain": verified_domain,
+        }
+
+    async def _submit_consent(
+        self,
+        request: Request,
+    ) -> HTMLResponse | RedirectResponse:
+        """Keep every native consent decision and error response non-cacheable."""
+
+        response = await super()._submit_consent(request)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        return response
 
     def get_oidc_configuration(
         self,

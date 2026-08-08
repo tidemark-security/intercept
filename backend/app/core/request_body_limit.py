@@ -10,6 +10,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 PASSKEY_REQUEST_MAX_BODY_BYTES = 256 * 1024
 PASSWORD_LOGIN_REQUEST_MAX_BODY_BYTES = 8 * 1024
+MCP_CONSENT_CONTEXT_REQUEST_MAX_BODY_BYTES = 4 * 1024
 
 
 class RequestBodyLimitMiddleware:
@@ -80,6 +81,7 @@ class RequestBodyLimitMiddleware:
         response = JSONResponse(
             {"message": "Request body too large.", "fields": []},
             status_code=413,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
         )
         await response(scope, receive, send)
 
@@ -101,8 +103,14 @@ PASSWORD_LOGIN_REQUEST_PATHS = frozenset(
     }
 )
 
+MCP_CONSENT_CONTEXT_REQUEST_PATHS = frozenset(
+    {"/api/v1/mcp/oauth/consent/oidc"}
+)
+
 
 __all__ = [
+    "MCP_CONSENT_CONTEXT_REQUEST_MAX_BODY_BYTES",
+    "MCP_CONSENT_CONTEXT_REQUEST_PATHS",
     "PASSKEY_REQUEST_MAX_BODY_BYTES",
     "PASSKEY_REQUEST_PATHS",
     "PASSWORD_LOGIN_REQUEST_MAX_BODY_BYTES",

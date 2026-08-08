@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 from fastmcp.server.auth import AccessToken
 from fastmcp.server.auth.oidc_proxy import OIDCConfiguration, OIDCProxy
+from fastmcp.server.auth.oauth_proxy.models import OAuthTransaction, ProxyDCRClient
 from httpx import ASGITransport, AsyncClient
 from mcp.server.auth.handlers.revoke import RevocationHandler
 from mcp.server.auth.middleware.client_auth import ClientAuthenticator
@@ -22,7 +23,7 @@ from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOption
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from sqlalchemy import Select, func, select
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
 from app.mcp.auth import MCP_ACCESS_SCOPE
@@ -118,6 +119,227 @@ def test_proxy_scope_hooks_never_forward_mcp_access() -> None:
     assert proxy._translate_scopes_from_idp(["openid", "email"]) == [
         MCP_ACCESS_SCOPE
     ]
+
+
+@pytest.mark.asyncio
+async def test_oidc_consent_handoff_preserves_fastmcp_csrf_cookie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    native_response = HTMLResponse("<form>native consent</form>")
+    native_response.set_cookie("MCP_CONSENT_STATE", "signed-state")
+    native_response.set_cookie("MCP_AUXILIARY_STATE", "second-signed-state")
+    monkeypatch.setattr(
+        OIDCProxy,
+        "_show_consent_page",
+        AsyncMock(return_value=native_response),
+    )
+    proxy = object.__new__(InterceptOIDCProxy)
+    proxy.base_url = "https://intercept.example/mcp"
+    request = SimpleNamespace(
+        query_params={"txn_id": "transaction-id"},
+    )
+
+    response = await proxy._show_consent_page(request)
+
+    assert response.status_code == 302
+    assert response.headers["location"] == (
+        "https://intercept.example/oauth/mcp/consent#txn_id=transaction-id"
+    )
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["pragma"] == "no-cache"
+    set_cookie_headers = response.headers.getlist("set-cookie")
+    assert any(
+        "MCP_CONSENT_STATE=signed-state" in value
+        for value in set_cookie_headers
+    )
+    assert any(
+        "MCP_AUXILIARY_STATE=second-signed-state" in value
+        for value in set_cookie_headers
+    )
+
+
+@pytest.mark.asyncio
+async def test_oidc_consent_context_comes_from_native_transaction() -> None:
+    transaction = SimpleNamespace(
+        csrf_token="csrf-token",
+        client_id="https://vscode.dev/oauth/client-metadata.json",
+        client_redirect_uri="http://127.0.0.1:33418/",
+        scopes=[MCP_ACCESS_SCOPE],
+    )
+    proxy = object.__new__(InterceptOIDCProxy)
+    proxy._transaction_store = SimpleNamespace(
+        get=AsyncMock(return_value=transaction)
+    )
+    proxy.get_client = AsyncMock(
+        return_value=ProxyDCRClient.model_construct(
+            client_id=transaction.client_id,
+            client_name="Visual Studio Code",
+            client_uri="https://code.visualstudio.com/",
+            cimd_document=object(),
+        )
+    )
+
+    context = await proxy.get_consent_context("transaction-id")
+
+    assert context == {
+        "transaction_id": "transaction-id",
+        "csrf_token": "csrf-token",
+        "client_name": "Visual Studio Code",
+        "client_id": "https://vscode.dev/oauth/client-metadata.json",
+        "client_uri": "https://code.visualstudio.com/",
+        "redirect_uri": "http://127.0.0.1:33418/",
+        "scopes": [MCP_ACCESS_SCOPE],
+        "verified_domain": "vscode.dev",
+    }
+
+
+@pytest.mark.asyncio
+async def test_oidc_consent_context_does_not_verify_unvalidated_url_client() -> None:
+    transaction = SimpleNamespace(
+        csrf_token="csrf-token",
+        client_id="https://untrusted.example/oauth/client-metadata.json",
+        client_redirect_uri="http://127.0.0.1:33418/",
+        scopes=[MCP_ACCESS_SCOPE],
+    )
+    proxy = object.__new__(InterceptOIDCProxy)
+    proxy._transaction_store = SimpleNamespace(
+        get=AsyncMock(return_value=transaction)
+    )
+    proxy.get_client = AsyncMock(
+        return_value=SimpleNamespace(
+            client_name="Unvalidated URL client",
+            client_uri="https://untrusted.example/",
+        )
+    )
+
+    context = await proxy.get_consent_context("transaction-id")
+
+    assert context is not None
+    assert context["verified_domain"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["approve", "deny"])
+async def test_oidc_consent_contract_round_trips_through_native_fastmcp(
+    action: str,
+) -> None:
+    transaction = OAuthTransaction(
+        txn_id="transaction-id",
+        client_id="desktop-client",
+        client_redirect_uri="http://127.0.0.1:33418/callback",
+        client_state="client-state",
+        code_challenge="challenge",
+        code_challenge_method="S256",
+        scopes=[MCP_ACCESS_SCOPE],
+        created_at=1.0,
+    )
+
+    class TransactionStore:
+        value = transaction
+
+        async def get(self, *, key: str) -> OAuthTransaction | None:
+            return self.value if key == transaction.txn_id else None
+
+        async def put(
+            self,
+            *,
+            key: str,
+            value: OAuthTransaction,
+            ttl: int,
+        ) -> None:
+            assert key == transaction.txn_id
+            assert ttl == 15 * 60
+            self.value = value
+
+    proxy = object.__new__(InterceptOIDCProxy)
+    proxy.base_url = "https://intercept.example/mcp"
+    proxy.required_scopes = [MCP_ACCESS_SCOPE]
+    proxy._transaction_store = TransactionStore()
+    proxy._require_authorization_consent = "remember"
+    proxy._consent_csp_policy = None
+    proxy._is_https = True
+    proxy._upstream_client_secret = None
+    proxy._jwt_signing_key = b"test-cookie-signing-key"
+    proxy._upstream_authorization_endpoint = "https://idp.example/authorize"
+    proxy._upstream_client_id = "intercept-upstream-client"
+    proxy._intercept_upstream_scopes = ["openid", "email"]
+    proxy._redirect_path = "/auth/callback"
+    proxy._forward_resource = False
+    proxy._extra_authorize_params = {}
+    proxy._allowed_client_redirect_uris = ["http://127.0.0.1:*"]
+    proxy.get_client = AsyncMock(
+        return_value=SimpleNamespace(
+            client_name="Desktop Client",
+            client_uri="https://client.example/",
+        )
+    )
+
+    app = Starlette(
+        routes=[
+            Route(
+                "/mcp/consent",
+                proxy._handle_consent,
+                methods=["GET", "POST"],
+            )
+        ]
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://intercept.example",
+    ) as client:
+        handoff = await client.get(
+            "/mcp/consent?txn_id=transaction-id",
+            headers={"Sec-Fetch-Site": "cross-site"},
+            follow_redirects=False,
+        )
+        context = await proxy.get_consent_context("transaction-id")
+        assert context is not None
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="https://intercept.example",
+        ) as cookie_less_client:
+            rejected = await cookie_less_client.post(
+                "/mcp/consent",
+                data={
+                    "txn_id": context["transaction_id"],
+                    "csrf_token": context["csrf_token"],
+                    "submit": "true",
+                    "action": action,
+                },
+                follow_redirects=False,
+            )
+        approval = await client.post(
+            "/mcp/consent",
+            data={
+                "txn_id": context["transaction_id"],
+                "csrf_token": context["csrf_token"],
+                "submit": "true",
+                "action": action,
+            },
+            follow_redirects=False,
+        )
+
+    assert handoff.status_code == 302
+    assert handoff.headers["location"] == (
+        "https://intercept.example/oauth/mcp/consent#txn_id=transaction-id"
+    )
+    assert "__Host-MCP_CONSENT_STATE" in handoff.headers["set-cookie"]
+    assert rejected.status_code == 403
+    assert rejected.headers["cache-control"] == "no-store"
+    assert rejected.headers["pragma"] == "no-cache"
+    assert approval.status_code == 302
+    assert approval.headers["cache-control"] == "no-store"
+    assert approval.headers["pragma"] == "no-cache"
+    if action == "approve":
+        assert approval.headers["location"].startswith(
+            "https://idp.example/authorize?"
+        )
+        assert "__Host-MCP_CONSENT_BINDING" in approval.headers["set-cookie"]
+    else:
+        assert approval.headers["location"] == (
+            "http://127.0.0.1:33418/callback?"
+            "error=access_denied&state=client-state"
+        )
 
 
 def _fastmcp_oidc_configuration(**overrides: object) -> OIDCConfiguration:

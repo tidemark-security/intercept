@@ -57,6 +57,8 @@ from app.core.csrf import CSRFMiddleware
 from app.core.database import async_session_factory, engine, test_db_connection
 from app.core.deployment_security import validate_dev_compose_public_exposure
 from app.core.request_body_limit import (
+    MCP_CONSENT_CONTEXT_REQUEST_MAX_BODY_BYTES,
+    MCP_CONSENT_CONTEXT_REQUEST_PATHS,
     PASSKEY_REQUEST_MAX_BODY_BYTES,
     PASSKEY_REQUEST_PATHS,
     PASSWORD_LOGIN_REQUEST_MAX_BODY_BYTES,
@@ -258,6 +260,11 @@ api_app.add_middleware(
 api_app.add_middleware(
     CSRFMiddleware,
     session_factory_provider=lambda: async_session_factory,
+)
+api_app.add_middleware(
+    RequestBodyLimitMiddleware,
+    max_body_bytes=MCP_CONSENT_CONTEXT_REQUEST_MAX_BODY_BYTES,
+    paths=MCP_CONSENT_CONTEXT_REQUEST_PATHS,
 )
 api_app.add_middleware(
     RequestBodyLimitMiddleware,

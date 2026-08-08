@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from html import escape
 from typing import Any, Literal
@@ -10,7 +11,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.route_utils import read_session_cookie
@@ -28,6 +29,9 @@ from app.services.auth_service import (
 from app.services.mcp_oauth_service import OAuthInvalidRequestError, mcp_oauth_service
 
 
+logger = logging.getLogger(__name__)
+
+
 consent_router = APIRouter(
     prefix="/mcp/oauth/consent",
     tags=["mcp-oauth"],
@@ -42,6 +46,31 @@ management_router = APIRouter(
 
 class ConsentDecision(BaseModel):
     decision: Literal["approve", "deny"]
+
+
+class OIDCConsentContextRequest(BaseModel):
+    """Capability-bearing lookup kept out of URLs and access logs."""
+
+    transaction_id: str = Field(min_length=1, max_length=256)
+
+
+class OIDCConsentContext(BaseModel):
+    """Narrow display projection for FastMCP's prepared consent state."""
+
+    transaction_id: str
+    csrf_token: str
+    client_name: str
+    client_id: str
+    client_uri: str | None
+    redirect_uri: str
+    scopes: list[str]
+    verified_domain: str | None
+
+
+OIDC_CONSENT_CACHE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Pragma": "no-cache",
+}
 
 
 async def _current_session_user(
@@ -201,6 +230,59 @@ async def consent_client_javascript() -> Response:
         CONSENT_CLIENT_JAVASCRIPT,
         media_type="text/javascript",
         headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+@consent_router.post("/oidc")
+async def oidc_consent_context(
+    request: Request,
+) -> JSONResponse:
+    """Serve FastMCP consent state without putting its capability in a URL."""
+
+    try:
+        payload = OIDCConsentContextRequest.model_validate(await request.json())
+    except ValueError:
+        return JSONResponse(
+            {"detail": "MCP authorization request is invalid"},
+            status_code=status.HTTP_400_BAD_REQUEST,
+            headers=OIDC_CONSENT_CACHE_HEADERS,
+        )
+
+    runtime = getattr(request.app.state, "mcp_runtime", None)
+    provider = getattr(runtime, "provider", None)
+    get_context = getattr(provider, "get_consent_context", None)
+    if not callable(get_context):
+        return JSONResponse(
+            {"detail": "OIDC MCP OAuth is not enabled"},
+            status_code=status.HTTP_404_NOT_FOUND,
+            headers=OIDC_CONSENT_CACHE_HEADERS,
+        )
+    try:
+        context = await get_context(payload.transaction_id)
+    except Exception:
+        logger.exception("Failed to load MCP OIDC consent context")
+        return JSONResponse(
+            {"detail": "MCP authorization request could not be loaded"},
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            headers=OIDC_CONSENT_CACHE_HEADERS,
+        )
+    if context is None:
+        return JSONResponse(
+            {"detail": "MCP authorization request is expired or already used"},
+            status_code=status.HTTP_410_GONE,
+            headers=OIDC_CONSENT_CACHE_HEADERS,
+        )
+    try:
+        projection = OIDCConsentContext.model_validate(context)
+    except ValidationError:
+        return JSONResponse(
+            {"detail": "MCP authorization request could not be loaded"},
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            headers=OIDC_CONSENT_CACHE_HEADERS,
+        )
+    return JSONResponse(
+        projection.model_dump(mode="json"),
+        headers=OIDC_CONSENT_CACHE_HEADERS,
     )
 
 
