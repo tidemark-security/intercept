@@ -2255,6 +2255,27 @@ class MCPOAuthAuthorizationCapacity(SQLModel, table=True):
     expires_at: datetime = Field(sa_column=Column(UTCDateTime(), nullable=False))
 
 
+class MCPOAuthClientAssertionJTI(SQLModel, table=True):
+    """Durable one-time claim for a FastMCP private_key_jwt assertion."""
+
+    __tablename__ = "mcp_oauth_client_assertion_jtis"  # type: ignore
+    __table_args__ = (
+        Index(
+            "ix_mcp_oauth_client_assertion_jtis_expires_at",
+            "expires_at",
+        ),
+    )
+
+    client_id_hash: str = Field(
+        sa_column=Column(String(64), primary_key=True, nullable=False)
+    )
+    jti_hash: str = Field(
+        sa_column=Column(String(64), primary_key=True, nullable=False)
+    )
+    created_at: datetime = Field(sa_column=Column(UTCDateTime(), nullable=False))
+    expires_at: datetime = Field(sa_column=Column(UTCDateTime(), nullable=False))
+
+
 class MCPOAuthPendingAuthorization(SQLModel, table=True):
     """Short-lived browser handoff for a local MCP OAuth authorization request."""
 

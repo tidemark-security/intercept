@@ -55,6 +55,8 @@ class MCPRegistrationPolicy:
     pending_authorization_per_source_quota: int = 50
     cimd_fetch_reservation_ttl_seconds: int = 60
     cimd_cache_max_entries: int = 256
+    client_assertion_replay_global_quota: int = 100_000
+    client_assertion_replay_per_client_quota: int = 10_000
 
 
 @dataclass(frozen=True, slots=True)

@@ -15,7 +15,7 @@ from fastmcp.server.auth.auth import (
     PrivateKeyJWTClientAuthenticator,
     TokenHandler,
 )
-from fastmcp.server.auth.cimd import CIMDClientManager, CIMDDocument
+from fastmcp.server.auth.cimd import CIMDDocument
 from mcp.server.auth.handlers.metadata import MetadataHandler
 from mcp.server.auth.handlers.revoke import RevocationHandler
 from mcp.server.auth.provider import (
@@ -37,6 +37,7 @@ from starlette.routing import Route
 from app.mcp.auth import normalize_public_dcr_client
 from app.mcp.cimd import (
     BoundedCIMDClientManager,
+    client_assertion_replay_error_boundary,
     cimd_fetch_requires_network,
     trim_cimd_cache,
 )
@@ -47,6 +48,9 @@ from app.models.models import (
     UserAccount,
 )
 from app.services.credential_invalidation import credential_was_issued_after_cutoff
+from app.services.mcp_client_assertion_replay_service import (
+    MCPClientAssertionReplayService,
+)
 from app.services.mcp_oauth_service import (
     MCP_OAUTH_SCOPE,
     MCPOAuthSettings,
@@ -663,7 +667,6 @@ class InterceptOAuthProvider(OAuthProvider):
         pending_ttl_seconds: int = DEFAULT_PENDING_AUTHORIZATION_TTL_SECONDS,
         now: Callable[[], datetime] | None = None,
         request_id_factory: Callable[[], UUID] = uuid4,
-        cimd_manager: CIMDClientManager | None = None,
         registration_policy: MCPRegistrationPolicy | None = None,
         registration_service: MCPDCRRegistrationService | None = None,
         authorization_capacity_service: (
@@ -741,10 +744,24 @@ class InterceptOAuthProvider(OAuthProvider):
         # FastMCP owns CIMD URL detection, SSRF-safe fetching, schema validation,
         # and HTTP caching. The relational grant store is only a projection used
         # by the local authorization-code and consent flows.
-        self._cimd_manager = cimd_manager or BoundedCIMDClientManager(
+        assertion_replay_service = (
+            MCPClientAssertionReplayService(
+                session_factory=session_factory,
+                max_rows=(
+                    self._registration_policy.client_assertion_replay_global_quota
+                ),
+                max_rows_per_client=(
+                    self._registration_policy.client_assertion_replay_per_client_quota
+                ),
+            )
+            if session_factory is not None
+            else None
+        )
+        self._cimd_manager = BoundedCIMDClientManager(
             enable_cimd=True,
             default_scope=MCP_OAUTH_SCOPE,
             max_cache_entries=self._registration_policy.cimd_cache_max_entries,
+            assertion_replay_service=assertion_replay_service,
         )
 
     def _uses_dcr_lease(self, client_id: str) -> bool:
@@ -1069,7 +1086,9 @@ class InterceptOAuthProvider(OAuthProvider):
                     Route(
                         path=route.path,
                         endpoint=cors_middleware(
-                            token_handler.handle,
+                            client_assertion_replay_error_boundary(
+                                token_handler.handle
+                            ),
                             ["POST", "OPTIONS"],
                         ),
                         methods=["POST", "OPTIONS"],
@@ -1086,7 +1105,9 @@ class InterceptOAuthProvider(OAuthProvider):
                     Route(
                         path=route.path,
                         endpoint=cors_middleware(
-                            revocation_handler.handle,
+                            client_assertion_replay_error_boundary(
+                                revocation_handler.handle
+                            ),
                             ["POST", "OPTIONS"],
                         ),
                         methods=["POST", "OPTIONS"],

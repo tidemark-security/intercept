@@ -82,6 +82,8 @@ async def test_registration_limits_are_frozen_and_must_be_positive() -> None:
                 "mcp.oauth.pending_authorization_per_source_quota": 9,
                 "mcp.oauth.cimd_fetch_reservation_ttl_seconds": 45,
                 "mcp.oauth.cimd_cache_max_entries": 64,
+                "mcp.oauth.client_assertion_replay_global_quota": 500,
+                "mcp.oauth.client_assertion_replay_per_client_quota": 25,
             }
         )
     )
@@ -99,12 +101,24 @@ async def test_registration_limits_are_frozen_and_must_be_positive() -> None:
         pending_authorization_per_source_quota=9,
         cimd_fetch_reservation_ttl_seconds=45,
         cimd_cache_max_entries=64,
+        client_assertion_replay_global_quota=500,
+        client_assertion_replay_per_client_quota=25,
     )
 
     with pytest.raises(MCPConfigurationError, match="registration limits"):
         await load_mcp_auth_snapshot(
             _base_settings(
                 **{"mcp.oauth.registration_pending_quota": 0}
+            )
+        )
+
+    with pytest.raises(MCPConfigurationError, match="cannot exceed global"):
+        await load_mcp_auth_snapshot(
+            _base_settings(
+                **{
+                    "mcp.oauth.client_assertion_replay_global_quota": 10,
+                    "mcp.oauth.client_assertion_replay_per_client_quota": 11,
+                }
             )
         )
 

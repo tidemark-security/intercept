@@ -18,7 +18,10 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 from fastmcp.server.auth import AccessToken
-from fastmcp.server.auth.auth import PrivateKeyJWTClientAuthenticator
+from fastmcp.server.auth.auth import (
+    PrivateKeyJWTClientAuthenticator,
+    TokenHandler,
+)
 from fastmcp.server.auth.oidc_proxy import OIDCProxy
 from key_value.aio.protocols import AsyncKeyValue
 from mcp.server.auth.handlers.metadata import MetadataHandler
@@ -46,6 +49,7 @@ from app.core.settings_registry import get_local
 from app.mcp.auth import MCP_ACCESS_SCOPE, normalize_public_dcr_client
 from app.mcp.cimd import (
     BoundedCIMDClientManager,
+    client_assertion_replay_error_boundary,
     cimd_fetch_requires_network,
     trim_cimd_cache,
 )
@@ -56,6 +60,9 @@ from app.models.models import (
     UserAccount,
 )
 from app.services.credential_invalidation import credential_was_issued_after_cutoff
+from app.services.mcp_client_assertion_replay_service import (
+    MCPClientAssertionReplayService,
+)
 from app.services.oidc_claim_contract import (
     OIDCClaimContractError,
     validate_oidc_claim_contract,
@@ -369,6 +376,15 @@ class InterceptOIDCProxy(OIDCProxy):
             default_scope=self._default_scope_str,
             allowed_redirect_uri_patterns=self._allowed_client_redirect_uris,
             max_cache_entries=self._registration_policy.cimd_cache_max_entries,
+            assertion_replay_service=MCPClientAssertionReplayService(
+                session_factory=session_factory,
+                max_rows=(
+                    self._registration_policy.client_assertion_replay_global_quota
+                ),
+                max_rows_per_client=(
+                    self._registration_policy.client_assertion_replay_per_client_quota
+                ),
+            ),
         )
         if self._authorization_capacity_service is not None:
             self._transaction_store = _AuthorizationCapacityStore(
@@ -582,6 +598,37 @@ class InterceptOIDCProxy(OIDCProxy):
         for route in routes:
             if (
                 cimd_manager is not None
+                and route.path == "/token"
+                and route.methods
+                and "POST" in route.methods
+            ):
+                client_authenticator = PrivateKeyJWTClientAuthenticator(
+                    provider=self,
+                    cimd_manager=cimd_manager,
+                    token_endpoint_url=(
+                        f"{str(self.base_url).rstrip('/')}/token"
+                    ),
+                )
+                token_handler = TokenHandler(
+                    provider=self,
+                    client_authenticator=client_authenticator,
+                )
+                result.append(
+                    Route(
+                        path=route.path,
+                        endpoint=cors_middleware(
+                            client_assertion_replay_error_boundary(
+                                token_handler.handle
+                            ),
+                            ["POST", "OPTIONS"],
+                        ),
+                        methods=["POST", "OPTIONS"],
+                        name=route.name,
+                        include_in_schema=route.include_in_schema,
+                    )
+                )
+            elif (
+                cimd_manager is not None
                 and route.path == "/revoke"
                 and route.methods
                 and "POST" in route.methods
@@ -601,7 +648,9 @@ class InterceptOIDCProxy(OIDCProxy):
                     Route(
                         path=route.path,
                         endpoint=cors_middleware(
-                            revocation_handler.handle,
+                            client_assertion_replay_error_boundary(
+                                revocation_handler.handle
+                            ),
                             ["POST", "OPTIONS"],
                         ),
                         methods=["POST", "OPTIONS"],

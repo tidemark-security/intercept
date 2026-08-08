@@ -358,6 +358,8 @@ def test_mcp_settings_explain_that_changes_require_a_restart() -> None:
         "mcp.oauth.pending_authorization_per_source_quota",
         "mcp.oauth.cimd_fetch_reservation_ttl_seconds",
         "mcp.oauth.cimd_cache_max_entries",
+        "mcp.oauth.client_assertion_replay_global_quota",
+        "mcp.oauth.client_assertion_replay_per_client_quota",
     ):
         assert "restart" in SETTINGS_REGISTRY[key].description.lower()
 

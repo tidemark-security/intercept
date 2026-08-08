@@ -50,6 +50,9 @@ from app.services.oidc_service import (
     OIDCConfigurationError,
     OIDCIdentityPolicy,
 )
+from app.services.mcp_client_assertion_replay_service import (
+    MCPClientAssertionReplayStoreError,
+)
 from app.services.mcp_oauth_service import mcp_oauth_service
 from app.services.mcp_registration_service import (
     MCPAuthorizationCapacityLimitError,
@@ -628,6 +631,104 @@ async def test_oidc_revocation_handler_authenticates_private_key_cimd(
         client=private_client,
         token_endpoint="https://intercept.example/mcp/token",
     )
+
+
+@pytest.mark.asyncio
+async def test_oidc_oauth_endpoints_fail_closed_when_replay_store_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def base_token(_request):
+        return JSONResponse({"unexpected": True})
+
+    proxy = object.__new__(InterceptOIDCProxy)
+    proxy.base_url = "https://intercept.example/mcp"
+    proxy.service_documentation_url = None
+    proxy.client_registration_options = None
+    proxy.revocation_options = None
+    private_client = OAuthClientInformationFull(
+        client_id="https://client.example/oauth-client.json",
+        redirect_uris=["http://127.0.0.1:49152/callback"],
+        token_endpoint_auth_method="private_key_jwt",
+    )
+    proxy.get_client = AsyncMock(return_value=private_client)
+    proxy.load_access_token = AsyncMock(return_value=None)
+    proxy.load_refresh_token = AsyncMock(return_value=None)
+    proxy.revoke_token = AsyncMock()
+    proxy._cimd_manager = SimpleNamespace(
+        validate_private_key_jwt=AsyncMock(
+            side_effect=MCPClientAssertionReplayStoreError(
+                "raw database failure"
+            )
+        )
+    )
+    base_revocation_handler = RevocationHandler(
+        provider=proxy,
+        client_authenticator=ClientAuthenticator(proxy),
+    )
+    monkeypatch.setattr(
+        OIDCProxy,
+        "get_routes",
+        lambda _proxy, _mcp_path=None: [
+            Route(
+                "/token",
+                cors_middleware(base_token, ["POST", "OPTIONS"]),
+                methods=["POST", "OPTIONS"],
+            ),
+            Route(
+                "/revoke",
+                cors_middleware(
+                    base_revocation_handler.handle,
+                    ["POST", "OPTIONS"],
+                ),
+                methods=["POST", "OPTIONS"],
+            ),
+        ],
+    )
+    app = Starlette(routes=proxy.get_routes())
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="https://intercept.example",
+    ) as client:
+        token_response = await client.post(
+            "/token",
+            data={
+                "client_id": "https://client.example/oauth-client.json",
+                "client_assertion_type": (
+                    "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+                ),
+                "client_assertion": "signed-client-assertion",
+                "grant_type": "authorization_code",
+                "code": "unknown-code",
+                "redirect_uri": "http://127.0.0.1:49152/callback",
+                "code_verifier": "a" * 43,
+            },
+        )
+        revoke_response = await client.post(
+            "/revoke",
+            data={
+                "client_id": "https://client.example/oauth-client.json",
+                "client_assertion_type": (
+                    "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+                ),
+                "client_assertion": "signed-client-assertion",
+                "client_secret": "",
+                "token": "unknown-token",
+            },
+        )
+
+    for response in (token_response, revoke_response):
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": "server_error",
+            "error_description": (
+                "Client assertion replay protection is temporarily unavailable"
+            ),
+        }
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["pragma"] == "no-cache"
+        assert response.headers["retry-after"] == "1"
+        assert "raw database failure" not in response.text
 
 
 class _Session:

@@ -279,6 +279,18 @@ async def load_mcp_auth_snapshot(settings: Any) -> MCPAuthSnapshot:
                 default=256,
             )
         ),
+        client_assertion_replay_global_quota=int(
+            await settings.get(
+                "mcp.oauth.client_assertion_replay_global_quota",
+                default=100_000,
+            )
+        ),
+        client_assertion_replay_per_client_quota=int(
+            await settings.get(
+                "mcp.oauth.client_assertion_replay_per_client_quota",
+                default=10_000,
+            )
+        ),
     )
     if any(
         value <= 0
@@ -295,9 +307,18 @@ async def load_mcp_auth_snapshot(settings: Any) -> MCPAuthSnapshot:
             registration_policy.pending_authorization_per_source_quota,
             registration_policy.cimd_fetch_reservation_ttl_seconds,
             registration_policy.cimd_cache_max_entries,
+            registration_policy.client_assertion_replay_global_quota,
+            registration_policy.client_assertion_replay_per_client_quota,
         )
     ):
         raise MCPConfigurationError("MCP registration limits must be positive")
+    if (
+        registration_policy.client_assertion_replay_per_client_quota
+        > registration_policy.client_assertion_replay_global_quota
+    ):
+        raise MCPConfigurationError(
+            "MCP per-client assertion replay quota cannot exceed global quota"
+        )
     if (
         registration_policy.abandoned_ttl_seconds
         < registration_policy.rate_window_seconds

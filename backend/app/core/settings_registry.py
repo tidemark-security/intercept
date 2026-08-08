@@ -789,6 +789,22 @@ _register(
         description="Maximum process-local FastMCP CIMD documents retained in memory. Backend restart required after changes",
         default=256,
     ),
+    _def(
+        "mcp.oauth.client_assertion_replay_global_quota",
+        env_var="MCP_OAUTH_CLIENT_ASSERTION_REPLAY_GLOBAL_QUOTA",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Maximum durable FastMCP private_key_jwt replay claims across all clients. Backend restart required after changes",
+        default=100000,
+    ),
+    _def(
+        "mcp.oauth.client_assertion_replay_per_client_quota",
+        env_var="MCP_OAUTH_CLIENT_ASSERTION_REPLAY_PER_CLIENT_QUOTA",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Maximum durable FastMCP private_key_jwt replay claims per client ID. Backend restart required after changes",
+        default=10000,
+    ),
 )
 
 # ---------------------------------------------------------------------------

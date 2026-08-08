@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import httpx
+import jwt
 import pytest
 from fastmcp.server.auth.cimd import CIMDClientManager, CIMDDocument
 from fastmcp.server.auth.oauth_proxy.models import ProxyDCRClient
@@ -18,8 +21,12 @@ from mcp.shared.auth import OAuthClientInformationFull
 from sqlalchemy import select
 from starlette.applications import Starlette
 
+from app.mcp.cimd import BoundedCIMDClientManager
 from app.mcp.local_oauth_provider import InterceptOAuthProvider, PendingAuthorization
 from app.models.models import MCPOAuthClient
+from app.services.mcp_client_assertion_replay_service import (
+    MCPClientAssertionReplayStoreError,
+)
 from app.services.mcp_registration_service import (
     MCPAuthorizationCapacityLimitError,
     MCPRegistrationPolicy,
@@ -115,6 +122,26 @@ class StubCIMDManager:
         return True
 
 
+def _test_provider(*, cimd_manager: Any, **kwargs: Any) -> InterceptOAuthProvider:
+    """Install a CIMD double after exercising the production constructor."""
+
+    provider = InterceptOAuthProvider(**kwargs)
+    provider._cimd_manager = cimd_manager
+    return provider
+
+
+@dataclass
+class UnavailableReplayCIMDManager(StubCIMDManager):
+    async def validate_private_key_jwt(
+        self,
+        assertion: str,
+        client: ProxyDCRClient,
+        token_endpoint: str,
+    ) -> bool:
+        del assertion, client, token_endpoint
+        raise MCPClientAssertionReplayStoreError("raw database failure")
+
+
 def _cimd_client(
     *,
     token_endpoint_auth_method: str = "none",
@@ -149,7 +176,7 @@ async def test_https_client_id_uses_native_cimd_before_relational_lookup() -> No
     """A CIMD URL is validated before any relational grant projection."""
     backend = RecordingBackend()
     cimd_manager = StubCIMDManager(_cimd_client())
-    provider = InterceptOAuthProvider(
+    provider = _test_provider(
         backend=backend,
         pending_authorizations=UnusedPendingAuthorizations(),
         public_base_url="http://localhost:8080",
@@ -176,7 +203,7 @@ async def test_non_url_client_id_preserves_dynamic_registration_lookup() -> None
     )
     backend = RecordingBackend(stored_client=registered)
     cimd_manager = StubCIMDManager(None)
-    provider = InterceptOAuthProvider(
+    provider = _test_provider(
         backend=backend,
         pending_authorizations=UnusedPendingAuthorizations(),
         public_base_url="http://localhost:8080",
@@ -195,7 +222,7 @@ async def test_private_key_cimd_client_is_projected_without_downgrade() -> None:
     """Lookup retains asymmetric metadata without persisting a projection."""
     backend = RecordingBackend()
     native_client = _cimd_client(token_endpoint_auth_method="private_key_jwt")
-    provider = InterceptOAuthProvider(
+    provider = _test_provider(
         backend=backend,
         pending_authorizations=UnusedPendingAuthorizations(),
         public_base_url="http://localhost:8080",
@@ -214,7 +241,7 @@ async def test_private_key_cimd_lookup_defers_relational_projection(
 ) -> None:
     """The relational grant projection retains metadata needed for reconnects."""
     native_client = _cimd_client(token_endpoint_auth_method="private_key_jwt")
-    provider = InterceptOAuthProvider(
+    provider = _test_provider(
         session_factory=session_maker,
         public_base_url="http://localhost:8080",
         cimd_manager=StubCIMDManager(native_client),
@@ -238,7 +265,7 @@ async def test_private_key_cimd_exact_redirect_reaches_local_consent() -> None:
     pending_authorizations = RecordingPendingAuthorizations()
     backend = RecordingBackend()
     native_client = _cimd_client(token_endpoint_auth_method="private_key_jwt")
-    provider = InterceptOAuthProvider(
+    provider = _test_provider(
         backend=backend,
         pending_authorizations=pending_authorizations,
         public_base_url="http://localhost:8080",
@@ -287,7 +314,7 @@ async def test_cimd_fetch_is_rejected_before_network_when_capacity_is_full() -> 
             raise MCPAuthorizationCapacityLimitError("full")
 
     manager = StubCIMDManager(_cimd_client())
-    provider = InterceptOAuthProvider(
+    provider = _test_provider(
         backend=RecordingBackend(),
         pending_authorizations=UnusedPendingAuthorizations(),
         public_base_url="http://localhost:8080",
@@ -331,7 +358,7 @@ async def test_non_authorization_cimd_fetch_releases_transient_capacity(
             self.releases.append(reservation_id)
 
     capacity = RecordingCapacity()
-    provider = InterceptOAuthProvider(
+    provider = _test_provider(
         backend=RecordingBackend(),
         pending_authorizations=UnusedPendingAuthorizations(),
         public_base_url="http://localhost:8080",
@@ -386,7 +413,7 @@ async def test_repeated_cimd_lookup_preserves_prefetch_reservation_for_authorize
     request_id = UUID("16ad90ad-4cf0-4c56-b4e2-9f39c44ca099")
     capacity = RecordingCapacity()
     pending = RecordingPendingAuthorizations()
-    provider = InterceptOAuthProvider(
+    provider = _test_provider(
         backend=RecordingBackend(),
         pending_authorizations=pending,
         public_base_url="http://localhost:8080",
@@ -445,7 +472,7 @@ async def test_cimd_authorize_releases_prefetch_when_promotion_fails() -> None:
             self.releases.append(reservation_id)
 
     capacity = RecordingCapacity()
-    provider = InterceptOAuthProvider(
+    provider = _test_provider(
         backend=RecordingBackend(),
         pending_authorizations=RecordingPendingAuthorizations(),
         public_base_url="http://localhost:8080",
@@ -495,7 +522,7 @@ async def test_unsupported_cimd_forms_fail_closed_before_persistence(
 ) -> None:
     """Relational local grants reject redirects they cannot bind exactly."""
     backend = RecordingBackend()
-    provider = InterceptOAuthProvider(
+    provider = _test_provider(
         backend=backend,
         pending_authorizations=UnusedPendingAuthorizations(),
         public_base_url="http://localhost:8080",
@@ -509,7 +536,7 @@ async def test_unsupported_cimd_forms_fail_closed_before_persistence(
 
 @pytest.mark.asyncio
 async def test_metadata_advertises_native_cimd_authentication_contract() -> None:
-    provider = InterceptOAuthProvider(
+    provider = _test_provider(
         backend=RecordingBackend(),
         pending_authorizations=UnusedPendingAuthorizations(),
         public_base_url="http://localhost:8080",
@@ -551,7 +578,7 @@ async def test_native_token_and_revocation_handlers_accept_public_clients() -> N
         response_types=["code"],
         scope="mcp:access",
     )
-    provider = InterceptOAuthProvider(
+    provider = _test_provider(
         backend=RecordingBackend(stored_client=registered),
         pending_authorizations=UnusedPendingAuthorizations(),
         public_base_url="http://localhost:8080",
@@ -594,7 +621,7 @@ async def test_native_token_and_revocation_handlers_authenticate_private_key_cim
     cimd_manager = StubCIMDManager(
         _cimd_client(token_endpoint_auth_method="private_key_jwt")
     )
-    provider = InterceptOAuthProvider(
+    provider = _test_provider(
         backend=RecordingBackend(),
         pending_authorizations=UnusedPendingAuthorizations(),
         public_base_url="http://localhost:8080",
@@ -647,6 +674,121 @@ async def test_native_token_and_revocation_handlers_authenticate_private_key_cim
             "http://localhost:8080/mcp/token",
         ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_native_oauth_endpoints_fail_closed_when_replay_store_is_unavailable() -> None:
+    provider = _test_provider(
+        backend=RecordingBackend(),
+        pending_authorizations=UnusedPendingAuthorizations(),
+        public_base_url="http://localhost:8080",
+        cimd_manager=UnavailableReplayCIMDManager(
+            _cimd_client(token_endpoint_auth_method="private_key_jwt")
+        ),
+    )
+    oauth_app = Starlette(routes=provider.get_routes("/streamable/"))
+    client_authentication = {
+        "client_id": CIMD_CLIENT_ID,
+        "client_assertion_type": JWT_BEARER_ASSERTION_TYPE,
+        "client_assertion": "signed-client-assertion",
+    }
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=oauth_app),
+        base_url="http://testserver",
+    ) as oauth_client:
+        token_response = await oauth_client.post(
+            "/token",
+            data={
+                **client_authentication,
+                "grant_type": "authorization_code",
+                "code": "unknown-code",
+                "redirect_uri": LOOPBACK_REDIRECT,
+                "code_verifier": "a" * 43,
+            },
+        )
+        revoke_response = await oauth_client.post(
+            "/revoke",
+            data={
+                **client_authentication,
+                "token": "unknown-token",
+                "client_secret": "",
+            },
+        )
+
+    for response in (token_response, revoke_response):
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": "server_error",
+            "error_description": (
+                "Client assertion replay protection is temporarily unavailable"
+            ),
+        }
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["pragma"] == "no-cache"
+        assert response.headers["retry-after"] == "1"
+        assert "raw database failure" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_false_cryptographic_validation_is_rejected_by_token_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        CIMDClientManager,
+        "validate_private_key_jwt",
+        AsyncMock(return_value=False),
+    )
+    private_client = _cimd_client(token_endpoint_auth_method="private_key_jwt")
+    manager = BoundedCIMDClientManager(
+        enable_cimd=True,
+        max_cache_entries=10,
+        assertion_replay_service=SimpleNamespace(reserve=AsyncMock()),
+    )
+    manager.get_client = AsyncMock(return_value=private_client)  # type: ignore[method-assign]
+    provider = _test_provider(
+        backend=RecordingBackend(),
+        pending_authorizations=UnusedPendingAuthorizations(),
+        public_base_url="http://localhost:8080",
+        cimd_manager=manager,
+    )
+    oauth_app = Starlette(routes=provider.get_routes("/streamable/"))
+    assertion = jwt.encode(
+        {"jti": "invalid-signature-jti", "exp": int(time.time()) + 120},
+        "test-only-signing-key-at-least-32-bytes",
+        algorithm="HS256",
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=oauth_app),
+        base_url="http://testserver",
+    ) as oauth_client:
+        response = await oauth_client.post(
+            "/token",
+            data={
+                "client_id": CIMD_CLIENT_ID,
+                "client_assertion_type": JWT_BEARER_ASSERTION_TYPE,
+                "client_assertion": assertion,
+                "grant_type": "authorization_code",
+                "code": "unknown-code",
+                "redirect_uri": LOOPBACK_REDIRECT,
+                "code_verifier": "a" * 43,
+            },
+        )
+
+    assert response.status_code == 401
+    assert response.json()["error"] == "invalid_client"
+    manager._assertion_replay_service.reserve.assert_not_awaited()
+
+
+def test_runtime_constructor_rejects_public_cimd_manager_override() -> None:
+    with pytest.raises(TypeError, match="unexpected keyword argument 'cimd_manager'"):
+        InterceptOAuthProvider(
+            backend=RecordingBackend(),
+            pending_authorizations=UnusedPendingAuthorizations(),
+            public_base_url="http://localhost:8080",
+            cimd_manager=StubCIMDManager(None),  # type: ignore[call-arg]
+        )
 
 
 def test_native_cimd_manager_is_enabled_by_default() -> None:
