@@ -120,8 +120,10 @@ keys/
 # Project Specific
 # =============================================================================
 
-# Local documentation
-/docs/
+# Local documentation, except the shipped no-clone quickstart artifacts.
+/docs/*
+!/docs/quickstart/
+!/docs/quickstart/**
 
 # GitHub Speckit files
 .specify

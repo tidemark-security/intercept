@@ -369,4 +369,4 @@ def test_mcp_sdk_has_principal_binding_security_floor() -> None:
         PROJECT_ROOT / "backend/requirements.txt"
     ).read_text(encoding="utf-8").splitlines()
 
-    assert "mcp==1.27.2" in requirements
+    assert "mcp==1.28.1" in requirements
