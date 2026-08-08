@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
@@ -354,6 +354,7 @@ async def test_oidc_non_authorization_cimd_fetch_releases_transient_capacity(
 @pytest.mark.asyncio
 async def test_oidc_transaction_promotes_prefetch_and_releases_on_delete() -> None:
     delegate = SimpleNamespace(
+        get=AsyncMock(return_value=None),
         put=AsyncMock(return_value="stored"),
         delete=AsyncMock(return_value=True),
     )
@@ -377,10 +378,144 @@ async def test_oidc_transaction_promotes_prefetch_and_releases_on_delete() -> No
         reservation_id="fetch-reservation",
         pending_id="transaction-id",
         client_id="cimd-client",
+        provider_mode="oidc",
         ttl_seconds=900,
     )
     capacity.reserve.assert_not_awaited()
     capacity.release.assert_awaited_once_with("transaction-id")
+
+
+@pytest.mark.asyncio
+async def test_oidc_transaction_repeated_puts_refresh_existing_capacity() -> None:
+    stored: dict[str, object] = {}
+
+    async def get_transaction(*, key: str, **_kwargs):
+        return stored.get(key)
+
+    async def put_transaction(*, key: str, value: object, **_kwargs):
+        stored[key] = value
+        return "stored"
+
+    delegate = SimpleNamespace(
+        get=AsyncMock(side_effect=get_transaction),
+        put=AsyncMock(side_effect=put_transaction),
+    )
+    capacity = SimpleNamespace(
+        promote=AsyncMock(),
+        reserve=AsyncMock(return_value=17),
+        refresh=AsyncMock(return_value=17),
+        release=AsyncMock(),
+    )
+    prefetch = ContextVar("test_oidc_transaction_update", default=None)
+    store = _AuthorizationCapacityStore(delegate, capacity, prefetch)
+    transaction = SimpleNamespace(client_id="cimd-client")
+
+    first = await store.put(
+        key="transaction-id",
+        value=transaction,
+        ttl=900,
+    )
+    second = await store.put(
+        key="transaction-id",
+        value=transaction,
+        ttl=900,
+    )
+    third = await store.put(
+        key="transaction-id",
+        value=transaction,
+        ttl=900,
+    )
+
+    assert first == second == third == "stored"
+    assert delegate.put.await_count == 3
+    capacity.reserve.assert_awaited_once_with(
+        reservation_id="transaction-id",
+        client_id="cimd-client",
+        provider_mode="oidc",
+        ttl_seconds=900,
+    )
+    assert capacity.refresh.await_args_list == [
+        call(
+            reservation_id="transaction-id",
+            client_id="cimd-client",
+            provider_mode="oidc",
+            ttl_seconds=900,
+        ),
+        call(
+            reservation_id="transaction-id",
+            client_id="cimd-client",
+            provider_mode="oidc",
+            ttl_seconds=900,
+        ),
+    ]
+    capacity.promote.assert_not_awaited()
+    capacity.release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_oidc_transaction_reserve_failure_releases_no_unowned_key() -> None:
+    capacity = SimpleNamespace(
+        promote=AsyncMock(),
+        reserve=AsyncMock(
+            side_effect=MCPAuthorizationCapacityLimitError("duplicate reservation")
+        ),
+        refresh=AsyncMock(),
+        release=AsyncMock(),
+    )
+    store = _AuthorizationCapacityStore(
+        SimpleNamespace(
+            get=AsyncMock(return_value=None),
+            put=AsyncMock(),
+        ),
+        capacity,
+        ContextVar("test_oidc_reserve_collision", default=None),
+    )
+
+    with pytest.raises(
+        MCPAuthorizationCapacityLimitError,
+        match="duplicate reservation",
+    ):
+        await store.put(
+            key="transaction-id",
+            value=SimpleNamespace(client_id="cimd-client"),
+            ttl=900,
+        )
+
+    capacity.release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_oidc_transaction_update_failure_preserves_existing_capacity() -> None:
+    capacity = SimpleNamespace(
+        promote=AsyncMock(),
+        reserve=AsyncMock(),
+        refresh=AsyncMock(return_value=17),
+        release=AsyncMock(),
+    )
+    store = _AuthorizationCapacityStore(
+        SimpleNamespace(
+            get=AsyncMock(return_value=SimpleNamespace(client_id="cimd-client")),
+            put=AsyncMock(side_effect=RuntimeError("storage unavailable")),
+        ),
+        capacity,
+        ContextVar("test_oidc_update_storage_failure", default=None),
+    )
+
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await store.put(
+            key="transaction-id",
+            value=SimpleNamespace(client_id="cimd-client"),
+            ttl=900,
+        )
+
+    capacity.refresh.assert_awaited_once_with(
+        reservation_id="transaction-id",
+        client_id="cimd-client",
+        provider_mode="oidc",
+        ttl_seconds=900,
+    )
+    capacity.promote.assert_not_awaited()
+    capacity.release.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -415,7 +550,10 @@ async def test_repeated_oidc_cimd_lookup_preserves_prefetch_for_transaction() ->
     proxy._authorization_capacity_service = capacity
     proxy._cimd_prefetch_reservation = reservation
     proxy._cimd_manager = cimd_manager
-    delegate = SimpleNamespace(put=AsyncMock(return_value="stored"))
+    delegate = SimpleNamespace(
+        get=AsyncMock(return_value=None),
+        put=AsyncMock(return_value="stored"),
+    )
     store = _AuthorizationCapacityStore(delegate, capacity, reservation)
     token = bind_authorization_request()
     try:
@@ -438,6 +576,7 @@ async def test_repeated_oidc_cimd_lookup_preserves_prefetch_for_transaction() ->
         reservation_id=capacity.reserve.await_args.kwargs["reservation_id"],
         pending_id="transaction-id",
         client_id=client_id,
+        provider_mode="oidc",
         ttl_seconds=900,
     )
 
@@ -456,7 +595,10 @@ async def test_oidc_transaction_releases_prefetch_when_promotion_fails() -> None
         default=("fetch-reservation", "cimd-client"),
     )
     store = _AuthorizationCapacityStore(
-        SimpleNamespace(put=AsyncMock()),
+        SimpleNamespace(
+            get=AsyncMock(return_value=None),
+            put=AsyncMock(),
+        ),
         capacity,
         prefetch,
     )
@@ -471,9 +613,7 @@ async def test_oidc_transaction_releases_prefetch_when_promotion_fails() -> None
             ttl=900,
         )
 
-    assert [
-        call.args[0] for call in capacity.release.await_args_list
-    ] == ["transaction-id", "fetch-reservation"]
+    capacity.release.assert_awaited_once_with("fetch-reservation")
     assert prefetch.get() is None
 
 

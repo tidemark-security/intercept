@@ -187,28 +187,45 @@ class _AuthorizationCapacityStore:
         client_id = str(value.client_id)
         ttl_seconds = max(int(kwargs.get("ttl") or 15 * 60), 1)
         prefetch = self._prefetch_reservation.get()
-        cleanup_ids = [key]
-        if prefetch is not None and prefetch[1] == client_id:
-            cleanup_ids.append(prefetch[0])
+        cleanup_reservation_id = prefetch[0] if prefetch is not None else None
         try:
-            if prefetch is not None and prefetch[1] == client_id:
+            existing = await self._delegate.get(key=key)
+            if existing is not None:
+                await self._capacity.refresh(
+                    reservation_id=key,
+                    client_id=client_id,
+                    provider_mode="oidc",
+                    ttl_seconds=ttl_seconds,
+                )
+                if cleanup_reservation_id is not None:
+                    await self._capacity.release(cleanup_reservation_id)
+                    cleanup_reservation_id = None
+            elif prefetch is not None and prefetch[1] == client_id:
                 await self._capacity.promote(
                     reservation_id=prefetch[0],
                     pending_id=key,
                     client_id=client_id,
+                    provider_mode="oidc",
                     ttl_seconds=ttl_seconds,
                 )
+                cleanup_reservation_id = key
             else:
+                if cleanup_reservation_id is not None:
+                    await self._capacity.release(cleanup_reservation_id)
+                    cleanup_reservation_id = None
                 await self._capacity.reserve(
                     reservation_id=key,
                     client_id=client_id,
                     provider_mode="oidc",
                     ttl_seconds=ttl_seconds,
                 )
-            return await self._delegate.put(key=key, value=value, **kwargs)
+                cleanup_reservation_id = key
+            result = await self._delegate.put(key=key, value=value, **kwargs)
+            cleanup_reservation_id = None
+            return result
         except Exception:
-            for reservation_id in dict.fromkeys(cleanup_ids):
-                await self._capacity.release(reservation_id)
+            if cleanup_reservation_id is not None:
+                await self._capacity.release(cleanup_reservation_id)
             raise
         finally:
             self._prefetch_reservation.set(None)

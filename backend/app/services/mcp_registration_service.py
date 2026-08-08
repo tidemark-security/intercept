@@ -221,6 +221,7 @@ class MCPOAuthAuthorizationCapacityService:
         reservation_id: str,
         pending_id: str,
         client_id: str,
+        provider_mode: str,
         ttl_seconds: int,
     ) -> int:
         """Bind a pre-fetch reservation to its durable pending request ID."""
@@ -242,10 +243,50 @@ class MCPOAuthAuthorizationCapacityService:
                 )
             authorization_epoch = await next_mcp_oauth_grant_epoch(session)
             row.reservation_id = pending_id[:128]
+            row.provider_mode = provider_mode[:32]
             row.authorization_epoch = authorization_epoch
             row.expires_at = now + timedelta(seconds=ttl_seconds)
             await session.flush()
             return authorization_epoch
+
+    async def refresh(
+        self,
+        *,
+        reservation_id: str,
+        client_id: str,
+        provider_mode: str,
+        ttl_seconds: int,
+    ) -> int:
+        """Extend an existing reservation without changing its causal epoch."""
+
+        async with self._session() as session:
+            await self._lock(session)
+            now = self._now()
+            row = await session.scalar(
+                select(MCPOAuthAuthorizationCapacity)
+                .where(
+                    MCPOAuthAuthorizationCapacity.reservation_id
+                    == reservation_id[:128]
+                )
+                .with_for_update()
+            )
+            if row is None or row.expires_at <= now:
+                raise MCPAuthorizationCapacityLimitError(
+                    "The MCP authorization transaction expired; retry later"
+                )
+            if (
+                row.client_id != client_id
+                or row.provider_mode != provider_mode[:32]
+            ):
+                raise MCPAuthorizationCapacityLimitError(
+                    "The MCP authorization transaction does not match this request"
+                )
+            row.expires_at = max(
+                row.expires_at,
+                now + timedelta(seconds=ttl_seconds),
+            )
+            await session.flush()
+            return row.authorization_epoch
 
     async def require_authorization_epoch(self, reservation_id: str) -> int:
         """Load the database-issued epoch bound to an OIDC transaction."""

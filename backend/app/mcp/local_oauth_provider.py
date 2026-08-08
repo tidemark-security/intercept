@@ -835,6 +835,7 @@ class InterceptOAuthProvider(OAuthProvider):
                         reservation_id=resolution.reservation_id,
                         pending_id=reservation_id,
                         client_id=client.client_id,
+                        provider_mode="local",
                         ttl_seconds=max(int(self.pending_ttl.total_seconds()), 1),
                     )
                     reservation_to_release = reservation_id

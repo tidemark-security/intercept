@@ -450,6 +450,7 @@ async def test_repeated_cimd_lookup_preserves_prefetch_reservation_for_authorize
             "reservation_id": capacity.reservations[0]["reservation_id"],
             "pending_id": str(request_id),
             "client_id": CIMD_CLIENT_ID,
+            "provider_mode": "local",
             "ttl_seconds": 300,
         }
     ]

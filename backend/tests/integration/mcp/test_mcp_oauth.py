@@ -6,7 +6,9 @@ import asyncio
 import base64
 import hashlib
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 from uuid import UUID
@@ -23,6 +25,7 @@ from app.mcp.local_oauth_provider import (
     PendingAuthorizationUnavailableError,
     create_local_oauth_provider,
 )
+from app.mcp.oidc_provider import _AuthorizationCapacityStore
 from app.mcp.runtime import (
     MCPAuthMode,
     MCPAuthSnapshot,
@@ -41,6 +44,7 @@ from app.models.models import (
     UserAccount,
 )
 from app.services.mcp_registration_service import (
+    MCPAuthorizationCapacityLimitError,
     MCPDCRRegistrationService,
     MCPOAuthAuthorizationCapacityService,
     MCPRegistrationExpiredError,
@@ -505,6 +509,7 @@ async def test_oidc_transaction_promotion_allocates_fresh_database_epoch(
         reservation_id="oidc-prefetch-epoch",
         pending_id="oidc-transaction-epoch",
         client_id="https://client.example/.well-known/oauth-client.json",
+        provider_mode="oidc",
         ttl_seconds=900,
     )
 
@@ -513,6 +518,148 @@ async def test_oidc_transaction_promotion_allocates_fresh_database_epoch(
         await service.require_authorization_epoch("oidc-transaction-epoch")
         == transaction_epoch
     )
+
+
+@pytest.mark.asyncio
+async def test_oidc_capacity_store_repeated_puts_refresh_one_reservation(
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    clock = [datetime(2026, 8, 8, 0, 0, tzinfo=timezone.utc)]
+    service = MCPOAuthAuthorizationCapacityService(
+        session_factory=session_maker,
+        policy=MCPRegistrationPolicy(),
+        now=lambda: clock[0],
+    )
+    client_id = "https://client.example/.well-known/oauth-client.json"
+    await service.reserve(
+        reservation_id="oidc-prefetch-refresh",
+        client_id=client_id,
+        provider_mode="oidc-cimd-fetch",
+        ttl_seconds=60,
+    )
+    stored: dict[str, object] = {}
+
+    async def get_transaction(*, key: str, **_kwargs):
+        return stored.get(key)
+
+    async def put_transaction(*, key: str, value: object, **_kwargs):
+        stored[key] = value
+
+    delegate = SimpleNamespace(
+        get=get_transaction,
+        put=put_transaction,
+    )
+    store = _AuthorizationCapacityStore(
+        delegate,
+        service,
+        ContextVar(
+            "test_oidc_capacity_refresh_prefetch",
+            default=("oidc-prefetch-refresh", client_id),
+        ),
+    )
+    transaction = SimpleNamespace(client_id=client_id)
+
+    await store.put(key="oidc-transaction-refresh", value=transaction, ttl=120)
+    async with session_maker() as session:
+        original = (
+            await session.execute(select(MCPOAuthAuthorizationCapacity))
+        ).scalar_one()
+        original_epoch = original.authorization_epoch
+        original_created_at = original.created_at
+        original_source_ip = original.source_ip
+    assert original.provider_mode == "oidc"
+
+    delayed_refresh_started = asyncio.Event()
+    resume_delayed_refresh = asyncio.Event()
+    delayed_service = MCPOAuthAuthorizationCapacityService(
+        session_factory=session_maker,
+        policy=MCPRegistrationPolicy(),
+        now=lambda: clock[0],
+    )
+
+    async def delayed_lock(session: AsyncSession) -> None:
+        delayed_refresh_started.set()
+        await resume_delayed_refresh.wait()
+        await MCPOAuthAuthorizationCapacityService._lock(session)
+
+    delayed_service._lock = delayed_lock  # type: ignore[method-assign]
+    delayed_refresh = asyncio.create_task(
+        delayed_service.refresh(
+            reservation_id="oidc-transaction-refresh",
+            client_id=client_id,
+            provider_mode="oidc",
+            ttl_seconds=120,
+        )
+    )
+    await delayed_refresh_started.wait()
+    clock[0] += timedelta(seconds=30)
+    try:
+        await service.refresh(
+            reservation_id="oidc-transaction-refresh",
+            client_id=client_id,
+            provider_mode="oidc",
+            ttl_seconds=120,
+        )
+    finally:
+        resume_delayed_refresh.set()
+    await delayed_refresh
+
+    await asyncio.gather(
+        store.put(key="oidc-transaction-refresh", value=transaction, ttl=120),
+        store.put(key="oidc-transaction-refresh", value=transaction, ttl=120),
+    )
+
+    stale_clock_service = MCPOAuthAuthorizationCapacityService(
+        session_factory=session_maker,
+        policy=MCPRegistrationPolicy(),
+        now=lambda: clock[0] - timedelta(seconds=10),
+    )
+    await stale_clock_service.refresh(
+        reservation_id="oidc-transaction-refresh",
+        client_id=client_id,
+        provider_mode="oidc",
+        ttl_seconds=120,
+    )
+
+    async with session_maker() as session:
+        rows = tuple(
+            await session.scalars(select(MCPOAuthAuthorizationCapacity))
+        )
+    assert len(rows) == 1
+    refreshed = rows[0]
+    assert refreshed.authorization_epoch == original_epoch
+    assert refreshed.created_at == original_created_at
+    assert refreshed.source_ip == original_source_ip
+    assert refreshed.expires_at == clock[0] + timedelta(seconds=120)
+
+    with pytest.raises(
+        MCPAuthorizationCapacityLimitError,
+        match="does not match",
+    ):
+        await service.refresh(
+            reservation_id="oidc-transaction-refresh",
+            client_id="https://different-client.example/client.json",
+            provider_mode="oidc",
+            ttl_seconds=120,
+        )
+
+    clock[0] += timedelta(seconds=121)
+    with pytest.raises(
+        MCPAuthorizationCapacityLimitError,
+        match="expired",
+    ):
+        await service.refresh(
+            reservation_id="oidc-transaction-refresh",
+            client_id=client_id,
+            provider_mode="oidc",
+            ttl_seconds=120,
+        )
+    async with session_maker() as session:
+        stale = (
+            await session.execute(select(MCPOAuthAuthorizationCapacity))
+        ).scalar_one()
+    assert stale.authorization_epoch == original_epoch
+    assert stale.expires_at < clock[0]
 
 
 @pytest.mark.asyncio
