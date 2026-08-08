@@ -13,10 +13,9 @@ from __future__ import annotations
 import ipaddress
 import re
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Dict, List, Optional, Callable, Any
 
-from app.models.enums import ObservableType, Protocol
+from app.models.enums import Protocol
 
 
 @dataclass
@@ -313,19 +312,6 @@ def get_all_rules() -> Dict[str, Dict[str, Any]]:
     return {key: rule.to_dict() for key, rule in VALIDATION_RULES.items()}
 
 
-def get_rule(key: str) -> Optional[ValidationRule]:
-    """
-    Get a specific validation rule by key.
-    
-    Args:
-        key: The validation rule key
-        
-    Returns:
-        ValidationRule if found, None otherwise
-    """
-    return VALIDATION_RULES.get(key)
-
-
 # =============================================================================
 # Exported Patterns (for use in search_service.py and other modules)
 # =============================================================================
@@ -337,7 +323,7 @@ EXTRACTION_PATTERNS = {
     "md5": re.compile(r'\b[a-fA-F0-9]{32}\b'),
     "sha1": re.compile(r'\b[a-fA-F0-9]{40}\b'),
     "sha256": re.compile(r'\b[a-fA-F0-9]{64}\b'),
-    "email": re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'),
+    "email": re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'),
 }
 
 # Strict validation patterns (anchored, for form validation)

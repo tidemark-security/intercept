@@ -1,9 +1,15 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from app.models.enums import UserRole, UserStatus
-from app.models.models import UserAccount
-from app.services.passkey_service import PasskeyCredentialNotFoundError, PasskeyService
+from sqlmodel import select
+from webauthn.helpers.structs import UserVerificationRequirement
+
+from app.models.models import UserAccount, WebAuthnChallenge
+from app.services.passkey_service import PasskeyService
 import pytest
 
 
@@ -45,7 +51,7 @@ def test_extract_transports_falls_back_to_platform_attachment() -> None:
 async def test_load_config_falls_back_to_cors_origins(monkeypatch) -> None:
     service = PasskeyService()
 
-    async def _fake_get_typed_value(_self, key: str, default=None):
+    async def _fake_get(_self, key: str, default=None):
         if key == "auth.passkeys.expected_origins":
             return None
         return default
@@ -58,8 +64,8 @@ async def test_load_config_falls_back_to_cors_origins(monkeypatch) -> None:
         return default
 
     monkeypatch.setattr(
-        "app.services.passkey_service.SettingsService.get_typed_value",
-        _fake_get_typed_value,
+        "app.services.passkey_service.SettingsService.get",
+        _fake_get,
     )
     monkeypatch.setattr("app.services.passkey_service.get_local", _fake_get_local)
 
@@ -73,7 +79,7 @@ async def test_load_config_falls_back_to_cors_origins(monkeypatch) -> None:
 async def test_load_config_parses_json_string_expected_origins(monkeypatch) -> None:
     service = PasskeyService()
 
-    async def _fake_get_typed_value(_self, key: str, default=None):
+    async def _fake_get(_self, key: str, default=None):
         if key == "auth.passkeys.expected_origins":
             return '["https://one.example.com", "https://two.example.com"]'
         return default
@@ -86,8 +92,8 @@ async def test_load_config_parses_json_string_expected_origins(monkeypatch) -> N
         return default
 
     monkeypatch.setattr(
-        "app.services.passkey_service.SettingsService.get_typed_value",
-        _fake_get_typed_value,
+        "app.services.passkey_service.SettingsService.get",
+        _fake_get,
     )
     monkeypatch.setattr("app.services.passkey_service.get_local", _fake_get_local)
 
@@ -100,7 +106,64 @@ async def test_load_config_parses_json_string_expected_origins(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
-async def test_begin_authentication_requires_existing_active_passkey(monkeypatch) -> None:
+async def test_load_config_normalizes_list_origins(monkeypatch) -> None:
+    service = PasskeyService()
+
+    async def _fake_get(_self, key: str, default=None):
+        if key == "auth.passkeys.expected_origins":
+            return [" https://one.example.com ", "", "https://two.example.com"]
+        return default
+
+    monkeypatch.setattr(
+        "app.services.passkey_service.SettingsService.get",
+        _fake_get,
+    )
+    monkeypatch.setattr(
+        "app.services.passkey_service.get_local",
+        lambda key, default=None: "example.com" if key == "auth.session.cookie_domain" else default,
+    )
+
+    config = await service._load_config(db=None)  # type: ignore[arg-type]
+
+    assert config.expected_origins == [
+        "https://one.example.com",
+        "https://two.example.com",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_challenge_deletes_expired_rows(session_maker: Any) -> None:
+    now = datetime.now(timezone.utc)
+    expired = WebAuthnChallenge(
+        challenge="expired",
+        flow_type="authentication",
+        expires_at=now - timedelta(minutes=1),
+    )
+    active = WebAuthnChallenge(
+        challenge="active",
+        flow_type="authentication",
+        expires_at=now + timedelta(minutes=5),
+    )
+
+    async with session_maker() as session:
+        session.add_all([expired, active])
+        await session.commit()
+
+        created = await PasskeyService()._create_challenge(
+            session,
+            challenge="new",
+            flow_type="authentication",
+            ttl_seconds=300,
+        )
+        await session.commit()
+        challenges = (await session.execute(select(WebAuthnChallenge))).scalars().all()
+
+    assert {challenge.challenge for challenge in challenges} == {"active", "new"}
+    assert created.expires_at > now
+
+
+@pytest.mark.asyncio
+async def test_begin_authentication_returns_decoy_without_active_passkey(monkeypatch) -> None:
     service = PasskeyService()
     now = datetime.now(timezone.utc)
     user = UserAccount(
@@ -126,11 +189,44 @@ async def test_begin_authentication_requires_existing_active_passkey(monkeypatch
     async def _empty_passkeys(*_args, **_kwargs):
         return []
 
-    async def _fail_load_config(*_args, **_kwargs):
-        raise AssertionError("passkey config should not load without credentials")
+    async def _load_config(*_args, **_kwargs):
+        return SimpleNamespace(
+            rp_id="localhost",
+            timeout_ms=60_000,
+            challenge_ttl_seconds=300,
+            user_verification=UserVerificationRequirement.REQUIRED,
+        )
+
+    admission_id = uuid4()
+    reserve_admission = AsyncMock(return_value=admission_id)
+    finalize_admission = AsyncMock()
 
     monkeypatch.setattr(service, "list_user_passkeys", _empty_passkeys)
-    monkeypatch.setattr(service, "_load_config", _fail_load_config)
+    monkeypatch.setattr(service, "_load_config", _load_config)
+    monkeypatch.setattr(
+        service,
+        "_reserve_authentication_admission",
+        reserve_admission,
+    )
+    monkeypatch.setattr(
+        service,
+        "_finalize_authentication_admission",
+        finalize_admission,
+    )
+    monkeypatch.setattr(
+        "app.services.passkey_service.oidc_local_credential_policy.capabilities_for",
+        AsyncMock(return_value=SimpleNamespace(passkey_allowed=True)),
+    )
 
-    with pytest.raises(PasskeyCredentialNotFoundError):
-        await service.begin_authentication(_Db(), username="admin")  # type: ignore[arg-type]
+    result, selected_user = await service.begin_authentication(  # type: ignore[arg-type]
+        _Db(),
+        username="admin",
+        source_address="198.51.100.10",
+    )
+
+    assert selected_user is None
+    assert result["options"]["allowCredentials"] == []
+    reserve_admission.assert_awaited_once()
+    finalize_admission.assert_awaited_once()
+    assert finalize_admission.await_args.kwargs["admission_id"] == admission_id
+    assert finalize_admission.await_args.kwargs["user_id"] is None

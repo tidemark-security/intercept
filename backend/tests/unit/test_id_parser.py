@@ -3,7 +3,9 @@
 import pytest
 from fastapi import HTTPException
 
-from app.core.id_parser import parse_entity_id, format_entity_id
+from app.api.id_parsing import parse_entity_id_or_400
+from app.core.entity_ids import format_entity_id
+from app.core.id_parser import EntityIdParseError, parse_entity_id
 
 
 class TestParseEntityId:
@@ -50,6 +52,12 @@ class TestParseEntityId:
         numeric_id, prefix = parse_entity_id("TSK-000789", "task")
         assert numeric_id == 789
         assert prefix == "TSK"
+
+    def test_run_prefix(self):
+        """Test parsing the registered Case Runbook prefix."""
+        numeric_id, prefix = parse_entity_id("run-000789", "runbook")
+        assert numeric_id == 789
+        assert prefix == "RUN"
     
     def test_case_insensitive_prefix(self):
         """Test that prefixes are case-insensitive."""
@@ -69,58 +77,52 @@ class TestParseEntityId:
     
     def test_wrong_prefix_for_alert(self):
         """Test error when using case prefix for alert."""
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(EntityIdParseError) as exc_info:
             parse_entity_id("CAS-123", "alert")
-        
-        assert exc_info.value.status_code == 400
-        assert "has case prefix but expected 'alert'" in exc_info.value.detail
+
+        assert "has case prefix but expected 'alert'" in str(exc_info.value)
     
     def test_wrong_prefix_for_case(self):
         """Test error when using alert prefix for case."""
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(EntityIdParseError) as exc_info:
             parse_entity_id("ALT-123", "case")
-        
-        assert exc_info.value.status_code == 400
-        assert "has alert prefix but expected 'case'" in exc_info.value.detail
+
+        assert "has alert prefix but expected 'case'" in str(exc_info.value)
     
     def test_wrong_prefix_for_task(self):
         """Test error when using case prefix for task."""
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(EntityIdParseError) as exc_info:
             parse_entity_id("CAS-123", "task")
-        
-        assert exc_info.value.status_code == 400
-        assert "has case prefix but expected 'task'" in exc_info.value.detail
+
+        assert "has case prefix but expected 'task'" in str(exc_info.value)
     
     def test_invalid_format_letters(self):
         """Test error with invalid format containing letters."""
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(EntityIdParseError) as exc_info:
             parse_entity_id("abc", "alert")
-        
-        assert exc_info.value.status_code == 400
-        assert "Invalid ID format" in exc_info.value.detail
+
+        assert "Invalid ID format" in str(exc_info.value)
     
     def test_invalid_format_special_chars(self):
         """Test error with invalid special characters."""
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(EntityIdParseError) as exc_info:
             parse_entity_id("123@456", "alert")
-        
-        assert exc_info.value.status_code == 400
-        assert "Invalid ID format" in exc_info.value.detail
+
+        assert "Invalid ID format" in str(exc_info.value)
     
     def test_invalid_kind(self):
         """Test error with invalid entity kind."""
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(EntityIdParseError) as exc_info:
             parse_entity_id("123", "invalid_kind")
-        
-        assert exc_info.value.status_code == 400
-        assert "Invalid entity kind" in exc_info.value.detail
+
+        assert "Invalid entity kind" in str(exc_info.value)
     
     def test_helpful_error_message(self):
         """Test that error messages are helpful."""
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(EntityIdParseError) as exc_info:
             parse_entity_id("xyz", "alert")
-        
-        error_detail = exc_info.value.detail
+
+        error_detail = str(exc_info.value)
         assert "Invalid ID format" in error_detail
         assert "ALT-" in error_detail  # Mentions expected format
         assert "123" in error_detail  # Shows example
@@ -158,6 +160,14 @@ class TestFormatEntityId:
         """Test formatting zero."""
         formatted = format_entity_id(0, "ALT")
         assert formatted == "ALT-0000000"
+
+
+def test_http_adapter_maps_parse_errors_to_bad_request() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        parse_entity_id_or_400("CAS-123", "alert")
+
+    assert exc_info.value.status_code == 400
+    assert "has case prefix" in exc_info.value.detail
 
 
 class TestRoundTrip:

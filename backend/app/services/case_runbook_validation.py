@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from typing import Any, Iterable
 
 from app.models.enums import CaseRunbookStatus
 from app.models.models import RunbookTaskDefinition
@@ -12,6 +12,16 @@ _WHITESPACE_RE = re.compile(r"\s+")
 
 class CaseRunbookValidationError(ValueError):
     """Raised when a case runbook violates lifecycle or task rules."""
+
+
+def coerce_runbook_tasks(raw_tasks: Iterable[Any] | None) -> list[RunbookTaskDefinition]:
+    """Convert JSON-backed task definitions into the canonical model."""
+    return [
+        task
+        if isinstance(task, RunbookTaskDefinition)
+        else RunbookTaskDefinition.model_validate(task)
+        for task in (raw_tasks or [])
+    ]
 
 
 def normalize_runbook_title(title: str | None) -> str | None:

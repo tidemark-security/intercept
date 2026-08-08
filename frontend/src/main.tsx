@@ -19,10 +19,9 @@ import {
 } from "./utils/visualFilterPreference";
 import { OpenAPI } from "./types/generated/core/OpenAPI";
 
-// Configure OpenAPI client
-// Use the same hostname as the current page to ensure cookies work correctly
-const currentHostname = window.location.hostname;
-OpenAPI.BASE = import.meta.env.VITE_API_BASE_URL || `http://${currentHostname}:8000`;
+// Default to same-origin so nginx, cookies, WebSockets, and attachment traffic
+// can share one public frontend domain. Direct Vite development proxies /api.
+OpenAPI.BASE = import.meta.env.VITE_API_BASE_URL || window.location.origin;
 OpenAPI.WITH_CREDENTIALS = true;
 OpenAPI.CREDENTIALS = "include";
 

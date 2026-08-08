@@ -63,6 +63,73 @@ async def test_personal_link_templates_are_owned_by_current_user(
     assert second_list.json() == []
 
 
+async def test_auditor_personal_link_templates_are_read_only(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    auditor_user_factory,
+):
+    auditor = auditor_user_factory(username="auditor_personal_templates")
+    existing = PersonalLinkTemplate(
+        **_template_payload(
+            template_id="auditor-existing-template",
+            name="Auditor Existing Template",
+        ),
+        user_id=auditor.id,
+    )
+    async with session_maker() as session:
+        session.add_all([auditor, existing])
+        await session.commit()
+
+    cookies = await _login(client, auditor.username)
+    list_response = await client.get(
+        "/api/v1/personal-link-templates",
+        cookies=cookies,
+    )
+    export_response = await client.post(
+        "/api/v1/personal-link-templates/export",
+        json={"template_ids": [existing.id]},
+        cookies=cookies,
+    )
+    assert list_response.status_code == 200
+    assert export_response.status_code == 200
+
+    mutation_responses = [
+        await client.post(
+            "/api/v1/personal-link-templates",
+            json=_template_payload(template_id="auditor-created-template"),
+            cookies=cookies,
+        ),
+        await client.post(
+            "/api/v1/personal-link-templates/import",
+            json={
+                "schema_version": 1,
+                "templates": [
+                    _template_payload(template_id="auditor-imported-template")
+                ],
+            },
+            cookies=cookies,
+        ),
+        await client.patch(
+            f"/api/v1/personal-link-templates/{existing.id}",
+            json={"name": "Auditor Modified Template"},
+            cookies=cookies,
+        ),
+        await client.delete(
+            f"/api/v1/personal-link-templates/{existing.id}",
+            cookies=cookies,
+        ),
+    ]
+
+    for response in mutation_responses:
+        assert response.status_code == 403, response.text
+        assert "read-only" in response.json()["detail"]["message"]
+
+    async with session_maker() as session:
+        persisted = await session.get(PersonalLinkTemplate, existing.id)
+        assert persisted is not None
+        assert persisted.name == "Auditor Existing Template"
+
+
 async def test_resolve_merges_public_and_current_user_personal_templates_with_scope_filtering(
     client: AsyncClient,
     session_maker: async_sessionmaker[AsyncSession],

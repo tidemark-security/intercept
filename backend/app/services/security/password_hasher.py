@@ -14,7 +14,7 @@ class Argon2Parameters:
 
     Values default to recommendations captured in the authentication research
     document. These can be overridden with environment-specific settings via
-    `Settings` in `app.core.config`.
+    the settings registry.
     """
 
     time_cost: int = 2
@@ -31,6 +31,7 @@ class Argon2Parameters:
             parallelism=self.parallelism,
             hash_len=self.hash_len,
             salt_len=self.salt_len,
+            encoding=self.encoding,
             type=Type.ID,
         )
 
@@ -41,6 +42,22 @@ class PasswordHasher:
     def __init__(self, params: Optional[Argon2Parameters] = None) -> None:
         self._params = params or Argon2Parameters()
         self._hasher = self._params.build_hasher()
+
+    @classmethod
+    def from_local_settings(cls) -> "PasswordHasher":
+        """Build a hasher from the canonical local-only Argon2 settings."""
+        from app.core.settings_registry import get_local
+
+        return cls(
+            Argon2Parameters(
+                time_cost=get_local("auth.argon2.time_cost"),
+                memory_cost=get_local("auth.argon2.memory_cost_kib"),
+                parallelism=get_local("auth.argon2.parallelism"),
+                hash_len=get_local("auth.argon2.hash_len"),
+                salt_len=get_local("auth.argon2.salt_len"),
+                encoding=get_local("auth.argon2.encoding"),
+            )
+        )
 
     @property
     def parameters(self) -> Argon2Parameters:
@@ -74,15 +91,4 @@ class PasswordHasher:
         except VerifyMismatchError:
             return False
         except (InvalidHash, VerificationError) as exc:  # pragma: no cover - defensive
-            raise ValueError("stored password hash is invalid") from exc
-
-    def needs_rehash(self, hashed_password: str) -> bool:
-        """Return ``True`` if the hash should be regenerated with current params."""
-
-        if not isinstance(hashed_password, str):
-            raise TypeError("hashed_password must be a string")
-
-        try:
-            return self._hasher.check_needs_rehash(hashed_password)
-        except InvalidHash as exc:  # pragma: no cover - defensive
             raise ValueError("stored password hash is invalid") from exc

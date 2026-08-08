@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from typing import List, Optional
 from uuid import UUID
 
@@ -8,7 +9,9 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
+from webauthn.helpers.exceptions import WebAuthnException
 
+from app.api.error_schemas import ValidationErrorResponse, ValidationField
 from app.api.route_utils import (
     generate_csrf_token,
     issue_authenticated_session_cookies,
@@ -16,9 +19,11 @@ from app.api.route_utils import (
     read_session_cookie,
     revoke_authenticated_session_cookies,
 )
-from app.core.settings_registry import get_local
+from app.api.request_metadata import build_request_metadata
+from app.core.client_address import request_client_address
 from app.core.database import get_db
 from app.models.enums import AccountType, SessionRevokedReason, UserRole, UserStatus
+from app.models.models import UserAccount
 from app.services.auth_service import (
     AccountDisabledError,
     AccountLockedError,
@@ -26,8 +31,8 @@ from app.services.auth_service import (
     LoginResult,
     NHIPasswordLoginError,
     PasswordLoginDisabledError,
+    PasswordChangeRequiredError,
     PasswordPolicyViolation,
-    RequestMetadata,
     SessionNotFoundError,
     auth_service,
 )
@@ -35,9 +40,22 @@ from app.services.passkey_service import (
     PasskeyChallengeNotFoundError,
     PasskeyConfigError,
     PasskeyCredentialNotFoundError,
+    PasskeyLimitError,
     PasskeyOwnershipError,
+    PasskeyPolicyError,
     passkey_service,
 )
+from app.services.passkey_challenge_request_service import (
+    PasskeyChallengeRequestLimitError,
+    passkey_source_fingerprint,
+)
+from app.services.password_hash_work_service import PasswordHashWorkCapacityError
+from app.services.oidc_local_credential_policy import (
+    LocalCredentialCapabilities,
+    oidc_local_credential_policy,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
@@ -49,18 +67,16 @@ router = APIRouter(prefix="/auth", tags=["authentication"])
 
 class LoginRequest(BaseModel):
     """Request payload for username/password login."""
-    username: str = Field(min_length=1, description="Username (case-insensitive)")
-    password: str = Field(min_length=1, description="Password in plain text")
-
-
-class ValidationField(BaseModel):
-    field: str
-    error: str
-
-
-class ValidationErrorResponse(BaseModel):
-    message: str
-    fields: List[ValidationField] = Field(default_factory=list)
+    username: str = Field(
+        min_length=1,
+        max_length=1024,
+        description="Username (case-insensitive)",
+    )
+    password: str = Field(
+        min_length=1,
+        max_length=1024,
+        description="Password in plain text",
+    )
 
 
 class UserSummary(BaseModel):
@@ -80,24 +96,27 @@ class LoginResponse(BaseModel):
     session: SessionSummary
     mustChangePassword: bool = False
     localCredentialManagementAllowed: bool = True
+    passwordLoginAllowed: bool = True
+    passkeyAllowed: bool = True
+    apiKeyAllowed: bool = True
 
 
 class PasswordChangeRequest(BaseModel):
-    currentPassword: str = Field(min_length=1)
-    newPassword: str = Field(min_length=12)
+    currentPassword: str = Field(min_length=1, max_length=1024)
+    newPassword: str = Field(min_length=12, max_length=1024)
 
 
 class PasswordResetTokenRequest(BaseModel):
-    token: str = Field(min_length=1)
-    newPassword: str = Field(min_length=12)
+    token: str = Field(min_length=1, max_length=512)
+    newPassword: str = Field(min_length=12, max_length=1024)
 
 
 class PasskeyBeginRegistrationRequest(BaseModel):
-    displayName: Optional[str] = None
+    displayName: Optional[str] = Field(default=None, max_length=100)
 
 
 class PasskeyBeginAuthenticationRequest(BaseModel):
-    username: str = Field(min_length=1)
+    username: str = Field(min_length=1, max_length=1024)
 
 
 class PasskeyBeginResponse(BaseModel):
@@ -106,13 +125,13 @@ class PasskeyBeginResponse(BaseModel):
 
 
 class PasskeyFinishRegistrationRequest(BaseModel):
-    challenge: str = Field(min_length=1)
+    challenge: str = Field(min_length=1, max_length=512)
     name: str = Field(min_length=1, max_length=100)
     credential: dict
 
 
 class PasskeyFinishAuthenticationRequest(BaseModel):
-    challenge: str = Field(min_length=1)
+    challenge: str = Field(min_length=1, max_length=512)
     credential: dict
 
 
@@ -129,15 +148,31 @@ class PasskeyRenameRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
 
 
-async def _require_human_session_user(request: Request, db: AsyncSession) -> LoginResult:
+async def _require_human_session_user(
+    request: Request,
+    db: AsyncSession,
+    *,
+    shared_authorization: bool = True,
+) -> LoginResult:
     session_token = read_session_cookie(request)
     if not session_token:
         raise SessionNotFoundError()
 
-    session = await auth_service.validate_session(db, session_token=session_token)
+    session = await auth_service.validate_session(
+        db,
+        session_token=session_token,
+        shared_authorization=shared_authorization,
+    )
     if session.user.account_type != AccountType.HUMAN:
         raise AccountDisabledError()
     return session
+
+
+def _password_change_required_response() -> JSONResponse:
+    return _validation_error(
+        message="Password change required before accessing this resource",
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
 
 
 def _to_passkey_read(passkey) -> PasskeyRead:
@@ -151,24 +186,46 @@ def _to_passkey_read(passkey) -> PasskeyRead:
     )
 
 
-async def _local_credential_management_allowed(db: AsyncSession, user: UserAccount) -> bool:
-    from app.services.oidc_service import oidc_service
-    from app.services.settings_service import SettingsService
-
-    settings = SettingsService(db)  # type: ignore[arg-type]
-    if not bool(await settings.get("oidc.enabled", default=False)):
-        return True
-    return await oidc_service.is_password_login_allowed(db, user=user)
+async def _local_credential_capabilities(
+    db: AsyncSession,
+    user: UserAccount,
+) -> LocalCredentialCapabilities:
+    return await oidc_local_credential_policy.capabilities_for(db, user=user)
 
 
-def _build_metadata(request: Request) -> RequestMetadata:
-    client_host: Optional[str] = None
-    if request.client:
-        client_host = request.client.host
-    return RequestMetadata(
-        ip_address=client_host,
-        user_agent=request.headers.get("user-agent"),
-        correlation_id=request.headers.get("x-request-id"),
+async def _build_authenticated_login_response(
+    *,
+    response: Response,
+    db: AsyncSession,
+    result: LoginResult,
+) -> LoginResponse:
+    """Issue login cookies and build the shared successful-login payload."""
+    issue_authenticated_session_cookies(
+        response,
+        result.session_token,
+        result.session.expires_at,
+    )
+    capabilities = await _local_credential_capabilities(db, result.user)
+    return LoginResponse(
+        user=UserSummary(
+            id=result.user.id,
+            username=result.user.username,
+            role=result.user.role,
+            status=result.user.status,
+        ),
+        session=SessionSummary(
+            sessionId=result.session.id,
+            expiresAt=result.session.expires_at,
+        ),
+        mustChangePassword=result.user.must_change_password,
+        localCredentialManagementAllowed=(
+            capabilities.password_login_allowed
+            and capabilities.passkey_allowed
+            and capabilities.api_key_allowed
+        ),
+        passwordLoginAllowed=capabilities.password_login_allowed,
+        passkeyAllowed=capabilities.passkey_allowed,
+        apiKeyAllowed=capabilities.api_key_allowed,
     )
 
 
@@ -209,14 +266,14 @@ async def login(
     - Rate limiting prevents brute-force attacks
     - All attempts are logged for audit
     """
-    metadata = _build_metadata(request)
+    metadata = build_request_metadata(request)
     client_ip = metadata.ip_address or "unknown"
-    limiter_key = f"{body.username.strip().lower()}:{client_ip}"
 
-    allowed, retry_after = await auth_service.check_rate_limit(limiter_key)
+    allowed, retry_after = await auth_service.check_rate_limit(
+        db,
+        source_address=client_ip,
+    )
     if not allowed:
-        if retry_after is None:
-            retry_after = get_local("auth.login.rate_limit_window_seconds")
         payload = ValidationErrorResponse(
             message="Too many login attempts. Please try again later.",
             fields=[],
@@ -235,30 +292,23 @@ async def login(
             password=body.password,
             metadata=metadata,
         )
+    except PasswordHashWorkCapacityError as exc:
+        limited = _validation_error(
+            message="Password processing is busy. Please try again later.",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+        limited.headers["Retry-After"] = str(exc.retry_after_seconds)
+        return limited
     except (AccountLockedError, AccountDisabledError, NHIPasswordLoginError, InvalidCredentialsError, PasswordLoginDisabledError):
         return _validation_error(
             message=GENERIC_LOGIN_FAILURE_MESSAGE,
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
-    issue_authenticated_session_cookies(response, result.session_token, result.session.expires_at)
-
-    user_summary = UserSummary(
-        id=result.user.id,
-        username=result.user.username,
-        role=result.user.role,
-        status=result.user.status,
-    )
-    session_summary = SessionSummary(
-        sessionId=result.session.id,
-        expiresAt=result.session.expires_at,
-    )
-
-    return LoginResponse(
-        user=user_summary,
-        session=session_summary,
-        mustChangePassword=result.user.must_change_password,
-        localCredentialManagementAllowed=await _local_credential_management_allowed(db, result.user),
+    return await _build_authenticated_login_response(
+        response=response,
+        db=db,
+        result=result,
     )
 
 
@@ -285,7 +335,7 @@ async def logout(
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
-    metadata = _build_metadata(request)
+    metadata = build_request_metadata(request)
 
     try:
         await auth_service.logout(
@@ -315,7 +365,11 @@ async def begin_passkey_registration(
 ):
     """Begin WebAuthn registration for the authenticated human user."""
     try:
-        login_result = await _require_human_session_user(request, db)
+        login_result = await _require_human_session_user(
+            request,
+            db,
+            shared_authorization=False,
+        )
     except SessionNotFoundError:
         return _validation_error(
             message="No active session",
@@ -326,6 +380,8 @@ async def begin_passkey_registration(
             message="Passkey registration is available only for human accounts.",
             status_code=status.HTTP_403_FORBIDDEN,
         )
+    except PasswordChangeRequiredError:
+        return _password_change_required_response()
 
     try:
         begin_result = await passkey_service.begin_registration(
@@ -338,6 +394,24 @@ async def begin_passkey_registration(
             message="Passkey registration is currently unavailable.",
             status_code=status.HTTP_400_BAD_REQUEST,
         )
+    except PasskeyPolicyError:
+        return _validation_error(
+            message="Passkey registration is disabled for this account.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    except PasskeyLimitError:
+        return _validation_error(
+            message="Maximum number of active passkeys reached.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    except PasskeyChallengeRequestLimitError as exc:
+        await db.rollback()
+        limit_response = _validation_error(
+            message="Too many passkey registration attempts. Please try again later.",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+        limit_response.headers["Retry-After"] = str(exc.retry_after_seconds)
+        return limit_response
 
     return PasskeyBeginResponse(challenge=begin_result["challenge"], options=begin_result["options"])
 
@@ -350,7 +424,11 @@ async def finish_passkey_registration(
 ):
     """Verify WebAuthn registration ceremony and persist passkey."""
     try:
-        login_result = await _require_human_session_user(request, db)
+        login_result = await _require_human_session_user(
+            request,
+            db,
+            shared_authorization=False,
+        )
     except SessionNotFoundError:
         return _validation_error(
             message="No active session",
@@ -361,6 +439,8 @@ async def finish_passkey_registration(
             message="Passkey registration is available only for human accounts.",
             status_code=status.HTTP_403_FORBIDDEN,
         )
+    except PasswordChangeRequiredError:
+        return _password_change_required_response()
 
     try:
         passkey = await passkey_service.finish_registration(
@@ -375,17 +455,31 @@ async def finish_passkey_registration(
             message="Registration challenge is invalid or expired.",
             status_code=status.HTTP_400_BAD_REQUEST,
         )
-    except Exception:
+    except PasskeyPolicyError:
+        return _validation_error(
+            message="Passkey registration is disabled for this account.",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    except PasskeyLimitError:
+        return _validation_error(
+            message="Maximum number of active passkeys reached.",
+            status_code=status.HTTP_409_CONFLICT,
+        )
+    except WebAuthnException:
         return _validation_error(
             message="Unable to verify passkey registration.",
             status_code=status.HTTP_400_BAD_REQUEST,
         )
+    except Exception:
+        logger.exception("Unexpected error finishing passkey registration")
+        raise
 
     return _to_passkey_read(passkey)
 
 
 @router.post("/passkeys/authenticate/options", response_model=PasskeyBeginResponse)
 async def begin_passkey_authentication(
+    request: Request,
     body: PasskeyBeginAuthenticationRequest,
     db: AsyncSession = Depends(get_db),
 ):
@@ -394,8 +488,29 @@ async def begin_passkey_authentication(
         begin_result, _user = await passkey_service.begin_authentication(
             db,
             username=body.username,
+            source_address=request_client_address(request),
         )
-    except PasskeyCredentialNotFoundError:
+    except PasskeyChallengeRequestLimitError as exc:
+        await db.rollback()
+        logger.warning(
+            "Passkey authentication initiation rejected by durable capacity controls",
+            extra={
+                "security": {
+                    "event": "passkey_authentication_initiation_limited",
+                    "source_fingerprint": passkey_source_fingerprint(
+                        request_client_address(request)
+                    )[:16],
+                    "retry_after_seconds": exc.retry_after_seconds,
+                }
+            },
+        )
+        limit_response = _validation_error(
+            message="Too many passkey sign-in attempts. Please try again later.",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+        limit_response.headers["Retry-After"] = str(exc.retry_after_seconds)
+        return limit_response
+    except (PasskeyCredentialNotFoundError, PasskeyPolicyError):
         return _validation_error(
             message="Passkey sign-in is unavailable for this account.",
             status_code=status.HTTP_404_NOT_FOUND,
@@ -417,7 +532,7 @@ async def finish_passkey_authentication(
     db: AsyncSession = Depends(get_db),
 ):
     """Complete WebAuthn authentication and issue a normal application session."""
-    metadata = _build_metadata(request)
+    metadata = build_request_metadata(request)
 
     try:
         auth_result = await passkey_service.finish_authentication(
@@ -425,21 +540,20 @@ async def finish_passkey_authentication(
             challenge=body.challenge,
             credential=body.credential,
         )
-    except PasskeyChallengeNotFoundError:
-        return _validation_error(
-            message="Authentication challenge is invalid or expired.",
-            status_code=status.HTTP_400_BAD_REQUEST,
-        )
-    except (PasskeyCredentialNotFoundError, PasskeyOwnershipError):
-        return _validation_error(
-            message="Passkey credential not found.",
-            status_code=status.HTTP_401_UNAUTHORIZED,
-        )
-    except Exception:
+    except (
+        PasskeyChallengeNotFoundError,
+        PasskeyCredentialNotFoundError,
+        PasskeyOwnershipError,
+        PasskeyPolicyError,
+        WebAuthnException,
+    ):
         return _validation_error(
             message="Unable to verify passkey authentication.",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
+    except Exception:
+        logger.exception("Unexpected error finishing passkey authentication")
+        raise
 
     auth_login = await auth_service.create_session_for_user(
         db,
@@ -448,21 +562,10 @@ async def finish_passkey_authentication(
     )
     auth_result.user.last_login_at = datetime.now(timezone.utc)
 
-    issue_authenticated_session_cookies(response, auth_login.session_token, auth_login.session.expires_at)
-
-    return LoginResponse(
-        user=UserSummary(
-            id=auth_login.user.id,
-            username=auth_login.user.username,
-            role=auth_login.user.role,
-            status=auth_login.user.status,
-        ),
-        session=SessionSummary(
-            sessionId=auth_login.session.id,
-            expiresAt=auth_login.session.expires_at,
-        ),
-        mustChangePassword=auth_login.user.must_change_password,
-        localCredentialManagementAllowed=await _local_credential_management_allowed(db, auth_login.user),
+    return await _build_authenticated_login_response(
+        response=response,
+        db=db,
+        result=auth_login,
     )
 
 
@@ -483,6 +586,8 @@ async def list_own_passkeys(
             message="Passkeys are available only for human accounts.",
             status_code=status.HTTP_403_FORBIDDEN,
         )
+    except PasswordChangeRequiredError:
+        return _password_change_required_response()
 
     passkeys = await passkey_service.list_user_passkeys(db, user_id=login_result.user.id, include_revoked=False)
     return [_to_passkey_read(item) for item in passkeys]
@@ -496,10 +601,14 @@ async def rename_own_passkey(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        login_result = await _require_human_session_user(request, db)
+        login_result = await _require_human_session_user(
+            request,
+            db,
+            shared_authorization=False,
+        )
         passkey = await passkey_service.rename_passkey(
             db,
-            user_id=login_result.user.id,
+            user=login_result.user,
             passkey_id=passkey_id,
             name=body.name,
         )
@@ -507,6 +616,13 @@ async def rename_own_passkey(
         return _validation_error(
             message="No active session",
             status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+    except PasswordChangeRequiredError:
+        return _password_change_required_response()
+    except PasskeyPolicyError:
+        return _validation_error(
+            message="Passkey management is disabled for this account.",
+            status_code=status.HTTP_403_FORBIDDEN,
         )
     except (PasskeyCredentialNotFoundError, PasskeyOwnershipError):
         return _validation_error(
@@ -524,7 +640,11 @@ async def revoke_own_passkey(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        login_result = await _require_human_session_user(request, db)
+        login_result = await _require_human_session_user(
+            request,
+            db,
+            shared_authorization=False,
+        )
         await passkey_service.revoke_passkey(
             db,
             passkey_id=passkey_id,
@@ -535,6 +655,8 @@ async def revoke_own_passkey(
             message="No active session",
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
+    except PasswordChangeRequiredError:
+        return _password_change_required_response()
     except (PasskeyCredentialNotFoundError, PasskeyOwnershipError):
         return _validation_error(
             message="Passkey not found.",
@@ -573,6 +695,8 @@ async def get_session(
         session_data = await auth_service.validate_session(
             db,
             session_token=session_token,
+            allow_password_change_required=True,
+            shared_lock=True,
         )
     except SessionNotFoundError:
         error_response = _validation_error(
@@ -595,11 +719,19 @@ async def get_session(
         expiresAt=session_data.session.expires_at,
     )
 
+    capabilities = await _local_credential_capabilities(db, session_data.user)
     return LoginResponse(
         user=user_summary,
         session=session_summary,
         mustChangePassword=session_data.user.must_change_password,
-        localCredentialManagementAllowed=await _local_credential_management_allowed(db, session_data.user),
+        localCredentialManagementAllowed=(
+            capabilities.password_login_allowed
+            and capabilities.passkey_allowed
+            and capabilities.api_key_allowed
+        ),
+        passwordLoginAllowed=capabilities.password_login_allowed,
+        passkeyAllowed=capabilities.passkey_allowed,
+        apiKeyAllowed=capabilities.api_key_allowed,
     )
 
 
@@ -633,7 +765,7 @@ async def change_password(
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
 
-    metadata = _build_metadata(request)
+    metadata = build_request_metadata(request)
 
     try:
         new_login = await auth_service.change_password(
@@ -650,6 +782,18 @@ async def change_password(
         )
         revoke_authenticated_session_cookies(error_response)
         return error_response
+    except PasswordLoginDisabledError:
+        return _validation_error(
+            message="Local password changes are disabled for this account",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    except PasswordHashWorkCapacityError as exc:
+        limited = _validation_error(
+            message="Password processing is busy. Please try again later.",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+        limited.headers["Retry-After"] = str(exc.retry_after_seconds)
+        return limited
     except InvalidCredentialsError:
         return _validation_error(
             message="Invalid current password",
@@ -677,9 +821,13 @@ async def reset_password_with_token(
     db: AsyncSession = Depends(get_db),
 ):
     """Set a new password using an admin-issued one-time reset token."""
-    from app.services.admin_auth_service import admin_auth_service
+    from app.services.admin_auth_service import (
+        AdminAuthPolicyError,
+        AdminAuthValidationError,
+        admin_auth_service,
+    )
 
-    metadata = _build_metadata(request)
+    metadata = build_request_metadata(request)
 
     try:
         await admin_auth_service.consume_reset_token(
@@ -693,7 +841,19 @@ async def reset_password_with_token(
             message=str(exc),
             status_code=status.HTTP_400_BAD_REQUEST,
         )
-    except ValueError as exc:
+    except AdminAuthPolicyError as exc:
+        return _validation_error(
+            message=str(exc),
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    except PasswordHashWorkCapacityError as exc:
+        limited = _validation_error(
+            message="Password processing is busy. Please try again later.",
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+        limited.headers["Retry-After"] = str(exc.retry_after_seconds)
+        return limited
+    except AdminAuthValidationError as exc:
         return _validation_error(
             message=str(exc),
             status_code=status.HTTP_400_BAD_REQUEST,

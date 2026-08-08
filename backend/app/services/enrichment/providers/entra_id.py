@@ -13,7 +13,13 @@ from urllib.parse import quote
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.enrichment.base import AliasMapping, EnrichmentProvider, EnrichmentResult
+from app.services.enrichment.base import (
+    EnrichmentProviderConfigurationError,
+    EnrichmentProviderError,
+    EnrichmentResult,
+    MalformedProviderRecordError,
+    UserDirectoryEnrichmentProvider,
+)
 from app.services.settings_service import SettingsService
 
 logger = logging.getLogger(__name__)
@@ -43,34 +49,17 @@ _USER_FIELDS = ",".join([
 ])
 
 
-class EntraIDProvider(EnrichmentProvider):
+class EntraIDProvider(UserDirectoryEnrichmentProvider):
     """Enrich InternalActorItem via Microsoft Graph API."""
 
     provider_id = "entra_id"
     display_name = "Microsoft Entra ID"
     settings_prefix = "enrichment.entra_id"
-    supported_item_types = ("internal_actor",)
     supports_bulk_sync = True
 
     def __init__(self) -> None:
         self._token_value: str | None = None
         self._token_expires_at: datetime | None = None
-
-    def can_enrich(self, item: Dict[str, Any]) -> bool:
-        return item.get("type") == "internal_actor" and bool(self._get_identifier(item))
-
-    def build_cache_key(self, item: Dict[str, Any]) -> str:
-        identifier = self._get_identifier(item)
-        if not identifier:
-            raise ValueError("Cannot determine identifier for Entra ID cache key")
-        return f"user:{identifier}"
-
-    def _get_identifier(self, item: Dict[str, Any]) -> str:
-        for key in ("user_id", "contact_email", "name"):
-            value = item.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip().lower()
-        return ""
 
     def _bounded_int(self, value: Any, *, minimum: int, maximum: int) -> int:
         try:
@@ -109,19 +98,35 @@ class EntraIDProvider(EnrichmentProvider):
                 },
             )
             resp.raise_for_status()
-            payload = resp.json()
-            access_token = payload.get("access_token")
-            if not isinstance(access_token, str) or not access_token:
-                raise ValueError("Entra ID token response missing access_token")
+            try:
+                payload = resp.json()
+            except ValueError as exc:
+                raise EnrichmentProviderError(
+                    "Entra ID token response is not valid JSON"
+                ) from exc
+            access_token, expires_in = self._parse_oauth_access_token_response(
+                payload,
+                provider_name="Entra ID",
+            )
             self._token_value = access_token
-            expires_in = int(payload.get("expires_in") or 3600)
             self._token_expires_at = now + timedelta(seconds=max(60, expires_in - 60))
             return self._token_value
 
     async def _get_settings(self, settings: SettingsService) -> Optional[Dict[str, Any]]:
-        tenant_id = await settings.get(f"{self.settings_prefix}.tenant_id", "")
-        client_id = await settings.get(f"{self.settings_prefix}.client_id", "")
-        client_secret = await settings.get(f"{self.settings_prefix}.client_secret", "")
+        values = await self._get_setting_values(
+            settings,
+            (
+                "tenant_id",
+                "client_id",
+                "client_secret",
+                "request_timeout_seconds",
+                "bulk_sync_page_size",
+                "bulk_sync_max_records",
+            ),
+        )
+        tenant_id = values["tenant_id"]
+        client_id = values["client_id"]
+        client_secret = values["client_secret"]
         if not (tenant_id and client_id and client_secret):
             return None
         return {
@@ -129,17 +134,17 @@ class EntraIDProvider(EnrichmentProvider):
             "client_id": client_id,
             "client_secret": client_secret,
             "request_timeout_seconds": self._bounded_float(
-                await settings.get(f"{self.settings_prefix}.request_timeout_seconds", 30),
+                values["request_timeout_seconds"],
                 minimum=1,
                 maximum=600,
             ),
             "bulk_sync_page_size": self._bounded_int(
-                await settings.get(f"{self.settings_prefix}.bulk_sync_page_size", 999),
+                values["bulk_sync_page_size"],
                 minimum=1,
                 maximum=999,
             ),
             "bulk_sync_max_records": self._bounded_int(
-                await settings.get(f"{self.settings_prefix}.bulk_sync_max_records", 0),
+                values["bulk_sync_max_records"],
                 minimum=0,
                 maximum=1_000_000,
             ),
@@ -236,35 +241,53 @@ class EntraIDProvider(EnrichmentProvider):
         return None
 
     def _build_result(self, user: Dict[str, Any], *, cache_key: str, manager: Dict[str, Any] | None) -> EnrichmentResult:
-        object_id = user.get("id", "")
-        display_name = user.get("displayName") or ""
-        email = user.get("mail") or ""
-        upn = user.get("userPrincipalName") or ""
-        sam = user.get("onPremisesSamAccountName") or ""
-        manager_info = manager or {}
-        canonical_value = upn.lower() or email.lower() or object_id or cache_key
+        user = self._require_record_mapping(user)
+        manager_info = (
+            {}
+            if manager is None
+            else self._require_record_mapping(manager)
+        )
+        object_id = self._optional_string_field(user, "id")
+        display_name = self._optional_string_field(user, "displayName")
+        email = self._optional_string_field(user, "mail")
+        upn = self._optional_string_field(user, "userPrincipalName")
+        sam = self._optional_string_field(user, "onPremisesSamAccountName")
+        employee_id = self._optional_string_field(user, "employeeId")
+        business_phones = self._optional_string_list_field(user, "businessPhones")
+        account_enabled = user.get("accountEnabled")
+        if account_enabled is not None and not isinstance(account_enabled, bool):
+            raise MalformedProviderRecordError(
+                "Provider record field 'accountEnabled' must be a boolean"
+            )
+        canonical_value = self._build_user_cache_key_from_values(
+            upn,
+            email,
+            object_id,
+        ).removeprefix("user:")
 
         enrichment_data = {
             "object_id": object_id,
             "display_name": display_name,
-            "given_name": user.get("givenName") or "",
-            "surname": user.get("surname") or "",
+            "given_name": self._optional_string_field(user, "givenName"),
+            "surname": self._optional_string_field(user, "surname"),
             "email": email,
             "upn": upn,
-            "job_title": user.get("jobTitle") or "",
-            "department": user.get("department") or "",
-            "office": user.get("officeLocation") or "",
-            "mobile_phone": user.get("mobilePhone") or "",
-            "business_phones": user.get("businessPhones") or [],
-            "employee_id": user.get("employeeId") or "",
-            "manager_name": manager_info.get("displayName") or "",
-            "manager_email": manager_info.get("mail") or "",
-            "manager_upn": manager_info.get("userPrincipalName") or "",
+            "job_title": self._optional_string_field(user, "jobTitle"),
+            "department": self._optional_string_field(user, "department"),
+            "office": self._optional_string_field(user, "officeLocation"),
+            "mobile_phone": self._optional_string_field(user, "mobilePhone"),
+            "business_phones": business_phones,
+            "employee_id": employee_id,
+            "manager_name": self._optional_string_field(manager_info, "displayName"),
+            "manager_email": self._optional_string_field(manager_info, "mail"),
+            "manager_upn": self._optional_string_field(
+                manager_info,
+                "userPrincipalName",
+            ),
             "sam_account_name": sam,
-            "account_enabled": user.get("accountEnabled"),
+            "account_enabled": account_enabled,
         }
 
-        aliases: List[AliasMapping] = []
         meta = {
             "department": enrichment_data["department"],
             "job_title": enrichment_data["job_title"],
@@ -272,26 +295,23 @@ class EntraIDProvider(EnrichmentProvider):
         }
         canonical_display = display_name or email or object_id
 
-        def _add(alias_type: str, value: str) -> None:
-            if value:
-                aliases.append(
-                    AliasMapping(
-                        entity_type="user",
-                        canonical_value=canonical_value,
-                        canonical_display=canonical_display,
-                        alias_type=alias_type,
-                        alias_value=value,
-                        attributes=meta,
-                    )
-                )
+        alias_values = [
+            ("object_id", object_id),
+            ("email", email.lower() if email else ""),
+            ("upn", upn.lower() if upn else ""),
+            ("samaccountname", sam.lower() if sam else ""),
+            ("display_name", display_name.lower() if display_name else ""),
+        ]
+        if employee_id:
+            alias_values.append(("employee_id", employee_id))
 
-        _add("object_id", object_id)
-        _add("email", email.lower() if email else "")
-        _add("upn", upn.lower() if upn else "")
-        _add("samaccountname", sam.lower() if sam else "")
-        _add("display_name", display_name.lower() if display_name else "")
-        if user.get("employeeId"):
-            _add("employee_id", user["employeeId"])
+        aliases = self._build_alias_mappings(
+            entity_type="user",
+            canonical_value=canonical_value,
+            canonical_display=canonical_display,
+            attributes=meta,
+            aliases=alias_values,
+        )
 
         return EnrichmentResult(
             provider_id=self.provider_id,
@@ -311,11 +331,15 @@ class EntraIDProvider(EnrichmentProvider):
     ) -> EnrichmentResult:
         cfg = await self._get_settings(settings)
         if not cfg:
-            raise ValueError("Entra ID provider is not fully configured")
+            raise EnrichmentProviderConfigurationError(
+                "Entra ID provider is not fully configured"
+            )
 
-        identifier = self._get_identifier(item)
+        identifier = self._get_user_identifier(item)
         if not identifier:
-            raise ValueError("Cannot determine identifier for Entra ID lookup")
+            raise EnrichmentProviderError(
+                "Cannot determine identifier for Entra ID lookup"
+            )
 
         request_timeout_seconds = float(cfg["request_timeout_seconds"])
         token = await self._get_token(
@@ -338,7 +362,9 @@ class EntraIDProvider(EnrichmentProvider):
     async def bulk_sync(self, *, db: AsyncSession, settings: SettingsService) -> List[EnrichmentResult]:
         cfg = await self._get_settings(settings)
         if not cfg:
-            raise ValueError("Entra ID provider is not fully configured")
+            raise EnrichmentProviderConfigurationError(
+                "Entra ID provider is not fully configured"
+            )
 
         request_timeout_seconds = float(cfg["request_timeout_seconds"])
         token = await self._get_token(
@@ -349,6 +375,7 @@ class EntraIDProvider(EnrichmentProvider):
         )
         headers = {"Authorization": f"Bearer {token}"}
         results: List[EnrichmentResult] = []
+        malformed_records = 0
         page_size = int(cfg["bulk_sync_page_size"])
         max_records = int(cfg["bulk_sync_max_records"])
         url = f"{_GRAPH_BASE}/users?$select={_USER_FIELDS}&$top={page_size}&$filter=accountEnabled eq true"
@@ -362,16 +389,24 @@ class EntraIDProvider(EnrichmentProvider):
                     if max_records > 0 and len(results) >= max_records:
                         break
                     try:
-                        cache_key = f"user:{str(user.get('userPrincipalName') or user.get('mail') or user.get('id') or '').strip().lower()}"
-                        if cache_key == "user:":
-                            continue
+                        user = self._require_record_mapping(user)
+                        cache_key = self._build_user_cache_key_from_values(
+                            user.get("userPrincipalName"),
+                            user.get("mail"),
+                            user.get("id"),
+                        )
                         results.append(self._build_result(user, cache_key=cache_key, manager=None))
-                    except Exception as exc:
-                        logger.warning("Entra ID: skipping user %s: %s", user.get("id"), exc)
+                    except MalformedProviderRecordError:
+                        malformed_records += 1
                 if max_records > 0 and len(results) >= max_records:
                     break
                 url = data.get("@odata.nextLink")
 
+        if malformed_records:
+            logger.warning(
+                "Entra ID bulk sync skipped malformed user records (count=%d)",
+                malformed_records,
+            )
         logger.info("Entra ID bulk sync: %d users", len(results))
         return results
 

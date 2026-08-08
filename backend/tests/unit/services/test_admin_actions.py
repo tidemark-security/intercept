@@ -10,7 +10,8 @@ from unittest.mock import patch
 import pytest
 
 from app.models.enums import SessionRevokedReason, UserRole, UserStatus
-from app.models.models import PASSWORD_POLICY_REGEX, UserAccount
+from app.core.password_policy import PASSWORD_POLICY_REGEX
+from app.models.models import UserAccount
 from app.services import AuditContext
 
 
@@ -83,7 +84,7 @@ class TestAuditLogging:
                 admin_user_id=admin_id,
                 target_user_id=target_user_id,
                 reset_request_id=reset_request_id,
-                expires_at=expires_at.isoformat(),
+                expires_at=expires_at,
                 context=context,
             )
 
@@ -93,6 +94,27 @@ class TestAuditLogging:
             assert log_event["event"] == "auth.admin.password_reset_issued"
             assert log_event["performed_by"] == str(admin_id)
             assert log_event["entity_id"] == str(target_user_id)
+
+    @pytest.mark.asyncio
+    async def test_timeline_event_logs_only_the_typed_item_metadata(self):
+        from app.services import AuditService
+
+        db = Mock()
+        db.add = Mock()
+        db.flush = AsyncMock()
+        audit_service = AuditService(db)
+
+        with patch.object(audit_service, "_logger") as mock_logger:
+            await audit_service.log_timeline_item_added(
+                entity_type="case",
+                entity_id=42,
+                item_id="note-1",
+                item_type="note",
+                user="analyst",
+            )
+
+        log_event = mock_logger.info.call_args.kwargs["extra"]["audit"]
+        assert log_event["item_type"] == "note"
 
 
 class TestSessionRevocation:

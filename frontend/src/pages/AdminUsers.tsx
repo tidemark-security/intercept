@@ -17,7 +17,6 @@ import { Toast } from "@/components/feedback/Toast";
 import { ToggleGroup } from "@tidemark-security/ux";
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { AdminPageLayout } from "../components/layout/AdminPageLayout";
-import { DateTimeManager } from "@/components/forms/DateTimeManager";
 import {
   formatForDatetimeLocal,
   normalizeDatetimeLocalValue,
@@ -38,6 +37,10 @@ import type {
 import { ApiError } from "../types/generated";
 import { useSession } from "../contexts/sessionContext";
 import { useTheme } from "@/contexts/ThemeContext";
+import {
+  allowedApiKeyScopesForRole,
+  type ApiKeyScope,
+} from "@/utils/apiKeyScopes";
 
 import {
   AlertCircle,
@@ -89,12 +92,14 @@ interface CreateUserFormData {
   description: string;
   initialApiKeyName: string;
   initialApiKeyExpiresAt: string;
+  initialApiKeyScopes: ApiKeyScope[];
 }
 
 interface CreateApiKeyFormData {
   name: string;
   expiresAt: string;
   userId: string;
+  scopes: ApiKeyScope[];
 }
 
 interface UnifiedCreatedKeyData {
@@ -123,12 +128,14 @@ const INITIAL_CREATE_FORM_DATA: CreateUserFormData = {
   description: "",
   initialApiKeyName: "",
   initialApiKeyExpiresAt: "",
+  initialApiKeyScopes: ["api:read"],
 };
 
 const EMPTY_API_KEY_FORM_DATA: CreateApiKeyFormData = {
   name: "",
   expiresAt: "",
   userId: "",
+  scopes: ["api:read"],
 };
 
 const ALLOWED_ROLES: UserRole[] = ["ANALYST", "ADMIN", "AUDITOR"];
@@ -314,6 +321,21 @@ function AdminUsers() {
     setCreateFormData((prev) => ({ ...prev, [field]: value }));
   };
 
+  const updateCreateRole = (role: UserRole) => {
+    setCreateFormData((prev) => {
+      const availableScopes = allowedApiKeyScopesForRole(role);
+      const permittedScopes = prev.initialApiKeyScopes.filter((scope) =>
+        availableScopes.includes(scope),
+      );
+      return {
+        ...prev,
+        role,
+        initialApiKeyScopes:
+          permittedScopes.length > 0 ? permittedScopes : ["api:read"],
+      };
+    });
+  };
+
   const updateCreateApiKeyField = <K extends keyof CreateApiKeyFormData>(
     field: K,
     value: CreateApiKeyFormData[K],
@@ -390,6 +412,10 @@ function AdminUsers() {
         setError("API key expiration date is required for NHI accounts");
         return;
       }
+      if (createFormData.initialApiKeyScopes.length === 0) {
+        setError("Select at least one API key permission");
+        return;
+      }
 
       const initialApiKeyExpiresAtDate = parseISO8601(
         createFormData.initialApiKeyExpiresAt,
@@ -413,6 +439,7 @@ function AdminUsers() {
               initial_api_key_name: createFormData.initialApiKeyName,
               initial_api_key_expires_at:
                 initialApiKeyExpiresAtDate.toISOString(),
+              initial_api_key_scopes: createFormData.initialApiKeyScopes,
             },
           });
 
@@ -444,6 +471,7 @@ function AdminUsers() {
       description: user.description,
       initialApiKeyName: "",
       initialApiKeyExpiresAt: "",
+      initialApiKeyScopes: ["api:read"],
     });
     setError(null);
   };
@@ -593,6 +621,7 @@ function AdminUsers() {
         "display",
       ),
       userId,
+      scopes: ["api:read"],
     });
     setShowCreateApiKeyModal(true);
   };
@@ -600,6 +629,10 @@ function AdminUsers() {
   const handleCreateApiKey = async () => {
     if (!createApiKeyFormData.name || !createApiKeyFormData.expiresAt) {
       setError("Name and expiration date are required");
+      return;
+    }
+    if (createApiKeyFormData.scopes.length === 0) {
+      setError("Select at least one API key permission");
       return;
     }
 
@@ -617,6 +650,7 @@ function AdminUsers() {
           name: createApiKeyFormData.name,
           expires_at: expiresAtDate.toISOString(),
           user_id: createApiKeyFormData.userId,
+          scopes: createApiKeyFormData.scopes,
         },
       });
 
@@ -800,6 +834,7 @@ function AdminUsers() {
       expiresAt={apiKey.expires_at}
       lastUsedAt={apiKey.last_used_at}
       revokedAt={apiKey.revoked_at}
+      scopes={apiKey.scopes}
       isExpired={isApiKeyExpired(apiKey.expires_at)}
       formatDate={formatApiKeyDate}
       onRevoke={() => handleRevokeApiKey(apiKey.id, userId)}
@@ -1229,7 +1264,16 @@ function AdminUsers() {
             >
               Cancel
             </Button>
-            <Button className="flex-1" onClick={handleCreateUser} loading={createLoading}>
+            <Button
+              className="flex-1"
+              onClick={handleCreateUser}
+              loading={createLoading}
+              disabled={
+                createLoading ||
+                (createFormData.accountType === "NHI" &&
+                  createFormData.initialApiKeyScopes.length === 0)
+              }
+            >
               {createFormData.accountType === "HUMAN"
                 ? "Create User"
                 : "Create Service Account"}
@@ -1361,33 +1405,35 @@ function AdminUsers() {
                     Override timestamps
                   </label>
 
-                  <TextField
-                    className="h-auto w-full flex-none"
-                    label="Initial API Key Name"
-                    helpText="A descriptive name for the initial API key"
-                  >
-                    <TextField.Input
-                      placeholder="production-key"
-                      value={createFormData.initialApiKeyName}
-                      onChange={(e) =>
-                        updateCreateFormField(
-                          "initialApiKeyName",
-                          e.target.value,
-                        )
+                  <div className="flex w-full flex-col gap-3">
+                    <span className="text-body-bold font-body-bold text-default-font">
+                      Initial API Key
+                    </span>
+                    <CreateApiKeyModalContent
+                      keyName={createFormData.initialApiKeyName}
+                      expiresAt={createFormData.initialApiKeyExpiresAt}
+                      scopes={createFormData.initialApiKeyScopes}
+                      availableScopes={allowedApiKeyScopesForRole(
+                        createFormData.role,
+                      )}
+                      onKeyNameChange={(value) =>
+                        updateCreateFormField("initialApiKeyName", value)
                       }
+                      onExpiresAtChange={(value) =>
+                        updateCreateFormField("initialApiKeyExpiresAt", value)
+                      }
+                      onScopesChange={(value) =>
+                        updateCreateFormField("initialApiKeyScopes", value)
+                      }
+                      onCancel={closeCreateUserModal}
+                      onSubmit={handleCreateUser}
+                      loading={createLoading}
+                      keyNamePlaceholder="production-key"
+                      showHeader={false}
+                      showFrame={false}
+                      showActions={false}
                     />
-                  </TextField>
-
-                  <DateTimeManager
-                    className="h-auto w-full flex-none"
-                    label="API Key Expiration"
-                    helpText="When the initial API key should expire"
-                    value={createFormData.initialApiKeyExpiresAt}
-                    onChange={(value) =>
-                      updateCreateFormField("initialApiKeyExpiresAt", value)
-                    }
-                    showNowButton={false}
-                  />
+                  </div>
                 </>
               )}
 
@@ -1405,7 +1451,7 @@ function AdminUsers() {
                           ? "brand-primary"
                           : "neutral-secondary"
                       }
-                      onClick={() => updateCreateFormField("role", role)}
+                      onClick={() => updateCreateRole(role)}
                     >
                       {role}
                     </Button>
@@ -1587,7 +1633,12 @@ function AdminUsers() {
             >
               Cancel
             </Button>
-            <Button className="flex-1" onClick={handleCreateApiKey} loading={createApiKeyLoading}>
+            <Button
+              className="flex-1"
+              onClick={handleCreateApiKey}
+              loading={createApiKeyLoading}
+              disabled={createApiKeyFormData.scopes.length === 0}
+            >
               Create Key
             </Button>
           </div>
@@ -1596,8 +1647,13 @@ function AdminUsers() {
         <CreateApiKeyModalContent
           keyName={createApiKeyFormData.name}
           expiresAt={createApiKeyFormData.expiresAt}
+          scopes={createApiKeyFormData.scopes}
+          availableScopes={allowedApiKeyScopesForRole(
+            users.find((user) => user.id === createApiKeyFormData.userId)?.role,
+          )}
           onKeyNameChange={(value) => updateCreateApiKeyField("name", value)}
           onExpiresAtChange={(value) => updateCreateApiKeyField("expiresAt", value)}
+          onScopesChange={(value) => updateCreateApiKeyField("scopes", value)}
           onCancel={closeCreateApiKeyModal}
           onSubmit={handleCreateApiKey}
           loading={createApiKeyLoading}

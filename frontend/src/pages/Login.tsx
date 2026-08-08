@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { Button } from "@/components/buttons/Button";
+import { AuthSplitLayout } from "@/components/auth";
 import { OAuthSocialButton } from "@/components/auth/OAuthSocialButton";
 import { SignIn } from "@/components/auth/SignIn";
 import { TextField } from "@/components/forms/TextField";
@@ -16,9 +17,6 @@ import { OpenAPI } from "@/types/generated/core/OpenAPI";
 import { AuthenticationService } from "@/types/generated/services/AuthenticationService";
 import interceptLogo from "../assets/Intercept-White.svg?url";
 import interceptLogoDark from "../assets/Intercept-Black.svg?url";
-import tidemarkLogoDark from "../assets/TMS-logo-black.svg?url";
-import tidemarkLogoLight from "../assets/TMS-logo-white.svg?url";
-import tidemarkLogoNeon from "../assets/TMS-logo-green.svg?url";
 
 import { ArrowRight, KeyRound } from 'lucide-react';
 
@@ -41,17 +39,36 @@ function Login() {
   const noSso = searchParams.get("no_sso") === "true";
   const isLoading = status === "authenticating";
   const loginLogo = resolvedTheme === "dark" ? interceptLogo : interceptLogoDark;
-  const mobileBrandLogo = resolvedTheme === "dark" ? tidemarkLogoNeon : tidemarkLogoDark;
-  const desktopBrandLogo = resolvedTheme === "dark" ? tidemarkLogoDark : tidemarkLogoNeon;
   const displayError = error ?? oidcError ?? "";
   const showLocalLogin = !oidcEnabled || noSso;
+  const goToPostLoginDestination = React.useCallback(() => {
+    const next = searchParams.get("next");
+    if (next) {
+      try {
+        const destination = new URL(next, window.location.origin);
+        const apiOrigin = new URL(OpenAPI.BASE || window.location.origin, window.location.origin).origin;
+        const allowedOrigins = new Set([window.location.origin, apiOrigin]);
+        if (allowedOrigins.has(destination.origin)) {
+          if (destination.origin === window.location.origin) {
+            navigate(`${destination.pathname}${destination.search}${destination.hash}`);
+          } else {
+            window.location.assign(destination.toString());
+          }
+          return;
+        }
+      } catch {
+        // Fall back to the app home route below.
+      }
+    }
+    navigate("/");
+  }, [navigate, searchParams]);
 
   // Redirect to home if already authenticated (but not if password change is required)
   useEffect(() => {
     if (status === "authenticated" && !mustChangePassword) {
-      navigate("/");
+      goToPostLoginDestination();
     }
-  }, [status, mustChangePassword, navigate]);
+  }, [status, mustChangePassword, goToPostLoginDestination]);
 
   useEffect(() => {
     if (step === "password") {
@@ -168,17 +185,9 @@ function Login() {
   };
 
   return (
-    <div className="flex h-full w-full flex-col items-start bg-default-background">
-      <div className="flex w-full grow shrink-0 basis-0 flex-wrap items-start mobile:flex-col mobile:flex-wrap mobile:gap-0">
-        <div className="flex grow shrink-0 basis-0 flex-col items-center justify-center gap-6 self-stretch px-12 py-12 mobile:px-0 mobile:py-0">
-          <div className="hidden w-full flex-wrap items-start justify-center mobile:flex">
-            <img
-              className="h-36 flex-none object-cover"
-              src={mobileBrandLogo}
-            />
-          </div>
-          {mustChangePassword ? (
-            <ChangePasswordForm logo={loginLogo} onSuccess={() => navigate("/")} />
+    <AuthSplitLayout>
+      {mustChangePassword ? (
+            <ChangePasswordForm logo={loginLogo} onSuccess={goToPostLoginDestination} />
           ) : loadingOidcConfig ? (
             <div className="flex w-full max-w-[448px] flex-col items-center justify-center gap-8 rounded-md px-6 py-6">
               <img className="flex-none" src={loginLogo} />
@@ -290,20 +299,8 @@ function Login() {
               )
             }
           />
-          )}
-        </div>
-        <div className={`flex grow shrink-0 basis-0 flex-col items-center gap-12 self-stretch px-12 py-12 mobile:hidden ${resolvedTheme === "dark" ? "bg-brand-primary" : "bg-neutral-1000"}`}>
-          <div className="flex w-full max-w-[448px] grow shrink-0 basis-0 flex-col items-center justify-center gap-8">
-            <div className="flex w-full flex-col items-center gap-6">
-              <img
-                className="w-full flex-none"
-                src={desktopBrandLogo}
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
+      )}
+    </AuthSplitLayout>
   );
 }
 

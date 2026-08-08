@@ -89,7 +89,7 @@ export function AddAttachmentForm({ initialData, pendingFiles, onPendingFilesCon
   const fileInputRef = useRef<HTMLInputElement>(null);
   const updateAttachmentMutation = useUpdateTimelineItem(entityId, entityType, {
     onSuccess: () => {
-      onSuccess?.(initialData?.id);
+      onSuccess?.(initialData?.id ?? undefined);
     },
     onError: (error) => {
       console.error("Failed to update attachment metadata:", error);
@@ -161,10 +161,14 @@ export function AddAttachmentForm({ initialData, pendingFiles, onPendingFilesCon
             ? { ...f, status: 'uploading' }
             : f
         ));
-        uploadFile(fileToUpload.file);
+        uploadFile(fileToUpload.file, {
+          description: formState.description || undefined,
+          timestamp: formState.timestamp || undefined,
+          tags: formState.tags.length > 0 ? formState.tags : undefined,
+        });
       }
     }
-  }, [currentUploadIndex, files, uploadFile]);
+  }, [currentUploadIndex, files, formState.description, formState.tags, formState.timestamp, uploadFile]);
 
   // Track the last pendingFiles reference we consumed to prevent double-processing
   // (React strict mode re-runs mount effects before the parent's clearPendingFiles propagates)
@@ -231,7 +235,7 @@ export function AddAttachmentForm({ initialData, pendingFiles, onPendingFilesCon
         itemId: initialData.id,
         updates: {
           type: "attachment",
-          description: formState.description || undefined,
+          description: formState.description,
           timestamp: formState.timestamp || initialData.timestamp || new Date().toISOString(),
           tags: formState.tags,
         },

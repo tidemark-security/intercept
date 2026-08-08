@@ -44,6 +44,12 @@ cd dev && docker compose up -d && cd ..
 cd backend && alembic upgrade head && cd ..
 ```
 
+The development Compose stack is available through its single-origin nginx
+harness at [http://localhost:8080](http://localhost:8080). REST, realtime
+WebSocket, and attachment storage traffic are proxied through that origin. See
+[the local nginx harness guide](docs/local-nginx-harness.md) for Cloudflare
+Tunnel configuration.
+
 #### Run
 
 ```bash
@@ -111,7 +117,7 @@ The `v*.*.*` tag triggers the [Release workflow](.github/workflows/release.yml),
 
 ### Key Documentation
 
-- [MCP Integration Guide](docs/mcp-integration-guide.md) — Connect AI tools to Intercept
+- [MCP Integration Guide](docs/mcp/integration-guide.md) — Connect AI tools to Intercept
 - [Search Architecture](docs/search-architecture.md) — How search works
 - [Task Queue](docs/task-queue.md) — Background job processing, in-worker retry/backoff, and terminal failure handling
 

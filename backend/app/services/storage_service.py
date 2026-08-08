@@ -1,16 +1,16 @@
 """Service for handling file uploads to object storage (MinIO/S3)."""
 
+import asyncio
 import base64
 import binascii
-import hashlib
 import logging
 import uuid
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
-from typing import Iterable, Optional, BinaryIO
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import timedelta
+from io import BytesIO
+from typing import Iterable, Optional
+from urllib.parse import quote
 
 from minio import Minio
 from minio.commonconfig import CopySource
@@ -40,9 +40,32 @@ MIME_SNIFF_BYTES = 1024 * 1024
 _magika = None
 
 
+def _copy_object_with_sha256_checksum(
+    client: Minio,
+    bucket_name: str,
+    source_key: str,
+    destination_key: str,
+) -> None:
+    """Use MinIO's copy request while adding the checksum header it cannot expose yet.
+
+    ``Minio.copy_object`` has no checksum-algorithm argument in the supported
+    client version. Keep the one private-client compatibility seam isolated so
+    the rest of the storage service only depends on its public API.
+    """
+    source = CopySource(bucket_name, source_key)
+    headers = source.gen_copy_headers()
+    headers["x-amz-checksum-algorithm"] = "SHA256"
+    client._execute(  # pylint: disable=protected-access
+        "PUT",
+        bucket_name,
+        object_name=destination_key,
+        headers=headers,
+    )
+
+
 @dataclass(frozen=True)
 class ObjectMetadata:
-    """Object metadata needed for attachment finalization."""
+    """Metadata returned for an object without fetching its body."""
 
     size: int
     content_type: str | None
@@ -118,6 +141,35 @@ class StorageService:
         except S3Error as e:
             logger.error(f"Failed to create bucket {self.bucket_name}: {e}")
             raise
+
+    async def ensure_bucket_exists(self) -> None:
+        """Ensure the configured bucket is ready for object operations."""
+        if self._bucket_checked:
+            return
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(_executor, self._ensure_bucket_exists)
+
+    async def put_object_bytes(
+        self,
+        storage_key: str,
+        data: bytes,
+        *,
+        content_type: str = "application/octet-stream",
+    ) -> None:
+        """Store a byte buffer under ``storage_key``."""
+        await self.ensure_bucket_exists()
+
+        def _put() -> None:
+            self.client.put_object(
+                self.bucket_name,
+                storage_key,
+                BytesIO(data),
+                len(data),
+                content_type=content_type,
+            )
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(_executor, _put)
     
     async def generate_presigned_upload_url(
         self,
@@ -134,16 +186,15 @@ class StorageService:
         Returns:
             Presigned PUT URL
         """
-        # Ensure bucket exists before generating URL (run in executor to avoid blocking)
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._ensure_bucket_exists)
+        await self.ensure_bucket_exists()
         
         if expires_minutes is None:
-            expires_minutes = storage_config.upload_timeout_minutes
+            expires_minutes = self.config.upload_timeout_minutes
         
         expiry = timedelta(minutes=expires_minutes)
         
         # Run blocking MinIO call in thread pool
+        loop = asyncio.get_running_loop()
         url = await loop.run_in_executor(
             _executor,
             lambda: self.client.presigned_put_object(
@@ -177,7 +228,7 @@ class StorageService:
             Presigned GET URL
         """
         if expires_minutes is None:
-            expires_minutes = storage_config.download_timeout_minutes
+            expires_minutes = self.config.download_timeout_minutes
         
         expiry = timedelta(minutes=expires_minutes)
         response_headers = None
@@ -291,21 +342,18 @@ class StorageService:
     async def copy_object(self, source_key: str, destination_key: str) -> None:
         """Copy an object inside the bucket without streaming it through the app."""
         def _copy() -> None:
-            source = CopySource(self.bucket_name, source_key)
-            headers = source.gen_copy_headers()
-            headers["x-amz-checksum-algorithm"] = "SHA256"
-            self.client._execute(  # pylint: disable=protected-access
-                "PUT",
+            _copy_object_with_sha256_checksum(
+                self.client,
                 self.bucket_name,
-                object_name=destination_key,
-                headers=headers,
+                source_key,
+                destination_key,
             )
 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(_executor, _copy)
 
     async def get_object_bytes(self, storage_key: str, *, max_bytes: int | None = None) -> bytes:
-        """Read an object from storage for server-side validation."""
+        """Read an object from storage, optionally limiting the response size."""
         if max_bytes is not None and max_bytes <= 0:
             return b""
 
@@ -372,8 +420,8 @@ class StorageService:
     def validate_file_type(
         self,
         mime_type: str | None,
-        allowed_types: "Iterable[str]",
-        denied_types: "Iterable[str]" = (),
+        allowed_types: Iterable[str],
+        denied_types: Iterable[str] = (),
     ) -> bool:
         """
         Validate a MIME type against the configured allow/deny lists.
@@ -395,19 +443,6 @@ class StorageService:
         if normalized in {self.normalize_mime_type(item) for item in denied_types}:
             return False
         return normalized in {self.normalize_mime_type(item) for item in allowed_types}
-    
-    def validate_file_size(self, file_size: int) -> bool:
-        """
-        Validate that a file size is within the allowed limit.
-        
-        Args:
-            file_size: File size in bytes
-        
-        Returns:
-            True if within limit, False otherwise
-        """
-        max_size_bytes = storage_config.max_upload_size_mb * 1024 * 1024
-        return file_size <= max_size_bytes
     
     @staticmethod
     def sanitize_filename(filename: str) -> str:
@@ -453,19 +488,5 @@ class StorageService:
         """Generate a temporary staging key for a direct client upload."""
         return f"_uploads/{parent_type}/{parent_id}/attachments/{item_id}/{uuid.uuid4()}"
     
-    @staticmethod
-    def calculate_file_hash(file_data: bytes) -> str:
-        """
-        Calculate SHA256 hash of file data.
-        
-        Args:
-            file_data: File binary data
-        
-        Returns:
-            Hex-encoded SHA256 hash
-        """
-        return hashlib.sha256(file_data).hexdigest()
-
-
 # Global storage service instance
 storage_service = StorageService()

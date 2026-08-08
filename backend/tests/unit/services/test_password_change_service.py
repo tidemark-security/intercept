@@ -6,7 +6,7 @@ Tests cover current password verification and session preservation during volunt
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 from uuid import uuid4
 
 import pytest
@@ -14,13 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import SessionRevokedReason, UserRole, UserStatus
 from app.models.models import AuthSession, UserAccount
+from app.services.audit_service import AuditContext
 from app.services.auth_service import (
     AuthService,
     InvalidCredentialsError,
     PasswordPolicyViolation,
-    RequestMetadata,
     SessionNotFoundError,
 )
+from app.services.oidc_local_credential_policy import LocalCredentialCapabilities
 from app.services.security.password_hasher import PasswordHasher
 
 
@@ -53,6 +54,38 @@ def auth_service(password_hasher: PasswordHasher) -> AuthService:
     return AuthService(password_hasher=password_hasher)
 
 
+@pytest.fixture(autouse=True)
+def allow_local_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep password-change unit tests independent of persisted OIDC settings."""
+
+    monkeypatch.setattr(
+        "app.services.auth_service.oidc_local_credential_policy.capabilities_for",
+        AsyncMock(
+            return_value=LocalCredentialCapabilities(
+                password_login_allowed=True,
+                passkey_allowed=True,
+                api_key_allowed=True,
+            )
+        ),
+    )
+
+
+@pytest.fixture(autouse=True)
+def run_password_work_inline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep unit tests focused on state transitions, not durable DB leases."""
+
+    async def reserve_commit_and_run(db, *, work_kind, operation, policy=None):
+        assert work_kind == "password_change"
+        assert policy is None
+        await db.commit()
+        return operation()
+
+    monkeypatch.setattr(
+        "app.services.auth_service.password_hash_work_service.reserve_commit_and_run",
+        reserve_commit_and_run,
+    )
+
+
 def _mock_audit_service() -> MagicMock:
     """Create an audit service mock with awaitable methods used by password changes."""
     mock_audit_svc = MagicMock()
@@ -82,9 +115,9 @@ def sample_user(password_hasher: PasswordHasher) -> UserAccount:
 
 
 @pytest.fixture
-def sample_session(sample_user: UserAccount) -> AuthSession:
+def sample_session(sample_user: UserAccount, mock_db: AsyncMock) -> AuthSession:
     """Create a sample auth session."""
-    return AuthSession(
+    session = AuthSession(
         id=uuid4(),
         session_token_hash="abc123hash",
         user_id=sample_user.id,
@@ -98,6 +131,20 @@ def sample_session(sample_user: UserAccount) -> AuthSession:
         user_agent="TestAgent/1.0",
         correlation_id=str(uuid4()),
     )
+
+    async def get_locked_row(model, row_id, **kwargs):
+        assert kwargs == {
+            "populate_existing": True,
+            "with_for_update": True,
+        }
+        if model is UserAccount and row_id == sample_user.id:
+            return sample_user
+        if model is AuthSession and row_id == session.id:
+            return session
+        return None
+
+    mock_db.get = AsyncMock(side_effect=get_locked_row)
+    return session
 
 
 @pytest.mark.asyncio
@@ -128,11 +175,25 @@ async def test_change_password_verifies_current_password(
             session_token="valid_token",
             current_password="OldPassword123!",
             new_password="NewSecure!Pass456",
-            metadata=RequestMetadata(),
+            metadata=AuditContext(),
         )
 
-        # Verify commit was called
-        mock_db.commit.assert_called_once()
+        # Snapshot release, durable work reservation, and final mutation commit.
+        assert mock_db.commit.await_count == 3
+        assert mock_db.get.await_args_list[:2] == [
+            call(
+                UserAccount,
+                sample_user.id,
+                populate_existing=True,
+                with_for_update=True,
+            ),
+            call(
+                AuthSession,
+                sample_session.id,
+                populate_existing=True,
+                with_for_update=True,
+            ),
+        ]
 
 
 @pytest.mark.asyncio
@@ -150,11 +211,11 @@ async def test_change_password_rejects_incorrect_current_password(
                 session_token="valid_token",
                 current_password="WrongPassword!",
                 new_password="NewSecure!Pass456",
-                metadata=RequestMetadata(),
+                metadata=AuditContext(),
             )
 
-        # Verify commit was NOT called
-        mock_db.commit.assert_not_called()
+        # Snapshot and work-reservation transactions commit before verification.
+        assert mock_db.commit.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -173,7 +234,7 @@ async def test_change_password_enforces_minimum_length(
                 session_token="valid_token",
                 current_password="OldPassword123!",
                 new_password="Short1!",  # Only 7 characters
-                metadata=RequestMetadata(),
+                metadata=AuditContext(),
             )
 
 
@@ -194,7 +255,7 @@ async def test_change_password_enforces_complexity_requirements(
                 session_token="valid_token",
                 current_password="OldPassword123!",
                 new_password="nouppercase123!",
-                metadata=RequestMetadata(),
+                metadata=AuditContext(),
             )
 
         # Missing lowercase
@@ -204,7 +265,7 @@ async def test_change_password_enforces_complexity_requirements(
                 session_token="valid_token",
                 current_password="OldPassword123!",
                 new_password="NOLOWERCASE123!",
-                metadata=RequestMetadata(),
+                metadata=AuditContext(),
             )
 
         # Missing number
@@ -214,7 +275,7 @@ async def test_change_password_enforces_complexity_requirements(
                 session_token="valid_token",
                 current_password="OldPassword123!",
                 new_password="NoNumbersHere!",
-                metadata=RequestMetadata(),
+                metadata=AuditContext(),
             )
 
         # Missing special character
@@ -224,7 +285,7 @@ async def test_change_password_enforces_complexity_requirements(
                 session_token="valid_token",
                 current_password="OldPassword123!",
                 new_password="NoSpecialChar123",
-                metadata=RequestMetadata(),
+                metadata=AuditContext(),
             )
 
 
@@ -264,7 +325,7 @@ async def test_change_password_rotates_current_session(
             session_token="valid_token",
             current_password="OldPassword123!",
             new_password="NewSecure!Pass456",
-            metadata=RequestMetadata(),
+            metadata=AuditContext(),
         )
 
         assert sample_session.revoked_at is not None
@@ -319,7 +380,7 @@ async def test_change_password_revokes_other_sessions(
             session_token="valid_token",
             current_password="OldPassword123!",
             new_password="NewSecure!Pass456",
-            metadata=RequestMetadata(),
+            metadata=AuditContext(),
         )
 
         # Verify other sessions were revoked with correct reason
@@ -359,7 +420,7 @@ async def test_change_password_updates_user_fields(
             session_token="valid_token",
             current_password="OldPassword123!",
             new_password="NewSecure!Pass456",
-            metadata=RequestMetadata(),
+            metadata=AuditContext(),
         )
 
         # Verify password hash was updated
@@ -399,7 +460,7 @@ async def test_change_password_requires_valid_session(
                 session_token="invalid_token",
                 current_password="OldPassword123!",
                 new_password="NewSecure!Pass456",
-                metadata=RequestMetadata(),
+                metadata=AuditContext(),
             )
 
 
@@ -419,7 +480,7 @@ async def test_change_password_calls_audit_logging(
     mock_result.scalars.return_value.all.return_value = []
     mock_db.execute.return_value = mock_result
 
-    metadata = RequestMetadata(
+    metadata = AuditContext(
         ip_address="192.168.1.100",
         user_agent="TestAgent/1.0",
         correlation_id="test-correlation-123",

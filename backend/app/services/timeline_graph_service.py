@@ -23,18 +23,17 @@ from app.models.models import (
 from app.services.realtime_service import emit_event
 
 
-EMPTY_GRAPH: Dict[str, Dict[str, Dict[str, Any]]] = {"nodes": {}, "edges": {}}
-EMPTY_META: Dict[str, Dict[str, int]] = {
-    "nodes": {},
-    "edges": {},
-    "deleted_nodes": {},
-    "deleted_edges": {},
-}
-
-
 class TimelineGraphConflict(Exception):
     def __init__(self, conflict: TimelineGraphConflictRead) -> None:
         self.conflict = conflict
+
+
+class TimelineGraphValidationError(ValueError):
+    """A timeline graph patch violates a client-facing domain rule."""
+
+
+class TimelineGraphEntityNotFoundError(LookupError):
+    """The case or task owning a requested timeline graph does not exist."""
 
 
 def _empty_graph() -> Dict[str, Dict[str, Dict[str, Any]]]:
@@ -94,34 +93,171 @@ def _object_changed_after(meta: Dict[str, Dict[str, int]], bucket: str, object_i
 
 def _validate_position(operation: TimelineGraphOperation) -> Dict[str, float]:
     if operation.position is None:
-        raise ValueError(f"{operation.type} requires position")
+        raise TimelineGraphValidationError(f"{operation.type} requires position")
     x = operation.position.get("x")
     y = operation.position.get("y")
     if x is None or y is None:
-        raise ValueError(f"{operation.type} requires position.x and position.y")
+        raise TimelineGraphValidationError(
+            f"{operation.type} requires position.x and position.y"
+        )
     return {"x": float(x), "y": float(y)}
 
 
 def _validate_size(operation: TimelineGraphOperation) -> Dict[str, float]:
     if operation.width is None or operation.height is None:
-        raise ValueError(f"{operation.type} requires width and height")
+        raise TimelineGraphValidationError(
+            f"{operation.type} requires width and height"
+        )
     width = float(operation.width)
     height = float(operation.height)
     if width <= 0 or height <= 0:
-        raise ValueError(f"{operation.type} requires positive width and height")
+        raise TimelineGraphValidationError(
+            f"{operation.type} requires positive width and height"
+        )
     return {"width": width, "height": height}
 
 
 def _require_node_id(operation: TimelineGraphOperation) -> str:
     if not operation.node_id:
-        raise ValueError(f"{operation.type} requires node_id")
+        raise TimelineGraphValidationError(f"{operation.type} requires node_id")
     return operation.node_id
 
 
 def _require_edge_id(operation: TimelineGraphOperation) -> str:
     if not operation.edge_id:
-        raise ValueError(f"{operation.type} requires edge_id")
+        raise TimelineGraphValidationError(f"{operation.type} requires edge_id")
     return operation.edge_id
+
+
+_NODE_OPERATION_TYPES = {
+    "add_node",
+    "add_group",
+    "move_node",
+    "resize_node",
+    "update_node_metadata",
+    "remove_node",
+}
+
+
+def _apply_node_operation(
+    graph: Dict[str, Dict[str, Dict[str, Any]]],
+    meta: Dict[str, Dict[str, int]],
+    next_revision: int,
+    operation: TimelineGraphOperation,
+) -> None:
+    """Apply one node operation and maintain its revision metadata."""
+    node_id = _require_node_id(operation)
+
+    if operation.type == "add_node":
+        if not operation.item_id:
+            raise TimelineGraphValidationError("add_node requires item_id")
+        graph["nodes"][node_id] = {
+            "id": node_id,
+            "item_id": operation.item_id,
+            "position": _validate_position(operation),
+        }
+        if operation.width is not None and operation.height is not None:
+            graph["nodes"][node_id].update(_validate_size(operation))
+        if "parent_node_id" in operation.model_fields_set:
+            graph["nodes"][node_id]["parent_node_id"] = operation.parent_node_id
+        meta["nodes"][node_id] = next_revision
+        meta["deleted_nodes"].pop(node_id, None)
+        return
+
+    if operation.type == "add_group":
+        graph["nodes"][node_id] = {
+            "id": node_id,
+            "kind": "group",
+            "label": operation.label.strip() if operation.label else "Group",
+            "position": _validate_position(operation),
+        }
+        if operation.width is not None and operation.height is not None:
+            graph["nodes"][node_id].update(_validate_size(operation))
+        meta["nodes"][node_id] = next_revision
+        meta["deleted_nodes"].pop(node_id, None)
+        return
+
+    if operation.type == "remove_node":
+        if graph["nodes"].pop(node_id, None) is not None:
+            meta["nodes"].pop(node_id, None)
+            meta["deleted_nodes"][node_id] = next_revision
+        for child_node in graph["nodes"].values():
+            if child_node.get("parent_node_id") == node_id:
+                child_node["parent_node_id"] = None
+        for edge_id, edge in list(graph["edges"].items()):
+            if edge.get("source") == node_id or edge.get("target") == node_id:
+                graph["edges"].pop(edge_id, None)
+                meta["edges"].pop(edge_id, None)
+                meta["deleted_edges"][edge_id] = next_revision
+        return
+
+    node = graph["nodes"].get(node_id)
+    if node is None:
+        return
+    if operation.type == "move_node":
+        node["position"] = _validate_position(operation)
+    elif operation.type == "resize_node":
+        node.update(_validate_size(operation))
+    elif operation.type == "update_node_metadata":
+        if "parent_node_id" in operation.model_fields_set:
+            node["parent_node_id"] = operation.parent_node_id
+        if "label" in operation.model_fields_set and node.get("kind") == "group":
+            node["label"] = operation.label.strip() if operation.label else "Group"
+    meta["nodes"][node_id] = next_revision
+
+
+def _apply_edge_operation(
+    graph: Dict[str, Dict[str, Dict[str, Any]]],
+    meta: Dict[str, Dict[str, int]],
+    next_revision: int,
+    operation: TimelineGraphOperation,
+) -> None:
+    """Apply one edge operation and maintain its revision metadata."""
+    edge_id = _require_edge_id(operation)
+
+    if operation.type == "add_edge":
+        if not operation.source or not operation.target:
+            raise TimelineGraphValidationError("add_edge requires source and target")
+        graph["edges"][edge_id] = {
+            "id": edge_id,
+            "source": operation.source,
+            "target": operation.target,
+            "source_handle": operation.source_handle,
+            "target_handle": operation.target_handle,
+            "label": operation.label,
+        }
+        if operation.marker is not None:
+            graph["edges"][edge_id]["marker"] = operation.marker
+        meta["edges"][edge_id] = next_revision
+        meta["deleted_edges"].pop(edge_id, None)
+        return
+
+    if operation.type == "remove_edge":
+        if graph["edges"].pop(edge_id, None) is not None:
+            meta["edges"].pop(edge_id, None)
+            meta["deleted_edges"][edge_id] = next_revision
+        return
+
+    edge = graph["edges"].get(edge_id)
+    if edge is None:
+        return
+    if operation.type == "reconnect_edge":
+        if not operation.source or not operation.target:
+            raise TimelineGraphValidationError(
+                "reconnect_edge requires source and target"
+            )
+        edge.update({
+            "source": operation.source,
+            "target": operation.target,
+            "source_handle": operation.source_handle,
+            "target_handle": operation.target_handle,
+        })
+    elif operation.type == "update_edge_label":
+        label = operation.label.strip() if operation.label else None
+        edge["label"] = label or None
+    elif operation.type == "update_edge_metadata" and "marker" in operation.model_fields_set:
+        edge["marker"] = operation.marker
+    meta["edges"][edge_id] = next_revision
 
 
 class TimelineGraphService:
@@ -139,6 +275,10 @@ class TimelineGraphService:
         updated_by: str,
     ) -> TimelineGraphRead:
         await self._ensure_entity_exists(db, entity_type, entity_id)
+        if not patch.operations:
+            row = await self._get_graph_row(db, entity_type, entity_id, for_update=False)
+            return _read_from_row(row, entity_type, entity_id)
+
         row = await self._get_or_create_graph_row(db, entity_type, entity_id, updated_by)
         graph = _normalize_graph(row.graph)
         meta = _normalize_meta(row.graph_meta)
@@ -169,9 +309,9 @@ class TimelineGraphService:
             event_type=RealtimeEventType.TIMELINE_GRAPH_UPDATED,
             performed_by=updated_by,
         )
+        response = _read_from_row(row, entity_type, entity_id)
         await db.commit()
-        await db.refresh(row)
-        return _read_from_row(row, entity_type, entity_id)
+        return response
 
     async def _ensure_entity_exists(self, db: AsyncSession, entity_type: str, entity_id: int) -> None:
         if entity_type == "case":
@@ -179,9 +319,13 @@ class TimelineGraphService:
         elif entity_type == "task":
             entity = await db.get(Task, entity_id)
         else:
-            raise ValueError("Timeline graphs are only supported for cases and tasks")
+            raise TimelineGraphValidationError(
+                "Timeline graphs are only supported for cases and tasks"
+            )
         if entity is None:
-            raise LookupError(f"{entity_type.title()} not found")
+            raise TimelineGraphEntityNotFoundError(
+                f"{entity_type.title()} not found"
+            )
 
     async def _get_graph_row(
         self,
@@ -223,11 +367,14 @@ class TimelineGraphService:
             created_by=username,
             updated_by=username,
         )
-        db.add(row)
+        # Flush unrelated pending work before opening the savepoint so an
+        # insert race can roll back only the attempted graph row.
+        await db.flush()
         try:
-            await db.flush()
+            async with db.begin_nested():
+                db.add(row)
+                await db.flush()
         except IntegrityError:
-            await db.rollback()
             row = await self._get_graph_row(db, entity_type, entity_id, for_update=True)
             if row is None:
                 raise
@@ -281,128 +428,10 @@ class TimelineGraphService:
         next_revision: int,
         operation: TimelineGraphOperation,
     ) -> None:
-        if operation.type == "add_node":
-            node_id = _require_node_id(operation)
-            if not operation.item_id:
-                raise ValueError("add_node requires item_id")
-            graph["nodes"][node_id] = {
-                "id": node_id,
-                "item_id": operation.item_id,
-                "position": _validate_position(operation),
-            }
-            if operation.width is not None and operation.height is not None:
-                graph["nodes"][node_id].update(_validate_size(operation))
-            if "parent_node_id" in operation.model_fields_set:
-                graph["nodes"][node_id]["parent_node_id"] = operation.parent_node_id
-            meta["nodes"][node_id] = next_revision
-            meta["deleted_nodes"].pop(node_id, None)
-            return
-
-        if operation.type == "add_group":
-            node_id = _require_node_id(operation)
-            graph["nodes"][node_id] = {
-                "id": node_id,
-                "kind": "group",
-                "label": operation.label.strip() if operation.label else "Group",
-                "position": _validate_position(operation),
-            }
-            if operation.width is not None and operation.height is not None:
-                graph["nodes"][node_id].update(_validate_size(operation))
-            meta["nodes"][node_id] = next_revision
-            meta["deleted_nodes"].pop(node_id, None)
-            return
-
-        if operation.type == "move_node":
-            node_id = _require_node_id(operation)
-            if node_id in graph["nodes"]:
-                graph["nodes"][node_id]["position"] = _validate_position(operation)
-                meta["nodes"][node_id] = next_revision
-            return
-
-        if operation.type == "resize_node":
-            node_id = _require_node_id(operation)
-            if node_id in graph["nodes"]:
-                graph["nodes"][node_id].update(_validate_size(operation))
-                meta["nodes"][node_id] = next_revision
-            return
-
-        if operation.type == "update_node_metadata":
-            node_id = _require_node_id(operation)
-            if node_id in graph["nodes"]:
-                if "parent_node_id" in operation.model_fields_set:
-                    graph["nodes"][node_id]["parent_node_id"] = operation.parent_node_id
-                if "label" in operation.model_fields_set and graph["nodes"][node_id].get("kind") == "group":
-                    graph["nodes"][node_id]["label"] = operation.label.strip() if operation.label else "Group"
-                meta["nodes"][node_id] = next_revision
-            return
-
-        if operation.type == "remove_node":
-            node_id = _require_node_id(operation)
-            if graph["nodes"].pop(node_id, None) is not None:
-                meta["nodes"].pop(node_id, None)
-                meta["deleted_nodes"][node_id] = next_revision
-            for child_node in graph["nodes"].values():
-                if child_node.get("parent_node_id") == node_id:
-                    child_node["parent_node_id"] = None
-            for edge_id, edge in list(graph["edges"].items()):
-                if edge.get("source") == node_id or edge.get("target") == node_id:
-                    graph["edges"].pop(edge_id, None)
-                    meta["edges"].pop(edge_id, None)
-                    meta["deleted_edges"][edge_id] = next_revision
-            return
-
-        if operation.type == "add_edge":
-            edge_id = _require_edge_id(operation)
-            if not operation.source or not operation.target:
-                raise ValueError("add_edge requires source and target")
-            graph["edges"][edge_id] = {
-                "id": edge_id,
-                "source": operation.source,
-                "target": operation.target,
-                "source_handle": operation.source_handle,
-                "target_handle": operation.target_handle,
-                "label": operation.label,
-            }
-            if operation.marker is not None:
-                graph["edges"][edge_id]["marker"] = operation.marker
-            meta["edges"][edge_id] = next_revision
-            meta["deleted_edges"].pop(edge_id, None)
-            return
-
-        if operation.type == "reconnect_edge":
-            edge_id = _require_edge_id(operation)
-            if edge_id in graph["edges"]:
-                if not operation.source or not operation.target:
-                    raise ValueError("reconnect_edge requires source and target")
-                graph["edges"][edge_id].update({
-                    "source": operation.source,
-                    "target": operation.target,
-                    "source_handle": operation.source_handle,
-                    "target_handle": operation.target_handle,
-                })
-                meta["edges"][edge_id] = next_revision
-            return
-
-        if operation.type == "remove_edge":
-            edge_id = _require_edge_id(operation)
-            if graph["edges"].pop(edge_id, None) is not None:
-                meta["edges"].pop(edge_id, None)
-                meta["deleted_edges"][edge_id] = next_revision
-            return
-
-        if operation.type == "update_edge_label":
-            edge_id = _require_edge_id(operation)
-            if edge_id in graph["edges"]:
-                label = operation.label.strip() if operation.label else None
-                graph["edges"][edge_id]["label"] = label or None
-                meta["edges"][edge_id] = next_revision
-
-        if operation.type == "update_edge_metadata":
-            edge_id = _require_edge_id(operation)
-            if edge_id in graph["edges"]:
-                if "marker" in operation.model_fields_set:
-                    graph["edges"][edge_id]["marker"] = operation.marker
-                meta["edges"][edge_id] = next_revision
+        if operation.type in _NODE_OPERATION_TYPES:
+            _apply_node_operation(graph, meta, next_revision, operation)
+        else:
+            _apply_edge_operation(graph, meta, next_revision, operation)
 
 
 timeline_graph_service = TimelineGraphService()

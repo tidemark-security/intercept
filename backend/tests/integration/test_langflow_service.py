@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from app.services.langflow_service import LangFlowService
@@ -44,6 +45,29 @@ async def test_list_flows_accepts_array_response(monkeypatch: pytest.MonkeyPatch
         {"id": "uuid-default", "endpoint_name": "tmi_general_purpose", "name": "General"},
         {"id": "uuid-alert", "endpoint_name": "tmi_alert_triage", "name": "Alert"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_connection_diagnostics_do_not_return_internal_exception_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = LangFlowService(base_url="http://internal-langflow/api/v1", api_key="secret-key")
+
+    async def fail_get(*_args, **_kwargs):
+        request = httpx.Request("GET", "http://10.0.0.8/private")
+        raise httpx.ConnectError("secret-key rejected", request=request)
+
+    monkeypatch.setattr(service.client, "get", fail_get)
+    try:
+        connectivity = await service.run_connectivity_check()
+        flow_summary = await service.list_flows()
+    finally:
+        await service.close()
+
+    assert connectivity.message == "Unable to complete the LangFlow health check"
+    assert flow_summary.check_result.message == "Unable to connect to the LangFlow flows API"
+    assert "secret-key" not in connectivity.message
+    assert "10.0.0.8" not in flow_summary.check_result.message
 
 
 @pytest.mark.asyncio

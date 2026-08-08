@@ -3,13 +3,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import HTTPException
 from mcp import McpError
-from pydantic import ValidationError
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.mcp.schemas import GetItemInput
 from app.mcp.server import (
     _GET_ITEM_MISSING_SCOPE_MESSAGE,
     _GET_ITEM_MIXED_CONTRACT_MESSAGE,
@@ -18,6 +15,7 @@ from app.mcp.server import (
 )
 from app.models.models import Alert, Case, Task
 from app.services import mcp_service
+from app.services.mcp_errors import McpNotFoundError, McpValidationError
 
 
 def _timeline_note(*, item_id: str, content_field: str, content: str) -> dict[str, str]:
@@ -28,6 +26,7 @@ def _timeline_note(*, item_id: str, content_field: str, content: str) -> dict[st
         "id": item_id,
         "type": "note",
         "timestamp": timestamp,
+        "created_by": "timeline-author",
         content_field: content,
     }
 
@@ -72,6 +71,7 @@ async def test_get_item_returns_case_note_description_content(
     assert result.metadata.parent_kind == "case"
     assert result.metadata.parent_id == case.id
     assert result.metadata.parent_human_id == "CAS-0000001"
+    assert result.metadata.author == "timeline-author"
 
 
 @pytest.mark.asyncio
@@ -129,27 +129,6 @@ async def test_get_item_preserves_legacy_body_and_content_fallbacks(
     assert result.content == legacy_content
     assert result.metadata.parent_kind == parent_entity_type
     assert result.metadata.parent_human_id == expected_human_id
-
-
-def test_get_item_input_requires_parent_scope_and_item_id() -> None:
-    schema = GetItemInput.model_json_schema()
-
-    assert set(schema["required"]) == {
-        "parent_entity_type",
-        "parent_entity_id",
-        "item_id",
-    }
-
-
-def test_get_item_input_rejects_old_hint_fields() -> None:
-    with pytest.raises(ValidationError):
-        GetItemInput.model_validate(
-            {
-                "item_id": "note-1",
-                "hint_kind": "case",
-                "hint_parent_id": "CAS-000001",
-            }
-        )
 
 
 @pytest.mark.asyncio
@@ -310,7 +289,7 @@ async def test_get_item_does_not_search_other_parent_entities(
 
         assert case.id is not None
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(McpNotFoundError) as exc_info:
             await mcp_service.get_item(
                 db=session,
                 parent_entity_type="case",
@@ -318,8 +297,7 @@ async def test_get_item_does_not_search_other_parent_entities(
                 item_id="cross-scope-item",
             )
 
-    assert exc_info.value.status_code == 404
-    assert "no longer searches other alerts, cases, or tasks" in exc_info.value.detail
+    assert "no longer searches other alerts, cases, or tasks" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -364,7 +342,7 @@ async def test_get_item_rejects_parent_type_prefix_mismatch(
     session_maker: async_sessionmaker[AsyncSession],
 ) -> None:
     async with session_maker() as session:
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(McpValidationError) as exc_info:
             await mcp_service.get_item(
                 db=session,
                 parent_entity_type="case",
@@ -372,5 +350,4 @@ async def test_get_item_rejects_parent_type_prefix_mismatch(
                 item_id="note-1",
             )
 
-    assert exc_info.value.status_code == 400
-    assert "has alert prefix but expected 'case'" in exc_info.value.detail
+    assert "has alert prefix but expected 'case'" in str(exc_info.value)

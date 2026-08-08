@@ -109,6 +109,13 @@ LANGFLOW_API_KEY=$(generate_secret 44)
 # --- Image version -----------------------------------------------------------
 # TAG=0.1.0
 
+# --- Public Intercept origin / MCP OAuth (optional) --------------------------
+# For a non-loopback deployment, set an HTTPS origin and enable Secure cookies.
+# INTERCEPT_PUBLIC_ORIGIN=https://intercept.example.com
+# SESSION_COOKIE_SECURE=true
+# Durable concurrent MCP authorization capacity per validated client source.
+# MCP_OAUTH_PENDING_AUTHORIZATION_PER_SOURCE_QUOTA=50
+
 # --- AI features (optional) --------------------------------------------------
 # Add your OpenAI API key to enable AI/LLM features.
 # Get one at https://platform.openai.com/api-keys

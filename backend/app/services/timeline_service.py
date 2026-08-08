@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Set, TYPE_CHECKING
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Dict, Iterable, List, Optional, Set, TYPE_CHECKING, TypeVar
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
@@ -11,26 +13,63 @@ import logging
 import json
 from sqlalchemy import select
 from sqlmodel import col
-from app.models.models import AuditLog
-from app.services.normalization_service import normalization_service
+
+from app.core.entity_ids import ALERT_PREFIX, CASE_PREFIX, TASK_PREFIX, format_entity_id
+from app.models.models import Actor, ActorSnapshot, Alert, AuditLog, Case, Task
+from app.services.date_filter_utils import parse_optional_utc_datetime
+from app.services.normalization_service import (
+    NormalizationValidationError,
+    TimelineReferenceIndex,
+    normalization_service,
+)
 
 if TYPE_CHECKING:
     from app.models.models import TaskCreate, TaskUpdate
 
 logger = logging.getLogger(__name__)
 
-# Fields that are dynamically populated from the Task entity on read
-# These should NOT be stored in the timeline JSON (snapshots)
-TASK_SNAPSHOT_FIELDS: Set[str] = {
-    "title", "status", "priority", "assignee", "due_date",
-    "task_human_id", "description", "picerl_stage", "source_runbook",
-}
+_EnumT = TypeVar("_EnumT", bound=Enum)
+
+
+class TimelineValidationError(ValueError):
+    """A timeline mutation violates a client-facing domain rule."""
+
+
+def _coerce_enum(value: Any, enum_type: type[_EnumT]) -> _EnumT | None:
+    """Return a known enum member, or None for malformed legacy timeline data."""
+    try:
+        return enum_type(value)
+    except (TypeError, ValueError):
+        return None
 
 # Fields that should be preserved in the timeline JSON for task items
 TASK_REFERENCE_FIELDS: Set[str] = {
-    "id", "type", "task_id", "created_at", "created_by",
+    "id", "type", "task_id", "description", "created_at", "created_by",
     "parent_id", "replies", "flagged", "highlighted", "tags", "timestamp",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineRemovalCleanup:
+    """External cleanup to perform only after the database deletion commits."""
+
+    storage_key: Optional[str] = None
+
+
+@dataclass(frozen=True, slots=True)
+class DeferredAutonomousTaskEnqueue:
+    """Autonomous task enqueue that is safe to run only after commit."""
+
+    task_id: int
+    assignee: str
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineItemUpdateResult:
+    """A timeline update plus any side effect deferred until after commit."""
+
+    item: Dict[str, Any]
+    autonomous_task_enqueue: Optional[DeferredAutonomousTaskEnqueue] = None
 
 
 class TimelineService:
@@ -39,12 +78,155 @@ class TimelineService:
     and mutation (add/update/remove) across alerts and cases.
     """
 
-    def _iter_items(self, items: Any) -> Iterable[Dict[str, Any]]:
+    def iter_items(self, items: Any) -> Iterable[Dict[str, Any]]:
+        """Iterate valid item mappings across legacy list and mapping storage."""
         if isinstance(items, dict):
             return (item for item in items.values() if isinstance(item, dict))
         if isinstance(items, list):
             return (item for item in items if isinstance(item, dict))
         return ()
+
+    def _collect_reference_ids(
+        self,
+        timeline_items: List[Dict[str, Any]] | Dict[str, Dict[str, Any]],
+        referenced_ids: Dict[str, Set[int]],
+        actor_snapshot_keys: Set[tuple[int, str]],
+    ) -> None:
+        for item in self.iter_items(timeline_items):
+            item_type = item.get("type")
+            if item_type in {"internal_actor", "external_actor", "threat_actor"}:
+                actor_id = item.get("actor_id")
+                if isinstance(actor_id, int):
+                    referenced_ids["actor"].add(actor_id)
+                    snapshot_hash = item.get("snapshot_hash")
+                    if isinstance(snapshot_hash, str) and snapshot_hash:
+                        actor_snapshot_keys.add((actor_id, snapshot_hash))
+            elif item_type in {"alert", "case", "task"}:
+                entity_id = item.get(f"{item_type}_id")
+                if isinstance(entity_id, int):
+                    referenced_ids[item_type].add(entity_id)
+
+            replies = item.get("replies")
+            if replies:
+                self._collect_reference_ids(replies, referenced_ids, actor_snapshot_keys)
+
+    async def _load_reference_entities(
+        self,
+        db: AsyncSession,
+        referenced_ids: Dict[str, Set[int]],
+        references: TimelineReferenceIndex,
+    ) -> None:
+        model_and_index = {
+            "actor": (Actor, references.actors),
+            "alert": (Alert, references.alerts),
+            "case": (Case, references.cases),
+            "task": (Task, references.tasks),
+        }
+        for entity_type, entity_ids in referenced_ids.items():
+            model, index = model_and_index[entity_type]
+            missing_ids = entity_ids.difference(index)
+            if not missing_ids:
+                continue
+
+            result = await db.execute(select(model).where(col(model.id).in_(missing_ids)))
+            entities = result.scalars().all()
+            index.update(
+                {
+                    entity.id: entity
+                    for entity in entities
+                    if isinstance(entity.id, int)
+                }
+            )
+            logger.debug("Loaded %d referenced %ss", len(entities), entity_type)
+
+    async def load_referenced_entities(
+        self,
+        db: AsyncSession,
+        timeline_items: List[Dict[str, Any]] | Dict[str, Dict[str, Any]],
+        *,
+        include_linked_timelines: bool = False,
+        references: TimelineReferenceIndex | None = None,
+    ) -> TimelineReferenceIndex:
+        """Build a strong, request-local index for all timeline references."""
+        root_ids: Dict[str, Set[int]] = {
+            "actor": set(),
+            "alert": set(),
+            "case": set(),
+            "task": set(),
+        }
+        actor_snapshot_keys: Set[tuple[int, str]] = set()
+        self._collect_reference_ids(timeline_items, root_ids, actor_snapshot_keys)
+
+        references = references or TimelineReferenceIndex()
+        await self._load_reference_entities(db, root_ids, references)
+
+        if include_linked_timelines:
+            nested_ids: Dict[str, Set[int]] = {
+                "actor": set(),
+                "alert": set(),
+                "case": set(),
+                "task": set(),
+            }
+            for entity_type, index in (
+                ("alert", references.alerts),
+                ("case", references.cases),
+                ("task", references.tasks),
+            ):
+                for entity_id in root_ids[entity_type]:
+                    entity = index.get(entity_id)
+                    source_timeline = getattr(entity, "timeline_items", None)
+                    if source_timeline:
+                        self._collect_reference_ids(
+                            source_timeline,
+                            nested_ids,
+                            actor_snapshot_keys,
+                        )
+            await self._load_reference_entities(db, nested_ids, references)
+
+        if actor_snapshot_keys:
+            actor_ids = {actor_id for actor_id, _ in actor_snapshot_keys}
+            snapshot_hashes = {snapshot_hash for _, snapshot_hash in actor_snapshot_keys}
+            result = await db.execute(
+                select(ActorSnapshot).where(
+                    col(ActorSnapshot.actor_id).in_(actor_ids),
+                    col(ActorSnapshot.snapshot_hash).in_(snapshot_hashes),
+                )
+            )
+            references.actor_snapshots.update(
+                {
+                    (snapshot.actor_id, snapshot.snapshot_hash): snapshot
+                    for snapshot in result.scalars().all()
+                    if (snapshot.actor_id, snapshot.snapshot_hash) in actor_snapshot_keys
+                }
+            )
+
+        return references
+
+    def _seed_entity_references(self, entity: Any, human_prefix: str) -> TimelineReferenceIndex:
+        """Reuse relationships already loaded by the owning entity query."""
+        references = TimelineReferenceIndex()
+        entity_id = getattr(entity, "id", None)
+        if not isinstance(entity_id, int):
+            return references
+
+        if human_prefix == CASE_PREFIX:
+            references.cases[entity_id] = entity
+            references.alerts.update(
+                {alert.id: alert for alert in getattr(entity, "alerts", ()) if isinstance(alert.id, int)}
+            )
+            references.tasks.update(
+                {task.id: task for task in getattr(entity, "tasks", ()) if isinstance(task.id, int)}
+            )
+        elif human_prefix == ALERT_PREFIX:
+            references.alerts[entity_id] = entity
+            linked_case = getattr(entity, "case", None)
+            linked_case_id = getattr(linked_case, "id", None)
+            if isinstance(linked_case_id, int):
+                references.cases[linked_case_id] = linked_case
+        elif human_prefix == TASK_PREFIX:
+            references.tasks[entity_id] = entity
+
+        return references
 
     def _ensure_item_id(self, item: Dict[str, Any]) -> None:
         if not item.get("id"):
@@ -53,7 +235,7 @@ class TimelineService:
     def _assign_new_item_ids(self, item: Dict[str, Any]) -> None:
         item["id"] = self.generate_item_id()
         replies = item.get("replies")
-        for reply in self._iter_items(replies):
+        for reply in self.iter_items(replies):
             self._assign_new_item_ids(reply)
 
     def _coerce_item_for_storage(self, item: Dict[str, Any]) -> Dict[str, Any]:
@@ -67,8 +249,10 @@ class TimelineService:
 
         if isinstance(items, dict):
             candidates = list(items.values())
+        elif isinstance(items, list):
+            candidates = items
         else:
-            candidates = list(items or [])
+            return mapping
 
         for candidate in candidates:
             if not isinstance(candidate, dict):
@@ -83,18 +267,19 @@ class TimelineService:
         entity.timeline_items = items
         return items
 
-    def _response_items(self, items: Any) -> List[Dict[str, Any]]:
+    def response_items(self, items: Any) -> List[Dict[str, Any]]:
+        """Return copied, recursively sorted items for API responses."""
         response_items: List[Dict[str, Any]] = []
-        for item in self._iter_items(items):
+        for item in self.iter_items(items):
             item_copy = dict(item)
-            item_copy["replies"] = self._response_items(item.get("replies"))
+            item_copy["replies"] = self.response_items(item.get("replies"))
             response_items.append(item_copy)
         response_items.sort(key=self._timeline_sort_key)
         return response_items
 
     def _response_mapping(self, items: Any) -> Dict[str, Dict[str, Any]]:
         response_items: Dict[str, Dict[str, Any]] = {}
-        for item in self._iter_items(items):
+        for item in self.iter_items(items):
             item_copy = dict(item)
             item_copy["replies"] = self._response_mapping(item.get("replies"))
             response_items[str(item_copy["id"])] = item_copy
@@ -103,6 +288,32 @@ class TimelineService:
     def generate_item_id(self) -> str:
         """Generate a unique identifier for a timeline item."""
         return uuid.uuid4().hex
+
+    def build_note_item(
+        self,
+        *,
+        description: str,
+        created_by: str,
+        timestamp: datetime | str,
+        tags: Iterable[str] = (),
+        created_at: datetime | str | None = None,
+        flagged: bool = False,
+        highlighted: bool = False,
+    ) -> Dict[str, Any]:
+        """Build a note for insertion through :meth:`add_timeline_item`."""
+        item: Dict[str, Any] = {
+            "type": "note",
+            "description": description,
+            "timestamp": timestamp,
+            "created_by": created_by,
+            "tags": list(tags),
+            "flagged": flagged,
+            "highlighted": highlighted,
+            "replies": [],
+        }
+        if created_at is not None:
+            item["created_at"] = created_at
+        return item
 
     def _validate_reply_depth(self, item: Dict[str, Any], current_depth: int = 0, max_depth: int = 5) -> None:
         """
@@ -115,24 +326,29 @@ class TimelineService:
             max_depth: Maximum allowed nesting depth
         """
         if current_depth >= max_depth:
-            raise ValueError(f"Replies cannot be nested more than {max_depth} levels deep")
+            raise TimelineValidationError(
+                f"Replies cannot be nested more than {max_depth} levels deep"
+            )
         
         # Check each reply recursively
         if item.get("replies"):
-            for reply in self._iter_items(item["replies"]):
+            for reply in self.iter_items(item["replies"]):
                 self._validate_reply_depth(reply, current_depth + 1, max_depth)
 
     async def normalize_item(self, db: AsyncSession, item: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalize a timeline item using the actor service (handles actor/alert/case normalization)."""
+        """Normalize a timeline item and any first-class entity reference it contains."""
         # Validate reply depth before normalizing (max 5 levels)
         self._validate_reply_depth(item)
         
-        normalized = await normalization_service.normalize_actor_item(db, item)
+        try:
+            normalized = await normalization_service.normalize_item(db, item)
+        except NormalizationValidationError as exc:
+            raise TimelineValidationError(str(exc)) from exc
         
         # Recursively normalize replies if present (up to max depth)
         if "replies" in normalized and normalized["replies"]:
             normalized_replies = []
-            for reply in self._iter_items(normalized["replies"]):
+            for reply in self.iter_items(normalized["replies"]):
                 # Recursively normalize each reply (which may have its own replies)
                 normalized_replies.append(await self.normalize_item(db, reply))
             normalized["replies"] = normalized_replies
@@ -171,13 +387,30 @@ class TimelineService:
             if not item.get("_injected")
         }
         
+        references = self._seed_entity_references(entity, human_prefix)
+
         # Inject synthetic timeline items for linked entities
-        items = await self._inject_linked_entity_items(db, entity, human_prefix, items)
+        items = await self._inject_linked_entity_items(
+            db,
+            entity,
+            human_prefix,
+            items,
+            references=references,
+        )
+        references = await self.load_referenced_entities(
+            db,
+            items,
+            include_linked_timelines=include_linked_timelines,
+            references=references,
+        )
 
         denormed: Dict[str, Dict[str, Any]] = {}
         for item_id, item in items.items():
             denormed[item_id] = await self._denormalize_item_recursive(
-                db, item, include_linked_timelines=include_linked_timelines
+                db,
+                item,
+                include_linked_timelines=include_linked_timelines,
+                references=references,
             )
 
         if detach:
@@ -316,13 +549,121 @@ class TimelineService:
             or item.get("deleted_at")
             or ""
         )
+
+    async def _get_case_reference(
+        self,
+        db: AsyncSession,
+        case_id: int,
+        references: TimelineReferenceIndex,
+    ) -> Case | None:
+        case = references.cases.get(case_id)
+        if case is not None:
+            return case
+
+        from app.services.case_service import case_service
+
+        case = await case_service.get_case_minimal(db, case_id)
+        if case is not None:
+            references.cases[case_id] = case
+        return case
+
+    @staticmethod
+    def _linked_item_fields(
+        *,
+        item_id: str,
+        item_type: str,
+        linked_at: Any,
+        created_by: str,
+        tag: str,
+        entity_tags: Any,
+    ) -> Dict[str, Any]:
+        """Build fields shared by synthetic linked-entity timeline items."""
+        timestamp = linked_at.isoformat()
+        return {
+            "id": item_id,
+            "type": item_type,
+            "created_at": timestamp,
+            "timestamp": timestamp,
+            "created_by": created_by,
+            "tags": [tag],
+            "entity_tags": entity_tags if isinstance(entity_tags, list) else [],
+            "flagged": False,
+            "highlighted": False,
+            "replies": {},
+            "_injected": True,
+        }
+
+    def _build_linked_alert_item(self, alert: Any) -> Dict[str, Any]:
+        return {
+            **self._linked_item_fields(
+                item_id=f"linked-alert-{alert.id}",
+                item_type="alert",
+                linked_at=alert.linked_at,
+                created_by=alert.assignee or "system",
+                tag="linked-alert",
+                entity_tags=alert.tags,
+            ),
+            "alert_id": alert.id,
+            "title": alert.title,
+            "priority": alert.priority,
+            "assignee": alert.assignee,
+            "entity_description": alert.description,
+        }
+
+    def _build_linked_task_item(self, task: Any) -> Dict[str, Any]:
+        return {
+            **self._linked_item_fields(
+                item_id=f"linked-task-{task.id}",
+                item_type="task",
+                linked_at=task.linked_at,
+                created_by=task.created_by or "system",
+                tag="linked-task",
+                entity_tags=task.tags,
+            ),
+            "task_id": task.id,
+            "title": task.title,
+            "status": task.status.value if hasattr(task.status, "value") else str(task.status),
+            "priority": task.priority,
+            "assignee": task.assignee,
+            "entity_description": task.description,
+            "due_date": task.due_date.isoformat() if task.due_date else None,
+            "picerl_stage": task.picerl_stage.value if task.picerl_stage else None,
+            "source_runbook": task.source_runbook,
+        }
+
+    def _build_linked_case_item(
+        self,
+        case: Case,
+        *,
+        case_id: int,
+        linked_at: Any,
+        created_by: str,
+    ) -> Dict[str, Any]:
+        return {
+            **self._linked_item_fields(
+                item_id=f"linked-case-{case_id}",
+                item_type="case",
+                linked_at=linked_at,
+                created_by=created_by,
+                tag="linked",
+                entity_tags=case.tags,
+            ),
+            "case_id": case_id,
+            "title": case.title,
+            "priority": case.priority,
+            "assignee": case.assignee,
+            "entity_description": case.description,
+            "description": f"Linked to Case {format_entity_id(case_id, CASE_PREFIX)}",
+        }
     
     async def _inject_linked_entity_items(
         self,
         db: AsyncSession,
         entity: Any,
         human_prefix: str,
-        items: Dict[str, Dict[str, Any]]
+        items: Dict[str, Dict[str, Any]],
+        *,
+        references: TimelineReferenceIndex,
     ) -> Dict[str, Dict[str, Any]]:
         """
         Inject synthetic timeline items for linked entities based on FK relationships.
@@ -330,130 +671,44 @@ class TimelineService:
         - For Cases (CAS): inject alert items for each linked alert
         - For Alerts (ALT): inject case item if linked to a case
         """
-        if human_prefix == "CAS":
-            # Inject alert items for linked alerts
-            alerts = getattr(entity, "alerts", None)
-            if alerts:
-                for alert in alerts:
-                    if alert.linked_at:
-                        # Create synthetic alert timeline item
-                        alert_item = {
-                            "id": f"linked-alert-{alert.id}",
-                            "type": "alert",
-                            "alert_id": alert.id,
-                            "title": alert.title,
-                            "priority": alert.priority,
-                            "assignee": alert.assignee,
-                            "entity_description": alert.description,
-                            "created_at": alert.linked_at.isoformat() if alert.linked_at else alert.created_at.isoformat(),
-                            "timestamp": alert.linked_at.isoformat() if alert.linked_at else alert.created_at.isoformat(),
-                            "created_by": alert.assignee or "system",
-                            "tags": ["linked-alert"],
-                            "entity_tags": alert.tags if isinstance(alert.tags, list) else [],
-                            "flagged": False,
-                            "highlighted": False,
-                            "replies": {},
-                            "_injected": True,  # Mark as dynamically injected
-                        }
-                        items[str(alert_item["id"])] = alert_item
-            
-            # Inject task items for linked tasks
-            tasks = getattr(entity, "tasks", None)
-            if tasks:
-                for task in tasks:
-                    if task.linked_at:
-                        # Create synthetic task timeline item
-                        task_item = {
-                            "id": f"linked-task-{task.id}",
-                            "type": "task",
-                            "task_id": task.id,
-                            "title": task.title,
-                            "status": task.status.value if hasattr(task.status, 'value') else str(task.status),
-                            "priority": task.priority,
-                            "assignee": task.assignee,
-                            "entity_description": task.description,
-                            "due_date": task.due_date.isoformat() if task.due_date else None,
-                            "picerl_stage": task.picerl_stage.value if task.picerl_stage else None,
-                            "source_runbook": task.source_runbook,
-                            "created_at": task.linked_at.isoformat() if task.linked_at else task.created_at.isoformat(),
-                            "timestamp": task.linked_at.isoformat() if task.linked_at else task.created_at.isoformat(),
-                            "created_by": task.created_by or "system",
-                            "tags": ["linked-task"],
-                            "entity_tags": task.tags if isinstance(task.tags, list) else [],
-                            "flagged": False,
-                            "highlighted": False,
-                            "replies": {},
-                            "_injected": True,  # Mark as dynamically injected
-                        }
-                        items[str(task_item["id"])] = task_item
-        
-        elif human_prefix == "ALT":
-            # Inject case item if alert is linked to a case
+        if human_prefix == CASE_PREFIX:
+            for alert in getattr(entity, "alerts", None) or []:
+                if alert.linked_at:
+                    alert_item = self._build_linked_alert_item(alert)
+                    items[str(alert_item["id"])] = alert_item
+
+            for task in getattr(entity, "tasks", None) or []:
+                if task.linked_at:
+                    task_item = self._build_linked_task_item(task)
+                    items[str(task_item["id"])] = task_item
+
+        elif human_prefix in {ALERT_PREFIX, TASK_PREFIX}:
             case_id = getattr(entity, "case_id", None)
             linked_at = getattr(entity, "linked_at", None)
             if case_id and linked_at:
-                # Need to fetch case details for the item
-                from app.services.case_service import case_service
-                case = await case_service.get_case_minimal(db, case_id)
+                case = await self._get_case_reference(db, case_id, references)
                 if case:
-                    case_item = {
-                        "id": f"linked-case-{case_id}",
-                        "type": "case",
-                        "case_id": case_id,
-                        "title": case.title,
-                        "priority": case.priority,
-                        "assignee": case.assignee,
-                        "entity_description": case.description,
-                        "description": f"Linked to Case CAS-{case_id:07d}",
-                        "created_at": linked_at.isoformat(),
-                        "timestamp": linked_at.isoformat(),
-                        "created_by": entity.assignee or "system",
-                        "tags": ["linked"],
-                        "entity_tags": case.tags if isinstance(case.tags, list) else [],
-                        "flagged": False,
-                        "highlighted": False,
-                        "replies": {},
-                        "_injected": True,  # Mark as dynamically injected
-                    }
+                    created_by = (
+                        entity.assignee
+                        if human_prefix == ALERT_PREFIX
+                        else getattr(entity, "created_by", None)
+                    ) or "system"
+                    case_item = self._build_linked_case_item(
+                        case,
+                        case_id=case_id,
+                        linked_at=linked_at,
+                        created_by=created_by,
+                    )
                     items[str(case_item["id"])] = case_item
-        
-        elif human_prefix == "TSK":
-            # Inject case item if task is linked to a case
-            case_id = getattr(entity, "case_id", None)
-            linked_at = getattr(entity, "linked_at", None)
-            if case_id and linked_at:
-                # Need to fetch case details for the item
-                from app.services.case_service import case_service
-                case = await case_service.get_case_minimal(db, case_id)
-                if case:
-                    case_item = {
-                        "id": f"linked-case-{case_id}",
-                        "type": "case",
-                        "case_id": case_id,
-                        "title": case.title,
-                        "priority": case.priority,
-                        "assignee": case.assignee,
-                        "entity_description": case.description,
-                        "description": f"Linked to Case CAS-{case_id:07d}",
-                        "created_at": linked_at.isoformat(),
-                        "timestamp": linked_at.isoformat(),
-                        "created_by": getattr(entity, "created_by", None) or "system",
-                        "tags": ["linked"],
-                        "entity_tags": case.tags if isinstance(case.tags, list) else [],
-                        "flagged": False,
-                        "highlighted": False,
-                        "replies": {},
-                        "_injected": True,  # Mark as dynamically injected
-                    }
-                    items[str(case_item["id"])] = case_item
-        
+
         return items
     
     async def _denormalize_item_recursive(
         self, 
         db: AsyncSession, 
         item: Dict[str, Any],
-        include_linked_timelines: bool = False
+        include_linked_timelines: bool = False,
+        references: TimelineReferenceIndex | None = None,
     ) -> Dict[str, Any]:
         """Recursively denormalize a timeline item and its replies.
         
@@ -463,118 +718,86 @@ class TimelineService:
             include_linked_timelines: If True, alert and task items will include
                 source_timeline_items from the linked entity
         """
-        denormalized = await normalization_service.denormalize_actor_item(db, item)
-        
-        # For task items, populate fields dynamically from the Task entity
-        if denormalized.get("type") == "task":
-            denormalized = await self._denormalize_task_item(
-                db, denormalized, include_linked_timelines=include_linked_timelines
+        denormalized = await normalization_service.denormalize_item(
+            db,
+            item,
+            references=references,
+        )
+
+        if denormalized.get("type") == "task" and include_linked_timelines:
+            denormalized = await self._embed_task_timeline_items(
+                db,
+                denormalized,
+                references=references,
             )
         
         # For alert items, optionally embed timeline items from the linked alert
         if denormalized.get("type") == "alert" and include_linked_timelines:
-            denormalized = await self._embed_alert_timeline_items(db, denormalized)
+            denormalized = await self._embed_alert_timeline_items(
+                db,
+                denormalized,
+                references=references,
+            )
         
         # For case items, optionally embed timeline items from the linked case
         if denormalized.get("type") == "case" and include_linked_timelines:
-            denormalized = await self._embed_case_timeline_items(db, denormalized)
+            denormalized = await self._embed_case_timeline_items(
+                db,
+                denormalized,
+                references=references,
+            )
         
         # Recursively denormalize replies if present
         if "replies" in denormalized and denormalized["replies"]:
             denormalized_replies: Dict[str, Dict[str, Any]] = {}
-            for reply in self._iter_items(denormalized["replies"]):
+            for reply in self.iter_items(denormalized["replies"]):
                 denormalized_reply = await self._denormalize_item_recursive(
-                    db, reply, include_linked_timelines=include_linked_timelines
+                    db,
+                    reply,
+                    include_linked_timelines=include_linked_timelines,
+                    references=references,
                 )
                 denormalized_replies[str(denormalized_reply["id"])] = denormalized_reply
             denormalized["replies"] = denormalized_replies
         
         return denormalized
 
-    # ===== Task Item Helpers =====
-    
-    def _resolve_task_id(self, item: Dict[str, Any]) -> Optional[int]:
-        """Extract task_id from a timeline item (from task_id or task_human_id)."""
-        task_id = item.get("task_id")
-        if isinstance(task_id, int):
-            return task_id
-        if isinstance(task_id, str) and task_id.isdigit():
-            return int(task_id)
-        
-        # Try parsing from human ID
-        human_id = item.get("task_human_id")
-        if isinstance(human_id, str) and human_id.startswith("TSK-"):
-            try:
-                return int(human_id[4:])
-            except ValueError:
-                pass
-        
-        return None
-
-    async def _denormalize_task_item(
-        self, 
-        db: AsyncSession, 
+    async def _embed_task_timeline_items(
+        self,
+        db: AsyncSession,
         item: Dict[str, Any],
-        include_linked_timelines: bool = False
+        *,
+        references: TimelineReferenceIndex | None = None,
     ) -> Dict[str, Any]:
-        """
-        Populate task timeline item fields from the Task entity.
-        
-        Uses task_id to fetch live data. Any snapshot fields in the stored
-        JSON are ignored - the Task entity is the source of truth.
-        
-        Args:
-            db: Database session
-            item: Task timeline item dict
-            include_linked_timelines: If True, embed task's timeline_items as source_timeline_items
-        """
-        task_id = self._resolve_task_id(item)
-        if not task_id:
-            logger.warning("Task timeline item missing task_id, cannot denormalize")
+        """Embed a linked task's timeline after canonical task denormalization."""
+        task_id = normalization_service.resolve_task_id(item)
+        if task_id is None:
             return item
-        
-        # Lazy import to avoid circular dependency
-        from app.services.task_service import task_service
-        
-        task = await task_service.get_task(db, task_id)
+
+        task = references.tasks.get(task_id) if references is not None else await db.get(Task, task_id)
         if not task:
-            logger.warning(f"Task {task_id} not found for timeline denormalization")
-            # Return item as-is, it may have stale snapshot data
             return item
-        
-        # Populate from Task entity (source of truth)
-        item["task_id"] = task.id
-        item["task_human_id"] = f"TSK-{task.id:07d}"
-        item["title"] = task.title
-        item["entity_description"] = task.description
-        item["status"] = task.status.value if task.status else None
-        item["priority"] = task.priority.value if task.priority else None
-        item["assignee"] = task.assignee
-        item["due_date"] = task.due_date.isoformat() if task.due_date else None
-        item["picerl_stage"] = task.picerl_stage.value if task.picerl_stage else None
-        item["source_runbook"] = task.source_runbook
-        
-        # Use Task's created_at/created_by as the canonical source
-        item["created_at"] = task.created_at.isoformat() if task.created_at else item.get("created_at")
-        item["created_by"] = task.created_by or item.get("created_by")
-        
-        # Optionally embed task's timeline items as source_timeline_items
-        if include_linked_timelines and task.timeline_items:
-            # Denormalize the task's timeline items (without further nesting to avoid infinite recursion)
+
+        if task.timeline_items:
             source_items: Dict[str, Dict[str, Any]] = {}
-            for task_item in self._iter_items(task.timeline_items):
+            for task_item in self.iter_items(task.timeline_items):
                 denormalized = await self._denormalize_item_recursive(
-                    db, task_item, include_linked_timelines=False  # Don't recurse into linked entities
+                    db,
+                    task_item,
+                    include_linked_timelines=False,
+                    references=references,
                 )
                 source_items[str(denormalized["id"])] = denormalized
             item["source_timeline_items"] = source_items
-        
+
         return item
 
     async def _embed_alert_timeline_items(
         self, 
         db: AsyncSession, 
-        item: Dict[str, Any]
+        item: Dict[str, Any],
+        *,
+        references: TimelineReferenceIndex | None = None,
     ) -> Dict[str, Any]:
         """
         Embed timeline items from the linked alert into the alert timeline item.
@@ -593,45 +816,42 @@ class TimelineService:
         if not alert_id:
             return item
         
-        try:
-            # Fetch the linked alert directly and denormalize its timeline in-place.
-            # Going through alert_service.get_alert() can run unrelated detail-page
-            # side effects; failures there should not make alert child timelines
-            # disappear from case/task linked-entity cards.
-            from app.models.models import Alert
+        alert = (
+            references.alerts.get(alert_id)
+            if references is not None
+            else await db.get(Alert, alert_id)
+        )
+        if not alert:
+            logger.warning(f"Alert {alert_id} not found for timeline embedding")
+            return item
 
-            result = await db.execute(select(Alert).where(Alert.id == alert_id))
-            alert = result.scalar_one_or_none()
-            if not alert:
-                logger.warning(f"Alert {alert_id} not found for timeline embedding")
-                return item
+        item["title"] = alert.title
+        item["entity_description"] = alert.description
+        item["status"] = alert.status.value if alert.status else None
+        item["priority"] = alert.priority.value if alert.priority else None
+        item["assignee"] = alert.assignee
 
-            item["title"] = alert.title
-            item["entity_description"] = alert.description
-            item["status"] = alert.status.value if alert.status else None
-            item["priority"] = alert.priority.value if alert.priority else None
-            item["assignee"] = alert.assignee
-            
-            # Embed the alert's timeline items
-            if alert.timeline_items:
-                source_items: Dict[str, Dict[str, Any]] = {}
-                for alert_item in self._iter_items(alert.timeline_items):
-                    denormalized = await self._denormalize_item_recursive(
-                        db,
-                        alert_item,
-                        include_linked_timelines=False,
-                    )
-                    source_items[str(denormalized["id"])] = denormalized
-                item["source_timeline_items"] = source_items
-        except Exception as e:
-            logger.warning(f"Failed to embed timeline items for alert {alert_id}: {e}")
+        # Embed the alert's timeline items
+        if alert.timeline_items:
+            source_items: Dict[str, Dict[str, Any]] = {}
+            for alert_item in self.iter_items(alert.timeline_items):
+                denormalized = await self._denormalize_item_recursive(
+                    db,
+                    alert_item,
+                    include_linked_timelines=False,
+                    references=references,
+                )
+                source_items[str(denormalized["id"])] = denormalized
+            item["source_timeline_items"] = source_items
         
         return item
 
     async def _embed_case_timeline_items(
         self, 
         db: AsyncSession, 
-        item: Dict[str, Any]
+        item: Dict[str, Any],
+        *,
+        references: TimelineReferenceIndex | None = None,
     ) -> Dict[str, Any]:
         """
         Embed timeline items from the linked case into the case timeline item.
@@ -650,29 +870,34 @@ class TimelineService:
         if not case_id:
             return item
         
-        # Lazy import to avoid circular dependency
-        from app.services.case_service import case_service
-        
-        try:
-            # Use get_case without include_linked_timelines to avoid infinite recursion
-            case = await case_service.get_case(db, case_id, include_linked_timelines=False)
-            if not case:
-                logger.warning(f"Case {case_id} not found for timeline embedding")
-                return item
+        case = (
+            references.cases.get(case_id)
+            if references is not None
+            else await db.get(Case, case_id)
+        )
+        if not case:
+            logger.warning(f"Case {case_id} not found for timeline embedding")
+            return item
 
-            item["title"] = case.title
-            item["entity_description"] = case.description
-            item["status"] = case.status.value if case.status else None
-            item["priority"] = case.priority.value if case.priority else None
-            item["assignee"] = case.assignee
-            item["created_by"] = case.created_by or item.get("created_by")
-            
-            # Embed the case's timeline items
-            if case.timeline_items:
-                # Items are already denormalized from get_case
-                item["source_timeline_items"] = case.timeline_items
-        except Exception as e:
-            logger.warning(f"Failed to embed timeline items for case {case_id}: {e}")
+        item["title"] = case.title
+        item["entity_description"] = case.description
+        item["status"] = case.status.value if case.status else None
+        item["priority"] = case.priority.value if case.priority else None
+        item["assignee"] = case.assignee
+        item["created_by"] = case.created_by or item.get("created_by")
+
+        # Embed the case's timeline items
+        if case.timeline_items:
+            source_items: Dict[str, Dict[str, Any]] = {}
+            for case_item in self.iter_items(case.timeline_items):
+                denormalized = await self._denormalize_item_recursive(
+                    db,
+                    case_item,
+                    include_linked_timelines=False,
+                    references=references,
+                )
+                source_items[str(denormalized["id"])] = denormalized
+            item["source_timeline_items"] = source_items
         
         return item
 
@@ -716,39 +941,15 @@ class TimelineService:
             title = title[:200]
         
         # Parse priority
-        priority = Priority.MEDIUM
-        if item.get("priority"):
-            try:
-                priority = Priority(item["priority"]) if isinstance(item["priority"], str) else item["priority"]
-            except (ValueError, TypeError):
-                pass
+        priority = _coerce_enum(item.get("priority"), Priority) or Priority.MEDIUM
         
         # Parse status
-        status = TaskStatus.TODO
-        if item.get("status"):
-            try:
-                status = TaskStatus(item["status"]) if isinstance(item["status"], str) else item["status"]
-            except (ValueError, TypeError):
-                pass
+        status = _coerce_enum(item.get("status"), TaskStatus) or TaskStatus.TODO
         
         # Parse due_date
-        due_date = None
-        if item.get("due_date"):
-            due_date_val = item["due_date"]
-            if isinstance(due_date_val, datetime):
-                due_date = due_date_val
-            elif isinstance(due_date_val, str):
-                try:
-                    due_date = datetime.fromisoformat(due_date_val.replace("Z", "+00:00"))
-                except ValueError:
-                    pass
+        due_date = parse_optional_utc_datetime(item.get("due_date"))
 
-        picerl_stage = None
-        if item.get("picerl_stage"):
-            try:
-                picerl_stage = PICERLStage(item["picerl_stage"]) if isinstance(item["picerl_stage"], str) else item["picerl_stage"]
-            except (ValueError, TypeError):
-                pass
+        picerl_stage = _coerce_enum(item.get("picerl_stage"), PICERLStage)
         
         task_create = TaskCreate(
             title=title,
@@ -762,9 +963,9 @@ class TimelineService:
             tags=item.get("tags") or [],
         )
         
-        task = await task_service.create_task(db, task_create, created_by)
+        task = await task_service.create_task_in_transaction(db, task_create, created_by)
         if task.id is None:
-            raise ValueError("Task creation did not return an ID")
+            raise RuntimeError("Task creation did not return an ID")
         return task.id
 
     async def _update_task_for_timeline_item(
@@ -773,11 +974,11 @@ class TimelineService:
         task_id: int,
         item: Dict[str, Any],
         updated_by: str,
-    ) -> bool:
+    ) -> tuple[bool, Optional[DeferredAutonomousTaskEnqueue]]:
         """
         Update a Task entity from timeline item data.
         
-        Returns True if update succeeded, False if task not found.
+        Returns whether the update succeeded and any post-commit enqueue.
         """
         from app.services.task_service import task_service
         from app.models.models import TaskUpdate
@@ -796,16 +997,12 @@ class TimelineService:
             update_data["description"] = item["description"]
         
         if "priority" in item and item["priority"]:
-            try:
-                update_data["priority"] = Priority(item["priority"]) if isinstance(item["priority"], str) else item["priority"]
-            except (ValueError, TypeError):
-                pass
+            if priority := _coerce_enum(item["priority"], Priority):
+                update_data["priority"] = priority
         
         if "status" in item and item["status"]:
-            try:
-                update_data["status"] = TaskStatus(item["status"]) if isinstance(item["status"], str) else item["status"]
-            except (ValueError, TypeError):
-                pass
+            if status := _coerce_enum(item["status"], TaskStatus):
+                update_data["status"] = status
         
         if "assignee" in item:
             update_data["assignee"] = item["assignee"]
@@ -814,35 +1011,30 @@ class TimelineService:
             due_date_val = item["due_date"]
             if due_date_val is None:
                 update_data["due_date"] = None
-            elif isinstance(due_date_val, datetime):
-                update_data["due_date"] = due_date_val
-            elif isinstance(due_date_val, str):
-                try:
-                    update_data["due_date"] = datetime.fromisoformat(due_date_val.replace("Z", "+00:00"))
-                except ValueError:
-                    pass
+            elif parsed_due_date := parse_optional_utc_datetime(due_date_val):
+                update_data["due_date"] = parsed_due_date
         
         if not update_data:
-            return True  # Nothing to update
+            return True, None  # Nothing to update
         
         task_update = TaskUpdate(**update_data)
-        result = await task_service.update_task(db, task_id, task_update, updated_by)
-        return result is not None
+        outcome = await task_service.update_task_in_transaction(
+            db,
+            task_id,
+            task_update,
+            updated_by,
+        )
+        if outcome is None:
+            return False, None
 
-    async def _delete_task_for_timeline_item(
-        self,
-        db: AsyncSession,
-        task_id: int,
-        deleted_by: str,
-    ) -> bool:
-        """Delete the Task entity associated with a timeline item."""
-        from app.services.task_service import task_service
-        
-        try:
-            return await task_service.delete_task(db, task_id, deleted_by)
-        except Exception as e:
-            logger.error(f"Failed to delete task {task_id}: {e}")
-            return False
+        task, autonomous_assignee = outcome
+        deferred_enqueue = None
+        if task.id is not None and autonomous_assignee is not None:
+            deferred_enqueue = DeferredAutonomousTaskEnqueue(
+                task_id=task.id,
+                assignee=autonomous_assignee,
+            )
+        return True, deferred_enqueue
 
     # ===== High-level Timeline Operations with Resource Sync =====
 
@@ -854,6 +1046,7 @@ class TimelineService:
         created_by: str,
         entity_id: Optional[int] = None,
         entity_type: str = "case",
+        preserve_item_id: bool = False,
     ) -> tuple[Dict[str, Any], Optional[int]]:
         """
         Add a timeline item with external resource synchronization.
@@ -884,7 +1077,7 @@ class TimelineService:
         
         # Alerts do not support task timeline items
         if item_type == "task" and entity_type == "alert":
-            raise ValueError("Task timeline items are not supported on alerts")
+            raise TimelineValidationError("Task timeline items are not supported on alerts")
         
         # Normalize the item first
         normalized = await self.normalize_item(db, item)
@@ -892,7 +1085,9 @@ class TimelineService:
         # Handle task creation
         if item_type == "task":
             if not entity_id:
-                raise ValueError("entity_id (case_id) is required for task timeline items")
+                raise TimelineValidationError(
+                    "entity_id (case_id) is required for task timeline items"
+                )
             
             # Create the Task entity using the ORIGINAL item (before normalization stripped fields)
             # This sets linked_at which triggers dynamic injection
@@ -905,7 +1100,12 @@ class TimelineService:
             return normalized, None
         
         # Add to timeline (for non-task items)
-        self.add_timeline_item(entity, normalized, created_by=created_by)
+        self.add_timeline_item(
+            entity,
+            normalized,
+            created_by=created_by,
+            preserve_item_id=preserve_item_id,
+        )
 
         enrichment_priority: Optional[int] = None
         if entity_id is not None:
@@ -926,7 +1126,7 @@ class TimelineService:
         item_id: str,
         item: Dict[str, Any],
         updated_by: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[TimelineItemUpdateResult]:
         """
         Update a timeline item with external resource synchronization.
         
@@ -941,7 +1141,7 @@ class TimelineService:
             The updated item dict, or None if not found
         """
         # Find the existing item
-        existing = self._find_item_by_id(getattr(entity, "timeline_items", None) or [], item_id)
+        existing = self.find_item_by_id(getattr(entity, "timeline_items", None) or [], item_id)
         if not existing:
             return None
         
@@ -949,12 +1149,19 @@ class TimelineService:
         
         # Handle task updates
         if item_type == "task":
-            task_id = self._resolve_task_id(existing)
+            task_id = normalization_service.resolve_task_id(existing)
             if task_id:
                 # Route task-specific updates (title, status, etc.) to Task entity
-                success = await self._update_task_for_timeline_item(db, task_id, item, updated_by)
+                success, autonomous_task_enqueue = await self._update_task_for_timeline_item(
+                    db,
+                    task_id,
+                    item,
+                    updated_by,
+                )
                 if not success:
                     logger.warning(f"Task {task_id} not found, may have been deleted")
+            else:
+                autonomous_task_enqueue = None
             
             # For tasks, update timeline-specific reference fields in the JSON
             # while leaving task entity fields on the Task row itself.
@@ -966,17 +1173,20 @@ class TimelineService:
                     timeline_specific_update[field] = item[field]
             
             if timeline_specific_update:
-                self.update_timeline_item(entity, item_id, timeline_specific_update, updated_by=updated_by)
+                self.update_timeline_item(entity, item_id, timeline_specific_update)
             
             # Return the existing item (caller should re-read with denormalization)
-            return existing
+            return TimelineItemUpdateResult(
+                item=existing,
+                autonomous_task_enqueue=autonomous_task_enqueue,
+            )
         
         # For non-task items, update normally
         normalized = await self.normalize_item(db, item)
-        if not self.update_timeline_item(entity, item_id, normalized, updated_by=updated_by):
+        if not self.update_timeline_item(entity, item_id, normalized):
             return None
         
-        return normalized
+        return TimelineItemUpdateResult(item=normalized)
 
     async def remove_timeline_item_with_cleanup(
         self,
@@ -984,59 +1194,58 @@ class TimelineService:
         entity: Any,
         item_id: str,
         removed_by: str,
-    ) -> bool:
+    ) -> Optional[TimelineRemovalCleanup]:
         """
-        Remove a timeline item and clean up external resources.
+        Remove a timeline item and prepare any external cleanup.
         
         Handles:
-        - Attachments: Deletes file from storage
-        - Tasks: Deletes the Task record from database
+        - Attachments: Defers storage deletion until after the database commit
+        - Tasks: Deletes the Task record in the caller's transaction
         
         Returns:
-            True if item was found and removed, False otherwise
+            Deferred cleanup if the item was removed, otherwise ``None``.
         """
         items = getattr(entity, "timeline_items", None)
         if not items:
-            return False
+            return None
         
         # Find the item first
-        item_to_remove = self._find_item_by_id(items, item_id)
+        item_to_remove = self.find_item_by_id(items, item_id)
         if not item_to_remove:
-            return False
-        
+            return None
+
         item_type = item_to_remove.get("type")
-        # Clean up external resources
+        storage_key: Optional[str] = None
         if item_type == "attachment":
-            storage_key = item_to_remove.get("storage_key")
-            if storage_key:
-                from app.services.storage_service import storage_service
-                try:
-                    await storage_service.delete_file(storage_key)
-                    logger.info(f"Deleted file from storage: {storage_key}")
-                except Exception as e:
-                    logger.error(f"Failed to delete file from storage {storage_key}: {e}")
-                    # Continue with removal even if storage delete fails
+            candidate = item_to_remove.get("storage_key")
+            if isinstance(candidate, str) and candidate:
+                storage_key = candidate
         
         elif item_type == "task":
-            task_id = self._resolve_task_id(item_to_remove)
+            task_id = normalization_service.resolve_task_id(item_to_remove)
             if task_id:
-                await self._delete_task_for_timeline_item(db, task_id, removed_by)
+                from app.services.task_service import task_service
+
+                if not await task_service.delete_task_in_transaction(db, task_id, removed_by):
+                    raise TimelineValidationError(f"Task {task_id} not found")
         
         # Remove from timeline
-        return self.remove_timeline_item(entity, item_id)
+        if not self.remove_timeline_item(entity, item_id):
+            return None
+        return TimelineRemovalCleanup(storage_key=storage_key)
 
-    def _find_item_by_id(self, items: Any, item_id: str) -> Optional[Dict[str, Any]]:
+    def find_item_by_id(self, items: Any, item_id: str) -> Optional[Dict[str, Any]]:
         """Recursively find a timeline item by ID, supporting nested replies."""
         if not items:
             return None
         if isinstance(items, dict) and item_id in items:
             item = items[item_id]
             return item if isinstance(item, dict) else None
-        for item in self._iter_items(items):
+        for item in self.iter_items(items):
             if item.get("id") == item_id:
                 return item
             # Check replies recursively
-            found = self._find_item_by_id(item.get("replies") or {}, item_id)
+            found = self.find_item_by_id(item.get("replies") or {}, item_id)
             if found:
                 return found
         return None
@@ -1046,21 +1255,32 @@ class TimelineService:
             item["created_at"] = datetime.now(timezone.utc).isoformat()
         item["created_by"] = created_by
     
-    def _serialize_datetime_fields(self, item: Dict[str, Any]) -> None:
-        """Ensure all datetime objects in item are converted to ISO strings for JSON storage."""
-        for key, value in item.items():
-            if isinstance(value, datetime):
-                item[key] = value.isoformat()
-            elif isinstance(value, list):
-                for list_item in value:
-                    if isinstance(list_item, dict):
-                        self._serialize_datetime_fields(list_item)
-            elif isinstance(value, dict):
-                for nested_item in value.values():
-                    if isinstance(nested_item, dict):
-                        self._serialize_datetime_fields(nested_item)
+    @classmethod
+    def _serialize_datetime_value(cls, value: Any) -> Any:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {
+                key: cls._serialize_datetime_value(child)
+                for key, child in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._serialize_datetime_value(child) for child in value]
+        return value
 
-    def add_timeline_item(self, entity: Any, item: Dict[str, Any], created_by: str) -> None:
+    def _serialize_datetime_fields(self, item: Dict[str, Any]) -> None:
+        """Convert datetime objects at every JSON nesting depth to ISO strings."""
+        for key, value in item.items():
+            item[key] = self._serialize_datetime_value(value)
+
+    def add_timeline_item(
+        self,
+        entity: Any,
+        item: Dict[str, Any],
+        created_by: str,
+        *,
+        preserve_item_id: bool = False,
+    ) -> None:
         """
         Mutate entity to append a normalized item with metadata; does not commit.
         
@@ -1069,7 +1289,7 @@ class TimelineService:
         """
         timeline_items = self._ensure_storage_items(entity)
         server_prepared_attachment = item.get("type") == "attachment" and bool(item.get("storage_key"))
-        if server_prepared_attachment:
+        if server_prepared_attachment or preserve_item_id:
             self._ensure_item_id(item)
         else:
             self._assign_new_item_ids(item)
@@ -1087,14 +1307,12 @@ class TimelineService:
                 if hasattr(entity, "updated_at"):
                     setattr(entity, "updated_at", datetime.now(timezone.utc))
                 return
-            else:
-                # Parent not found - add as top-level item anyway (graceful degradation)
-                # Could also raise an error here if strict validation is needed
-                pass
+            # Parent not found: preserve the established graceful fallback and
+            # store the item at the top level.
         
         # Add as top-level item
         if str(item["id"]) in timeline_items:
-            raise ValueError("Timeline item ID collision")
+            raise TimelineValidationError("Timeline item ID collision")
         timeline_items[str(item["id"])] = item
         # Mark the JSON column as modified so SQLAlchemy knows to update it
         flag_modified(entity, "timeline_items")
@@ -1106,7 +1324,7 @@ class TimelineService:
         Recursively search for parent item and add reply to it.
         Returns True if parent found and reply added, False otherwise.
         """
-        for item in self._iter_items(items):
+        for item in self.iter_items(items):
             if item.get("id") == parent_id:
                 # Found parent - add reply
                 existing_replies = item.get("replies")
@@ -1127,7 +1345,12 @@ class TimelineService:
         
         return False
 
-    def update_timeline_item(self, entity: Any, item_id: str, updated: Dict[str, Any], updated_by: str) -> bool:
+    def update_timeline_item(
+        self,
+        entity: Any,
+        item_id: str,
+        updated: Dict[str, Any],
+    ) -> bool:
         """
         Update a timeline item by id; preserves created_* fields; returns True if found and updated.
         Supports nested replies at any depth.
@@ -1137,7 +1360,7 @@ class TimelineService:
             return False
         
         # Try to update recursively
-        if self._update_item_recursive(items, item_id, updated, updated_by):
+        if self._update_item_recursive(items, item_id, updated):
             flag_modified(entity, "timeline_items")
             if hasattr(entity, "updated_at"):
                 setattr(entity, "updated_at", datetime.now(timezone.utc))
@@ -1160,16 +1383,21 @@ class TimelineService:
         self._coerce_item_for_storage(new_item)
         return new_item
 
-    def _update_item_recursive(self, items: Any, item_id: str, updated: Dict[str, Any], updated_by: str) -> bool:
+    def _update_item_recursive(
+        self,
+        items: Any,
+        item_id: str,
+        updated: Dict[str, Any],
+    ) -> bool:
         """Recursively search and update a timeline item by ID."""
         if isinstance(items, dict):
             if item_id in items:
                 items[item_id] = self._build_updated_item(items[item_id], item_id, updated)
                 return True
 
-            for item in self._iter_items(items):
+            for item in self.iter_items(items):
                 replies = item.get("replies")
-                if replies and self._update_item_recursive(replies, item_id, updated, updated_by):
+                if replies and self._update_item_recursive(replies, item_id, updated):
                     return True
 
             return False
@@ -1184,7 +1412,7 @@ class TimelineService:
                     return True
 
                 replies = item.get("replies")
-                if replies and self._update_item_recursive(replies, item_id, updated, updated_by):
+                if replies and self._update_item_recursive(replies, item_id, updated):
                     return True
 
         return False
@@ -1210,27 +1438,22 @@ class TimelineService:
     def _remove_item_recursive(self, items: Any, item_id: str) -> bool:
         """Recursively search and remove a timeline item by ID."""
         if isinstance(items, dict):
-            if items.pop(item_id, None) is not None:
+            if item_id in items:
+                del items[item_id]
                 return True
-            for item in items.values():
-                replies = item.get('replies')
-                if replies and self._remove_item_recursive(replies, item_id):
+        elif isinstance(items, list):
+            for index, item in enumerate(items):
+                if isinstance(item, dict) and item.get("id") == item_id:
+                    del items[index]
                     return True
+        else:
             return False
 
-        # Try to remove at current level
-        original_len = len(items)
-        items[:] = [it for it in items if it.get("id") != item_id]
-        if len(items) < original_len:
-            return True
-        
-        # Item not found at this level - check nested replies
-        for item in items:
-            replies = item.get('replies')
-            if replies and isinstance(replies, list):
-                if self._remove_item_recursive(replies, item_id):
-                    return True
-        
+        for item in self.iter_items(items):
+            replies = item.get("replies")
+            if replies and self._remove_item_recursive(replies, item_id):
+                return True
+
         return False
 
 

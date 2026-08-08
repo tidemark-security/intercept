@@ -16,7 +16,7 @@ import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional, Set
 
 import asyncpg
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 CHANNEL = "timeline_events"
 HEARTBEAT_INTERVAL = 30  # seconds
 REMOTE_PRESENCE_TTL = HEARTBEAT_INTERVAL * 3
+_EXPECTED_LISTENER_CONNECTION_ERRORS = (
+    asyncpg.PostgresError,
+    asyncpg.InterfaceError,
+    OSError,
+    TimeoutError,
+)
 
 
 def _get_raw_dsn() -> str:
@@ -37,14 +43,20 @@ def _get_raw_dsn() -> str:
     return url.replace("postgresql+asyncpg://", "postgresql://")
 
 
-async def _publish_realtime_message(payload: Dict[str, Any]) -> None:
-    """Publish a JSON payload to the realtime Postgres channel."""
+def _serialize_notify_payload(payload: Dict[str, Any]) -> str:
+    """Serialize a realtime payload and enforce the shared NOTIFY size warning."""
     payload_json = json.dumps(payload)
     if len(payload_json) > 7500:
         logger.warning(
             "NOTIFY payload exceeds 7500 bytes (%d), approaching 8000-byte PG limit",
             len(payload_json),
         )
+    return payload_json
+
+
+async def _publish_realtime_message(payload: Dict[str, Any]) -> None:
+    """Publish a JSON payload to the realtime Postgres channel."""
+    payload_json = _serialize_notify_payload(payload)
 
     conn = await asyncpg.connect(_get_raw_dsn())
     try:
@@ -54,6 +66,7 @@ async def _publish_realtime_message(payload: Dict[str, Any]) -> None:
 
 
 PresencePublisher = Callable[[Dict[str, Any]], Awaitable[None]]
+SessionValidator = Callable[[str], Awaitable[bool]]
 
 
 class ConnectionManager:
@@ -64,9 +77,11 @@ class ConnectionManager:
         *,
         node_id: Optional[str] = None,
         presence_publisher: Optional[PresencePublisher] = None,
+        session_validator: Optional[SessionValidator] = None,
     ) -> None:
         self.node_id = node_id or str(uuid.uuid4())
         self._presence_publisher = presence_publisher or _publish_realtime_message
+        self._session_validator = session_validator
         # ws → set of subscription keys ("alert:5", "case:12")
         self._connections: Dict[WebSocket, Set[str]] = {}
         # subscription key → set of WebSockets
@@ -85,11 +100,71 @@ class ConnectionManager:
     def active_connections(self) -> int:
         return len(self._connections)
 
+    def set_session_validator(self, validator: SessionValidator) -> None:
+        """Configure the production session validator without an import cycle."""
+        self._session_validator = validator
+
     async def connect(self, ws: WebSocket, session_token: str, username: str) -> None:
         async with self._lock:
             self._connections[ws] = set()
             self._session_tokens[ws] = session_token
             self._usernames[ws] = username
+
+    async def validate_connection(self, ws: WebSocket) -> bool:
+        """Fail closed when a connected WebSocket's stored session is invalid."""
+        async with self._lock:
+            session_token = self._session_tokens.get(ws)
+
+        if session_token is None:
+            return False
+
+        validator = self._session_validator
+        if validator is None:
+            # Tests and isolated manager consumers may intentionally omit a
+            # validator. The production singleton is configured by the
+            # WebSocket route after its database-backed validator is defined.
+            return True
+
+        try:
+            session_valid = await validator(session_token)
+        except Exception:
+            logger.exception("WebSocket session validation error")
+            await self._reject_connection(
+                ws,
+                code=1011,
+                reason="Session validation unavailable",
+            )
+            return False
+
+        if not session_valid:
+            await self._reject_connection(
+                ws,
+                code=4001,
+                reason="Session expired",
+            )
+            return False
+
+        # Do not authorize a command or send if the connection was removed or
+        # replaced while the asynchronous validator was running.
+        async with self._lock:
+            return self._session_tokens.get(ws) == session_token
+
+    async def _reject_connection(
+        self,
+        ws: WebSocket,
+        *,
+        code: int,
+        reason: str,
+    ) -> None:
+        """Remove and close a connection whose session cannot be trusted."""
+        try:
+            await self.disconnect(ws)
+        finally:
+            try:
+                await ws.close(code=code, reason=reason)
+            except (RuntimeError, WebSocketDisconnect):
+                # The peer may have disconnected while validation was in progress.
+                pass
 
     async def disconnect(self, ws: WebSocket) -> None:
         affected_keys: list[str] = []
@@ -109,12 +184,15 @@ class ConnectionManager:
             await self._broadcast_presence_for_key(key)
             await self._publish_presence_for_key(key)
 
-    async def subscribe(self, ws: WebSocket, entity_type: str, entity_id: int) -> None:
+    async def subscribe(self, ws: WebSocket, entity_type: str, entity_id: int) -> bool:
+        if not await self.validate_connection(ws):
+            return False
+
         key = f"{entity_type}:{entity_id}"
         should_broadcast = False
         async with self._lock:
             if ws not in self._connections:
-                return
+                return False
             self._connections[ws].add(key)
             self._subscriptions.setdefault(key, set()).add(ws)
             should_broadcast = True
@@ -123,8 +201,12 @@ class ConnectionManager:
             await self._broadcast_presence_for_key(key)
             await self._publish_presence_for_key(key)
             await self._publish_presence_request(key)
+        return True
 
-    async def unsubscribe(self, ws: WebSocket, entity_type: str, entity_id: int) -> None:
+    async def unsubscribe(self, ws: WebSocket, entity_type: str, entity_id: int) -> bool:
+        if not await self.validate_connection(ws):
+            return False
+
         key = f"{entity_type}:{entity_id}"
         should_broadcast = False
         async with self._lock:
@@ -141,6 +223,7 @@ class ConnectionManager:
         if should_broadcast:
             await self._broadcast_presence_for_key(key)
             await self._publish_presence_for_key(key)
+        return True
 
     def get_session_token(self, ws: WebSocket) -> Optional[str]:
         return self._session_tokens.get(ws)
@@ -220,6 +303,7 @@ class ConnectionManager:
             return
         entity_type, entity_id = entity
 
+        await self._prune_invalid_connections_for_key(key)
         async with self._lock:
             local_viewers = sorted(self._get_local_viewers_for_key(key))
 
@@ -284,6 +368,7 @@ class ConnectionManager:
             return
         entity_type, entity_id = entity
 
+        await self._prune_invalid_connections_for_key(key)
         async with self._lock:
             subscribers = list(self._subscriptions.get(key, set()))
             viewers = sorted(self._get_local_viewers_for_key(key) | self._get_remote_viewers_for_key(key))
@@ -309,10 +394,13 @@ class ConnectionManager:
         async with self._lock:
             subscribers = list(self._subscriptions.get(key, set()))
 
-        await self._send_to_many(subscribers, message)
-        return set(subscribers)
+        return await self._send_to_many(subscribers, message)
 
-    async def broadcast_list(self, entity_type: str, message: dict, exclude: set[WebSocket] | None = None) -> None:
+    async def broadcast_list(
+        self,
+        message: dict,
+        exclude: set[WebSocket] | None = None,
+    ) -> None:
         """Send message to ALL connected clients for list invalidation.
 
         Any connected client may be viewing a list of this entity type,
@@ -326,15 +414,31 @@ class ConnectionManager:
 
         await self._send_to_many(subscriber_list, message)
 
-    async def _send_to_many(self, subscribers: list[WebSocket], message: dict) -> None:
-        stale: list[WebSocket] = []
+    async def _prune_invalid_connections_for_key(self, key: str) -> None:
+        """Remove invalid subscribers before deriving a presence snapshot."""
+        async with self._lock:
+            subscribers = list(self._subscriptions.get(key, set()))
         for ws in subscribers:
+            await self.validate_connection(ws)
+
+    async def _send_to_many(
+        self,
+        subscribers: list[WebSocket],
+        message: dict,
+    ) -> set[WebSocket]:
+        stale: list[WebSocket] = []
+        notified: set[WebSocket] = set()
+        for ws in subscribers:
+            if not await self.validate_connection(ws):
+                continue
             try:
                 await ws.send_json(message)
+                notified.add(ws)
             except Exception:
                 stale.append(ws)
         for ws in stale:
             await self.disconnect(ws)
+        return notified
 
 
 class NotificationListener:
@@ -344,48 +448,95 @@ class NotificationListener:
         self._manager = manager
         self._conn: Optional[asyncpg.Connection] = None
         self._running = False
-        self._reconnect_task: Optional[asyncio.Task] = None
-        self._presence_task: Optional[asyncio.Task] = None
+        self._reconnect_task: asyncio.Task[None] | None = None
+        self._presence_task: asyncio.Task[None] | None = None
+        self._notify_tasks: set[asyncio.Task[None]] = set()
 
-    async def start(self) -> None:
+    async def start(self) -> bool:
+        """Start listener tasks and report whether the initial connection succeeded."""
         self._running = True
-        await self._connect_and_listen()
-        self._presence_task = asyncio.create_task(self._presence_snapshot_loop())
+        connected = await self._connect_and_listen()
+        if not connected:
+            self._schedule_reconnect()
+        self._presence_task = self._create_background_task(
+            self._presence_snapshot_loop(),
+            name="realtime-presence-snapshots",
+        )
+        return connected
 
     async def stop(self) -> None:
         self._running = False
-        if self._reconnect_task and not self._reconnect_task.done():
-            self._reconnect_task.cancel()
-            try:
-                await self._reconnect_task
-            except asyncio.CancelledError:
-                pass
-        if self._presence_task and not self._presence_task.done():
-            self._presence_task.cancel()
-            try:
-                await self._presence_task
-            except asyncio.CancelledError:
-                pass
+        await self._cancel_background_task(self._reconnect_task)
+        await self._cancel_background_task(self._presence_task)
         await self._close_conn()
+        await self._cancel_notify_tasks()
 
-    async def _connect_and_listen(self) -> None:
+    def _create_background_task(
+        self,
+        coroutine: Awaitable[None],
+        *,
+        name: str,
+    ) -> asyncio.Task[None]:
+        task = asyncio.create_task(coroutine, name=name)
+        task.add_done_callback(self._log_background_task_failure)
+        return task
+
+    @staticmethod
+    async def _cancel_background_task(task: asyncio.Task[None] | None) -> None:
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    @staticmethod
+    def _log_background_task_failure(task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "%s stopped unexpectedly",
+                task.get_name(),
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+    async def _connect_and_listen(self) -> bool:
         try:
             dsn = _get_raw_dsn()
             self._conn = await asyncpg.connect(dsn)
             await self._conn.add_listener(CHANNEL, self._on_notify)  # type: ignore[union-attr]
             logger.info(f"LISTEN {CHANNEL} — notification listener started")
-        except Exception as e:
-            logger.error(f"Failed to start notification listener: {e}")
-            self._schedule_reconnect()
+            return True
+        except _EXPECTED_LISTENER_CONNECTION_ERRORS as exc:
+            logger.error("Failed to start notification listener: %s", exc)
+            await self._close_conn()
+            return False
+        except BaseException:
+            await self._close_conn()
+            raise
 
     def _on_notify(
         self,
-        connection: asyncpg.Connection,
-        pid: int,
-        channel: str,
+        _connection: asyncpg.Connection,
+        _pid: int,
+        _channel: str,
         payload: str,
     ) -> None:
-        asyncio.ensure_future(self._handle_notify(payload))
+        if not self._running:
+            return
+
+        task = asyncio.create_task(self._handle_notify(payload))
+        self._notify_tasks.add(task)
+        task.add_done_callback(self._notify_tasks.discard)
+
+    async def _cancel_notify_tasks(self) -> None:
+        tasks = tuple(self._notify_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._notify_tasks.difference_update(tasks)
 
     async def _handle_notify(self, payload: str) -> None:
         try:
@@ -417,7 +568,7 @@ class NotificationListener:
             # Fan out to detail subscribers
             already_notified = await self._manager.broadcast(entity_type, entity_id, message)
             # Fan out to ALL connected clients for list invalidation (excluding already-notified)
-            await self._manager.broadcast_list(entity_type, message, exclude=already_notified)
+            await self._manager.broadcast_list(message, exclude=already_notified)
         except Exception:
             logger.exception("Error handling NOTIFY payload")
 
@@ -430,33 +581,41 @@ class NotificationListener:
                 logger.exception("Error publishing presence snapshots")
 
     async def _close_conn(self) -> None:
-        if self._conn and not self._conn.is_closed():
-            try:
-                await self._conn.remove_listener(CHANNEL, self._on_notify)
-                await self._conn.close()
-            except Exception:
-                pass
+        conn = self._conn
         self._conn = None
+        if conn is None or conn.is_closed():
+            return
+
+        try:
+            await conn.remove_listener(CHANNEL, self._on_notify)
+        except Exception:
+            logger.debug("Failed to remove notification listener during cleanup", exc_info=True)
+
+        try:
+            await conn.close()
+        except Exception:
+            logger.debug("Failed to close notification listener connection", exc_info=True)
 
     def _schedule_reconnect(self) -> None:
         if not self._running:
             return
-        self._reconnect_task = asyncio.ensure_future(self._reconnect_loop())
+        if self._reconnect_task and not self._reconnect_task.done():
+            return
+        self._reconnect_task = self._create_background_task(
+            self._reconnect_loop(),
+            name="realtime-notification-reconnect",
+        )
 
     async def _reconnect_loop(self) -> None:
         delay = 3
         max_delay = 60
         while self._running:
-            logger.info(f"Reconnecting notification listener in {delay}s…")
+            logger.info("Reconnecting notification listener in %ss…", delay)
             await asyncio.sleep(delay)
-            try:
-                await self._close_conn()
-                await self._connect_and_listen()
-                if self._conn and not self._conn.is_closed():
-                    logger.info("Notification listener reconnected")
-                    return
-            except Exception as e:
-                logger.warning(f"Reconnect failed: {e}")
+            await self._close_conn()
+            if await self._connect_and_listen():
+                logger.info("Notification listener reconnected")
+                return
             delay = min(delay * 2, max_delay)
 
 
@@ -500,12 +659,6 @@ async def emit_event(
     if item_type is not None:
         payload["item_type"] = item_type
 
-    payload_json = json.dumps(payload)
-
-    if len(payload_json) > 7500:
-        logger.warning(
-            "NOTIFY payload exceeds 7500 bytes (%d), approaching 8000-byte PG limit",
-            len(payload_json),
-        )
+    payload_json = _serialize_notify_payload(payload)
 
     await db.execute(text("SELECT pg_notify(:channel, :payload)"), {"channel": CHANNEL, "payload": payload_json})

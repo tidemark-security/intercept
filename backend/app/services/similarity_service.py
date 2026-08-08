@@ -8,11 +8,35 @@ Implements similarity scoring based on:
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Set, List, Dict, Any
+from typing import Any, Dict, List, Set
 from sqlmodel import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import Alert
+from app.services.observable_service import extract_high_signal_entities
+
+
+def _similarity_components(alert: Alert) -> tuple[str, str]:
+    source = (alert.source or "unknown").strip().lower()
+    title = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", alert.title.lower())).strip()
+    return source, title
+
+
+def _apply_similarity_filters(query: Any, alert: Alert, source: str, title: str) -> Any:
+    if alert.source:
+        query = query.where(func.lower(Alert.source) == source)
+    else:
+        query = query.where(Alert.source.is_(None))
+
+    normalized_title = func.lower(
+        func.regexp_replace(
+            func.regexp_replace(Alert.title, r"[^a-zA-Z0-9\s]", " ", "g"),
+            r"\s+",
+            " ",
+            "g",
+        )
+    )
+    return query.where(normalized_title.like(f"%{title}%"))
 
 
 def compute_similarity_key(alert: Alert) -> str:
@@ -26,12 +50,7 @@ def compute_similarity_key(alert: Alert) -> str:
     Returns:
         Similarity key string (e.g., "crowdstrike::powershell execution detected")
     """
-    source = (alert.source or "unknown").strip().lower()
-    
-    # Normalize title: lowercase, remove special chars, collapse whitespace
-    title = alert.title.lower()
-    title = re.sub(r'[^a-z0-9\s]', ' ', title)  # Remove special chars
-    title = re.sub(r'\s+', ' ', title).strip()  # Collapse whitespace
+    source, title = _similarity_components(alert)
     
     return f"{source}::{title}"
 
@@ -51,7 +70,7 @@ async def count_similar_alerts(
     Returns:
         Count of similar alerts (excluding the alert itself)
     """
-    similarity_key = compute_similarity_key(alert)
+    source, title = _similarity_components(alert)
     cutoff_time = datetime.now(timezone.utc) - timedelta(days=days)
     
     # Count alerts with same similarity key
@@ -61,29 +80,7 @@ async def count_similar_alerts(
     )
     
     # Filter by similarity key components
-    source = (alert.source or "unknown").strip().lower()
-    
-    # Compute normalized title for comparison
-    title = alert.title.lower()
-    title = re.sub(r'[^a-z0-9\s]', ' ', title)
-    title = re.sub(r'\s+', ' ', title).strip()
-    
-    # Find alerts with same source
-    if alert.source:
-        query = query.where(func.lower(Alert.source) == source)
-    else:
-        query = query.where(Alert.source.is_(None))
-    
-    # Find alerts with similar normalized title (using LIKE for now)
-    # Note: For production, consider using pg_trgm extension for better fuzzy matching
-    query = query.where(
-        func.lower(
-            func.regexp_replace(
-                func.regexp_replace(Alert.title, r'[^a-zA-Z0-9\s]', ' ', 'g'),
-                r'\s+', ' ', 'g'
-            )
-        ).like(f"%{title}%")
-    )
+    query = _apply_similarity_filters(query, alert, source, title)
     
     # Exclude the alert itself if it has an ID
     if alert.id is not None:
@@ -132,9 +129,6 @@ async def find_related_alerts(
     Returns:
         List of matches with scores and reasons
     """
-    from sqlmodel import select, func
-    from app.core.id_parser import format_entity_id
-    
     matches = []
     
     # Limit max_matches
@@ -142,31 +136,14 @@ async def find_related_alerts(
     
     # Strategy 1: Same source + title similarity
     similarity_key = compute_similarity_key(alert)
-    source = (alert.source or "unknown").strip().lower()
-    
-    # Normalize title for comparison
-    title = alert.title.lower()
-    title = re.sub(r'[^a-z0-9\s]', ' ', title)
-    title = re.sub(r'\s+', ' ', title).strip()
+    source, title = _similarity_components(alert)
     
     # Find alerts with same source and similar normalized title
     query = select(Alert).where(
         Alert.id != alert.id  # Exclude self
     )
     
-    # Filter by same source
-    if alert.source:
-        query = query.where(func.lower(Alert.source) == source)
-    
-    # Fuzzy title match using LIKE
-    query = query.where(
-        func.lower(
-            func.regexp_replace(
-                func.regexp_replace(Alert.title, r'[^a-zA-Z0-9\s]', ' ', 'g'),
-                r'\s+', ' ', 'g'
-            )
-        ).like(f"%{title}%")
-    )
+    query = _apply_similarity_filters(query, alert, source, title)
     
     # Limit results
     query = query.limit(max_matches)
@@ -174,6 +151,12 @@ async def find_related_alerts(
     result = await db.execute(query)
     similar_alerts = result.scalars().all()
     
+    from app.services.timeline_service import timeline_service
+
+    seed_entities = extract_high_signal_entities(
+        timeline_service.response_items(alert.timeline_items)
+    )
+
     for similar_alert in similar_alerts:
         reasons = []
         score = 0.0
@@ -188,19 +171,14 @@ async def find_related_alerts(
         
         # Check for shared entities (IPs, domains, hashes)
         # Extract entities from both alerts
-        from app.services.timeline_service import timeline_service
-
-        seed_entities = extract_high_signal_entities(
-            timeline_service._response_items(alert.timeline_items)
-        )
         match_entities = extract_high_signal_entities(
-            timeline_service._response_items(similar_alert.timeline_items)
+            timeline_service.response_items(similar_alert.timeline_items)
         )
         
         # Find shared entities
         shared = seed_entities & match_entities
         if shared:
-            for entity in list(shared)[:3]:  # Limit to top 3
+            for entity in sorted(shared)[:3]:  # Limit to top 3
                 # Determine entity type
                 if re.match(r'^(?:\d{1,3}\.){3}\d{1,3}$', entity):
                     reasons.append(f"shared_ip:{entity}")
@@ -223,27 +201,3 @@ async def find_related_alerts(
     matches.sort(key=lambda x: x["score"], reverse=True)
     
     return matches[:max_matches]
-
-
-def extract_high_signal_entities(timeline_items: List[dict]) -> Set[str]:
-    """Extract high-signal entities for similarity matching.
-    
-    Returns IPs, domains, and hashes from timeline items.
-    
-    Args:
-        timeline_items: List of timeline item dictionaries
-        
-    Returns:
-        Set of entity strings
-    """
-    from app.services.observable_service import extract_observables
-    
-    entities: Set[str] = set()
-    observables = extract_observables(timeline_items, max_observables=100)
-    
-    for obs in observables:
-        # Only include high-signal types
-        if obs.type in ("IP", "DOMAIN", "HASH"):
-            entities.add(obs.value)
-    
-    return entities

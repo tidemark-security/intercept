@@ -142,24 +142,32 @@ services:
   # ---------------------------------------------------------------------------
   backend:
     image: ghcr.io/tidemark-security/intercept-backend:${TAG:-latest}
-    extra_hosts:
-      - "localhost:host-gateway"
     ports:
       - "127.0.0.1:8000:8000"
     environment:
-      DATABASE_URL: postgresql+asyncpg://intercept_user:${POSTGRES_PASSWORD}@localhost:5432/intercept_case_db
+      DATABASE_URL: postgresql+asyncpg://intercept_user:${POSTGRES_PASSWORD}@postgres:5432/intercept_case_db
       SECRET_KEY: ${SECRET_KEY}
-      SESSION_COOKIE_SECURE: "false"               # Set to "true" when using HTTPS
-      STORAGE_ENDPOINT: localhost:9000
+      SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}" # Set to "true" when using HTTPS
+      STORAGE_ENDPOINT: minio:9000
       STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER}
       STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       STORAGE_BUCKET: intercept-attachments
       STORAGE_USE_SSL: "false"
-      LANGFLOW__BASE_URL: http://localhost:7860/api/v1
+      LANGFLOW__BASE_URL: http://langflow:7860/api/v1
       LANGFLOW__API_KEY: ${LANGFLOW_API_KEY}
+      MCP_OAUTH_ENABLED: "true"
+      MCP_OAUTH_PUBLIC_BASE_URL: ${INTERCEPT_PUBLIC_ORIGIN:-http://localhost}
+      MCP_OAUTH_LOGIN_BASE_URL: ${INTERCEPT_PUBLIC_ORIGIN:-http://localhost}
+      MCP_OAUTH_PENDING_AUTHORIZATION_PER_SOURCE_QUOTA: ${MCP_OAUTH_PENDING_AUTHORIZATION_PER_SOURCE_QUOTA:-50}
+      PASSWORD_HASH_MAX_CONCURRENT: ${PASSWORD_HASH_MAX_CONCURRENT:-8}
+      PASSWORD_HASH_LEASE_SECONDS: ${PASSWORD_HASH_LEASE_SECONDS:-900}
       AUTO_SEED: "true"                            # Creates the admin user on first boot
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD}
-      CORS_ORIGINS: '["http://localhost"]'         # Adjust for production (e.g. "https://example.com")
+      OIDC_REDIRECT_URI: ${INTERCEPT_PUBLIC_ORIGIN:-http://localhost}/api/v1/auth/oidc/callback
+      HTTP_TRUSTED_HOSTS: '${INTERCEPT_TRUSTED_HOSTS:-["localhost","127.0.0.1"]}'
+      HTTP_TRUSTED_PROXY_CIDRS: '["${INTERCEPT_INGRESS_SUBNET:-172.31.251.0/24}"]'
+      CORS_ORIGINS: '["${INTERCEPT_PUBLIC_ORIGIN:-http://localhost}"]' # Adjust for production (e.g. "https://example.com")
+      OIDC_ALLOWED_REDIRECT_ORIGINS: '["${INTERCEPT_PUBLIC_ORIGIN:-http://localhost}"]'
     depends_on:
       postgres:
         condition: service_healthy
@@ -171,6 +179,9 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    networks:
+      - default
+      - ingress
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -178,19 +189,17 @@ services:
   # ---------------------------------------------------------------------------
   worker:
     image: ghcr.io/tidemark-security/intercept-worker:${TAG:-latest}
-    extra_hosts:
-      - "localhost:host-gateway"
     ports:
       - "127.0.0.1:8001:8001"
     environment:
-      DATABASE_URL: postgresql+asyncpg://intercept_user:${POSTGRES_PASSWORD}@localhost:5432/intercept_case_db
+      DATABASE_URL: postgresql+asyncpg://intercept_user:${POSTGRES_PASSWORD}@postgres:5432/intercept_case_db
       SECRET_KEY: ${SECRET_KEY}
-      STORAGE_ENDPOINT: localhost:9000
+      STORAGE_ENDPOINT: minio:9000
       STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER}
       STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       STORAGE_BUCKET: intercept-attachments
       STORAGE_USE_SSL: "false"
-      LANGFLOW__BASE_URL: http://localhost:7860/api/v1
+      LANGFLOW__BASE_URL: http://langflow:7860/api/v1
       LANGFLOW__API_KEY: ${LANGFLOW_API_KEY}
       WORKER_CONCURRENCY: "20"
       HEALTH_PORT: "8001"
@@ -215,6 +224,9 @@ services:
       - "127.0.0.1:80:8080"
     depends_on:
       - backend
+    networks:
+      - default
+      - ingress
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -257,3 +269,11 @@ volumes:
   tmi_qs_postgres_data:
   tmi_qs_minio_data:
   tmi_qs_langflow_data:
+
+networks:
+  default:
+  ingress:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${INTERCEPT_INGRESS_SUBNET:-172.31.251.0/24}

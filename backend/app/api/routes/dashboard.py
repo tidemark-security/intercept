@@ -3,20 +3,17 @@ Dashboard API Routes
 
 Provides aggregated statistics for the dashboard homepage.
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from typing import List, Optional, Literal
 from datetime import datetime
-import logging
 
 from app.core.database import get_db
 from app.services.dashboard_service import dashboard_service
 from app.models.models import UserAccount
 from app.models.enums import Priority
 from app.api.routes.admin_auth import require_authenticated_user
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/dashboard",
@@ -75,14 +72,7 @@ async def get_sidebar_badge_counts(
     _current_user: UserAccount = Depends(require_authenticated_user)
 ):
     """Get authoritative sidebar badge counts for open and unassigned work."""
-    try:
-        return await dashboard_service.get_sidebar_badge_counts(db)
-    except Exception as e:
-        logger.error(f"Error fetching sidebar badge counts: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error fetching sidebar badge counts: {str(e)}",
-        )
+    return await dashboard_service.get_sidebar_badge_counts(db)
 
 
 @router.get("/stats", response_model=DashboardStatsResponse)
@@ -105,21 +95,16 @@ async def get_dashboard_stats(
     
     If my_items=true (default), stats are filtered to current user's assignments.
     """
-    try:
-        username = current_user.username if my_items else None
-        stats = await dashboard_service.get_dashboard_stats(db, username)
-        
-        return DashboardStatsResponse(
-            unacknowledged_alerts=stats.unacknowledged_alerts,
-            open_tasks=stats.open_tasks,
-            assigned_cases=stats.assigned_cases,
-            tasks_due_today=stats.tasks_due_today,
-            critical_cases=stats.critical_cases,
-        )
-        
-    except Exception as e:
-        logger.error(f"Error fetching dashboard stats: {e}")
-        raise HTTPException(status_code=500, detail=f"Error fetching dashboard stats: {str(e)}")
+    username = current_user.username if my_items else None
+    stats = await dashboard_service.get_dashboard_stats(db, username)
+
+    return DashboardStatsResponse(
+        unacknowledged_alerts=stats.unacknowledged_alerts,
+        open_tasks=stats.open_tasks,
+        assigned_cases=stats.assigned_cases,
+        tasks_due_today=stats.tasks_due_today,
+        critical_cases=stats.critical_cases,
+    )
 
 
 @router.get("/recent", response_model=RecentItemsResponse)
@@ -137,15 +122,10 @@ async def get_recent_items(
     Returns items sorted by updated_at descending.
     If my_items=true (default), only items assigned to current user are returned.
     """
-    try:
-        username = current_user.username if my_items else None
-        items = await dashboard_service.get_recent_items(db, username, limit)
-        
-        return RecentItemsResponse(items=items)
-        
-    except Exception as e:
-        logger.error(f"Error fetching recent items: {e}")
-        raise HTTPException(status_code=500, detail=f"Error fetching recent items: {str(e)}")
+    username = current_user.username if my_items else None
+    items = await dashboard_service.get_recent_items(db, username, limit)
+
+    return RecentItemsResponse(items=items)
 
 
 @router.get("/priority-items", response_model=RecentItemsResponse)
@@ -160,11 +140,8 @@ async def get_priority_items(
     sorted by priority (highest first), then by type (alerts, tasks, cases).
     This helps analysts see their workload prioritized.
     """
-    try:
-        items, truncated = await dashboard_service.get_priority_items(db, current_user.username, limit)
-        
-        return RecentItemsResponse(items=items, truncated=truncated)
-        
-    except Exception as e:
-        logger.error(f"Error fetching priority items: {e}")
-        raise HTTPException(status_code=500, detail=f"Error fetching priority items: {str(e)}")
+    items, truncated = await dashboard_service.get_priority_items(
+        db, current_user.username, limit
+    )
+
+    return RecentItemsResponse(items=items, truncated=truncated)

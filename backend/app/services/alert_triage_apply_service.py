@@ -11,16 +11,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.enums import AlertStatus, CaseStatus, Priority
 from app.models.models import Alert, Case
-from app.services.tag_filter_utils import normalize_persisted_tags
+from app.services.tag_filter_utils import normalize_derived_entity_tags
 
-TRIAGE_COMPLETION_STATUSES = {
-    AlertStatus.ESCALATED,
+CLOSED_ALERT_STATUSES = frozenset({
     AlertStatus.CLOSED_TP,
     AlertStatus.CLOSED_BP,
     AlertStatus.CLOSED_FP,
     AlertStatus.CLOSED_UNRESOLVED,
     AlertStatus.CLOSED_DUPLICATE,
-}
+})
+
+TRIAGE_COMPLETION_STATUSES = CLOSED_ALERT_STATUSES | {AlertStatus.ESCALATED}
 
 
 def is_triage_completion_status(status: Optional[AlertStatus]) -> bool:
@@ -83,7 +84,9 @@ async def create_case_from_alert(
         title=title or f"Case from Alert: {alert.title}",
         description=description if description is not None else alert.description,
         priority=priority or alert.priority or Priority.MEDIUM,
-        tags=normalize_persisted_tags(tags if tags is not None else alert.tags),
+        tags=normalize_derived_entity_tags(
+            tags if tags is not None else alert.tags
+        ),
         assignee=assignee,
         status=CaseStatus.IN_PROGRESS,
         timeline_items=[],

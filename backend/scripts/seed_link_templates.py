@@ -13,7 +13,6 @@ Usage:
 
 import asyncio
 import sys
-import os
 from pathlib import Path
 
 # Add the backend directory to Python path
@@ -170,6 +169,18 @@ DEFAULT_TEMPLATES = [
     },
 ]
 
+UPDATABLE_TEMPLATE_FIELDS = (
+    "name",
+    "icon_name",
+    "tooltip_template",
+    "url_template",
+    "field_names",
+    "conditions",
+    "surface_scopes",
+    "entity_types",
+    "display_order",
+)
+
 
 async def seed_link_templates():
     """Seed the database with default link templates."""
@@ -180,7 +191,10 @@ async def seed_link_templates():
         # Check existing templates
         result = await session.execute(select(LinkTemplate))
         existing_templates = result.scalars().all()
-        existing_ids = {t.template_id for t in existing_templates}
+        existing_by_id = {
+            template.template_id: template
+            for template in existing_templates
+        }
         
         logger.info(f"Found {len(existing_templates)} existing link templates")
         
@@ -191,34 +205,15 @@ async def seed_link_templates():
         for template_data in DEFAULT_TEMPLATES:
             template_id = template_data["template_id"]
             
-            # Use native Python objects - SQLModel JSON column handles serialization
-            field_names = template_data["field_names"]
-            conditions = template_data["conditions"]
-            surface_scopes = template_data["surface_scopes"]
-            entity_types = template_data["entity_types"]
-            
-            if template_id in existing_ids:
-                # Update existing template
-                result = await session.execute(
-                    select(LinkTemplate).where(LinkTemplate.template_id == template_id)
-                )
-                existing = result.scalar_one()
-                
-                # Update fields (preserving enabled state if already configured)
-                existing.name = template_data["name"]
-                existing.icon_name = template_data["icon_name"]
-                existing.tooltip_template = template_data["tooltip_template"]
-                existing.url_template = template_data["url_template"]
-                existing.field_names = field_names
-                existing.conditions = conditions
-                existing.surface_scopes = surface_scopes
-                existing.entity_types = entity_types
-                existing.display_order = template_data["display_order"]
-                # Note: Not updating 'enabled' - respect existing configuration
+            existing = existing_by_id.get(template_id)
+            if existing is not None:
+                # Preserve the operator-controlled enabled state.
+                for field_name in UPDATABLE_TEMPLATE_FIELDS:
+                    setattr(existing, field_name, template_data[field_name])
                 
                 session.add(existing)
                 updated_count += 1
-                logger.info(f"Updated template: {template_id}")
+                logger.info("Updated template: %s", template_id)
             else:
                 # Create new template
                 template = LinkTemplate(
@@ -227,22 +222,22 @@ async def seed_link_templates():
                     icon_name=template_data["icon_name"],
                     tooltip_template=template_data["tooltip_template"],
                     url_template=template_data["url_template"],
-                    field_names=field_names,
-                    conditions=conditions,
-                    surface_scopes=surface_scopes,
-                    entity_types=entity_types,
+                    field_names=template_data["field_names"],
+                    conditions=template_data["conditions"],
+                    surface_scopes=template_data["surface_scopes"],
+                    entity_types=template_data["entity_types"],
                     enabled=template_data["enabled"],
                     display_order=template_data["display_order"],
                 )
                 session.add(template)
                 added_count += 1
-                logger.info(f"Added new template: {template_id}")
+                logger.info("Added new template: %s", template_id)
         
         # Commit all changes
         await session.commit()
         
-        logger.info(f"✓ Seeding complete: {added_count} added, {updated_count} updated")
-        logger.info(f"✓ Total link templates: {len(existing_templates) + added_count}")
+        logger.info("✓ Seeding complete: %d added, %d updated", added_count, updated_count)
+        logger.info("✓ Total link templates: %d", len(existing_templates) + added_count)
 
 
 async def main():
@@ -252,7 +247,7 @@ async def main():
         logger.info("Link template seeding completed successfully")
         return 0
     except Exception as e:
-        logger.error(f"Failed to seed link templates: {e}", exc_info=True)
+        logger.error("Failed to seed link templates: %s", e, exc_info=True)
         return 1
 
 

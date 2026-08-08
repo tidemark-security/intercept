@@ -35,6 +35,7 @@ describe("LangflowSetupStatus", () => {
             name: "Intercept Langflow MCP",
             prefix: "tmk_1234",
             expires_at: "2026-01-01T00:00:00Z",
+            scopes: ["mcp:access"],
             last_used_at: null,
             revoked_at: null,
             created_at: "2025-01-01T00:00:00Z",

@@ -15,6 +15,10 @@ export type CreateApiKeyRequest = {
      */
     expires_at: string;
     /**
+     * Explicit permissions granted to the API key
+     */
+    scopes?: Array<string>;
+    /**
      * Target user ID (admin-only, defaults to current user)
      */
     user_id?: (string | null);

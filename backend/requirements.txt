@@ -25,7 +25,9 @@ webauthn==2.7.1
 uvicorn[standard]==0.44.0
 
 # MCP
-fastmcp>=3.2.4
+fastmcp==3.4.4
+mcp==1.28.1
+py-key-value-aio[postgresql,wrappers-encryption]==0.4.4
 
 # File upload dependencies
 magika==1.0.2

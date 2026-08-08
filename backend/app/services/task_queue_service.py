@@ -20,7 +20,7 @@ from datetime import datetime, timezone, timedelta
 import asyncpg
 from pgqueuer import PgQueuer
 from pgqueuer.db import AsyncpgPoolDriver
-from pgqueuer.errors import MaxRetriesExceeded, MaxTimeExceeded
+from pgqueuer.errors import DuplicateJobError, MaxRetriesExceeded, MaxTimeExceeded
 from pgqueuer.executors import EntrypointExecutor
 from pgqueuer.qm import QueueManager
 from pgqueuer.queries import Queries
@@ -30,6 +30,7 @@ from app.core.settings_registry import get_local
 from app.services.worker_task_runtime_config import (
     WorkerTaskRuntimeConfig,
     WorkerTaskRuntimeSnapshot,
+    is_expected_runtime_config_refresh_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,55 @@ logger = logging.getLogger(__name__)
 
 TerminalFailureHandler = Callable[..., Awaitable[None]]
 TaskHandler = Callable[..., Awaitable[None]]
+
+
+class TaskQueueNotInitializedError(RuntimeError):
+    """Raised when queue operations are attempted before initialization."""
+
+
+_NON_RETRYABLE_TASK_ERRORS = (
+    ValueError,
+    TypeError,
+    LookupError,
+    AttributeError,
+    NameError,
+    AssertionError,
+    ImportError,
+    SyntaxError,
+    NotImplementedError,
+)
+
+_TRANSIENT_QUEUE_SERVICE_ERRORS = (
+    ConnectionError,
+    TimeoutError,
+    asyncpg.PostgresConnectionError,
+    asyncpg.InterfaceError,
+    asyncpg.OperatorInterventionError,
+    asyncpg.InsufficientResourcesError,
+)
+
+
+def _terminal_failure_payload(job: Job) -> Dict[str, Any]:
+    """Decode hook context without replacing the task's terminal exception."""
+    if not job.payload:
+        return {}
+
+    try:
+        payload = json.loads(job.payload.decode("utf-8"))
+    except (AttributeError, TypeError, ValueError):
+        logger.warning(
+            "Could not decode payload for terminal task hook",
+            extra={"task_id": str(job.id), "task_name": job.entrypoint},
+        )
+        return {}
+
+    if not isinstance(payload, dict):
+        logger.warning(
+            "Ignoring non-object payload for terminal task hook",
+            extra={"task_id": str(job.id), "task_name": job.entrypoint},
+        )
+        return {}
+    return payload
 
 
 @dataclasses.dataclass
@@ -60,13 +110,10 @@ class RetryWithTerminalFailureHookExecutor(EntrypointExecutor):
     async def execute(self, job: Job, context: Any) -> None:
         try:
             await self._execute_with_retries(job, context)
-        except (MaxRetriesExceeded, MaxTimeExceeded) as exc:
+        except Exception as exc:
             if self.on_terminal_failure is not None:
-                payload: Dict[str, Any] = {}
-                if job.payload:
-                    payload = json.loads(job.payload.decode("utf-8"))
-
                 try:
+                    payload = _terminal_failure_payload(job)
                     failure_signature = signature(self.on_terminal_failure)
                     if "task_id" in failure_signature.parameters:
                         await self.on_terminal_failure(payload, exc, task_id=str(job.id))
@@ -95,6 +142,8 @@ class RetryWithTerminalFailureHookExecutor(EntrypointExecutor):
                 if self.max_attempts and attempt >= self.max_attempts:
                     raise
                 await self._sleep_before_retry(attempt, snapshot)
+            except _NON_RETRYABLE_TASK_ERRORS:
+                raise
             except Exception as exc:
                 attempt += 1
                 if self.max_attempts and attempt >= self.max_attempts:
@@ -226,34 +275,50 @@ class TaskQueueService:
     
     async def shutdown(self):
         """Shutdown the queue manager and cleanup resources."""
+        cleanup_failed = False
+        self._running = False
+
+        worker_task = self._worker_task
+        self._worker_task = None
         try:
-            self._running = False
-            
-            if self._worker_task and not self._worker_task.done():
-                self._worker_task.cancel()
+            if worker_task and not worker_task.done():
+                worker_task.cancel()
                 try:
-                    await self._worker_task
+                    await worker_task
                 except asyncio.CancelledError:
                     pass
+        except Exception:
+            cleanup_failed = True
+            logger.exception("Failed to stop the task queue worker")
 
+        try:
             await self._stop_runtime_config_refresh()
-            
-            # Release connection back to pool before closing
-            if self._connection and self._pool:
-                try:
-                    await self._pool.release(self._connection)
-                except Exception:
-                    pass  # Connection may already be released
-                self._connection = None
-            
-            # Close the connection pool
-            if self._pool:
-                await self._pool.close()
-                self._pool = None
-            
+        except Exception:
+            cleanup_failed = True
+            logger.exception("Failed to stop the task queue runtime config listener")
+
+        pool = self._pool
+        connection = self._connection
+        self._connection = None
+        if connection is not None and pool is not None:
+            try:
+                await pool.release(connection)
+            except Exception:
+                cleanup_failed = True
+                logger.exception("Failed to release the task queue connection")
+
+        self._pool = None
+        if pool is not None:
+            try:
+                await pool.close()
+            except Exception:
+                cleanup_failed = True
+                logger.exception("Failed to close the task queue connection pool")
+
+        if cleanup_failed:
+            logger.warning("Task queue service shutdown completed with cleanup errors")
+        else:
             logger.info("Task queue service shut down successfully")
-        except Exception as e:
-            logger.error(f"Error shutting down task queue service: {e}")
     
     async def enqueue(
         self,
@@ -277,10 +342,10 @@ class TaskQueueService:
             Task ID
             
         Raises:
-            RuntimeError: If queue manager not initialized
+            TaskQueueNotInitializedError: If queue manager is not initialized
         """
         if not self.queries:
-            raise RuntimeError("Task queue not initialized")
+            raise TaskQueueNotInitializedError("Task queue not initialized")
         
         try:
             # Serialize payload to bytes
@@ -293,32 +358,75 @@ class TaskQueueService:
                 if schedule_at > now:
                     execute_after = schedule_at - now
             
-            # Enqueue job using Queries
-            job_ids = await self.queries.enqueue(
-                entrypoint=task_name,
-                payload=payload_bytes,
-                priority=priority,
-                execute_after=execute_after,
-                dedupe_key=dedupe_key,
-            )
-            
-            job_id = job_ids[0] if job_ids else None
-            
-            logger.info(
-                f"Enqueued task: {task_name}",
-                extra={
-                    "task_id": str(job_id),
-                    "task_name": task_name,
-                    "priority": priority,
-                    "dedupe_key": dedupe_key,
-                }
-            )
-            
-            return str(job_id) if job_id else ""
-            
+            # A conflicting active row can finish between pgqueuer's unique
+            # violation and our lookup. Retry once when that race resolves.
+            for duplicate_attempt in range(2):
+                try:
+                    job_ids = await self.queries.enqueue(
+                        entrypoint=task_name,
+                        payload=payload_bytes,
+                        priority=priority,
+                        execute_after=execute_after,
+                        dedupe_key=dedupe_key,
+                    )
+                except DuplicateJobError:
+                    if not dedupe_key:
+                        raise
+                    existing_job_id = await self._get_active_job_id_by_dedupe_key(
+                        task_name,
+                        dedupe_key,
+                    )
+                    if existing_job_id is not None:
+                        logger.info(
+                            "Reused active deduplicated task",
+                            extra={
+                                "task_id": existing_job_id,
+                                "task_name": task_name,
+                                "dedupe_key": dedupe_key,
+                            },
+                        )
+                        return str(existing_job_id)
+                    if duplicate_attempt == 0:
+                        continue
+                    raise
+
+                job_id = job_ids[0] if job_ids else None
+                logger.info(
+                    "Enqueued task: %s",
+                    task_name,
+                    extra={
+                        "task_id": str(job_id),
+                        "task_name": task_name,
+                        "priority": priority,
+                        "dedupe_key": dedupe_key,
+                    },
+                )
+                return str(job_id) if job_id else ""
+
+            raise AssertionError("deduplicated enqueue retry loop did not terminate")
         except Exception as e:
             logger.error(f"Failed to enqueue task {task_name}: {e}")
             raise
+
+    async def _get_active_job_id_by_dedupe_key(
+        self,
+        task_name: str,
+        dedupe_key: str,
+    ) -> int | None:
+        """Resolve the active job that caused a deduplicated enqueue conflict."""
+        if self.queries is None:
+            return None
+
+        queue_table = self.queries.qbe.settings.queue_table
+        rows = await self.queries.driver.fetch(
+            f"SELECT id FROM {queue_table} "  # trusted pgqueuer-owned identifier
+            "WHERE entrypoint = $1 AND dedupe_key = $2 "
+            "AND status IN ('queued', 'picked') "
+            "ORDER BY id DESC LIMIT 1",
+            task_name,
+            dedupe_key,
+        )
+        return int(rows[0]["id"]) if rows else None
     
     def register_handler(
         self,
@@ -460,16 +568,17 @@ class TaskQueueService:
         )
 
     async def _stop_runtime_config_refresh(self) -> None:
-        if not self._runtime_config_refresh_task:
+        task = self._runtime_config_refresh_task
+        self._runtime_config_refresh_task = None
+        if not task:
             return
 
-        if not self._runtime_config_refresh_task.done():
-            self._runtime_config_refresh_task.cancel()
+        if not task.done():
+            task.cancel()
             try:
-                await self._runtime_config_refresh_task
+                await task
             except asyncio.CancelledError:
                 pass
-        self._runtime_config_refresh_task = None
 
     async def _runtime_config_refresh_loop(self) -> None:
         while self._running:
@@ -481,12 +590,14 @@ class TaskQueueService:
                     await self.refresh_task_runtime_config(SettingsService(db))
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
+                if not is_expected_runtime_config_refresh_error(exc):
+                    raise
                 logger.exception("Failed to refresh worker task runtime config")
 
             await asyncio.sleep(self.task_runtime_config.snapshot.refresh_interval_seconds)
     
-    async def start_worker(self, concurrency: int = 10):
+    async def start_worker(self, concurrency: int = 10) -> asyncio.Task[None]:
         """
         Start the background worker process.
         
@@ -498,7 +609,9 @@ class TaskQueueService:
         
         if self._running:
             logger.warning("Worker already running")
-            return
+            if self._worker_task is None:
+                raise RuntimeError("Worker marked running without a background task")
+            return self._worker_task
         
         self._running = True
         self._last_worker_error = None
@@ -518,9 +631,9 @@ class TaskQueueService:
                         await self._run_pgqueuer_services(concurrency=concurrency)
                     except asyncio.CancelledError:
                         break
-                    except Exception as e:
+                    except _TRANSIENT_QUEUE_SERVICE_ERRORS as e:
                         self._last_worker_error = str(e) or e.__class__.__name__
-                        logger.exception("Worker error: %s", e)
+                        logger.exception("Transient worker error: %s", e)
                         if not self._running:
                             break
                         await asyncio.sleep(5)  # Brief pause before retry
@@ -532,6 +645,7 @@ class TaskQueueService:
         
         # Start worker in background
         self._worker_task = asyncio.create_task(worker_loop())
+        return self._worker_task
 
     async def _run_pgqueuer_services(self, concurrency: int) -> None:
         if self.pgqueuer is None:
@@ -560,6 +674,7 @@ class TaskQueueService:
             if pending:
                 completed_task = next(iter(done))
                 raise RuntimeError(f"{completed_task.get_name()} stopped unexpectedly")
+            raise RuntimeError("pgqueuer services stopped unexpectedly")
         finally:
             for task in tasks:
                 if not task.done():
@@ -581,17 +696,24 @@ class TaskQueueService:
                 worker_error = None
 
             if worker_error is not None:
-                return False, str(worker_error) or worker_error.__class__.__name__
+                return False, "queue worker unavailable"
             return False, "worker loop stopped"
 
         if self._last_worker_error:
-            return False, self._last_worker_error
+            return False, "queue worker unavailable"
+
+        runtime_config_task = self._runtime_config_refresh_task
+        if runtime_config_task is not None and runtime_config_task.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                runtime_config_task.exception()
+            return False, "runtime configuration unavailable"
 
         try:
             if self._pool.get_size() <= 0:
                 return False, "database pool not ready"
-        except Exception as exc:
-            return False, str(exc) or exc.__class__.__name__
+        except Exception:
+            logger.exception("Could not inspect worker database pool readiness")
+            return False, "database pool unavailable"
 
         return True, ""
 
@@ -600,22 +722,6 @@ class TaskQueueService:
             return 0
         return self._pool.get_size()
     
-    async def stop_worker(self):
-        """Stop the background worker process."""
-        self._running = False
-        
-        if self._worker_task and not self._worker_task.done():
-            self._worker_task.cancel()
-            try:
-                await self._worker_task
-            except asyncio.CancelledError:
-                pass
-
-        await self._stop_runtime_config_refresh()
-        
-        logger.info("Task queue worker stopped")
-
-
 # Global task queue service instance
 _task_queue_service: Optional[TaskQueueService] = None
 
@@ -628,10 +734,10 @@ def get_task_queue_service() -> TaskQueueService:
         TaskQueueService instance
         
     Raises:
-        RuntimeError: If service not initialized
+        TaskQueueNotInitializedError: If the service is not initialized
     """
     if _task_queue_service is None:
-        raise RuntimeError(
+        raise TaskQueueNotInitializedError(
             "Task queue service not initialized. "
             "Call initialize_task_queue_service() first."
         )
@@ -649,11 +755,16 @@ async def initialize_task_queue_service(connection_string: str) -> TaskQueueServ
         Initialized TaskQueueService
     """
     global _task_queue_service
-    
-    _task_queue_service = TaskQueueService(connection_string)
-    await _task_queue_service.initialize()
-    
-    return _task_queue_service
+
+    candidate = TaskQueueService(connection_string)
+    try:
+        await candidate.initialize()
+    except BaseException:
+        await candidate.shutdown()
+        raise
+
+    _task_queue_service = candidate
+    return candidate
 
 
 async def shutdown_task_queue_service():

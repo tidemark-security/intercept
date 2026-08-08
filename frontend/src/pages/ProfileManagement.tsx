@@ -4,6 +4,7 @@ import React from "react";
 import { ApiError } from "@/types/generated/core/ApiError";
 import { ApiKeysService } from "@/types/generated/services/ApiKeysService";
 import { AuthenticationService } from "@/types/generated/services/AuthenticationService";
+import { McpOauthService } from "@/types/generated/services/McpOauthService";
 import { Alert } from "@/components/feedback/Alert";
 import {
   ApiKeyCreatedContent,
@@ -29,6 +30,7 @@ import { useVisualFilterPreference } from "@/contexts/VisualFilterContext";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
 import type { ApiKeyCreateResponse } from "@/types/generated/models/ApiKeyCreateResponse";
 import type { ApiKeyRead } from "@/types/generated/models/ApiKeyRead";
+import type { MCPOAuthClientRead } from "@/types/generated/models/MCPOAuthClientRead";
 import type { PasskeyRead } from "@/types/generated/models/PasskeyRead";
 import {
   formatForDatetimeLocal,
@@ -38,6 +40,10 @@ import {
 import { formatAbsoluteTime } from "@/utils/dateFormatters";
 import type { ThemePreference } from "@/utils/themePreference";
 import type { TimezonePreference } from "@/utils/timezonePreference";
+import {
+  allowedApiKeyScopesForRole,
+  type ApiKeyScope,
+} from "@/utils/apiKeyScopes";
 import {
   getVisualFilterLimits,
   type VisualFilterPreference,
@@ -122,7 +128,20 @@ function ProfileManagement() {
   const { themePreference, setThemePreference, resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === "dark";
   const breakpoint = useBreakpoint();
-  const { localCredentialManagementAllowed = true } = useSession();
+  const {
+    user,
+    localCredentialManagementAllowed = true,
+    passwordLoginAllowed,
+    passkeyAllowed,
+    apiKeyAllowed,
+  } = useSession();
+  const canManagePassword = passwordLoginAllowed ?? localCredentialManagementAllowed;
+  const canUsePasskeys = passkeyAllowed ?? localCredentialManagementAllowed;
+  const canCreateApiKeys = apiKeyAllowed ?? localCredentialManagementAllowed;
+  const availableApiKeyScopes = React.useMemo(
+    () => allowedApiKeyScopesForRole(user?.role),
+    [user?.role],
+  );
   const { timezonePreference, setTimezonePreference } = useTimezonePreference();
   const {
     visualFilterPreference,
@@ -139,9 +158,14 @@ function ProfileManagement() {
   const [showCreateApiKeyModal, setShowCreateApiKeyModal] = React.useState(false);
   const [apiKeyNameInput, setApiKeyNameInput] = React.useState("");
   const [apiKeyExpiresAtInput, setApiKeyExpiresAtInput] = React.useState("");
+  const [apiKeyScopes, setApiKeyScopes] = React.useState<ApiKeyScope[]>([
+    "api:read",
+  ]);
   const [createdApiKey, setCreatedApiKey] = React.useState<ApiKeyCreateResponse | null>(null);
   const [showCreatedApiKeyValue, setShowCreatedApiKeyValue] = React.useState(true);
   const [createdApiKeyCopied, setCreatedApiKeyCopied] = React.useState(false);
+  const [mcpClients, setMcpClients] = React.useState<MCPOAuthClientRead[]>([]);
+  const [isLoadingMcpClients, setIsLoadingMcpClients] = React.useState(false);
   const [passkeys, setPasskeys] = React.useState<PasskeyRead[]>([]);
   const [isLoadingPasskeys, setIsLoadingPasskeys] = React.useState(false);
   const [isRegisteringPasskey, setIsRegisteringPasskey] = React.useState(false);
@@ -159,6 +183,7 @@ function ProfileManagement() {
       { id: "profile-appearance", label: "Appearance", group: "Preferences" },
       { id: "profile-password", label: "Password", group: "Security" },
       { id: "profile-api-keys", label: "API Keys", group: "Security" },
+      { id: "profile-mcp-clients", label: "MCP Clients", group: "Security" },
       { id: "profile-passkeys", label: "Passkeys", group: "Security" },
       {
         id: "profile-personal-link-templates",
@@ -205,6 +230,18 @@ function ProfileManagement() {
     }
   }, [showToast]);
 
+  const loadMcpClients = React.useCallback(async () => {
+    setIsLoadingMcpClients(true);
+    try {
+      const items = await McpOauthService.listConnectedMcpClientsApiV1McpOauthClientsGet();
+      setMcpClients(items);
+    } catch {
+      showToast("Error", "Failed to load connected MCP clients", "error");
+    } finally {
+      setIsLoadingMcpClients(false);
+    }
+  }, [showToast]);
+
   React.useEffect(() => {
     loadPasskeys();
   }, [loadPasskeys]);
@@ -212,6 +249,10 @@ function ProfileManagement() {
   React.useEffect(() => {
     loadApiKeys();
   }, [loadApiKeys]);
+
+  React.useEffect(() => {
+    loadMcpClients();
+  }, [loadMcpClients]);
 
   const handleChangePassword = async () => {
     if (!currentPassword.trim() || !newPassword.trim() || !confirmPassword.trim()) {
@@ -252,12 +293,14 @@ function ProfileManagement() {
   }, []);
 
   const openCreateApiKeyModal = () => {
+    if (!canCreateApiKeys) return;
     const defaultExpiry = new Date();
     defaultExpiry.setDate(defaultExpiry.getDate() + 30);
     setApiKeyNameInput("");
     setApiKeyExpiresAtInput(
       normalizeDatetimeLocalValue(formatForDatetimeLocal(defaultExpiry), "display"),
     );
+    setApiKeyScopes(["api:read"]);
     setShowCreateApiKeyModal(true);
   };
 
@@ -265,6 +308,7 @@ function ProfileManagement() {
     setShowCreateApiKeyModal(false);
     setApiKeyNameInput("");
     setApiKeyExpiresAtInput("");
+    setApiKeyScopes(["api:read"]);
   };
 
   const closeCreatedApiKeyModal = () => {
@@ -274,8 +318,16 @@ function ProfileManagement() {
   };
 
   const handleCreateApiKey = async () => {
+    if (!canCreateApiKeys) {
+      showToast("Not allowed", "Local API key creation is disabled for this account", "error");
+      return;
+    }
     if (!apiKeyNameInput.trim() || !apiKeyExpiresAtInput) {
       showToast("Validation Error", "Name and expiration date are required", "error");
+      return;
+    }
+    if (apiKeyScopes.length === 0) {
+      showToast("Validation Error", "Select at least one API key permission", "error");
       return;
     }
 
@@ -291,6 +343,7 @@ function ProfileManagement() {
         requestBody: {
           name: apiKeyNameInput.trim(),
           expires_at: expiresAtDate.toISOString(),
+          scopes: apiKeyScopes,
         },
       });
 
@@ -322,6 +375,17 @@ function ProfileManagement() {
     }
   };
 
+  const handleRevokeMcpClient = async (clientId: string) => {
+    try {
+      await McpOauthService.revokeConnectedMcpClientApiV1McpOauthClientsConsentIdDelete({
+        consentId: clientId,
+      });
+      await loadMcpClients();
+    } catch {
+      showToast("Error", "Failed to revoke MCP client", "error");
+    }
+  };
+
   const handleCopyApiKey = async (key: string) => {
     try {
       await navigator.clipboard.writeText(key);
@@ -333,6 +397,7 @@ function ProfileManagement() {
   };
 
   const openRegisterPasskeyModal = () => {
+    if (!canUsePasskeys) return;
     if (!browserSupportsPasskeys()) {
       showToast("Unsupported", "This browser does not support passkeys", "error");
       return;
@@ -797,6 +862,15 @@ function ProfileManagement() {
                   title="Password"
                 />
 
+              {!canManagePassword ? (
+                <Alert
+                  variant="neutral"
+                  icon={<Shield />}
+                  title="Managed by SSO"
+                  description="Local password changes are disabled for this OIDC-linked account."
+                />
+              ) : null}
+
               <div className="flex w-full flex-col items-start gap-4">
                 <TextField
                   className="h-auto w-full flex-none"
@@ -805,6 +879,7 @@ function ProfileManagement() {
                 >
                   <TextField.Input
                     type="password"
+                    disabled={!canManagePassword}
                     placeholder="Enter current password"
                     value={currentPassword}
                     onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
@@ -820,6 +895,7 @@ function ProfileManagement() {
                 >
                   <TextField.Input
                     type="password"
+                    disabled={!canManagePassword}
                     placeholder="Enter new password"
                     value={newPassword}
                     onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
@@ -835,6 +911,7 @@ function ProfileManagement() {
                 >
                   <TextField.Input
                     type="password"
+                    disabled={!canManagePassword}
                     placeholder="Confirm new password"
                     value={confirmPassword}
                     onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
@@ -845,7 +922,11 @@ function ProfileManagement() {
               </div>
 
               <div className="flex w-full flex-col items-end gap-6">
-                <Button icon={<Key />} onClick={handleChangePassword} disabled={isChangingPassword}>
+                <Button
+                  icon={<Key />}
+                  onClick={handleChangePassword}
+                  disabled={isChangingPassword || !canManagePassword}
+                >
                   {isChangingPassword ? "Changing..." : "Change Password"}
                 </Button>
               </div>
@@ -856,15 +937,26 @@ function ProfileManagement() {
                   icon={<Key className="text-[20px] text-subtext-color" />}
                   title="API Keys"
                   action={
-                    <Button icon={<Plus />} onClick={openCreateApiKeyModal} disabled={isCreatingApiKey}>
-                      Create New API Key
-                    </Button>
+                    canCreateApiKeys ? (
+                      <Button icon={<Plus />} onClick={openCreateApiKeyModal} disabled={isCreatingApiKey}>
+                        Create New API Key
+                      </Button>
+                    ) : undefined
                   }
                 />
 
               <span className="text-body font-body text-subtext-color">
                 API keys are for programmatic access to your account.
               </span>
+
+              {!canCreateApiKeys ? (
+                <Alert
+                  variant="neutral"
+                  icon={<Shield />}
+                  title="Managed by SSO"
+                  description="Local API key creation is disabled for this OIDC-linked account."
+                />
+              ) : null}
 
               <div className="flex w-full flex-col items-start gap-4">
                 {isLoadingApiKeys ? (
@@ -882,6 +974,7 @@ function ProfileManagement() {
                     expiresAt={apiKey.expires_at}
                     lastUsedAt={apiKey.last_used_at}
                     revokedAt={apiKey.revoked_at}
+                    scopes={apiKey.scopes}
                     isExpired={isApiKeyExpired(apiKey.expires_at)}
                     formatDate={formatApiKeyDate}
                     onRevoke={() => handleRevokeApiKey(apiKey.id)}
@@ -890,12 +983,59 @@ function ProfileManagement() {
               </div>
             </section>
 
+              <section id="profile-mcp-clients" className={profileSectionClassName}>
+                <ProfileSectionHeader
+                  icon={<Link2 className="text-[20px] text-subtext-color" />}
+                  title="Connected MCP Clients"
+                />
+
+              <span className="text-body font-body text-subtext-color">
+                Browser-authorized MCP clients use your account permissions.
+              </span>
+
+              <div className="flex w-full flex-col items-start gap-4">
+                {isLoadingMcpClients ? (
+                  <span className="text-body font-body text-subtext-color">Loading MCP clients...</span>
+                ) : mcpClients.length === 0 ? (
+                  <span className="text-body font-body text-subtext-color">
+                    No MCP clients connected yet.
+                  </span>
+                ) : mcpClients.map((client) => (
+                  <div
+                    key={client.id}
+                    className="flex w-full flex-wrap items-center gap-4 rounded-md border border-solid border-neutral-border bg-default-background px-4 py-4"
+                  >
+                    <div className="flex grow shrink basis-0 flex-col items-start gap-1">
+                      <span className="text-body-bold font-body-bold text-default-font">
+                        {client.client_name}
+                      </span>
+                      <span className="text-caption font-caption text-subtext-color break-all">
+                        {client.client_uri || client.client_id}
+                      </span>
+                      <span className="text-caption font-caption text-subtext-color">
+                        Last authorized {formatApiKeyDate(client.last_authorized_at)}
+                        {" · "}
+                        Last used {formatApiKeyDate(client.last_used_at)}
+                      </span>
+                    </div>
+                    <Button
+                      variant="destructive-secondary"
+                      icon={<Trash2 />}
+                      onClick={() => handleRevokeMcpClient(client.id)}
+                    >
+                      Revoke
+                    </Button>
+                  </div>
+                ))}
+              </div>
+              </section>
+
               <section id="profile-passkeys" className={profileSectionClassName}>
                 <ProfileSectionHeader
                   icon={<Fingerprint className="text-[20px] text-subtext-color" />}
                   title="Passkeys"
                   action={
-                    localCredentialManagementAllowed ? (
+                    canUsePasskeys ? (
                       <Button icon={<Plus />} onClick={openRegisterPasskeyModal} disabled={isRegisteringPasskey}>
                         {isRegisteringPasskey ? "Registering..." : "Register New Passkey"}
                       </Button>
@@ -907,6 +1047,15 @@ function ProfileManagement() {
                 Passkeys are a more secure alternative to passwords. Use your
                 device biometrics or security key to sign in.
               </span>
+
+              {!canUsePasskeys ? (
+                <Alert
+                  variant="neutral"
+                  icon={<Shield />}
+                  title="Managed by SSO"
+                  description="Local passkey registration is disabled for this OIDC-linked account."
+                />
+              ) : null}
 
               <div className="flex w-full flex-col items-start gap-4">
                 {isLoadingPasskeys ? (
@@ -949,7 +1098,7 @@ function ProfileManagement() {
                 ))}
               </div>
 
-              {localCredentialManagementAllowed ? (
+              {canUsePasskeys ? (
                 <Alert
                   variant="neutral"
                   icon={<Shield />}
@@ -1064,7 +1213,12 @@ function ProfileManagement() {
             >
               Cancel
             </Button>
-            <Button className="flex-1" onClick={handleCreateApiKey} loading={isCreatingApiKey}>
+            <Button
+              className="flex-1"
+              onClick={handleCreateApiKey}
+              loading={isCreatingApiKey}
+              disabled={apiKeyScopes.length === 0}
+            >
               Create Key
             </Button>
           </div>
@@ -1073,8 +1227,11 @@ function ProfileManagement() {
         <CreateApiKeyModalContent
           keyName={apiKeyNameInput}
           expiresAt={apiKeyExpiresAtInput}
+          scopes={apiKeyScopes}
+          availableScopes={availableApiKeyScopes}
           onKeyNameChange={setApiKeyNameInput}
           onExpiresAtChange={setApiKeyExpiresAtInput}
+          onScopesChange={setApiKeyScopes}
           onCancel={closeCreateApiKeyModal}
           onSubmit={handleCreateApiKey}
           loading={isCreatingApiKey}

@@ -11,13 +11,18 @@ from sqlmodel import select
 
 from app.models.enums import AccountType, SessionRevokedReason, UserRole, UserStatus
 from app.models.models import AdminResetRequest, AuthSession, UserAccount
-from app.services.admin_auth_service import admin_auth_service
-from app.services.auth_service import RequestMetadata, auth_service
+from app.services.admin_auth_service import (
+    AdminAuthNotFoundError,
+    AdminAuthValidationError,
+    admin_auth_service,
+)
+from app.services.audit_service import AuditContext
+from app.services.auth_service import auth_service
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
-def _metadata() -> RequestMetadata:
-    return RequestMetadata(
+def _metadata() -> AuditContext:
+    return AuditContext(
         ip_address="127.0.0.1",
         user_agent="test-agent",
         correlation_id="test-correlation-id",
@@ -259,7 +264,7 @@ async def test_consume_reset_token_rejects_expired_request(
         reset_request.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
         await session.commit()
 
-        with pytest.raises(ValueError, match="expired"):
+        with pytest.raises(AdminAuthValidationError, match="expired"):
             await admin_auth_service.consume_reset_token(
                 token=result.reset_token,
                 new_password="NewSecurePassword123!",
@@ -296,7 +301,7 @@ async def test_cannot_reset_nonexistent_or_invalid_targets(
         await session.refresh(admin)
         await session.refresh(nhi_user)
 
-        with pytest.raises(ValueError, match="not found"):
+        with pytest.raises(AdminAuthNotFoundError, match="not found"):
             await admin_auth_service.issue_password_reset(
                 admin_user_id=admin.id,
                 target_user_id=fake_user_id,
@@ -304,7 +309,10 @@ async def test_cannot_reset_nonexistent_or_invalid_targets(
                 db=session,
             )
 
-        with pytest.raises(ValueError, match="Cannot reset your own password"):
+        with pytest.raises(
+            AdminAuthValidationError,
+            match="Cannot reset your own password",
+        ):
             await admin_auth_service.issue_password_reset(
                 admin_user_id=admin.id,
                 target_user_id=admin.id,
@@ -312,7 +320,7 @@ async def test_cannot_reset_nonexistent_or_invalid_targets(
                 db=session,
             )
 
-        with pytest.raises(ValueError, match="NHI accounts"):
+        with pytest.raises(AdminAuthValidationError, match="NHI accounts"):
             await admin_auth_service.issue_password_reset(
                 admin_user_id=admin.id,
                 target_user_id=nhi_user.id,

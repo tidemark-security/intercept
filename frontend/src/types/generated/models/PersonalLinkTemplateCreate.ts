@@ -7,7 +7,7 @@
  */
 export type PersonalLinkTemplateCreate = {
     /**
-     * Unique identifier for this template type
+     * Unique identifier for this template type (e.g., 'virustotal-domain')
      */
     template_id: string;
     /**
@@ -19,11 +19,11 @@ export type PersonalLinkTemplateCreate = {
      */
     icon_name: string;
     /**
-     * Tooltip text with {{variable}} placeholders
+     * Tooltip text with {{variable}} placeholders for interpolation
      */
     tooltip_template: string;
     /**
-     * URL template with {{variable}} placeholders
+     * URL template with {{variable}} placeholders for interpolation
      */
     url_template: string;
     /**
@@ -47,7 +47,7 @@ export type PersonalLinkTemplateCreate = {
      */
     enabled?: boolean;
     /**
-     * Sort order for display
+     * Sort order for display (lower numbers first)
      */
     display_order?: number;
 };

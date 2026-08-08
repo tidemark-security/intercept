@@ -83,7 +83,7 @@ export class CaseRunbooksService {
     public static getCaseRunbookApiV1CaseRunbooksRunbookIdGet({
         runbookId,
     }: {
-        runbookId: number,
+        runbookId: (number | string),
     }): CancelablePromise<CaseRunbookRead> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -105,7 +105,7 @@ export class CaseRunbooksService {
         runbookId,
         requestBody,
     }: {
-        runbookId: number,
+        runbookId: (number | string),
         requestBody: CaseRunbookUpdate,
     }): CancelablePromise<CaseRunbookRead> {
         return __request(OpenAPI, {
@@ -129,7 +129,7 @@ export class CaseRunbooksService {
     public static deleteCaseRunbookApiV1CaseRunbooksRunbookIdDelete({
         runbookId,
     }: {
-        runbookId: number,
+        runbookId: (number | string),
     }): CancelablePromise<CaseRunbookRead> {
         return __request(OpenAPI, {
             method: 'DELETE',
@@ -150,7 +150,7 @@ export class CaseRunbooksService {
     public static publishCaseRunbookApiV1CaseRunbooksRunbookIdPublishPost({
         runbookId,
     }: {
-        runbookId: number,
+        runbookId: (number | string),
     }): CancelablePromise<CaseRunbookRead> {
         return __request(OpenAPI, {
             method: 'POST',
@@ -171,7 +171,7 @@ export class CaseRunbooksService {
     public static disableCaseRunbookApiV1CaseRunbooksRunbookIdDisablePost({
         runbookId,
     }: {
-        runbookId: number,
+        runbookId: (number | string),
     }): CancelablePromise<CaseRunbookRead> {
         return __request(OpenAPI, {
             method: 'POST',
@@ -194,8 +194,8 @@ export class CaseRunbooksService {
         runbookId,
         requestBody,
     }: {
-        caseId: number,
-        runbookId: number,
+        caseId: (number | string),
+        runbookId: (number | string),
         requestBody: CaseRunbookApplyRequest,
     }): CancelablePromise<CaseRunbookApplyResponse> {
         return __request(OpenAPI, {

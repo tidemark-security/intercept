@@ -38,3 +38,17 @@ def test_extract_high_signal_entities_includes_direct_observable_items() -> None
 
     assert "a" * 64 in entities
     assert "admin@example.com" not in entities
+
+
+def test_email_extraction_reuses_canonical_character_rules() -> None:
+    observables = extract_observables(
+        [
+            {
+                "type": "note",
+                "description": "Valid admin@example.com; invalid attacker@example.c|m",
+            }
+        ]
+    )
+
+    emails = [observable.value for observable in observables if observable.type == "EMAIL"]
+    assert emails == ["admin@example.com"]

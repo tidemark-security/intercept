@@ -10,19 +10,40 @@ from app.mcp import tools as mcp_tools
 from app.models.enums import AccountType, UserRole
 
 
-def _mcp_request_for_auditor() -> SimpleNamespace:
+def _mcp_principal_for_auditor() -> SimpleNamespace:
     user = SimpleNamespace(username="auditor-user", role=UserRole.AUDITOR)
-    return SimpleNamespace(scope={"mcp_user": user})
+    return SimpleNamespace(user=user)
 
 
-def _mcp_request_for_nhi(*, override_timestamps: bool) -> SimpleNamespace:
+def _mcp_principal_for_nhi(*, override_timestamps: bool) -> SimpleNamespace:
     user = SimpleNamespace(
         username="svc-migration",
         role=UserRole.ANALYST,
         account_type=AccountType.NHI,
         override_timestamps=override_timestamps,
     )
-    return SimpleNamespace(scope={"mcp_user": user})
+    return SimpleNamespace(user=user)
+
+
+def test_authenticated_user_treats_missing_principal_as_anonymous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_tools, "get_current_mcp_principal", lambda: None)
+
+    assert mcp_tools._get_authenticated_user() is None
+
+
+def test_authenticated_user_does_not_mask_malformed_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        mcp_tools,
+        "get_current_mcp_principal",
+        lambda: SimpleNamespace(),
+    )
+
+    with pytest.raises(AttributeError):
+        mcp_tools._get_authenticated_user()
 
 
 @pytest.mark.asyncio
@@ -30,7 +51,11 @@ async def test_auditor_cannot_commit_mcp_triage_decision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service_call = AsyncMock()
-    monkeypatch.setattr(mcp_tools, "get_http_request", _mcp_request_for_auditor)
+    monkeypatch.setattr(
+        mcp_tools,
+        "get_current_mcp_principal",
+        _mcp_principal_for_auditor,
+    )
     monkeypatch.setattr(mcp_tools.mcp_service, "record_triage_decision", service_call)
 
     with pytest.raises(HTTPException) as exc_info:
@@ -53,8 +78,8 @@ async def test_mcp_timeline_created_at_requires_migration_flag(
     service_call = AsyncMock()
     monkeypatch.setattr(
         mcp_tools,
-        "get_http_request",
-        lambda: _mcp_request_for_nhi(override_timestamps=True),
+        "get_current_mcp_principal",
+        lambda: _mcp_principal_for_nhi(override_timestamps=True),
     )
     monkeypatch.setattr(mcp_tools.mcp_service, "add_timeline_item", service_call)
 
@@ -79,8 +104,8 @@ async def test_mcp_timeline_migration_requires_override_permission(
     service_call = AsyncMock()
     monkeypatch.setattr(
         mcp_tools,
-        "get_http_request",
-        lambda: _mcp_request_for_nhi(override_timestamps=False),
+        "get_current_mcp_principal",
+        lambda: _mcp_principal_for_nhi(override_timestamps=False),
     )
     monkeypatch.setattr(mcp_tools.mcp_service, "add_timeline_item", service_call)
 
@@ -108,8 +133,8 @@ async def test_mcp_timeline_migration_passes_authorized_created_at(
     )
     monkeypatch.setattr(
         mcp_tools,
-        "get_http_request",
-        lambda: _mcp_request_for_nhi(override_timestamps=True),
+        "get_current_mcp_principal",
+        lambda: _mcp_principal_for_nhi(override_timestamps=True),
     )
     monkeypatch.setattr(mcp_tools.mcp_service, "add_timeline_item", service_call)
 
@@ -133,7 +158,11 @@ async def test_auditor_cannot_commit_mcp_timeline_item(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service_call = AsyncMock()
-    monkeypatch.setattr(mcp_tools, "get_http_request", _mcp_request_for_auditor)
+    monkeypatch.setattr(
+        mcp_tools,
+        "get_current_mcp_principal",
+        _mcp_principal_for_auditor,
+    )
     monkeypatch.setattr(mcp_tools.mcp_service, "add_timeline_item", service_call)
 
     with pytest.raises(HTTPException) as exc_info:

@@ -1,12 +1,12 @@
-"""MCP Server with explicit tool registration.
+"""MCP server with an explicit, intentionally limited tool interface."""
 
-Replaces the auto-generated FastMCP.from_fastapi() with intentionally designed tools.
-Part of T013-T014 (Phase 2: MCP Server Skeleton).
-"""
+from collections.abc import Awaitable
+from typing import Any, Callable, TypeVar
 
-from typing import Any
-
+from fastapi import HTTPException
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from fastmcp.server.auth import AuthProvider
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from mcp import McpError
 from mcp.types import ErrorData
@@ -22,6 +22,8 @@ from app.mcp.tools import (
     get_item_tool,
     validate_mermaid_tool,
 )
+from app.core.database import async_session_factory
+from app.mcp.principal import MCPPrincipalMiddleware
 
 
 _GET_ITEM_OLD_CONTRACT_MESSAGE = (
@@ -38,6 +40,16 @@ _GET_ITEM_MISSING_SCOPE_MESSAGE = (
     "get_item now requires the parent entity scope. Send parent_entity_type "
     "plus parent_entity_id so the server only searches one alert, case, or task."
 )
+_ToolResult = TypeVar("_ToolResult")
+
+
+async def _run_tool(awaitable: Awaitable[_ToolResult]) -> _ToolResult:
+    """Expose only explicitly curated FastAPI errors through the MCP boundary."""
+    try:
+        return await awaitable
+    except HTTPException as exc:
+        message = exc.detail if isinstance(exc.detail, str) else "Tool request rejected"
+        raise ToolError(message) from exc
 
 
 class GetItemContractGuidanceMiddleware(Middleware):
@@ -73,8 +85,9 @@ class GetItemContractGuidanceMiddleware(Middleware):
         return await call_next(context)
 
 
-# Create MCP server instance with explicit tool registration
-mcp = FastMCP("Tidemark Intercept MCP")
+# Keep unexpected implementation, database, and transport details out of MCP
+# protocol errors. Intentional client-facing failures become ToolError values.
+mcp = FastMCP("Tidemark Intercept MCP", mask_error_details=True)
 mcp.add_middleware(GetItemContractGuidanceMiddleware())
 
 
@@ -104,7 +117,9 @@ async def get_summary(
         max_observables: Max observables to extract (1-50, default: 20)
         since: ISO-8601 timestamp for incremental refresh (optional)
     """
-    return await get_summary_tool(kind, id, max_timeline_items, max_observables, since)
+    return await _run_tool(
+        get_summary_tool(kind, id, max_timeline_items, max_observables, since)
+    )
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
@@ -141,9 +156,18 @@ async def list_work(
         limit: Max items to return (1-50, default: 50)
         cursor: Pagination cursor from previous response
     """
-    return await list_work_tool(
-        kind, statuses, priorities, assignees, contains,
-        time_range_start, time_range_end, limit, cursor
+    return await _run_tool(
+        list_work_tool(
+            kind,
+            statuses,
+            priorities,
+            assignees,
+            contains,
+            time_range_start,
+            time_range_end,
+            limit,
+            cursor,
+        )
     )
 
 
@@ -169,7 +193,7 @@ async def find_related(
         seed_id: Seed entity ID (forgiving format)
         max_matches: Max matches to return (1-20, default: 10)
     """
-    return await find_related_tool(seed_kind, seed_id, max_matches)
+    return await _run_tool(find_related_tool(seed_kind, seed_id, max_matches))
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
@@ -183,7 +207,7 @@ async def search_case_runbooks(
         query: Optional text search. Empty query returns published runbooks by title.
         limit: Max runbooks to return (1-25, default: 10).
     """
-    return await search_case_runbooks_tool(query, limit)
+    return await _run_tool(search_case_runbooks_tool(query, limit))
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
@@ -193,7 +217,7 @@ async def get_case_runbook(id: str) -> dict:
     Args:
         id: Case Runbook ID in forgiving format, e.g. "123" or "RUN-0000123".
     """
-    return await get_case_runbook_tool(id)
+    return await _run_tool(get_case_runbook_tool(id))
 
 
 @mcp.tool()
@@ -215,7 +239,7 @@ async def record_triage_decision(
     """Record AI triage recommendation for an alert.
     
     Recommendations start as PENDING until analyst accepts/rejects.
-    New recommendation replaces existing (sets old to SUPERSEDED).
+    A new recommendation replaces the existing per-alert row in place.
     
     Returns:
         - mode: "dry_run" or "committed" or "replaced"
@@ -238,10 +262,22 @@ async def record_triage_decision(
         request_escalate_to_case: Optional/deprecated case creation request. Persisted value is derived from disposition.
         commit: If false, returns dry-run preview only (default: false)
     """
-    return await record_triage_decision_tool(
-        alert_id, disposition, confidence, reasoning_bullets,
-        recommended_actions, recommended_case_runbook_id, suggested_status, suggested_priority, suggested_assignee,
-        suggested_tags_add, suggested_tags_remove, request_escalate_to_case, commit
+    return await _run_tool(
+        record_triage_decision_tool(
+            alert_id,
+            disposition,
+            confidence,
+            reasoning_bullets,
+            recommended_actions,
+            recommended_case_runbook_id,
+            suggested_status,
+            suggested_priority,
+            suggested_assignee,
+            suggested_tags_add,
+            suggested_tags_remove,
+            request_escalate_to_case,
+            commit,
+        )
     )
 
 
@@ -274,7 +310,17 @@ async def add_timeline_item(
         created_at: Migration-only ISO-8601 creation timestamp.
         migration: Required when an authorized NHI supplies created_at.
     """
-    return await add_timeline_item_tool(target_kind, target_id, item_id, body, commit, created_at, migration)
+    return await _run_tool(
+        add_timeline_item_tool(
+            target_kind,
+            target_id,
+            item_id,
+            body,
+            commit,
+            created_at,
+            migration,
+        )
+    )
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
@@ -306,8 +352,15 @@ async def get_item(
         max_chars: Max characters to return (100-10000, default: 4000)
         cursor: Pagination cursor from previous response
     """
-    return await get_item_tool(
-        parent_entity_type, parent_entity_id, item_id, mode, max_chars, cursor
+    return await _run_tool(
+        get_item_tool(
+            parent_entity_type,
+            parent_entity_id,
+            item_id,
+            mode,
+            max_chars,
+            cursor,
+        )
     )
 
 
@@ -325,8 +378,42 @@ async def validate_mermaid(
     Args:
         diagram: Raw Mermaid diagram definition to validate
     """
-    return await validate_mermaid_tool(diagram)
+    return await _run_tool(validate_mermaid_tool(diagram))
 
 
-# Export MCP server instance
-__all__ = ["mcp"]
+_TOOL_REGISTRATIONS: tuple[tuple[Callable[..., Any], dict[str, Any] | None], ...] = (
+    (get_summary, {"readOnlyHint": True}),
+    (list_work, {"readOnlyHint": True}),
+    (find_related, {"readOnlyHint": True}),
+    (search_case_runbooks, {"readOnlyHint": True}),
+    (get_case_runbook, {"readOnlyHint": True}),
+    (record_triage_decision, None),
+    (add_timeline_item, None),
+    (get_item, {"readOnlyHint": True}),
+    (validate_mermaid, {"readOnlyHint": True}),
+)
+
+
+def create_mcp_server(
+    *,
+    auth: AuthProvider,
+    lifespan: Any,
+    session_factory: Callable[..., Any] = async_session_factory,
+) -> FastMCP:
+    """Build the authenticated server before its HTTP application is captured."""
+
+    server = FastMCP(
+        "Tidemark Intercept MCP",
+        auth=auth,
+        lifespan=lifespan,
+        mask_error_details=True,
+    )
+    server.add_middleware(MCPPrincipalMiddleware(session_factory=session_factory))
+    server.add_middleware(GetItemContractGuidanceMiddleware())
+    for tool_function, annotations in _TOOL_REGISTRATIONS:
+        server.tool(annotations=annotations)(tool_function)
+    return server
+
+
+# Export the schema-only server plus the runtime factory.
+__all__ = ["create_mcp_server", "mcp"]

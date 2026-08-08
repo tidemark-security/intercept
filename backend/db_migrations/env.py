@@ -12,7 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 # Import SQLModel and our models
 from sqlmodel import SQLModel
-from app.models import models  # This imports all our SQLModel classes
+from app.models import models as _registered_models  # noqa: E402, F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -52,6 +52,11 @@ def include_object(object, name, type_, reflected, compare_to):
     """
     # Exclude pgqueuer tables
     if type_ == "table" and name.startswith("pgqueuer"):
+        return False
+
+    # Managed by the explicit FastMCP storage migration. Its native schema is
+    # intentionally not represented by an application SQLModel.
+    if type_ == "table" and name == "fastmcp_oauth_kv":
         return False
     
     # Exclude search_vector columns (managed via raw SQL triggers)

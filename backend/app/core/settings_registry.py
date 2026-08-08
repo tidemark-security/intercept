@@ -19,7 +19,7 @@ type, default value, category, and whether it is local-only.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from app.models.enums import SettingType
@@ -96,6 +96,17 @@ SETTINGS_REGISTRY: Dict[str, SettingDefinition] = {}
 
 
 def _register(*defs: SettingDefinition) -> None:
+    seen_keys = set(SETTINGS_REGISTRY)
+    duplicate_keys: set[str] = set()
+    for d in defs:
+        if d.key in seen_keys:
+            duplicate_keys.add(d.key)
+        seen_keys.add(d.key)
+
+    if duplicate_keys:
+        duplicates = ", ".join(sorted(duplicate_keys))
+        raise ValueError(f"Duplicate setting definition(s): {duplicates}")
+
     for d in defs:
         SETTINGS_REGISTRY[d.key] = d
 
@@ -183,6 +194,36 @@ _register(
             "http://127.0.0.1:3000",
             "http://127.0.0.1:5173",
         ],
+    ),
+    _def(
+        "http.trusted_hosts",
+        env_var="HTTP_TRUSTED_HOSTS",
+        value_type=SettingType.JSON,
+        local_only=True,
+        category="bootstrap",
+        description="Host header allowlist for the API, OAuth discovery, and MCP",
+        default=["localhost", "127.0.0.1", "testserver"],
+    ),
+    _def(
+        "http.trusted_proxy_cidrs",
+        env_var="HTTP_TRUSTED_PROXY_CIDRS",
+        value_type=SettingType.JSON,
+        local_only=True,
+        category="bootstrap",
+        description=(
+            "Direct proxy IP networks permitted to supply X-Forwarded-For "
+            "client addresses"
+        ),
+        default=[],
+    ),
+    _def(
+        "dummy_data.enabled",
+        env_var="DUMMY_DATA_ENABLED",
+        value_type=SettingType.BOOLEAN,
+        local_only=True,
+        category="bootstrap",
+        description="Mount development-only dummy-data API routes",
+        default=False,
     ),
     _def(
         "worker.concurrency",
@@ -359,6 +400,39 @@ _register(
         description="Header that must mirror the CSRF cookie on unsafe requests",
         default="X-XSRF-TOKEN",
     ),
+    _def(
+        "auth.api_keys.max_lifetime_days",
+        env_var="API_KEY_MAX_LIFETIME_DAYS",
+        value_type=SettingType.NUMBER,
+        local_only=True,
+        category="session",
+        description="Maximum lifetime permitted for newly issued API keys",
+        default=90,
+    ),
+    _def(
+        "auth.password_work.max_concurrent",
+        env_var="PASSWORD_HASH_MAX_CONCURRENT",
+        value_type=SettingType.NUMBER,
+        local_only=True,
+        category="session",
+        description=(
+            "Maximum Argon2 password operations reserved across all backend "
+            "workers, with the same value used as a per-process safety cap"
+        ),
+        default=8,
+    ),
+    _def(
+        "auth.password_work.lease_seconds",
+        env_var="PASSWORD_HASH_LEASE_SECONDS",
+        value_type=SettingType.NUMBER,
+        local_only=True,
+        category="session",
+        description=(
+            "Crash-recovery lease for reserved Argon2 password work; keep "
+            "comfortably above the worst-case executor runtime"
+        ),
+        default=900,
+    ),
 )
 
 # ---------------------------------------------------------------------------
@@ -483,6 +557,23 @@ _register(
         default=None,
     ),
     _def(
+        "oidc.redirect_uri",
+        env_var="OIDC_REDIRECT_URI",
+        local_only=True,
+        category="oidc",
+        description="Exact externally registered callback URI for main-app OIDC",
+        default="http://localhost:8080/api/v1/auth/oidc/callback",
+    ),
+    _def(
+        "oidc.clock_skew_seconds",
+        env_var="OIDC_CLOCK_SKEW_SECONDS",
+        value_type=SettingType.NUMBER,
+        local_only=True,
+        category="oidc",
+        description="Permitted OIDC token clock skew in seconds",
+        default=60,
+    ),
+    _def(
         "oidc.scopes",
         env_var="OIDC_SCOPES",
         category="oidc",
@@ -501,8 +592,11 @@ _register(
         env_var="OIDC_JIT_PROVISIONING",
         value_type=SettingType.BOOLEAN,
         category="oidc",
-        description="Automatically create local user accounts for first-time OIDC sign-ins",
-        default=True,
+        description=(
+            "Explicitly opt in to creating local user accounts for first-time OIDC "
+            "sign-ins; exact issuer/subject pre-provisioning is the default"
+        ),
+        default=False,
     ),
     _def(
         "oidc.default_role",
@@ -548,20 +642,168 @@ _register(
         ],
     ),
     _def(
-        "oidc.trusted_auto_link_issuers",
-        env_var="OIDC_TRUSTED_AUTO_LINK_ISSUERS",
-        value_type=SettingType.JSON,
-        category="oidc",
-        description="JSON array of OIDC issuers allowed to auto-link existing users by email",
-        default=[],
-    ),
-    _def(
         "oidc.browser_binding.cookie_name",
         env_var="OIDC_BROWSER_BINDING_COOKIE_NAME",
         local_only=True,
         category="oidc",
         description="Cookie used to bind an OIDC login flow to the initiating browser",
         default="intercept_oidc_binding",
+    ),
+)
+
+# ---------------------------------------------------------------------------
+# MCP authentication (loaded when the backend starts)
+# ---------------------------------------------------------------------------
+_register(
+    _def(
+        "mcp.oauth.enabled",
+        env_var="MCP_OAUTH_ENABLED",
+        value_type=SettingType.BOOLEAN,
+        category="mcp",
+        description="Enable interactive authentication for the remote MCP server. Backend restart required after changes",
+        default=False,
+    ),
+    _def(
+        "mcp.oauth.public_base_url",
+        env_var="MCP_OAUTH_PUBLIC_BASE_URL",
+        category="mcp",
+        description="Public Intercept origin for MCP issuer and discovery metadata; HTTPS is required except for loopback. Backend restart required after changes",
+        default="",
+    ),
+    _def(
+        "mcp.oauth.login_base_url",
+        env_var="MCP_OAUTH_LOGIN_BASE_URL",
+        category="mcp",
+        description="Public frontend origin used when an MCP browser flow needs local Intercept login. Backend restart required after changes",
+        default="",
+    ),
+    _def(
+        "mcp.oauth.refresh_token_ttl_days",
+        env_var="MCP_OAUTH_REFRESH_TOKEN_TTL_DAYS",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Days before MCP OAuth refresh tokens expire. Backend restart required after changes",
+        default=30,
+    ),
+    _def(
+        "mcp.oauth.access_token_ttl_seconds",
+        env_var="MCP_OAUTH_ACCESS_TOKEN_TTL_SECONDS",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Seconds before MCP OAuth access tokens expire. Backend restart required after changes",
+        default=3600,
+    ),
+    _def(
+        "mcp.oauth.registration_max_body_bytes",
+        env_var="MCP_OAUTH_REGISTRATION_MAX_BODY_BYTES",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Maximum JSON body size for MCP dynamic client registration. Backend restart required after changes",
+        default=65536,
+    ),
+    _def(
+        "mcp.oauth.registration_pending_quota",
+        env_var="MCP_OAUTH_REGISTRATION_PENDING_QUOTA",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Maximum unclaimed MCP dynamic registrations across all workers. Backend restart required after changes",
+        default=1000,
+    ),
+    _def(
+        "mcp.oauth.registration_total_quota",
+        env_var="MCP_OAUTH_REGISTRATION_TOTAL_QUOTA",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Maximum tracked MCP dynamic registrations, including active clients. Backend restart required after changes",
+        default=5000,
+    ),
+    _def(
+        "mcp.oauth.registration_per_ip_quota",
+        env_var="MCP_OAUTH_REGISTRATION_PER_IP_QUOTA",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Maximum MCP dynamic registrations per validated source address and rate window. Backend restart required after changes",
+        default=600,
+    ),
+    _def(
+        "mcp.oauth.registration_rate_window_seconds",
+        env_var="MCP_OAUTH_REGISTRATION_RATE_WINDOW_SECONDS",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Durable per-client MCP registration rate window in seconds. Backend restart required after changes",
+        default=3600,
+    ),
+    _def(
+        "mcp.oauth.registration_abandoned_ttl_seconds",
+        env_var="MCP_OAUTH_REGISTRATION_ABANDONED_TTL_SECONDS",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Seconds before an unused MCP dynamic registration is expired and cleaned up. Backend restart required after changes",
+        default=3600,
+    ),
+    _def(
+        "mcp.oauth.registration_active_ttl_seconds",
+        env_var="MCP_OAUTH_REGISTRATION_ACTIVE_TTL_SECONDS",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Inactivity lifetime for authorized MCP dynamic clients, never shorter than the configured token lifetimes. Backend restart required after changes",
+        default=2592000,
+    ),
+    _def(
+        "mcp.oauth.pending_authorization_global_quota",
+        env_var="MCP_OAUTH_PENDING_AUTHORIZATION_GLOBAL_QUOTA",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Maximum pending MCP OAuth authorizations and admitted CIMD fetches across all workers. Backend restart required after changes",
+        default=1000,
+    ),
+    _def(
+        "mcp.oauth.pending_authorization_per_client_quota",
+        env_var="MCP_OAUTH_PENDING_AUTHORIZATION_PER_CLIENT_QUOTA",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Maximum pending MCP OAuth authorizations and admitted CIMD fetches per client ID. Backend restart required after changes",
+        default=10,
+    ),
+    _def(
+        "mcp.oauth.pending_authorization_per_source_quota",
+        env_var="MCP_OAUTH_PENDING_AUTHORIZATION_PER_SOURCE_QUOTA",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Maximum pending MCP OAuth authorizations and admitted CIMD fetches per validated source address. Backend restart required after changes",
+        default=50,
+    ),
+    _def(
+        "mcp.oauth.cimd_fetch_reservation_ttl_seconds",
+        env_var="MCP_OAUTH_CIMD_FETCH_RESERVATION_TTL_SECONDS",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Seconds a CIMD metadata-fetch admission occupies authorization capacity when no flow is created. Backend restart required after changes",
+        default=60,
+    ),
+    _def(
+        "mcp.oauth.cimd_cache_max_entries",
+        env_var="MCP_OAUTH_CIMD_CACHE_MAX_ENTRIES",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Maximum process-local FastMCP CIMD documents retained in memory. Backend restart required after changes",
+        default=256,
+    ),
+    _def(
+        "mcp.oauth.client_assertion_replay_global_quota",
+        env_var="MCP_OAUTH_CLIENT_ASSERTION_REPLAY_GLOBAL_QUOTA",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Maximum durable FastMCP private_key_jwt replay claims across all clients. Backend restart required after changes",
+        default=100000,
+    ),
+    _def(
+        "mcp.oauth.client_assertion_replay_per_client_quota",
+        env_var="MCP_OAUTH_CLIENT_ASSERTION_REPLAY_PER_CLIENT_QUOTA",
+        value_type=SettingType.NUMBER,
+        category="mcp",
+        description="Maximum durable FastMCP private_key_jwt replay claims per client ID. Backend restart required after changes",
+        default=10000,
     ),
 )
 
@@ -670,7 +912,10 @@ _register(
         env_var="LOGIN_RATE_LIMIT_ATTEMPTS",
         value_type=SettingType.NUMBER,
         category="login",
-        description="Max login attempts per rate-limit window",
+        description=(
+            "Max password-login initiations per resolved client source and "
+            "rate-limit window"
+        ),
         default=10,
     ),
     _def(
@@ -678,7 +923,7 @@ _register(
         env_var="LOGIN_RATE_LIMIT_WINDOW_SECONDS",
         value_type=SettingType.NUMBER,
         category="login",
-        description="Rate-limit sliding window in seconds",
+        description="Per-source password-login rate-limit window in seconds",
         default=60,
     ),
 )
@@ -1076,7 +1321,7 @@ _register(
     _def(
         "enrichment.servicenow.lookup_query_template",
         category="enrichment",
-        description="ServiceNow encoded query template for single-user lookups; use {value} as the escaped identifier",
+        description="Legacy compatibility mirror derived from the ServiceNow user lookup fields",
         default="email={value}^ORuser_name={value}^ORname={value}",
     ),
     _def(
@@ -1252,9 +1497,10 @@ _register(
     ),
     _def(
         "auth.passkeys.resident_key",
+        local_only=True,
         category="passkeys",
-        description="WebAuthn resident key requirement (required, preferred, discouraged)",
-        default="preferred",
+        description="WebAuthn discoverable credential requirement (fixed to required)",
+        default="required",
     ),
     _def(
         "auth.passkeys.attestation",
@@ -1293,6 +1539,24 @@ def _load_dotenv() -> Dict[str, str]:
     return _dotenv_values
 
 
+def get_environment_value(env_var: str) -> Optional[str]:
+    """Resolve one environment name from the process, then the cached .env."""
+    import os
+
+    value = os.getenv(env_var)
+    if value is not None:
+        return value
+    return _load_dotenv().get(env_var)
+
+
+def get_setting_default(key: str) -> Any:
+    """Return a registered setting's canonical default."""
+    try:
+        return SETTINGS_REGISTRY[key].default
+    except KeyError:
+        raise KeyError(f"Unknown setting key: {key!r}") from None
+
+
 def get_local(key: str, default: Any = _SENTINEL) -> Any:
     """Read a setting value from environment / .env only (no database).
 
@@ -1308,24 +1572,16 @@ def get_local(key: str, default: Any = _SENTINEL) -> Any:
     Raises ``KeyError`` if the key is not in the registry and no *default*
     is supplied.
     """
-    import os
-
     defn = SETTINGS_REGISTRY.get(key)
     if defn is None:
         if default is _SENTINEL:
             raise KeyError(f"Unknown setting key: {key!r}")
         return default
 
-    # 1. Real environment variable
-    raw = os.getenv(defn.env_var)
+    # 1–2. Real environment variable, then .env file.
+    raw = get_environment_value(defn.env_var)
     if raw is not None:
-        return _coerce(raw, defn.value_type)
-
-    # 2. .env file
-    dotenv = _load_dotenv()
-    raw = dotenv.get(defn.env_var)
-    if raw is not None:
-        return _coerce(raw, defn.value_type)
+        return coerce_setting_value(raw, defn.value_type)
 
     # 3. Registry default
     if defn.default is not None:
@@ -1338,7 +1594,7 @@ def get_local(key: str, default: Any = _SENTINEL) -> Any:
     return defn.default  # may be None
 
 
-def _coerce(raw: str, value_type: SettingType) -> Any:
+def coerce_setting_value(raw: str, value_type: SettingType) -> Any:
     """Coerce a raw string value based on SettingType."""
     import json
 

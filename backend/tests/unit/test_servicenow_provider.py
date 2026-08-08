@@ -13,6 +13,9 @@ class StubSettings:
     async def get(self, key: str, default: object = None) -> object:
         return self._values.get(key, default)
 
+    async def get_many(self, defaults: dict[str, object]) -> dict[str, object]:
+        return {key: self._values.get(key, default) for key, default in defaults.items()}
+
 
 class FakeResponse:
     def __init__(self, status_code: int, payload: dict[str, object]):
@@ -162,6 +165,12 @@ async def test_enrich_fetches_servicenow_user(monkeypatch: pytest.MonkeyPatch) -
 
 @pytest.mark.asyncio
 async def test_enrich_supports_pysnow_oauth_password_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    offloaded: list[object] = []
+
+    async def run_inline(callback):
+        offloaded.append(callback)
+        return callback()
+
     class FakeOAuthClient:
         generated: list[tuple[str, str]] = []
         token: dict[str, object] | None = None
@@ -191,6 +200,10 @@ async def test_enrich_supports_pysnow_oauth_password_client(monkeypatch: pytest.
     FakeAsyncClient.requests = []
     fake_pysnow = types.SimpleNamespace(OAuthClient=FakeOAuthClient)
     monkeypatch.setitem(sys.modules, "pysnow", fake_pysnow)
+    monkeypatch.setattr(
+        "app.services.enrichment.providers.servicenow.asyncio.to_thread",
+        run_inline,
+    )
     monkeypatch.setattr("app.services.enrichment.providers.servicenow.httpx.AsyncClient", FakeAsyncClient)
     provider = servicenow_provider.__class__()
 
@@ -210,6 +223,7 @@ async def test_enrich_supports_pysnow_oauth_password_client(monkeypatch: pytest.
 
     assert result.cache_key == "user:alice@example.com"
     assert FakeOAuthClient.generated == [("svc_user", "svc_pass")]
+    assert len(offloaded) == 1
 
 
 @pytest.mark.asyncio
@@ -402,3 +416,80 @@ async def test_get_settings_clamps_bulk_sync_bounds() -> None:
     assert cfg is not None
     assert cfg["page_size"] == 1000
     assert cfg["max_records"] == 50000
+
+
+@pytest.mark.asyncio
+async def test_bulk_sync_skips_only_malformed_provider_records(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class MixedRecordAsyncClient(FakeAsyncClient):
+        async def get(
+            self,
+            url: str,
+            params: dict[str, object] | None = None,
+        ):
+            assert url.endswith("/api/now/table/sys_user")
+            return FakeResponse(
+                200,
+                {
+                    "result": [
+                        {
+                            "sys_id": "sensitive-malformed-servicenow-record",
+                            "email": ["not-a-scalar"],
+                        },
+                        {
+                            "sys_id": "sn-user-valid",
+                            "email": "valid@example.com",
+                            "name": "Valid User",
+                        },
+                    ]
+                },
+            )
+
+    monkeypatch.setattr(
+        "app.services.enrichment.providers.servicenow.httpx.AsyncClient",
+        MixedRecordAsyncClient,
+    )
+    provider = servicenow_provider.__class__()
+
+    results = await provider.bulk_sync(
+        db=None,  # type: ignore[arg-type]
+        settings=_settings(
+            **{
+                "enrichment.servicenow.page_size": 2,
+                "enrichment.servicenow.max_records": 2,
+            }
+        ),  # type: ignore[arg-type]
+    )
+
+    assert [result.cache_key for result in results] == ["user:valid@example.com"]
+    assert (
+        "ServiceNow bulk sync skipped malformed user records (count=1)"
+        in caplog.messages
+    )
+    assert "sensitive-malformed-servicenow-record" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [RuntimeError, TypeError, AttributeError])
+async def test_bulk_sync_propagates_unexpected_record_processing_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
+) -> None:
+    monkeypatch.setattr(
+        "app.services.enrichment.providers.servicenow.httpx.AsyncClient",
+        FakeAsyncClient,
+    )
+    provider = servicenow_provider.__class__()
+
+    def raise_defect(*args, **kwargs):
+        raise error_type("record processing defect")
+
+    monkeypatch.setattr(provider, "_build_result", raise_defect)
+
+    with pytest.raises(error_type, match="record processing defect"):
+        await provider.bulk_sync(
+            db=None,  # type: ignore[arg-type]
+            settings=_settings(),  # type: ignore[arg-type]
+        )

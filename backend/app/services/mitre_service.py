@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from functools import lru_cache
+from json import JSONDecodeError
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
@@ -22,6 +24,10 @@ logger = logging.getLogger(__name__)
 
 # Lazy-loaded MitreAttackData instance
 _mitre_data: Optional[MitreAttackData] = None
+
+
+class MitreDataUnavailableError(RuntimeError):
+    """Raised when the configured ATT&CK bundle cannot be loaded."""
 
 
 def _get_stix_path() -> Path:
@@ -50,10 +56,11 @@ def _get_stix_path() -> Path:
     return Path(__file__).parent.parent / "models" / "enterprise-attack-18.1.json"
 
 
-def _load_mitre_data() -> Optional["MitreAttackData"]:
+def _load_mitre_data() -> "MitreAttackData":
     """Load the MITRE ATT&CK data from the STIX bundle.
     
-    Returns None if the file doesn't exist or loading fails.
+    Raises:
+        MitreDataUnavailableError: If the bundle or its parser is unavailable.
     """
     global _mitre_data
     if _mitre_data is not None:
@@ -61,20 +68,23 @@ def _load_mitre_data() -> Optional["MitreAttackData"]:
     
     stix_path = _get_stix_path()
     if not stix_path.exists():
-        logger.warning(f"MITRE ATT&CK STIX file not found: {stix_path}")
-        return None
-    
+        logger.warning("MITRE ATT&CK STIX file not found: %s", stix_path)
+        raise MitreDataUnavailableError("MITRE ATT&CK data file is unavailable")
+
     try:
         from mitreattack.stix20 import MitreAttackData
+        from stix2.exceptions import STIXError
+    except ImportError as exc:
+        logger.warning("MITRE ATT&CK parser is not installed")
+        raise MitreDataUnavailableError("MITRE ATT&CK parser is unavailable") from exc
+
+    try:
         _mitre_data = MitreAttackData(stix_filepath=str(stix_path))
-        logger.info(f"Loaded MITRE ATT&CK data from {stix_path}")
+        logger.info("Loaded MITRE ATT&CK data from %s", stix_path)
         return _mitre_data
-    except ImportError:
-        logger.warning("mitreattack-python library not installed")
-        return None
-    except Exception as e:
-        logger.error(f"Failed to load MITRE ATT&CK data: {e}")
-        return None
+    except (OSError, JSONDecodeError, STIXError, KeyError, TypeError) as exc:
+        logger.exception("Failed to load MITRE ATT&CK data from %s", stix_path)
+        raise MitreDataUnavailableError("MITRE ATT&CK data could not be loaded") from exc
 
 
 # STIX type mappings for ATT&CK ID prefixes
@@ -87,6 +97,29 @@ ATTACK_ID_STIX_TYPES = {
     "DS": "x-mitre-data-source",  # Data Source
     "C": "campaign",  # Campaign
 }
+
+ATTACK_ID_PATTERN = re.compile(
+    r"^(?:T\d{4}(?:\.\d{3})?|TA\d{4}|G\d{4}|S\d{4}|M\d{4}|DS\d{4}|C\d{4})$",
+    re.IGNORECASE,
+)
+
+SEARCH_OBJECT_TYPE_TO_STIX = {
+    "technique": "attack-pattern",
+    "tactic": "x-mitre-tactic",
+    "group": "intrusion-set",
+    "software": None,
+    "mitigation": "course-of-action",
+    "campaign": "campaign",
+}
+DIRECT_RESULT_TYPE_TO_STIX = {
+    "technique": "attack-pattern",
+    "tactic": "x-mitre-tactic",
+    "group": "intrusion-set",
+    "software": "tool",
+    "mitigation": "course-of-action",
+    "campaign": "campaign",
+}
+SEARCHABLE_ATTACK_ID_PREFIXES = ("T", "TA", "G", "S", "M", "C", "DS")
 
 
 def _get_stix_type_for_attack_id(attack_id: str) -> Optional[str]:
@@ -137,33 +170,27 @@ class MitreService:
         Returns None if the object is not found.
         """
         mitre_data = _load_mitre_data()
-        if mitre_data is None:
-            return None
-        
+
         attack_id = attack_id.upper().strip()
+        if not MitreService.is_attack_id_format(attack_id):
+            logger.warning("Unknown ATT&CK ID format: %s", attack_id)
+            return None
         stix_type = _get_stix_type_for_attack_id(attack_id)
-        
-        if stix_type is None:
-            logger.warning(f"Unknown ATT&CK ID format: {attack_id}")
+        if stix_type is None:  # pragma: no cover - pattern and prefix map are kept in sync
             return None
         
-        try:
-            # Special handling for software - could be tool or malware
-            if stix_type == "tool":
-                obj = mitre_data.get_object_by_attack_id(attack_id, "tool")
-                if obj is None:
-                    obj = mitre_data.get_object_by_attack_id(attack_id, "malware")
-            else:
-                obj = mitre_data.get_object_by_attack_id(attack_id, stix_type)
-            
+        # Special handling for software - it may be represented as a tool or malware.
+        if stix_type == "tool":
+            obj = mitre_data.get_object_by_attack_id(attack_id, "tool")
             if obj is None:
-                return None
-            
-            return MitreService._format_attack_object(mitre_data, obj, attack_id)
-        
-        except Exception as e:
-            logger.error(f"Error looking up ATT&CK ID {attack_id}: {e}")
+                obj = mitre_data.get_object_by_attack_id(attack_id, "malware")
+        else:
+            obj = mitre_data.get_object_by_attack_id(attack_id, stix_type)
+
+        if obj is None:
             return None
+
+        return MitreService._format_attack_object(mitre_data, obj, attack_id)
     
     @staticmethod
     def _format_attack_object(
@@ -269,12 +296,8 @@ class MitreService:
         stix_id = obj.id if hasattr(obj, "id") else obj.get("id")
         
         # Get tactics this technique belongs to
-        tactics = []
-        try:
-            tactic_objs = mitre_data.get_tactics_by_technique(stix_id)
-            tactics = [t.name for t in tactic_objs] if tactic_objs else []
-        except Exception:
-            pass
+        tactic_objs = mitre_data.get_tactics_by_technique(stix_id)
+        tactics = [t.name for t in tactic_objs] if tactic_objs else []
         
         # Check if this is a sub-technique
         is_subtechnique = "." in attack_id
@@ -335,9 +358,9 @@ class MitreService:
         return MitreService.get_attack_object(attack_id)
     
     @staticmethod
-    def validate_attack_id(attack_id: str) -> bool:
-        """Check if an ATT&CK ID exists in the database."""
-        return MitreService.get_attack_object(attack_id) is not None
+    def is_attack_id_format(attack_id: str) -> bool:
+        """Return whether a value has a supported ATT&CK external-ID format."""
+        return bool(ATTACK_ID_PATTERN.fullmatch(attack_id.strip()))
     
     @staticmethod
     @lru_cache(maxsize=1000)
@@ -348,6 +371,84 @@ class MitreService:
         techniques may be looked up repeatedly.
         """
         return MitreService.get_attack_object(attack_id)
+
+    @staticmethod
+    def _search_stix_types(object_types: Optional[List[str]]) -> List[str]:
+        if not object_types:
+            return ["attack-pattern"]
+        stix_types: List[str] = []
+        for object_type in object_types:
+            if object_type == "software":
+                stix_types.extend(("tool", "malware"))
+            elif mapped_type := SEARCH_OBJECT_TYPE_TO_STIX.get(object_type):
+                stix_types.append(mapped_type)
+        return list(dict.fromkeys(stix_types))
+
+    @staticmethod
+    def _objects_for_search_type(
+        mitre_data: "MitreAttackData",
+        stix_type: str,
+    ) -> List[Any]:
+        if stix_type == "attack-pattern":
+            return mitre_data.get_techniques(remove_revoked_deprecated=True)
+        if stix_type == "x-mitre-tactic":
+            return mitre_data.get_tactics(remove_revoked_deprecated=True)
+        if stix_type == "intrusion-set":
+            return mitre_data.get_groups(remove_revoked_deprecated=True)
+        if stix_type in ("tool", "malware"):
+            return [
+                obj
+                for obj in mitre_data.get_software(remove_revoked_deprecated=True)
+                if obj.get("type") == stix_type
+            ]
+        if stix_type == "course-of-action":
+            return mitre_data.get_mitigations(remove_revoked_deprecated=True)
+        if stix_type == "campaign":
+            return mitre_data.get_campaigns(remove_revoked_deprecated=True)
+        return []
+
+    @staticmethod
+    def _search_match_score(
+        *,
+        query_upper: str,
+        query_lower: str,
+        attack_id: str,
+        name: str,
+    ) -> int:
+        name_lower = name.lower()
+        if attack_id.upper().startswith(query_upper) and len(query_upper) >= 2:
+            return 90
+        if name_lower == query_lower:
+            return 80
+        if name_lower.startswith(query_lower):
+            return 70
+        if query_lower in name_lower:
+            return 60
+        return 0
+
+    @staticmethod
+    def _add_search_result(
+        mitre_data: "MitreAttackData",
+        results_by_id: Dict[str, Dict[str, Any]],
+        obj: Any,
+        stix_type: str,
+        score: int,
+    ) -> None:
+        stix_id = obj.get("id") if isinstance(obj, dict) else getattr(obj, "id", "")
+        if not stix_id:
+            return
+        attack_id = mitre_data.get_attack_id(str(stix_id)) or ""
+        if not attack_id:
+            return
+        existing = results_by_id.get(attack_id)
+        if existing and existing["_score"] >= score:
+            return
+        results_by_id[attack_id] = {
+            "attack_id": attack_id,
+            "name": mitre_data.get_field(obj, "name") or "",
+            "object_type": MitreService._get_friendly_type(stix_type),
+            "_score": score,
+        }
     
     @staticmethod
     def search(
@@ -372,163 +473,87 @@ class MitreService:
             List of matching ATT&CK objects with basic info (id, name, type)
         """
         mitre_data = _load_mitre_data()
-        if mitre_data is None:
-            return []
-        
+
         query_upper = query.upper().strip()
         query_lower = query.lower().strip()
         
         if not query_lower:
             return []
         
-        # Map friendly type names to STIX types
-        type_mapping = {
-            "technique": "attack-pattern",
-            "tactic": "x-mitre-tactic",
-            "group": "intrusion-set",
-            "software": None,  # Special case: includes both tool and malware
-            "mitigation": "course-of-action",
-            "campaign": "campaign",
-        }
-        
-        # Determine which STIX types to search
-        stix_types_to_search: List[str] = []
-        if object_types:
-            for ot in object_types:
-                if ot == "software":
-                    stix_types_to_search.append("tool")
-                    stix_types_to_search.append("malware")
-                else:
-                    mapped = type_mapping.get(ot)
-                    if mapped:
-                        stix_types_to_search.append(mapped)
-        else:
-            # Default: search techniques only (most common use case for TTP form)
-            stix_types_to_search = ["attack-pattern"]
-        
-        # Remove duplicates while preserving order
-        stix_types_to_search = list(dict.fromkeys(stix_types_to_search))
-        
-        # Use dict to track best score per attack_id
+        stix_types_to_search = MitreService._search_stix_types(object_types)
         results_by_id: Dict[str, Dict[str, Any]] = {}
-        
-        def add_result(obj: Any, stix_type: str, score: int) -> None:
-            """Helper to add object to results, keeping highest score per ID."""
-            stix_id = obj.get("id") if isinstance(obj, dict) else getattr(obj, "id", "")
-            if not stix_id:
-                return
-            stix_id_str = str(stix_id)
-            attack_id = mitre_data.get_attack_id(stix_id_str) or ""
+
+        # Strategy 1: Direct ATT&CK ID match (highest priority)
+        if query_upper.startswith(SEARCHABLE_ATTACK_ID_PREFIXES):
+            direct_obj = MitreService.get_attack_object(query_upper)
+            if direct_obj:
+                obj_type = direct_obj.get("object_type", "technique")
+                stix_type = DIRECT_RESULT_TYPE_TO_STIX.get(
+                    obj_type,
+                    "attack-pattern",
+                )
+
+                # Check if this type is in our search filter
+                if not stix_types_to_search or stix_type in stix_types_to_search:
+                    results_by_id[direct_obj["attack_id"]] = {
+                        "attack_id": direct_obj["attack_id"],
+                        "name": direct_obj["name"],
+                        "object_type": obj_type,
+                        "_score": 100,  # Exact ID match
+                    }
             
-            # Keep the result with the highest score
-            existing = results_by_id.get(attack_id)
-            if existing and existing["_score"] >= score:
-                return
-            
-            name = mitre_data.get_field(obj, "name") or ""
-            
-            results_by_id[attack_id] = {
-                "attack_id": attack_id,
-                "name": name,
-                "object_type": MitreService._get_friendly_type(stix_type),
-                "_score": score,
-            }
-        
-        try:
-            # Strategy 1: Direct ATT&CK ID match (highest priority)
-            if query_upper.startswith(("T", "TA", "G", "S", "M", "C", "DS")):
-                direct_obj = MitreService.get_attack_object(query_upper)
-                if direct_obj:
-                    obj_type = direct_obj.get("object_type", "technique")
-                    stix_type = {
-                        "technique": "attack-pattern",
-                        "tactic": "x-mitre-tactic", 
-                        "group": "intrusion-set",
-                        "software": "tool",
-                        "mitigation": "course-of-action",
-                        "campaign": "campaign",
-                    }.get(obj_type, "attack-pattern")
-                    
-                    # Check if this type is in our search filter
-                    if not stix_types_to_search or stix_type in stix_types_to_search:
-                        results_by_id[direct_obj["attack_id"]] = {
-                            "attack_id": direct_obj["attack_id"],
-                            "name": direct_obj["name"],
-                            "object_type": obj_type,
-                            "_score": 100,  # Exact ID match
-                        }
-            
-            # Strategy 2: Search by name first (higher priority than content)
-            for stix_type in stix_types_to_search:
-                if stix_type == "attack-pattern":
-                    objects = mitre_data.get_techniques(remove_revoked_deprecated=True)
-                elif stix_type == "x-mitre-tactic":
-                    objects = mitre_data.get_tactics(remove_revoked_deprecated=True)
-                elif stix_type == "intrusion-set":
-                    objects = mitre_data.get_groups(remove_revoked_deprecated=True)
-                elif stix_type in ("tool", "malware"):
-                    all_software = mitre_data.get_software(remove_revoked_deprecated=True)
-                    objects = [o for o in all_software if o.get("type") == stix_type]
-                elif stix_type == "course-of-action":
-                    objects = mitre_data.get_mitigations(remove_revoked_deprecated=True)
-                elif stix_type == "campaign":
-                    objects = mitre_data.get_campaigns(remove_revoked_deprecated=True)
-                else:
+        # Strategy 2: Search by name first (higher priority than content)
+        for stix_type in stix_types_to_search:
+            for obj in MitreService._objects_for_search_type(mitre_data, stix_type):
+                name = mitre_data.get_field(obj, "name") or ""
+                stix_id = obj.get("id") if isinstance(obj, dict) else getattr(obj, "id", "")
+                if not stix_id:
                     continue
-                
-                for obj in objects:
-                    name = mitre_data.get_field(obj, "name") or ""
-                    stix_id = obj.get("id") if isinstance(obj, dict) else getattr(obj, "id", "")
-                    if not stix_id:
-                        continue
-                    attack_id = mitre_data.get_attack_id(str(stix_id)) or ""
-                    
-                    name_lower = name.lower()
-                    
-                    # Score based on match type
-                    score = 0
-                    if attack_id.upper().startswith(query_upper) and len(query_upper) >= 2:
-                        score = 90  # ID prefix match
-                    elif name_lower == query_lower:
-                        score = 80  # Exact name match
-                    elif name_lower.startswith(query_lower):
-                        score = 70  # Name prefix match
-                    elif query_lower in name_lower:
-                        score = 60  # Name substring match
-                    
-                    if score > 0:
-                        add_result(obj, stix_type, score)
-            
-            # Strategy 3: Search by description content (lower priority)
-            for stix_type in stix_types_to_search:
-                try:
-                    content_matches = mitre_data.get_objects_by_content(
-                        query_lower, 
-                        stix_type, 
-                        remove_revoked_deprecated=True
+                attack_id = mitre_data.get_attack_id(str(stix_id)) or ""
+                score = MitreService._search_match_score(
+                    query_upper=query_upper,
+                    query_lower=query_lower,
+                    attack_id=attack_id,
+                    name=name,
+                )
+                if score > 0:
+                    MitreService._add_search_result(
+                        mitre_data,
+                        results_by_id,
+                        obj,
+                        stix_type,
+                        score,
                     )
-                    for obj in content_matches:
-                        add_result(obj, stix_type, 40)  # Description match score
-                except Exception:
-                    pass
-                
-                # Early exit if we have enough results
-                if len(results_by_id) >= limit * 2:
-                    break
-            
-            # Convert to list and sort by score (descending), then by name
-            results = list(results_by_id.values())
-            results.sort(key=lambda x: (-x["_score"], x["name"]))
-            
-            # Remove score from output and limit results
-            for r in results:
-                r.pop("_score", None)
-            
-            return results[:limit]
-        
-        except Exception as e:
-            logger.error(f"Error searching ATT&CK data: {e}")
-            return []
+
+        # Strategy 3: Search by description content (lower priority)
+        for stix_type in stix_types_to_search:
+            content_matches = mitre_data.get_objects_by_content(
+                query_lower,
+                stix_type,
+                remove_revoked_deprecated=True,
+            )
+            for obj in content_matches:
+                MitreService._add_search_result(
+                    mitre_data,
+                    results_by_id,
+                    obj,
+                    stix_type,
+                    40,
+                )
+
+            # Early exit if we have enough results
+            if len(results_by_id) >= limit * 2:
+                break
+
+        # Convert to list and sort by score (descending), then by name
+        results = list(results_by_id.values())
+        results.sort(key=lambda x: (-x["_score"], x["name"]))
+
+        # Remove score from output and limit results
+        for result in results:
+            result.pop("_score", None)
+
+        return results[:limit]
     
     @staticmethod
     def get_all_techniques(include_subtechniques: bool = True) -> List[Dict[str, Any]]:
@@ -537,80 +562,58 @@ class MitreService:
         Returns a simplified list with attack_id, name, and tactic info.
         """
         mitre_data = _load_mitre_data()
-        if mitre_data is None:
-            return []
-        
-        try:
-            techniques = mitre_data.get_techniques(
-                include_subtechniques=include_subtechniques,
-                remove_revoked_deprecated=True
-            )
-            
-            results = []
-            for tech in techniques:
-                stix_id = tech.get("id") if isinstance(tech, dict) else getattr(tech, "id", "")
-                if not stix_id:
-                    continue
-                stix_id_str = str(stix_id)
-                attack_id = mitre_data.get_attack_id(stix_id_str) or ""
-                name = mitre_data.get_field(tech, "name") or ""
-                
-                # Get tactics
-                tactics = []
-                try:
-                    tactic_objs = mitre_data.get_tactics_by_technique(stix_id_str)
-                    tactics = [t.name for t in tactic_objs] if tactic_objs else []
-                except Exception:
-                    pass
-                
-                is_subtechnique = "." in attack_id
-                
-                results.append({
-                    "attack_id": attack_id,
-                    "name": name,
-                    "tactics": tactics,
-                    "is_subtechnique": is_subtechnique,
-                    "parent_technique": attack_id.split(".")[0] if is_subtechnique else None,
-                })
-            
-            # Sort by attack_id
-            results.sort(key=lambda x: x["attack_id"])
-            return results
-        
-        except Exception as e:
-            logger.error(f"Error getting all techniques: {e}")
-            return []
+
+        techniques = mitre_data.get_techniques(
+            include_subtechniques=include_subtechniques,
+            remove_revoked_deprecated=True,
+        )
+
+        results = []
+        for tech in techniques:
+            stix_id = tech.get("id") if isinstance(tech, dict) else getattr(tech, "id", "")
+            if not stix_id:
+                continue
+            stix_id_str = str(stix_id)
+            attack_id = mitre_data.get_attack_id(stix_id_str) or ""
+            name = mitre_data.get_field(tech, "name") or ""
+
+            tactic_objs = mitre_data.get_tactics_by_technique(stix_id_str)
+            tactics = [t.name for t in tactic_objs] if tactic_objs else []
+            is_subtechnique = "." in attack_id
+
+            results.append({
+                "attack_id": attack_id,
+                "name": name,
+                "tactics": tactics,
+                "is_subtechnique": is_subtechnique,
+                "parent_technique": attack_id.split(".")[0] if is_subtechnique else None,
+            })
+
+        results.sort(key=lambda x: x["attack_id"])
+        return results
     
     @staticmethod
     def get_all_tactics() -> List[Dict[str, Any]]:
         """Get all tactics for dropdown lists."""
         mitre_data = _load_mitre_data()
-        if mitre_data is None:
-            return []
-        
-        try:
-            tactics = mitre_data.get_tactics(remove_revoked_deprecated=True)
-            
-            results = []
-            for tactic in tactics:
-                stix_id = tactic.get("id") if isinstance(tactic, dict) else getattr(tactic, "id", "")
-                attack_id = mitre_data.get_attack_id(stix_id) or ""
-                name = mitre_data.get_field(tactic, "name") or ""
-                shortname = mitre_data.get_field(tactic, "x_mitre_shortname") or ""
-                
-                results.append({
-                    "attack_id": attack_id,
-                    "name": name,
-                    "shortname": shortname,
-                })
-            
-            # Sort by attack_id
-            results.sort(key=lambda x: x["attack_id"])
-            return results
-        
-        except Exception as e:
-            logger.error(f"Error getting all tactics: {e}")
-            return []
+
+        tactics = mitre_data.get_tactics(remove_revoked_deprecated=True)
+
+        results = []
+        for tactic in tactics:
+            stix_id = tactic.get("id") if isinstance(tactic, dict) else getattr(tactic, "id", "")
+            attack_id = mitre_data.get_attack_id(stix_id) or ""
+            name = mitre_data.get_field(tactic, "name") or ""
+            shortname = mitre_data.get_field(tactic, "x_mitre_shortname") or ""
+
+            results.append({
+                "attack_id": attack_id,
+                "name": name,
+                "shortname": shortname,
+            })
+
+        results.sort(key=lambda x: x["attack_id"])
+        return results
 
 
 # Singleton instance for convenience

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from fastapi import HTTPException, status
 
@@ -70,3 +70,44 @@ def reject_created_at_update(payload: dict) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="created_at is immutable and cannot be updated",
         )
+
+
+def _convert_timeline_item_or_400(
+    payload: dict[str, Any],
+    converter: Callable[[dict[str, Any]], Any],
+) -> Any:
+    """Translate only payload-conversion failures at the HTTP seam."""
+    try:
+        return converter(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def prepare_timeline_item_create(
+    payload: dict[str, Any],
+    *,
+    converter: Callable[[dict[str, Any]], Any],
+    current_user: UserAccount,
+    migration: bool,
+) -> tuple[Any, Optional[datetime]]:
+    """Convert a timeline payload and apply the shared creation timestamp policy."""
+    has_created_at = "created_at" in payload
+    item = _convert_timeline_item_or_400(payload, converter)
+    created_at_override = normalize_created_at_override(
+        current_user=current_user,
+        migration=migration,
+        created_at=item.created_at if has_created_at else None,
+    )
+    if created_at_override is not None:
+        item.created_at = created_at_override
+    return item, created_at_override
+
+
+def prepare_timeline_item_update(
+    payload: dict[str, Any],
+    *,
+    converter: Callable[[dict[str, Any]], Any],
+) -> Any:
+    """Reject immutable fields and convert a timeline update payload."""
+    reject_created_at_update(payload)
+    return _convert_timeline_item_or_400(payload, converter)

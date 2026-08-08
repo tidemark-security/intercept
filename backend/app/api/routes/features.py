@@ -97,14 +97,14 @@ async def get_feature_flags(
     settings = SettingsService(db)
     
     # Check if triage flow is configured
-    triage_flow_id = await settings.get_typed_value("langflow.alert_triage_flow_id")
+    triage_flow_id = await settings.get("langflow.alert_triage_flow_id")
     ai_triage_enabled = bool(triage_flow_id)
     
     # Check if auto-enqueue is enabled (defaults to False if not set)
-    auto_enqueue = await settings.get_typed_value("triage.auto_enqueue")
+    auto_enqueue = await settings.get("triage.auto_enqueue")
     ai_triage_auto_enqueue = auto_enqueue if auto_enqueue is not None else False
 
-    recommended_tags_setting = await settings.get_typed_value("case_closure.recommended_tags")
+    recommended_tags_setting = await settings.get("case_closure.recommended_tags")
     case_closure_recommended_tags = _parse_recommended_tags(recommended_tags_setting)
     
     return FeatureFlags(

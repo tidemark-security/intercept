@@ -6,10 +6,11 @@ from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.enums import AccountType, UserRole, UserStatus
-from app.models.models import Alert, Case, Task, UserAccount
+from app.models.models import Alert, AuditLog, Case, Task, UserAccount
 from app.services.api_key_service import api_key_service
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
@@ -314,6 +315,7 @@ async def test_authorized_nhi_can_backdate_timeline_adds(
             "type": "note",
             "description": "Migrated note",
             "created_at": MIGRATED_CREATED_AT,
+            "created_by": "untrusted-migration-author",
         },
         headers={"Authorization": f"Bearer {raw_key}"},
     )
@@ -321,8 +323,131 @@ async def test_authorized_nhi_can_backdate_timeline_adds(
     assert response.status_code == 200, response.text
     items = _timeline_values(response.json()["timeline_items"])
     note = next(item for item in items if item["description"] == "Migrated note")
+    assert note["id"] == f"migration-note-{collection}"
+    assert note["created_by"].startswith("svc.migration.")
     assert _parse_datetime(note["created_at"]) == _parse_datetime(MIGRATED_CREATED_AT)
     assert _parse_datetime(note["timestamp"]) > _parse_datetime(note["created_at"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collection", ["alerts", "cases", "tasks"])
+async def test_migration_timeline_add_with_stable_id_is_idempotent(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    collection: str,
+) -> None:
+    raw_key = await _create_nhi_api_key(session_maker, override_timestamps=True)
+    targets = await _create_timeline_targets(session_maker)
+    item_id = f"stable-migration-note-{collection}"
+    path = f"/api/v1/{collection}/{targets[collection]}/timeline?migration=true"
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    first_response = await client.post(
+        path,
+        json={
+            "id": item_id,
+            "type": "note",
+            "description": "Original migrated note",
+            "created_at": MIGRATED_CREATED_AT,
+        },
+        headers=headers,
+    )
+    retry_response = await client.post(
+        path,
+        json={
+            "id": item_id,
+            "type": "note",
+            "description": "Changed retry content",
+            "created_at": MIGRATED_CREATED_AT,
+        },
+        headers=headers,
+    )
+
+    assert first_response.status_code == 200, first_response.text
+    assert retry_response.status_code == 200, retry_response.text
+    matching_items = [
+        item
+        for item in _timeline_values(retry_response.json()["timeline_items"])
+        if item.get("id") == item_id
+    ]
+    assert len(matching_items) == 1
+    assert matching_items[0]["description"] == "Original migrated note"
+
+    entity_type = collection.removesuffix("s")
+    async with session_maker() as session:
+        audit_logs = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.entity_type == entity_type,
+                    AuditLog.entity_id == str(targets[collection]),
+                    AuditLog.event_type == "timeline.item.added",
+                    AuditLog.item_id == item_id,
+                )
+            )
+        ).scalars().all()
+
+    assert len(audit_logs) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collection", ["alerts", "cases", "tasks"])
+async def test_migration_timeline_add_without_id_gets_server_id(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    collection: str,
+) -> None:
+    raw_key = await _create_nhi_api_key(session_maker, override_timestamps=True)
+    targets = await _create_timeline_targets(session_maker)
+
+    response = await client.post(
+        f"/api/v1/{collection}/{targets[collection]}/timeline?migration=true",
+        json={
+            "type": "note",
+            "description": "Migration without stable ID",
+            "created_at": MIGRATED_CREATED_AT,
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+
+    assert response.status_code == 200, response.text
+    item = next(
+        item
+        for item in _timeline_values(response.json()["timeline_items"])
+        if item["description"] == "Migration without stable ID"
+    )
+    assert isinstance(item["id"], str)
+    assert item["id"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collection", ["alerts", "cases", "tasks"])
+async def test_normal_timeline_add_replaces_supplied_id(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+    collection: str,
+) -> None:
+    session_cookie = await _login_and_get_cookie(client, session_maker, analyst_user_factory)
+    targets = await _create_timeline_targets(session_maker)
+    supplied_id = f"untrusted-normal-note-{collection}"
+
+    response = await client.post(
+        f"/api/v1/{collection}/{targets[collection]}/timeline",
+        json={
+            "id": supplied_id,
+            "type": "note",
+            "description": "Normal note with untrusted ID",
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200, response.text
+    item = next(
+        item
+        for item in _timeline_values(response.json()["timeline_items"])
+        if item["description"] == "Normal note with untrusted ID"
+    )
+    assert item["id"] != supplied_id
 
 
 @pytest.mark.asyncio

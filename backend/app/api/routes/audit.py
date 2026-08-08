@@ -8,6 +8,7 @@ from app.core.database import get_db
 from app.models.enums import AuditEventType
 from app.models.models import AuditLogRead
 from app.services.audit_service import AuditService
+from app.services.date_filter_utils import DateFilterValidationError
 from app.api.routes.admin_auth import require_admin_user
 
 router = APIRouter(
@@ -30,8 +31,8 @@ async def get_audit_logs(
 ):
     """Get paginated audit logs for admin users."""
 
+    audit_service = AuditService(db)
     try:
-        audit_service = AuditService(db)
         return await audit_service.get_audit_logs(
             event_type=event_type,
             entity_type=entity_type,
@@ -41,8 +42,8 @@ async def get_audit_logs(
             start_date=start_date,
             end_date=end_date,
         )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Error fetching audit logs: {exc}") from exc
+    except DateFilterValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/event-types", response_model=list[str])
