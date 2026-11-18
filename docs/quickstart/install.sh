@@ -98,7 +98,7 @@ LANGFLOW_DB_PASSWORD=$(generate_secret 24)
 SECRET_KEY=$(generate_fernet_key)
 MINIO_ROOT_USER=$(generate_secret 16)
 MINIO_ROOT_PASSWORD=$(generate_secret 24)
-INITIAL_ADMIN_PASSWORD=$(generate_secret 24)
+INITIAL_ADMIN_PASSWORD=Aa1!$(generate_secret 24)
 
 # --- Langflow auth -----------------------------------------------------------
 LANGFLOW_SUPERUSER=admin

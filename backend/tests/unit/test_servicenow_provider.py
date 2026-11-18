@@ -1,7 +1,5 @@
 import httpx
 import pytest
-import sys
-import types
 
 from app.services.enrichment.providers.servicenow import servicenow_provider
 
@@ -164,47 +162,19 @@ async def test_enrich_fetches_servicenow_user(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.asyncio
-async def test_enrich_supports_pysnow_oauth_password_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    offloaded: list[object] = []
+async def test_enrich_supports_oauth_password_grant(monkeypatch: pytest.MonkeyPatch) -> None:
+    class OAuthHTTPClient(FakeAsyncClient):
+        async def post(self, url, *, auth, data):
+            assert url == "https://example.service-now.com/oauth_token.do"
+            assert auth == ("oauth-client", "oauth-secret")
+            assert data == {"grant_type": "password", "username": "svc_user", "password": "svc_pass"}
+            return FakeResponse(200, {"access_token": "oauth-access-token"})
 
-    async def run_inline(callback):
-        offloaded.append(callback)
-        return callback()
+        async def get(self, url, params=None):
+            assert self.headers == {"Authorization": "Bearer oauth-access-token"}
+            return await super().get(url, params)
 
-    class FakeOAuthClient:
-        generated: list[tuple[str, str]] = []
-        token: dict[str, object] | None = None
-
-        def __init__(self, **kwargs):
-            assert kwargs == {
-                "host": "example.service-now.com",
-                "use_ssl": True,
-                "client_id": "oauth-client",
-                "client_secret": "oauth-secret",
-            }
-
-        def generate_token(self, user: str, password: str) -> dict[str, object]:
-            self.generated.append((user, password))
-            return {
-                "token_type": "Bearer",
-                "refresh_token": "refresh-token",
-                "access_token": "oauth-access-token",
-                "scope": "useraccount",
-                "expires_in": 3600,
-                "expires_at": 1234567890,
-            }
-
-        def set_token(self, token: dict[str, object]) -> None:
-            self.token = token
-
-    FakeAsyncClient.requests = []
-    fake_pysnow = types.SimpleNamespace(OAuthClient=FakeOAuthClient)
-    monkeypatch.setitem(sys.modules, "pysnow", fake_pysnow)
-    monkeypatch.setattr(
-        "app.services.enrichment.providers.servicenow.asyncio.to_thread",
-        run_inline,
-    )
-    monkeypatch.setattr("app.services.enrichment.providers.servicenow.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("app.services.enrichment.providers.servicenow.httpx.AsyncClient", OAuthHTTPClient)
     provider = servicenow_provider.__class__()
 
     result = await provider.enrich(
@@ -222,8 +192,6 @@ async def test_enrich_supports_pysnow_oauth_password_client(monkeypatch: pytest.
     )
 
     assert result.cache_key == "user:alice@example.com"
-    assert FakeOAuthClient.generated == [("svc_user", "svc_pass")]
-    assert len(offloaded) == 1
 
 
 @pytest.mark.asyncio

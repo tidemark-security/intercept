@@ -12,6 +12,7 @@ RUN npm ci --prefix /ux
 
 # Copy package files first for better layer caching
 COPY package.json package-lock.json ./
+COPY public/ public/
 
 # Install dependencies
 RUN npm pkg set dependencies.@tidemark-security/ux="file:/ux" \

@@ -4,7 +4,6 @@ Uses the ServiceNow Table API for sys_user-style directory lookups.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Tuple
@@ -247,29 +246,24 @@ class ServiceNowProvider(EnrichmentProvider):
         table = quote(str(cfg["cmdb_table"]), safe="")
         return f"{cfg['instance_url']}/nav_to.do?uri=/{table}.do?sys_id={quote(sys_id, safe='')}"
 
-    async def _oauth_access_token(self, cfg: Dict[str, Any]) -> str:
-        try:
-            import pysnow
-        except ImportError as exc:
-            raise EnrichmentProviderConfigurationError(
-                "pysnow is required for ServiceNow OAuth authentication"
-            ) from exc
+    async def _oauth_access_token(self, cfg: Dict[str, Any], *, timeout: int) -> str:
+        instance = urlparse(str(cfg["instance_url"]))
+        if instance.scheme != "https":
+            raise EnrichmentProviderConfigurationError("ServiceNow OAuth requires HTTPS")
 
-        parsed = urlparse(str(cfg["instance_url"]))
-
-        def _generate_access_token() -> str:
-            client = pysnow.OAuthClient(
-                host=parsed.netloc,
-                use_ssl=parsed.scheme == "https",
-                client_id=str(cfg["oauth_client_id"]),
-                client_secret=str(cfg["oauth_client_secret"]),
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                f"https://{instance.netloc}/oauth_token.do",
+                auth=(cfg["oauth_client_id"], cfg["oauth_client_secret"]),
+                data={
+                    "grant_type": "password",
+                    "username": cfg["username"],
+                    "password": cfg["password"],
+                },
             )
-            token = client.generate_token(str(cfg["username"]), str(cfg["password"]))
-            client.set_token(token)
-            return str(token.get("access_token") or "")
-
-        access_token = await asyncio.to_thread(_generate_access_token)
-        if not access_token:
+            response.raise_for_status()
+            access_token = response.json().get("access_token")
+        if not isinstance(access_token, str) or not access_token:
             raise EnrichmentProviderError(
                 "ServiceNow OAuth token response did not include an access token"
             )
@@ -281,7 +275,7 @@ class ServiceNowProvider(EnrichmentProvider):
             cfg.get("auth_type") or self._get_setting_default("auth_type")
         )
         if auth_type == "oauth_password":
-            access_token = await self._oauth_access_token(cfg)
+            access_token = await self._oauth_access_token(cfg, timeout=timeout)
             async with httpx.AsyncClient(
                 timeout=timeout,
                 headers={"Authorization": f"Bearer {access_token}"},
