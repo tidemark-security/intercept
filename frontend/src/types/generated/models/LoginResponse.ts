@@ -9,5 +9,8 @@ export type LoginResponse = {
     session: SessionSummary;
     mustChangePassword?: boolean;
     localCredentialManagementAllowed?: boolean;
+    passwordLoginAllowed?: boolean;
+    passkeyAllowed?: boolean;
+    apiKeyAllowed?: boolean;
 };
 

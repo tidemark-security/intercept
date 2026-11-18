@@ -359,6 +359,8 @@ class AuditEventType(str, Enum):
     AUTH_OIDC_LOGIN_FAILURE = "auth.oidc.login.failure"
     AUTH_OIDC_ACCOUNT_LINKED = "auth.oidc.account_linked"
     AUTH_OIDC_ACCOUNT_PROVISIONED = "auth.oidc.account_provisioned"
+    AUTH_OIDC_ACCOUNT_PREPROVISIONED = "auth.oidc.account_preprovisioned"
+    AUTH_OIDC_ROLE_CHANGED = "auth.oidc.role_changed"
     AUTH_PASSWORD_CHANGED = "auth.password_changed"
     AUTH_ADMIN_USER_CREATED = "auth.admin.user_created"
     AUTH_ADMIN_USER_STATUS_CHANGED = "auth.admin.user_status_changed"

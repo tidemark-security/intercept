@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ipaddress
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
@@ -8,7 +7,13 @@ from typing import Any, Dict
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.enrichment.base import EnrichmentProvider, EnrichmentResult
+from app.core.entity_ids import KIND_TO_PREFIX, format_entity_id
+from app.services.enrichment.base import (
+    EnrichmentProvider,
+    EnrichmentProviderError,
+    EnrichmentResult,
+)
+from app.services.enrichment.providers.ip_eligibility import normalize_public_ip_address
 from app.services.settings_service import SettingsService
 
 
@@ -78,7 +83,9 @@ class CrossCaseObservableProvider(EnrichmentProvider):
     def build_cache_key(self, item: Dict[str, Any]) -> str:
         observables = self._observables(item)
         if not observables:
-            raise ValueError("No observable available for cross-case correlation")
+            raise EnrichmentProviderError(
+                "No observable available for cross-case correlation"
+            )
         return "|".join(f"{observable_type}:{observable_value}" for observable_type, observable_value in observables)
 
     async def enrich(
@@ -92,7 +99,9 @@ class CrossCaseObservableProvider(EnrichmentProvider):
     ) -> EnrichmentResult:
         observables = self._observables(item)
         if not observables:
-            raise ValueError("No observable available for cross-case correlation")
+            raise EnrichmentProviderError(
+                "No observable available for cross-case correlation"
+            )
 
         max_lookback_days = await self._max_lookback_days(settings)
         lookback_started_at = datetime.now(timezone.utc) - timedelta(days=max_lookback_days)
@@ -302,7 +311,7 @@ class CrossCaseObservableProvider(EnrichmentProvider):
         observables: list[tuple[str, str]] = []
         seen: set[tuple[str, str]] = set()
         for observable_type, observable_value in raw_candidates:
-            if observable_type == "IP" and not self._is_public_ip(observable_value):
+            if observable_type == "IP" and normalize_public_ip_address(observable_value) is None:
                 continue
             candidate = (observable_type, observable_value)
             if candidate in seen:
@@ -311,28 +320,14 @@ class CrossCaseObservableProvider(EnrichmentProvider):
             observables.append(candidate)
         return observables
 
-    def _is_public_ip(self, value: str) -> bool:
-        try:
-            parsed = ipaddress.ip_address(value)
-        except ValueError:
-            return False
-        return not (
-            parsed.is_private
-            or parsed.is_loopback
-            or parsed.is_multicast
-            or parsed.is_reserved
-            or parsed.is_unspecified
-        )
-
     def _format_match(self, row: Any) -> dict[str, Any]:
         entity_type = str(row["entity_type"])
         entity_id = int(row["entity_id"])
-        prefixes = {"alert": "ALT", "case": "CAS", "task": "TSK"}
-        prefix = prefixes.get(entity_type, entity_type.upper())
+        prefix = KIND_TO_PREFIX.get(entity_type, entity_type.upper())
         return {
             "entity_type": entity_type,
             "entity_id": entity_id,
-            "human_id": f"{prefix}-{entity_id:07d}",
+            "human_id": format_entity_id(entity_id, prefix),
             "title": row["title"],
             "status": row["status"],
             "priority": row["priority"],

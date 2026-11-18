@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List, Optional
+from typing import Any, List, Optional
 from fastapi_pagination import Page
-import logging
 
 from app.core.database import get_db
-from app.services.task_service import task_service
+from app.core.entity_ids import TASK_PREFIX
+from app.services.task_service import TaskValidationError, task_service
+from app.services.timeline_add_service import TimelineItemConflict
 from app.models.models import (
     TaskCreate,
     TaskUpdate,
@@ -29,13 +30,19 @@ from app.api.route_utils import (
     handle_update_attachment_status,
     handle_generate_download_url,
 )
-from app.api.timestamp_overrides import normalize_created_at_override, reject_created_at_update
+from app.api.timestamp_overrides import (
+    normalize_created_at_override,
+    prepare_timeline_item_create,
+    prepare_timeline_item_update,
+)
 from app.api.routes.admin_auth import require_authenticated_user, require_non_auditor_user
-from app.services.timeline_graph_service import TimelineGraphConflict, timeline_graph_service
+from app.services.timeline_graph_service import (
+    TimelineGraphConflict,
+    TimelineGraphEntityNotFoundError,
+    TimelineGraphValidationError,
+    timeline_graph_service,
+)
 
-logger = logging.getLogger(__name__)
-
-ID_PREFIX = "TSK-"
 router = APIRouter(
     prefix="/tasks", 
     tags=["tasks"],
@@ -47,7 +54,7 @@ TIMELINE_ITEM_TYPES = get_timeline_item_types(TaskTimelineItem)
 convert_timeline_item = create_timeline_converter(TIMELINE_ITEM_TYPES)
 
 # Human ID decorator configured for tasks
-handle_human_id = create_human_id_decorator(ID_PREFIX, "task_id")
+handle_human_id = create_human_id_decorator(TASK_PREFIX, "task_id")
 
 
 @router.post("", response_model=TaskRead)
@@ -62,30 +69,24 @@ async def create_task(
     If no assignee is specified, the task will be assigned to the creator (per spec requirement).
     Tasks can optionally be linked to a case via case_id.
     """
+    created_at_override = normalize_created_at_override(
+        current_user=current_user,
+        migration=migration,
+        created_at=task_data.created_at,
+    )
     try:
-        created_at_override = normalize_created_at_override(
-            current_user=current_user,
-            migration=migration,
-            created_at=task_data.created_at,
-        )
-        db_task = await task_service.create_task(
+        return await task_service.create_task(
             db,
             task_data,
             current_user.username,
             created_at_override=created_at_override,
         )
-        return db_task
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating task: {e}")
-        raise HTTPException(status_code=500, detail=f"Error creating task: {str(e)}")
+    except TaskValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("", response_model=Page[TaskRead])
 async def get_tasks(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, le=1000),
     status: Optional[List[TaskStatus]] = Query(None, description="Filter by multiple task statuses"),
     assignee: Optional[str] = None,
     case_id: Optional[int] = Query(None, description="Filter by case ID"),
@@ -106,16 +107,21 @@ async def get_tasks(
     Tasks are filtered by created_at timestamp.
     """
     try:
-        tasks = await task_service.get_tasks(
-            db, skip=skip, limit=limit, status=status, assignee=assignee,
-            case_id=case_id, include_tags=include_tags, exclude_tags=exclude_tags,
-            search=search, start_date=start_date, end_date=end_date,
-            sort_by=sort_by, sort_order=sort_order
+        return await task_service.get_tasks(
+            db,
+            status=status,
+            assignee=assignee,
+            case_id=case_id,
+            include_tags=include_tags,
+            exclude_tags=exclude_tags,
+            search=search,
+            start_date=start_date,
+            end_date=end_date,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
-        return tasks
-    except Exception as e:
-        logger.error(f"Error fetching tasks: {e}")
-        raise HTTPException(status_code=500, detail=f"Error fetching tasks: {str(e)}")
+    except TaskValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{task_id}", response_model=TaskRead)
@@ -134,16 +140,12 @@ async def get_task(
     When include_linked_timelines=true, case and alert timeline items will include
     a source_timeline_items field containing the timeline from the linked entity.
     """
-    try:
-        db_task = await task_service.get_task(db, task_id, include_linked_timelines=include_linked_timelines)
-        if not db_task:
-            raise HTTPException(status_code=404, detail="Task not found")
-        return db_task
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching task: {e}")
-        raise HTTPException(status_code=500, detail=f"Error fetching task: {str(e)}")
+    db_task = await task_service.get_task(
+        db, task_id, include_linked_timelines=include_linked_timelines
+    )
+    if not db_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return db_task
 
 
 @router.get("/{task_id}/timeline-graph", response_model=TimelineGraphRead)
@@ -156,13 +158,8 @@ async def get_timeline_graph(
     """Get the shared timeline graph document for a task."""
     try:
         return await timeline_graph_service.get_graph(db, "task", task_id)
-    except LookupError:
+    except TimelineGraphEntityNotFoundError:
         raise HTTPException(status_code=404, detail="Task not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching timeline graph: {e}")
-        raise HTTPException(status_code=500, detail=f"Error fetching timeline graph: {str(e)}")
 
 
 @router.patch("/{task_id}/timeline-graph", response_model=TimelineGraphRead)
@@ -179,15 +176,10 @@ async def patch_timeline_graph(
         return await timeline_graph_service.patch_graph(db, "task", task_id, patch, current_user.username)
     except TimelineGraphConflict as conflict:
         raise HTTPException(status_code=409, detail=jsonable_encoder(conflict.conflict))
-    except LookupError:
+    except TimelineGraphEntityNotFoundError:
         raise HTTPException(status_code=404, detail="Task not found")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error patching timeline graph: {e}")
-        raise HTTPException(status_code=500, detail=f"Error patching timeline graph: {str(e)}")
+    except TimelineGraphValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.put("/{task_id}", response_model=TaskRead)
@@ -204,15 +196,14 @@ async def update_task(
     The updated_at timestamp is automatically refreshed on any update (per spec requirement).
     """
     try:
-        db_task = await task_service.update_task(db, task_id, task_update, current_user.username)
-        if not db_task:
-            raise HTTPException(status_code=404, detail="Task not found")
-        return db_task
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating task: {e}")
-        raise HTTPException(status_code=500, detail=f"Error updating task: {str(e)}")
+        db_task = await task_service.update_task(
+            db, task_id, task_update, current_user.username
+        )
+    except TaskValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not db_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return db_task
 
 
 @router.delete("/{task_id}")
@@ -224,16 +215,10 @@ async def delete_task(
     current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Delete a task."""
-    try:
-        success = await task_service.delete_task(db, task_id, current_user.username)
-        if not success:
-            raise HTTPException(status_code=404, detail="Task not found")
-        return {"message": "Task deleted successfully"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting task: {e}")
-        raise HTTPException(status_code=500, detail=f"Error deleting task: {str(e)}")
+    success = await task_service.delete_task(db, task_id, current_user.username)
+    if not success:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"message": "Task deleted successfully"}
 
 
 # ---------------------------------------------------------------------------
@@ -246,39 +231,34 @@ async def delete_task(
 async def add_timeline_item(
     task_id: int,
     request: Request,  # pylint: disable=unused-argument
-    timeline_item: dict,  # Using dict for now since we need to handle different timeline item types
+    timeline_item: dict[str, Any],
     migration: bool = Query(False, description="Allow authorized NHI migration clients to provide created_at"),
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Add a timeline item to a task."""
     try:
-        has_created_at = "created_at" in timeline_item
-        typed_item = convert_timeline_item(timeline_item)
-        created_at_override = normalize_created_at_override(
+        typed_item, created_at_override = prepare_timeline_item_create(
+            timeline_item,
+            converter=convert_timeline_item,
             current_user=current_user,
             migration=migration,
-            created_at=typed_item.created_at if has_created_at else None,
         )
-        if created_at_override is not None:
-            typed_item.created_at = created_at_override
+        preserve_supplied_id = migration and bool(typed_item.id)
         db_task = await task_service.add_timeline_item(
             db,
             task_id,
             typed_item,
             current_user.username,
             created_at_override=created_at_override,
+            preserve_item_id=preserve_supplied_id,
+            idempotent=preserve_supplied_id,
         )
         if not db_task:
             raise HTTPException(status_code=404, detail="Task not found")
         return db_task
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error adding timeline item to task: {e}")
-        raise HTTPException(status_code=500, detail=f"Error adding timeline item: {str(e)}")
+    except TaskValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.put("/{task_id}/timeline/{item_id}", response_model=TaskRead)
@@ -287,25 +267,22 @@ async def update_timeline_item(
     task_id: int,
     request: Request,  # pylint: disable=unused-argument
     item_id: str,
-    timeline_item: dict,  # Using dict for now since we need to handle different timeline item types
+    timeline_item: dict[str, Any],
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Update a specific timeline item in a task."""
     try:
-        reject_created_at_update(timeline_item)
-        typed_item = convert_timeline_item(timeline_item)
+        typed_item = prepare_timeline_item_update(
+            timeline_item,
+            converter=convert_timeline_item,
+        )
         db_task = await task_service.update_timeline_item(db, task_id, item_id, typed_item, current_user.username)
         if not db_task:
             raise HTTPException(status_code=404, detail="Task not found")
         return db_task
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating timeline item in task: {e}")
-        raise HTTPException(status_code=500, detail=f"Error updating timeline item: {str(e)}")
+    except (TaskValidationError, TimelineItemConflict) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/{task_id}/timeline/{item_id}", response_model=TaskRead)
@@ -323,13 +300,8 @@ async def remove_timeline_item(
         if not db_task:
             raise HTTPException(status_code=404, detail="Task not found")
         return db_task
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error removing timeline item from task: {e}")
-        raise HTTPException(status_code=500, detail=f"Error removing timeline item: {str(e)}")
+    except TaskValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

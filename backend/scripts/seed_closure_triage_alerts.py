@@ -27,6 +27,7 @@ backend_path = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_path))
 
 from app.core.database import engine
+from app.core.entity_ids import ALERT_PREFIX, format_entity_id
 from app.services.dummy_data_service import dummy_data_service
 
 
@@ -57,9 +58,8 @@ async def seed_closure_prone_alerts(count: int) -> int:
         for alert in alerts:
             if alert.id is None:
                 continue
-            print(f"- ALT-{alert.id:07d}: {alert.title} ({alert.source})")
+            print(f"- {format_entity_id(alert.id, ALERT_PREFIX)}: {alert.title} ({alert.source})")
 
-    await engine.dispose()
     return 0
 
 
@@ -75,6 +75,8 @@ async def main() -> int:
     except Exception as exc:
         print(f"Failed to seed closure-prone alerts: {exc}")
         return 1
+    finally:
+        await engine.dispose()
 
 
 if __name__ == "__main__":

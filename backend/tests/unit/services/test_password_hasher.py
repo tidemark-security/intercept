@@ -1,6 +1,7 @@
 import pytest
 
-from app.models.models import PasswordChangeRequest, UserAccountCreate
+from app.models.models import PasswordChangeRequest
+from app.services.security import password_hasher as password_hasher_module
 from app.services.security.password_hasher import Argon2Parameters, PasswordHasher
 
 
@@ -12,17 +13,6 @@ def test_hash_and_verify_round_trip() -> None:
     assert isinstance(hashed, str)
     assert hasher.verify(hashed, "CorrectHorseBatteryStaple!") is True
     assert hasher.verify(hashed, "incorrect") is False
-
-
-def test_needs_rehash_when_parameters_change() -> None:
-    old_params = Argon2Parameters(time_cost=2, memory_cost=32 * 1024, parallelism=1)
-    hasher_old = PasswordHasher(old_params)
-    hashed = hasher_old.hash("AnotherSecret123!")
-
-    new_params = Argon2Parameters(time_cost=4, memory_cost=64 * 1024, parallelism=2)
-    hasher_new = PasswordHasher(new_params)
-
-    assert hasher_new.needs_rehash(hashed) is True
 
 
 @pytest.mark.parametrize("password", [123, None, b"bytes"])  # type: ignore[list-item]
@@ -48,13 +38,50 @@ def test_hash_contains_argon2id_prefix() -> None:
     assert hashed.startswith("$argon2id$")
 
 
-def test_user_account_create_enforces_password_policy() -> None:
-    with pytest.raises(ValueError):
-        UserAccountCreate(
-            username="analyst",
-            email="analyst@example.com",
-            password="weakpass",
-        )
+def test_configured_hasher_reads_all_canonical_argon2_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = {
+        "auth.argon2.time_cost": 3,
+        "auth.argon2.memory_cost_kib": 24_000,
+        "auth.argon2.parallelism": 2,
+        "auth.argon2.hash_len": 40,
+        "auth.argon2.salt_len": 20,
+        "auth.argon2.encoding": "utf-8",
+    }
+    monkeypatch.setattr(
+        "app.core.settings_registry.get_local",
+        configured.__getitem__,
+    )
+
+    hasher = PasswordHasher.from_local_settings()
+
+    assert hasher.parameters == Argon2Parameters(
+        time_cost=3,
+        memory_cost=24_000,
+        parallelism=2,
+        hash_len=40,
+        salt_len=20,
+        encoding="utf-8",
+    )
+
+
+def test_argon2_builder_forwards_encoding(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class StubArgon2PasswordHasher:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        password_hasher_module,
+        "Argon2PasswordHasher",
+        StubArgon2PasswordHasher,
+    )
+
+    Argon2Parameters(encoding="latin-1").build_hasher()
+
+    assert captured["encoding"] == "latin-1"
 
 
 def test_password_change_request_enforces_policy() -> None:

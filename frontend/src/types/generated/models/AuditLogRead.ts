@@ -6,7 +6,6 @@
  * Schema for reading persisted audit logs.
  */
 export type AuditLogRead = {
-    id: number;
     event_type: string;
     entity_type?: (string | null);
     entity_id?: (string | null);
@@ -19,5 +18,6 @@ export type AuditLogRead = {
     ip_address?: (string | null);
     user_agent?: (string | null);
     correlation_id?: (string | null);
+    id: number;
 };
 

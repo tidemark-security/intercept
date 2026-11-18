@@ -3,17 +3,44 @@
 These tests verify the query construction and logic for fuzzy matching,
 without requiring a full database setup.
 """
-import pytest
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from app.services.search_service import SearchService, classify_query, QueryType
-from app.models.search_schemas import (
-    EntityType,
-    SearchResultItem,
-    DateRangeApplied,
+import pytest
+
+from app.models.search_schemas import EntityType
+from app.services.search_service import (
+    QueryType,
+    SearchDateRangeValidationError,
+    SearchService,
+    classify_query,
+    resolve_search_date_range,
 )
+
+
+def _make_mock_db() -> AsyncMock:
+    return AsyncMock()
+
+
+def _search_row(**overrides) -> SimpleNamespace:
+    values = {
+        "id": 1,
+        "title": "Phishing Alert",
+        "description": "This is a phishing attack",
+        "tags": [],
+        "timeline_items": {},
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": None,
+        "priority": None,
+        "status": None,
+        "assignee": None,
+        "score": 0.45,
+        "snippet": "This is a <mark>phishing</mark> attack",
+        "total_count": 1,
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
 
 
 class TestQueryClassification:
@@ -74,6 +101,13 @@ class TestQueryClassification:
         result = classify_query("FOO-123")
         assert result.query_type == QueryType.GENERIC
 
+    @pytest.mark.parametrize("query", ["ALT-42*", "42*"])
+    def test_wildcard_ids_are_not_treated_as_exact_ids(self, query):
+        """A wildcard query must not bypass content-search semantics."""
+        result = classify_query(query)
+
+        assert result.query_type not in {QueryType.HUMAN_ID, QueryType.NUMERIC_ID}
+
 
 class TestNumericIdClassification:
     """Tests for plain numeric ID classification."""
@@ -124,6 +158,35 @@ class TestNumericIdClassification:
         assert result.human_id_entity_type == "case"
 
 
+class TestSearchDateRange:
+    def test_end_only_range_is_resolved_relative_to_requested_end(self):
+        end = datetime(2020, 1, 31, tzinfo=timezone.utc)
+
+        start, resolved_end = resolve_search_date_range(None, end)
+
+        assert start == end - timedelta(days=30)
+        assert resolved_end == end
+
+    @pytest.mark.parametrize(
+        ("start", "end", "message"),
+        [
+            (
+                datetime(2025, 1, 2, tzinfo=timezone.utc),
+                datetime(2025, 1, 1, tzinfo=timezone.utc),
+                "Start date must be before end date",
+            ),
+            (
+                datetime(2024, 1, 1, tzinfo=timezone.utc),
+                datetime(2025, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+                "Date range cannot exceed 1 year",
+            ),
+        ],
+    )
+    def test_invalid_resolved_range_is_rejected(self, start, end, message):
+        with pytest.raises(SearchDateRangeValidationError, match=message):
+            resolve_search_date_range(start, end)
+
+
 class TestSearchServiceHumanId:
     """Tests for human ID generation."""
     
@@ -152,7 +215,7 @@ class TestSearchServiceFuzzyFallback:
     async def test_global_search_uses_fuzzy_fallback_when_no_fulltext_results(self):
         """When full-text search returns no results, fuzzy search should be used."""
         service = SearchService()
-        mock_db = AsyncMock()
+        mock_db = _make_mock_db()
         
         # Create empty result for fulltext search
         fulltext_result = MagicMock()
@@ -160,13 +223,7 @@ class TestSearchServiceFuzzyFallback:
         
         # Create fuzzy result with one match
         fuzzy_result = MagicMock()
-        fuzzy_row = MagicMock()
-        fuzzy_row.id = 1
-        fuzzy_row.title = "Phishing Alert"
-        fuzzy_row.description = "This is a phishing attack"
-        fuzzy_row.created_at = datetime.now(timezone.utc)
-        fuzzy_row.score = 0.45
-        fuzzy_row.total_count = 1
+        fuzzy_row = _search_row()
         fuzzy_result.fetchall.return_value = [fuzzy_row]
         
         # Mock execute to return empty fulltext, then fuzzy results
@@ -183,11 +240,11 @@ class TestSearchServiceFuzzyFallback:
         mock_db.execute = mock_execute
         
         # Execute search with typo "phising" for just ALERT type
-        response = await service.global_search(
+        response = await service.paginated_search(
             db=mock_db,
             query="phising",  # typo of "phishing"
             entity_types=[EntityType.ALERT],
-            limit_per_type=5,
+            limit=5,
         )
         
         # Should have called fulltext (1 for alert) then fuzzy search (1 call)
@@ -198,18 +255,11 @@ class TestSearchServiceFuzzyFallback:
     async def test_global_search_skips_fuzzy_when_fulltext_has_results(self):
         """When full-text search has results, fuzzy should not be called."""
         service = SearchService()
-        mock_db = AsyncMock()
+        mock_db = _make_mock_db()
         
         # Create fulltext result with matches
         fulltext_result = MagicMock()
-        fulltext_row = MagicMock()
-        fulltext_row.id = 1
-        fulltext_row.title = "Phishing Alert"
-        fulltext_row.description = "This is a phishing attack"
-        fulltext_row.created_at = datetime.now(timezone.utc)
-        fulltext_row.score = 0.8
-        fulltext_row.snippet = "This is a <mark>phishing</mark> attack"
-        fulltext_row.total_count = 1
+        fulltext_row = _search_row(score=0.8)
         fulltext_result.fetchall.return_value = [fulltext_row]
         
         call_count = 0
@@ -221,34 +271,27 @@ class TestSearchServiceFuzzyFallback:
         mock_db.execute = mock_execute
         
         # Execute search with exact term
-        response = await service.global_search(
+        response = await service.paginated_search(
             db=mock_db,
             query="phishing",  # exact match
             entity_types=[EntityType.ALERT],
-            limit_per_type=5,
+            limit=5,
         )
         
         # Should only have called fulltext search (1 call per entity type)
         # Since we're filtering to just alerts, should be exactly 1 call
         assert call_count == 1, "Only fulltext search should have been called"
-        assert response.total_by_type.alert == 1
+        assert response.total == 1
 
 
 class TestSearchServiceQueryConstruction:
     """Tests for fuzzy matching query construction."""
     
-    def test_fuzzy_similarity_threshold_default(self):
-        """Fuzzy search should use 0.3 as default similarity threshold."""
-        service = SearchService()
-        # The threshold is used in fuzzy_search method
-        # We verify it's documented/used correctly
-        assert hasattr(service, 'fuzzy_search')
-    
     @pytest.mark.asyncio
     async def test_fuzzy_search_uses_similarity_function(self):
         """Fuzzy search should use pg_trgm similarity function."""
         service = SearchService()
-        mock_db = AsyncMock()
+        mock_db = _make_mock_db()
         
         # Create empty result
         empty_result = MagicMock()
@@ -261,10 +304,15 @@ class TestSearchServiceQueryConstruction:
         
         mock_db.execute = mock_execute
         
-        await service.fuzzy_search(
+        now = datetime.now(timezone.utc)
+        await service._fuzzy_search_entity_candidates(
             db=mock_db,
+            table_name="alerts",
+            entity_type=EntityType.ALERT,
             query="test",
-            entity_types=[EntityType.ALERT],
+            start_date=now - timedelta(days=30),
+            end_date=now,
+            candidate_limit=5,
             similarity_threshold=0.3,
         )
         
@@ -275,42 +323,10 @@ class TestSearchServiceQueryConstruction:
         assert "similarity" in sql_text.lower()
 
     @pytest.mark.asyncio
-    async def test_text_search_sql_does_not_duplicate_timeline_items_projection(self):
-        """Full-text UNION branches must project the same number of columns."""
-        service = SearchService()
-        mock_db = AsyncMock()
-
-        empty_result = MagicMock()
-        empty_result.fetchall.return_value = []
-
-        executed_sql = []
-        async def mock_execute(sql, params=None):
-            executed_sql.append(str(sql))
-            return empty_result
-
-        mock_db.execute = mock_execute
-
-        await service._search_entity(
-            db=mock_db,
-            table_name="cases",
-            entity_type=EntityType.CASE,
-            query="credentials",
-            start_date=datetime.now(timezone.utc) - timedelta(days=1),
-            end_date=datetime.now(timezone.utc),
-            limit=20,
-            tags=["credentials"],
-        )
-
-        sql_text = executed_sql[0]
-        fulltext_branch = sql_text.split("UNION", 1)[0]
-        assert "tags,\n                    timeline_items,\n                    created_at" not in fulltext_branch
-        assert "assignee,\n                    timeline_items,\n                    ts_rank" in fulltext_branch
-
-    @pytest.mark.asyncio
     async def test_fuzzy_search_sql_projects_timeline_items_before_selecting_it(self):
         """Fuzzy fallback must include timeline_items in its CTE when tag metadata is requested."""
         service = SearchService()
-        mock_db = AsyncMock()
+        mock_db = _make_mock_db()
 
         empty_result = MagicMock()
         empty_result.fetchall.return_value = []
@@ -322,16 +338,15 @@ class TestSearchServiceQueryConstruction:
 
         mock_db.execute = mock_execute
 
-        await service._fuzzy_search_entity_paginated(
+        await service._fuzzy_search_entity_candidates(
             db=mock_db,
             table_name="cases",
             entity_type=EntityType.CASE,
             query="credentialz",
             start_date=datetime.now(timezone.utc) - timedelta(days=1),
             end_date=datetime.now(timezone.utc),
-            skip=0,
-            limit=20,
-            tags=["credentials"],
+            candidate_limit=20,
+            normalized_tags=["credentials"],
         )
 
         sql_text = executed_sql[0]
@@ -346,7 +361,7 @@ class TestSearchServiceEntityTypes:
     async def test_search_filters_by_entity_types(self):
         """Search should only query specified entity types."""
         service = SearchService()
-        mock_db = AsyncMock()
+        mock_db = _make_mock_db()
         
         empty_result = MagicMock()
         empty_result.fetchall.return_value = []
@@ -365,16 +380,30 @@ class TestSearchServiceEntityTypes:
         mock_db.execute = mock_execute
         
         # Search only alerts and cases
-        await service.global_search(
+        await service.paginated_search(
             db=mock_db,
             query="test",
             entity_types=[EntityType.ALERT, EntityType.CASE],
-            limit_per_type=5,
+            limit=5,
         )
         
         assert 'alerts' in tables_queried
         assert 'cases' in tables_queried
         assert 'tasks' not in tables_queried
+
+    @pytest.mark.asyncio
+    async def test_paginated_search_deduplicates_repeated_entity_types(self):
+        service = SearchService()
+        service._search_entity_candidates = AsyncMock(return_value=([], 1))
+
+        response = await service.paginated_search(
+            db=_make_mock_db(),
+            query="test",
+            entity_types=[EntityType.ALERT, EntityType.ALERT],
+        )
+
+        assert service._search_entity_candidates.await_count == 1
+        assert response.entity_types == [EntityType.ALERT]
 
 
 class TestSearchServiceResultMetadata:
@@ -384,7 +413,7 @@ class TestSearchServiceResultMetadata:
     async def test_paginated_alert_search_includes_assignee_metadata(self):
         """Alert search rows should carry the same assignee metadata as alert detail."""
         service = SearchService()
-        mock_db = AsyncMock()
+        mock_db = _make_mock_db()
         created_at = datetime.now(timezone.utc) - timedelta(hours=1)
         updated_at = datetime.now(timezone.utc)
 
@@ -407,15 +436,14 @@ class TestSearchServiceResultMetadata:
         ]
         mock_db.execute.return_value = result
 
-        items, total = await service._search_entity_paginated(
+        items, total = await service._search_entity_candidates(
             db=mock_db,
             table_name="alerts",
             entity_type=EntityType.ALERT,
             query="*",
             start_date=created_at - timedelta(days=1),
             end_date=updated_at + timedelta(days=1),
-            skip=0,
-            limit=20,
+            candidate_limit=20,
         )
 
         assert total == 1
@@ -462,6 +490,24 @@ class TestSearchServiceTagFilters:
         assert "timeline_tag ILIKE :tag_pattern_1" in sql
         assert params["tag_pattern_0"] == "%SOCI%"
         assert params["tag_pattern_1"] == "%VIP%"
+
+    def test_tag_filter_treats_sql_wildcards_as_literal_text(self):
+        service = SearchService()
+
+        sql, params = service._build_tag_filter_sql([r"100%_done\later"])
+
+        assert "ESCAPE '\\'" in sql
+        assert params["tag_pattern_0"] == r"%100\%\_done\\later%"
+
+    def test_timeline_wildcard_escapes_sql_wildcards(self):
+        service = SearchService()
+
+        sql, params = service._build_timeline_match_sql(
+            classify_query("100%_done*")
+        )
+
+        assert "ESCAPE '\\'" in sql
+        assert params["timeline_pattern"] == r"%100\%\_done%%"
 
     def test_build_tag_matches_includes_entity_tag_matches(self):
         service = SearchService()
@@ -531,3 +577,99 @@ class TestSearchServiceTagFilters:
 
         assert len(matches) == 1
         assert matches[0].tag == "stolen-CREDENTIALS"
+
+    def test_result_mapping_tolerates_malformed_legacy_tags(self):
+        service = SearchService()
+        row = _search_row(tags="not-a-list", timeline_items="not-a-container")
+
+        result = service._result_from_row(
+            row,
+            EntityType.ALERT,
+            snippet="Alert",
+            score=0.5,
+            normalized_tags=["alert"],
+        )
+
+        assert result.tags == []
+        assert result.tag_matches == []
+
+    def test_result_mapping_drops_non_string_tag_entries(self):
+        service = SearchService()
+        row = _search_row(tags=["valid", 7, None])
+
+        result = service._result_from_row(
+            row,
+            EntityType.ALERT,
+            snippet="Alert",
+            score=0.5,
+            normalized_tags=["valid"],
+        )
+
+        assert result.tags == ["valid"]
+        assert [match.tag for match in result.tag_matches] == ["valid"]
+
+
+class TestSearchServiceExactIdFilters:
+    @pytest.mark.asyncio
+    async def test_exact_id_lookup_applies_date_and_tag_filters(self):
+        service = SearchService()
+        db = _make_mock_db()
+        query_result = MagicMock()
+        query_result.fetchone.return_value = None
+        db.execute.return_value = query_result
+        start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        end = datetime(2025, 1, 2, tzinfo=timezone.utc)
+
+        result = await service._lookup_exact_id(
+            db,
+            entity_type=EntityType.ALERT,
+            entity_id=42,
+            start_date=start,
+            end_date=end,
+            normalized_tags=["100%"],
+        )
+
+        assert result is None
+        sql, params = db.execute.await_args.args
+        sql_text = str(sql)
+        assert "created_at >= :start_date" in sql_text
+        assert "created_at <= :end_date" in sql_text
+        assert "tag ILIKE :tag_pattern_0" in sql_text
+        assert params == {
+            "entity_id": 42,
+            "start_date": start,
+            "end_date": end,
+            "tag_pattern_0": r"%100\%%",
+        }
+
+    @pytest.mark.asyncio
+    async def test_exact_id_lookup_projects_timeline_items_for_tag_context(self):
+        service = SearchService()
+        db = _make_mock_db()
+        query_result = MagicMock()
+        query_result.fetchone.return_value = _search_row(
+            tags=[],
+            timeline_items={
+                "note-1": {
+                    "id": "note-1",
+                    "type": "note",
+                    "tags": ["credentials"],
+                }
+            },
+        )
+        db.execute.return_value = query_result
+        end = datetime.now(timezone.utc)
+
+        result = await service._lookup_exact_id(
+            db,
+            entity_type=EntityType.ALERT,
+            entity_id=1,
+            start_date=end - timedelta(days=1),
+            end_date=end,
+            normalized_tags=["credentials"],
+        )
+
+        assert result is not None
+        assert result.tag_matches[0].timeline_item_id == "note-1"
+        sql, _ = db.execute.await_args.args
+        assert "timeline_items" in str(sql)

@@ -29,6 +29,7 @@ import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types
 import { caseStatusToUIState, priorityToUIPriority } from "@/utils/statusHelpers";
 import { CASE_STATUS_OPTIONS } from "@/utils/statusLabels";
 import { Plus } from "lucide-react";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const CASE_SORT_OPTIONS = [
   {
@@ -65,6 +66,7 @@ const CASE_SORT_OPTIONS = [
  * @returns The Cases List page component
  */
 function CasesListPage() {
+  useDocumentTitle("Cases");
   const navigate = useViewTransitionNavigate();
   const location = useLocation();
   const { user } = useSession();

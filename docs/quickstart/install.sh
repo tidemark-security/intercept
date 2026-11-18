@@ -98,7 +98,7 @@ LANGFLOW_DB_PASSWORD=$(generate_secret 24)
 SECRET_KEY=$(generate_fernet_key)
 MINIO_ROOT_USER=$(generate_secret 16)
 MINIO_ROOT_PASSWORD=$(generate_secret 24)
-INITIAL_ADMIN_PASSWORD=$(generate_secret 24)
+INITIAL_ADMIN_PASSWORD=Aa1!$(generate_secret 24)
 
 # --- Langflow auth -----------------------------------------------------------
 LANGFLOW_SUPERUSER=admin
@@ -108,6 +108,13 @@ LANGFLOW_API_KEY=$(generate_secret 44)
 
 # --- Image version -----------------------------------------------------------
 # TAG=0.1.0
+
+# --- Public Intercept origin / MCP OAuth (optional) --------------------------
+# For a non-loopback deployment, set an HTTPS origin and enable Secure cookies.
+# INTERCEPT_PUBLIC_ORIGIN=https://intercept.example.com
+# SESSION_COOKIE_SECURE=true
+# Durable concurrent MCP authorization capacity per validated client source.
+# MCP_OAUTH_PENDING_AUTHORIZATION_PER_SOURCE_QUOTA=50
 
 # --- AI features (optional) --------------------------------------------------
 # Add your OpenAI API key to enable AI/LLM features.
@@ -138,7 +145,7 @@ EOF
   echo "  Services:"
   echo "    Frontend UI ·····  http://localhost"
   echo "    Backend API ·····  http://localhost:8000"
-  echo "    MinIO Console ···  http://localhost:9001"
+  echo "    Silo Console ···  http://localhost:9001"
   echo "    Langflow AI ·····  http://localhost:7860"
   echo ""
   echo -e "  ${YELLOW}You will be prompted to change the generated admin password after first login.${NC}"

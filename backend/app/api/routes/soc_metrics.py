@@ -7,11 +7,10 @@ Supports three metric types:
 - analyst: Per-analyst performance metrics (admin-only)
 - alert: Alert performance/detection engineering metrics
 """
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional, Literal
-import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -26,10 +25,16 @@ from app.models.models import (
     ChatFeedbackDrillDownResponse,
 )
 from app.models.enums import Priority, RejectionCategory, TriageDisposition, RecommendationStatus, MessageFeedback
+from app.services.date_filter_utils import (
+    DateFilterValidationError,
+    parse_datetime_filter,
+)
 from app.services.metrics_service import metrics_service
-from app.api.routes.admin_auth import require_authenticated_user, require_admin_user
-
-logger = logging.getLogger(__name__)
+from app.api.routes.admin_auth import (
+    require_api_key_admin_scope,
+    require_authenticated_user,
+    require_admin_user,
+)
 
 router = APIRouter(
     prefix="/metrics",
@@ -42,18 +47,25 @@ MetricType = Literal["soc", "analyst", "alert"]
 
 def parse_datetime(value: Optional[str], param_name: str) -> Optional[datetime]:
     """Parse ISO8601 datetime string with timezone awareness."""
-    if value is None:
-        return None
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except ValueError as e:
+        return parse_datetime_filter(value, parameter=param_name)
+    except DateFilterValidationError as exc:
+        parse_error = exc.__cause__ or exc
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid {param_name} format. Use ISO8601 (e.g., '2025-12-01T00:00:00Z'): {e}"
-        )
+            detail=(
+                f"Invalid {param_name} format. Use ISO8601 "
+                f"(e.g., '2025-12-01T00:00:00Z'): {parse_error}"
+            ),
+        ) from exc
+
+
+def _parse_time_range(
+    start: Optional[str],
+    end: Optional[str],
+) -> tuple[Optional[datetime], Optional[datetime]]:
+    """Parse optional start and end query parameters."""
+    return parse_datetime(start, "start"), parse_datetime(end, "end")
 
 
 @router.get(
@@ -80,6 +92,7 @@ Query SOC operational metrics aggregated in 15-minute windows.
 """,
 )
 async def get_metrics(
+    request: Request,
     type: MetricType = Query(
         ...,
         description="Metric type: 'soc' for SOC summary, 'analyst' for per-analyst (admin only), 'alert' for detection engineering"
@@ -118,9 +131,7 @@ async def get_metrics(
     - **analyst**: Restricted to admin users only
     - **alert**: Available to all authenticated users
     """
-    # Parse datetime parameters
-    start_time = parse_datetime(start, "start")
-    end_time = parse_datetime(end, "end")
+    start_time, end_time = _parse_time_range(start, end)
     
     # Validate time range
     if start_time and end_time and start_time >= end_time:
@@ -129,62 +140,52 @@ async def get_metrics(
             detail="start must be before end"
         )
 
-    try:
-        if type == "soc":
-            return await metrics_service.get_soc_metrics(
-                db=db,
-                start_time=start_time,
-                end_time=end_time,
-                priority=priority,
-                source=source,
+    if type == "soc":
+        return await metrics_service.get_soc_metrics(
+            db=db,
+            start_time=start_time,
+            end_time=end_time,
+            priority=priority,
+            source=source,
+        )
+
+    if type == "analyst":
+        # Analyst metrics require admin role
+        if current_user.role.value != "ADMIN":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Analyst metrics require admin role"
             )
-        
-        elif type == "analyst":
-            # Analyst metrics require admin role
-            if current_user.role.value != "ADMIN":
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Analyst metrics require admin role"
-                )
-            return await metrics_service.get_analyst_metrics(
-                db=db,
-                start_time=start_time,
-                end_time=end_time,
-                analyst=analyst,
-            )
-        
-        elif type == "alert":
-            # Validate group_by parameter
-            valid_group_by = {"source", "title", "tag"}
-            if group_by not in valid_group_by:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid group_by: {group_by}. Must be one of: {', '.join(valid_group_by)}"
-                )
-            return await metrics_service.get_alert_metrics(
-                db=db,
-                start_time=start_time,
-                end_time=end_time,
-                source=source,
-                priority=priority,
-                group_by=group_by,
-            )
-        
-        else:
-            # Should not reach here due to Literal type
+        require_api_key_admin_scope(request)
+        return await metrics_service.get_analyst_metrics(
+            db=db,
+            start_time=start_time,
+            end_time=end_time,
+            analyst=analyst,
+        )
+
+    if type == "alert":
+        # Validate group_by parameter
+        valid_group_by = {"source", "title", "tag"}
+        if group_by not in valid_group_by:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid metric type: {type}. Must be one of: soc, analyst, alert"
+                detail=f"Invalid group_by: {group_by}. Must be one of: {', '.join(valid_group_by)}"
             )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching {type} metrics: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error fetching metrics: {str(e)}"
+        return await metrics_service.get_alert_metrics(
+            db=db,
+            start_time=start_time,
+            end_time=end_time,
+            source=source,
+            priority=priority,
+            group_by=group_by,
         )
+
+    # Should not be reached because FastAPI validates the Literal parameter.
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"Invalid metric type: {type}. Must be one of: soc, analyst, alert",
+    )
 
 
 @router.get(
@@ -202,8 +203,7 @@ async def get_soc_metrics(
     current_user: UserAccount = Depends(require_authenticated_user),
 ):
     """Get SOC-level summary metrics."""
-    start_time = parse_datetime(start, "start")
-    end_time = parse_datetime(end, "end")
+    start_time, end_time = _parse_time_range(start, end)
     
     return await metrics_service.get_soc_metrics(
         db=db,
@@ -229,8 +229,7 @@ async def get_analyst_metrics(
     admin_user: UserAccount = Depends(require_admin_user),
 ):
     """Get per-analyst performance metrics (admin only)."""
-    start_time = parse_datetime(start, "start")
-    end_time = parse_datetime(end, "end")
+    start_time, end_time = _parse_time_range(start, end)
     
     return await metrics_service.get_analyst_metrics(
         db=db,
@@ -256,8 +255,7 @@ async def get_alert_metrics(
     current_user: UserAccount = Depends(require_authenticated_user),
 ):
     """Get alert performance metrics for detection engineering."""
-    start_time = parse_datetime(start, "start")
-    end_time = parse_datetime(end, "end")
+    start_time, end_time = _parse_time_range(start, end)
     
     # Validate group_by parameter
     valid_group_by = {"source", "title", "tag"}
@@ -299,8 +297,7 @@ async def get_ai_triage_metrics(
     current_user: UserAccount = Depends(require_authenticated_user),
 ):
     """Get AI triage accuracy metrics."""
-    start_time = parse_datetime(start, "start")
-    end_time = parse_datetime(end, "end")
+    start_time, end_time = _parse_time_range(start, end)
     
     return await metrics_service.get_ai_triage_metrics(
         db=db,
@@ -330,8 +327,7 @@ async def get_ai_chat_metrics(
     current_user: UserAccount = Depends(require_authenticated_user),
 ):
     """Get AI chat feedback metrics."""
-    start_time = parse_datetime(start, "start")
-    end_time = parse_datetime(end, "end")
+    start_time, end_time = _parse_time_range(start, end)
     
     return await metrics_service.get_ai_chat_metrics(
         db=db,
@@ -378,8 +374,7 @@ async def get_ai_triage_recommendations_drilldown(
     admin_user: UserAccount = Depends(require_admin_user),
 ):
     """Get paginated triage recommendations with alert details (admin only)."""
-    start_time = parse_datetime(start, "start")
-    end_time = parse_datetime(end, "end")
+    start_time, end_time = _parse_time_range(start, end)
     
     return await metrics_service.get_triage_recommendations_drilldown(
         db=db,
@@ -423,8 +418,7 @@ async def get_ai_chat_feedback_drilldown(
     admin_user: UserAccount = Depends(require_admin_user),
 ):
     """Get paginated chat messages with feedback (admin only)."""
-    start_time = parse_datetime(start, "start")
-    end_time = parse_datetime(end, "end")
+    start_time, end_time = _parse_time_range(start, end)
     
     return await metrics_service.get_chat_feedback_drilldown(
         db=db,

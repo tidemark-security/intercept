@@ -9,6 +9,7 @@ import { getPersistedCollapsedState, getPersistedWidth, persistCollapsedState } 
 import { UnifiedTimeline } from "@/components/timeline/UnifiedTimeline";
 import { RightDock } from '@/components/layout/RightDock';
 import { useCaseDetail } from "@/hooks/useCaseDetail";
+import { formatEntityTitle, useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { convertHumanIdToNumeric } from "@/utils/caseHelpers";
 import { useUsers } from "@/hooks/useUsers";
 import { useUpdateCase } from "@/hooks/useUpdateCase";
@@ -140,6 +141,8 @@ function CaseDetailPage() {
     error: detailError,
   } = useCaseDetail(selectedCaseId, { includeLinkedTimelines: true });
 
+  useDocumentTitle(formatEntityTitle(caseDetail?.human_id ?? humanId, caseDetail?.title));
+
   // Check if the error is a 404
   const is404Error = detailError && (
     (detailError as any)?.status === 404 ||
@@ -247,6 +250,7 @@ function CaseDetailPage() {
       updateCaseMutation.mutate({
         status: 'CLOSED',
         tags: payload.tags,
+        closure_summary: payload.note,
       });
     };
 

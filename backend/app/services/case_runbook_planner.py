@@ -4,9 +4,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
+from app.core.entity_ids import RUNBOOK_PREFIX, format_entity_id
 from app.models.enums import Priority
 from app.models.models import Case, CaseRunbook, RunbookTaskDefinition, RunbookTaskOverride
-from app.services.case_runbook_validation import normalize_runbook_title
+from app.services.case_runbook_validation import (
+    CaseRunbookValidationError,
+    coerce_runbook_tasks,
+    normalize_runbook_title,
+)
 from app.services.tag_filter_utils import merge_persisted_tags, normalize_persisted_tags
 
 
@@ -29,13 +34,6 @@ class CaseRunbookApplicationPlan:
     case_tags_after: list[str]
     duplicate_warnings: list[dict[str, Any]]
     audit_note: str
-
-
-def _task_defs(runbook: CaseRunbook) -> list[RunbookTaskDefinition]:
-    return [
-        task if isinstance(task, RunbookTaskDefinition) else RunbookTaskDefinition.model_validate(task)
-        for task in (runbook.runbook_tasks or [])
-    ]
 
 
 def _overrides_by_index(overrides: list[RunbookTaskOverride]) -> dict[int, RunbookTaskOverride]:
@@ -82,7 +80,7 @@ def plan_case_runbook_application(
     applied_by: str,
     applied_at: datetime,
 ) -> CaseRunbookApplicationPlan:
-    task_defs = _task_defs(runbook)
+    task_defs = coerce_runbook_tasks(runbook.runbook_tasks)
     by_index = _overrides_by_index(overrides)
     existing_titles = _existing_task_titles(case)
     prior_runbook_application = runbook.id is not None and _case_has_runbook_source(case, runbook.id)
@@ -132,9 +130,15 @@ def plan_case_runbook_application(
             )
 
     if not planned:
-        raise ValueError("Applying a Case Runbook requires at least one selected Runbook Task")
+        raise CaseRunbookValidationError(
+            "Applying a Case Runbook requires at least one selected Runbook Task"
+        )
 
-    runbook_human_id = f"RUN-{runbook.id:07d}" if runbook.id is not None else "RUN-UNKNOWN"
+    runbook_human_id = (
+        format_entity_id(runbook.id, RUNBOOK_PREFIX)
+        if runbook.id is not None
+        else f"{RUNBOOK_PREFIX}-UNKNOWN"
+    )
     audit_note = (
         f"Applied Case Runbook {runbook_human_id} {runbook.title!r} by {applied_by}. "
         f"Created {len(planned)} task(s)."

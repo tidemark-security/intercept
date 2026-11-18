@@ -29,6 +29,7 @@ import {
   Search,
   ShieldCheck,
 } from "lucide-react";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const ENTITY_TYPE_OPTIONS = [
   { label: "All entities", value: "__all__" },
@@ -78,6 +79,7 @@ function hasSnapshotDetails(entry: AuditLogRead): boolean {
 }
 
 export default function AdminAuditTrail() {
+  useDocumentTitle("Audit Trail");
   const { user: currentUser } = useSession();
   const isAdmin = currentUser?.role === "ADMIN";
 

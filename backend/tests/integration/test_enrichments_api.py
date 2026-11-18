@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
+from uuid import UUID
 
 import pytest
 from httpx import AsyncClient
@@ -10,7 +13,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm.attributes import flag_modified
 from sqlmodel import select
 
-from app.models.models import Alert, Case, EnrichmentAlias, EnrichmentCacheEntry, QueueJobRead, Task
+from app.api.routes import enrichments as enrichment_routes
+from app.models.models import (
+    Alert,
+    AuditLog,
+    Case,
+    EnrichmentAlias,
+    EnrichmentCacheEntry,
+    QueueJobRead,
+    ServiceNowConfigureRequest,
+    Task,
+)
 from app.core.security import initialize_encryption_service
 from app.models.enums import RealtimeEventType, SettingType
 from app.models.models import AppSetting
@@ -54,22 +67,6 @@ def _timeline_values(items: Any) -> list[dict[str, Any]]:
     if isinstance(items, list):
         return [item for item in items if isinstance(item, dict)]
     return []
-
-
-def _timeline_map(items: Any) -> dict[str, dict[str, Any]]:
-    if isinstance(items, dict):
-        return {
-            str(item.get("id") or key): item
-            for key, item in items.items()
-            if isinstance(item, dict)
-        }
-    if isinstance(items, list):
-        return {
-            str(item.get("id")): item
-            for item in items
-            if isinstance(item, dict) and item.get("id")
-        }
-    return {}
 
 
 def _observable_item(item_id: str, observable_type: str = "IP", observable_value: str = "148.52.126.237") -> dict[str, Any]:
@@ -562,6 +559,66 @@ async def test_configure_service_now_saves_settings(
 
 
 @pytest.mark.asyncio
+async def test_configure_service_now_rolls_back_every_setting_when_one_write_fails(
+    session_maker: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initialize_encryption_service(b"test-master-key")
+    original_upsert = SettingsService.upsert_setting_in_transaction
+    write_count = 0
+
+    async def fail_after_third_write(self, *args, **kwargs):
+        nonlocal write_count
+        result = await original_upsert(self, *args, **kwargs)
+        write_count += 1
+        if write_count == 3:
+            raise RuntimeError("injected ServiceNow setting failure")
+        return result
+
+    monkeypatch.setattr(
+        SettingsService,
+        "upsert_setting_in_transaction",
+        fail_after_third_write,
+    )
+
+    async with session_maker() as mutation_session:
+        with pytest.raises(RuntimeError, match="injected ServiceNow setting failure"):
+            await enrichment_routes.configure_service_now(
+                http_request=SimpleNamespace(client=None, headers={}),
+                request=ServiceNowConfigureRequest(
+                    instance_url="https://example.service-now.com/",
+                    username="svc-user",
+                    password="svc-pass",
+                    user_query_field="email",
+                    ttl_seconds=3600,
+                    enabled=True,
+                ),
+                current_user=SimpleNamespace(username="admin"),
+                db=mutation_session,
+            )
+
+    async with session_maker() as verification_session:
+        settings = (
+            await verification_session.execute(
+                select(AppSetting).where(
+                    AppSetting.key.like("enrichment.servicenow.%")
+                )
+            )
+        ).scalars().all()
+        audits = (
+            await verification_session.execute(
+                select(AuditLog).where(
+                    AuditLog.entity_type == "setting",
+                    AuditLog.entity_id.like("enrichment.servicenow.%"),
+                )
+            )
+        ).scalars().all()
+
+    assert settings == []
+    assert audits == []
+
+
+@pytest.mark.asyncio
 async def test_enqueue_item_enrichment_returns_task_id(
     client: AsyncClient,
     session_maker: async_sessionmaker[AsyncSession],
@@ -604,14 +661,27 @@ async def test_enqueue_item_enrichment_returns_task_id(
         await session.refresh(alert)
 
     class FakeQueue:
-        async def enqueue(self, *, task_name: str, payload: dict[str, object], priority: int = 0) -> str:
+        async def enqueue(
+            self,
+            *,
+            task_name: str,
+            payload: dict[str, object],
+            priority: int = 0,
+            dedupe_key: str | None = None,
+        ) -> str:
             assert task_name == "enrich_item"
+            request_id = str(payload.get("enrichment_request_id") or "")
+            UUID(request_id)
             assert payload == {
                 "entity_type": "alert",
                 "entity_id": alert.id,
                 "item_id": "item-1",
+                "enrichment_request_id": request_id,
             }
             assert priority == 0
+            assert dedupe_key == (
+                f"enrich_item:alert:{alert.id}:item-1:{request_id}"
+            )
 
             async with session_maker() as session:
                 refreshed_alert = await session.get(Alert, alert.id)
@@ -619,6 +689,7 @@ async def test_enqueue_item_enrichment_returns_task_id(
                 stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-1")
 
             assert stored_item["enrichment_status"] == "pending"
+            assert stored_item["enrichment_request_id"] == request_id
             return "task-enrich-123"
 
     monkeypatch.setattr("app.services.enrichment.service.get_task_queue_service", lambda: FakeQueue())
@@ -639,6 +710,7 @@ async def test_enqueue_item_enrichment_returns_task_id(
 
     assert stored_item["enrichment_status"] == "pending"
     assert stored_item["enrichment_task_id"] == "task-enrich-123"
+    UUID(stored_item["enrichment_request_id"])
 
 
 @pytest.mark.asyncio
@@ -832,7 +904,14 @@ async def test_add_internal_actor_auto_enqueues_matching_enrichment(
     captured_payloads: list[dict[str, object]] = []
 
     class FakeQueue:
-        async def enqueue(self, *, task_name: str, payload: dict[str, object], priority: int = 0) -> str:
+        async def enqueue(
+            self,
+            *,
+            task_name: str,
+            payload: dict[str, object],
+            priority: int = 0,
+            dedupe_key: str | None = None,
+        ) -> str:
             async with session_maker() as session:
                 refreshed_alert = await session.get(Alert, alert.id)
                 assert refreshed_alert is not None
@@ -873,6 +952,9 @@ async def test_add_internal_actor_auto_enqueues_matching_enrichment(
                     "entity_type": "alert",
                     "entity_id": alert.id,
                     "item_id": item_id,
+                    "enrichment_request_id": captured_payloads[0]["payload"][  # type: ignore[index]
+                        "enrichment_request_id"
+                    ],
                 },
             )
         }
@@ -896,6 +978,10 @@ async def test_add_internal_actor_auto_enqueues_matching_enrichment(
 
     assert response.status_code == 200
     item_id = _timeline_values(response.json()["timeline_items"])[0]["id"]
+    request_id = str(
+        captured_payloads[0]["payload"]["enrichment_request_id"]  # type: ignore[index]
+    )
+    UUID(request_id)
     assert captured_payloads == [
         {
             "task_name": "enrich_item",
@@ -903,6 +989,7 @@ async def test_add_internal_actor_auto_enqueues_matching_enrichment(
                 "entity_type": "alert",
                 "entity_id": alert.id,
                 "item_id": item_id,
+                "enrichment_request_id": request_id,
             },
             "priority": 0,
         }
@@ -915,6 +1002,7 @@ async def test_add_internal_actor_auto_enqueues_matching_enrichment(
 
     assert stored_item["enrichment_status"] == "pending"
     assert stored_item["enrichment_task_id"] == "123"
+    assert stored_item["enrichment_request_id"] == request_id
 
 
 @pytest.mark.asyncio
@@ -970,7 +1058,14 @@ async def test_update_observable_clears_stale_enrichment_and_reenqueues(
     captured_payloads: list[dict[str, object]] = []
 
     class FakeQueue:
-        async def enqueue(self, *, task_name: str, payload: dict[str, object], priority: int = 0) -> str:
+        async def enqueue(
+            self,
+            *,
+            task_name: str,
+            payload: dict[str, object],
+            priority: int = 0,
+            dedupe_key: str | None = None,
+        ) -> str:
             async with session_maker() as session:
                 refreshed_alert = await session.get(Alert, alert.id)
                 assert refreshed_alert is not None
@@ -995,6 +1090,10 @@ async def test_update_observable_clears_stale_enrichment_and_reenqueues(
     )
 
     assert response.status_code == 200
+    request_id = str(
+        captured_payloads[0]["payload"]["enrichment_request_id"]  # type: ignore[index]
+    )
+    UUID(request_id)
     assert captured_payloads == [
         {
             "task_name": "enrich_item",
@@ -1002,6 +1101,7 @@ async def test_update_observable_clears_stale_enrichment_and_reenqueues(
                 "entity_type": "alert",
                 "entity_id": alert.id,
                 "item_id": "item-ip-1",
+                "enrichment_request_id": request_id,
             },
             "priority": 0,
         }
@@ -1059,7 +1159,14 @@ async def test_update_without_enrichment_identity_change_does_not_reenqueue(
         await session.refresh(alert)
 
     class FakeQueue:
-        async def enqueue(self, *, task_name: str, payload: dict[str, object], priority: int = 0) -> str:
+        async def enqueue(
+            self,
+            *,
+            task_name: str,
+            payload: dict[str, object],
+            priority: int = 0,
+            dedupe_key: str | None = None,
+        ) -> str:
             raise AssertionError("Enrichment should not be re-enqueued for unrelated timeline edits")
 
     monkeypatch.setattr("app.services.enrichment.service.get_task_queue_service", lambda: FakeQueue())
@@ -1100,6 +1207,8 @@ async def test_run_item_enrichment_emits_timeline_updated_event(
         "created_by": analyst.username,
         "user_id": "alice@example.com",
         "enrichment_status": "pending",
+        "enrichment_task_id": "task-worker-1",
+        "enrichment_request_id": "request-worker-1",
         "enrichments": {},
     }
     alert = Alert(
@@ -1167,6 +1276,8 @@ async def test_run_item_enrichment_emits_timeline_updated_event(
             entity_type="alert",
             entity_id=alert.id,
             item_id="item-worker-1",
+            task_id="task-worker-1",
+            enrichment_request_id="request-worker-1",
         )
 
     assert emitted_events == [
@@ -1178,6 +1289,255 @@ async def test_run_item_enrichment_emits_timeline_updated_event(
             "item_id": "item-worker-1",
         }
     ]
+
+    async with session_maker() as session:
+        refreshed_alert = await session.get(Alert, alert.id)
+        assert refreshed_alert is not None
+        stored_item = timeline_service.find_item_by_id(
+            refreshed_alert.timeline_items,
+            "item-worker-1",
+        )
+        assert stored_item is not None
+
+    assert stored_item["enrichment_status"] == "complete"
+    assert "enrichment_task_id" not in stored_item
+    assert "enrichment_request_id" not in stored_item
+
+
+@pytest.mark.asyncio
+async def test_run_item_enrichment_merges_into_timeline_updated_during_provider_io(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    analyst = analyst_user_factory(username="analyst.concurrent-enrichment")
+    item = {
+        "id": "item-concurrent-enrichment",
+        "type": "internal_actor",
+        "timestamp": "2026-03-14T00:00:00Z",
+        "created_at": "2026-03-14T00:00:00Z",
+        "created_by": analyst.username,
+        "user_id": "concurrent-enrichment@example.com",
+        "enrichment_status": "pending",
+        "enrichments": {},
+        "replies": {},
+    }
+    alert = Alert(
+        title="Alert enriched during analyst update",
+        description="Test alert",
+        source="unit-test",
+        timeline_items={item["id"]: item},
+        created_by=analyst.username,
+    )
+    register_providers()
+
+    async with session_maker() as session:
+        session.add_all(
+            [
+                analyst,
+                alert,
+                AppSetting(
+                    key="enrichment.google_workspace.enabled",
+                    value="true",
+                    value_type=SettingType.BOOLEAN,
+                    is_secret=False,
+                    description="Enable Google Workspace user enrichment provider",
+                    category="enrichment",
+                ),
+            ]
+        )
+        await session.commit()
+        await session.refresh(alert)
+        assert alert.id is not None
+        alert_id = alert.id
+
+    provider_started = asyncio.Event()
+    release_provider = asyncio.Event()
+
+    async def delayed_enrich(**_: object) -> EnrichmentResult:
+        provider_started.set()
+        await release_provider.wait()
+        return EnrichmentResult(
+            provider_id="google_workspace",
+            cache_key="user:concurrent-enrichment@example.com",
+            enrichment_data={"display_name": "Concurrent Analyst"},
+        )
+
+    monkeypatch.setattr(
+        "app.services.enrichment.providers.google_workspace.google_workspace_provider.enrich",
+        delayed_enrich,
+    )
+
+    async with session_maker() as enrichment_session:
+        enrichment_task = asyncio.create_task(
+            enrichment_service.run_item_enrichment(
+                enrichment_session,
+                entity_type="alert",
+                entity_id=alert_id,
+                item_id=str(item["id"]),
+            )
+        )
+        await asyncio.wait_for(provider_started.wait(), timeout=2)
+
+        async with session_maker() as analyst_session:
+            concurrent_alert = await analyst_session.get(Alert, alert_id)
+            assert concurrent_alert is not None
+            concurrent_note = timeline_service.build_note_item(
+                description="Note added while enrichment provider was running",
+                created_by=analyst.username,
+                timestamp="2026-03-14T00:01:00Z",
+            )
+            concurrent_note["id"] = "concurrent-analyst-note"
+            timeline_service.add_timeline_item(
+                concurrent_alert,
+                concurrent_note,
+                created_by=analyst.username,
+                preserve_item_id=True,
+            )
+            await analyst_session.commit()
+
+        release_provider.set()
+        await enrichment_task
+
+    async with session_maker() as session:
+        refreshed_alert = await session.get(Alert, alert_id)
+        assert refreshed_alert is not None
+        timeline_items = refreshed_alert.timeline_items or {}
+        enriched_item = timeline_items[str(item["id"])]
+
+    assert "concurrent-analyst-note" in timeline_items
+    assert enriched_item["enrichment_status"] == "complete"
+    assert enriched_item["enrichments"]["google_workspace"] == {
+        "display_name": "Concurrent Analyst"
+    }
+
+
+@pytest.mark.asyncio
+async def test_old_enrichment_request_cannot_write_results_to_updated_identity(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    analyst = analyst_user_factory(username="analyst.enrichment-generation")
+    item_id = "item-enrichment-generation"
+    old_request_id = "request-generation-old"
+    new_request_id = "request-generation-new"
+    item = {
+        "id": item_id,
+        "type": "internal_actor",
+        "timestamp": "2026-03-14T00:00:00Z",
+        "created_at": "2026-03-14T00:00:00Z",
+        "created_by": analyst.username,
+        "user_id": "old-generation@example.com",
+        "enrichment_status": "pending",
+        "enrichment_task_id": "task-generation-old",
+        "enrichment_request_id": old_request_id,
+        "enrichments": {},
+        "replies": {},
+    }
+    alert = Alert(
+        title="Alert with superseded enrichment generation",
+        description="Test alert",
+        source="unit-test",
+        timeline_items={item_id: item},
+        created_by=analyst.username,
+    )
+    register_providers()
+
+    async with session_maker() as session:
+        session.add_all(
+            [
+                analyst,
+                alert,
+                AppSetting(
+                    key="enrichment.google_workspace.enabled",
+                    value="true",
+                    value_type=SettingType.BOOLEAN,
+                    is_secret=False,
+                    description="Enable Google Workspace user enrichment provider",
+                    category="enrichment",
+                ),
+            ]
+        )
+        await session.commit()
+        await session.refresh(alert)
+        assert alert.id is not None
+        alert_id = alert.id
+
+    provider_started = asyncio.Event()
+    release_provider = asyncio.Event()
+
+    async def delayed_enrich(**_: object) -> EnrichmentResult:
+        provider_started.set()
+        await release_provider.wait()
+        return EnrichmentResult(
+            provider_id="google_workspace",
+            cache_key="user:old-generation@example.com",
+            enrichment_data={"display_name": "Obsolete Identity"},
+        )
+
+    monkeypatch.setattr(
+        "app.services.enrichment.providers.google_workspace.google_workspace_provider.enrich",
+        delayed_enrich,
+    )
+
+    async with session_maker() as enrichment_session:
+        enrichment_task = asyncio.create_task(
+            enrichment_service.run_item_enrichment(
+                enrichment_session,
+                entity_type="alert",
+                entity_id=alert_id,
+                item_id=item_id,
+                task_id="task-generation-old",
+                enrichment_request_id=old_request_id,
+            )
+        )
+        await asyncio.wait_for(provider_started.wait(), timeout=2)
+
+        async with session_maker() as analyst_session:
+            concurrent_alert = await analyst_session.get(Alert, alert_id)
+            assert concurrent_alert is not None
+            updated_item = timeline_service.find_item_by_id(
+                concurrent_alert.timeline_items,
+                item_id,
+            )
+            assert updated_item is not None
+            updated_item["user_id"] = "new-generation@example.com"
+            updated_item["enrichment_status"] = "pending"
+            updated_item["enrichment_request_id"] = new_request_id
+            updated_item.pop("enrichment_task_id", None)
+            updated_item["enrichments"] = {}
+            flag_modified(concurrent_alert, "timeline_items")
+
+            concurrent_note = timeline_service.build_note_item(
+                description="Analyst note added while old request was running",
+                created_by=analyst.username,
+                timestamp="2026-03-14T00:01:00Z",
+            )
+            concurrent_note["id"] = "generation-analyst-note"
+            timeline_service.add_timeline_item(
+                concurrent_alert,
+                concurrent_note,
+                created_by=analyst.username,
+                preserve_item_id=True,
+            )
+            await analyst_session.commit()
+
+        release_provider.set()
+        await enrichment_task
+
+    async with session_maker() as session:
+        refreshed_alert = await session.get(Alert, alert_id)
+        assert refreshed_alert is not None
+        timeline_items = refreshed_alert.timeline_items or {}
+        stored_item = timeline_service.find_item_by_id(timeline_items, item_id)
+        assert stored_item is not None
+
+    assert "generation-analyst-note" in timeline_items
+    assert stored_item["user_id"] == "new-generation@example.com"
+    assert stored_item["enrichment_status"] == "pending"
+    assert stored_item["enrichment_request_id"] == new_request_id
+    assert stored_item["enrichments"] == {}
 
 
 @pytest.mark.asyncio
@@ -1349,6 +1709,7 @@ async def test_enrich_item_terminal_failure_marks_item_failed(
         "user_id": "alice@example.com",
         "enrichment_status": "pending",
         "enrichment_task_id": "task-terminal-1",
+        "enrichment_request_id": "request-terminal-1",
     }
     alert = Alert(
         title="Alert with terminal enrichment failure",
@@ -1391,7 +1752,12 @@ async def test_enrich_item_terminal_failure_marks_item_failed(
     monkeypatch.setattr("app.services.enrichment.service.emit_event", fake_emit_event)
 
     await _handle_enrich_item_terminal_failure(
-        {"entity_type": "alert", "entity_id": alert_id, "item_id": "item-terminal-1"},
+        {
+            "entity_type": "alert",
+            "entity_id": alert_id,
+            "item_id": "item-terminal-1",
+            "enrichment_request_id": "request-terminal-1",
+        },
         _make_retries_exhausted_error("provider timeout"),
         task_id="task-terminal-1",
     )
@@ -1412,7 +1778,8 @@ async def test_enrich_item_terminal_failure_marks_item_failed(
         stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-terminal-1")
         assert stored_item["enrichment_status"] == "failed"
         assert "enrichment_task_id" not in stored_item
-        assert stored_item["enrichments"]["system"]["error"] == "Retries exhausted: provider timeout"
+        assert "enrichment_request_id" not in stored_item
+        assert stored_item["enrichments"]["system"]["error"] == "Retries exhausted"
 
 
 @pytest.mark.asyncio
@@ -1593,7 +1960,14 @@ async def test_denormalize_timeline_does_not_overwrite_newer_enrichment_state(
         await session.refresh(alert)
 
     class FakeQueue:
-        async def enqueue(self, *, task_name: str, payload: dict[str, object], priority: int = 0) -> str:
+        async def enqueue(
+            self,
+            *,
+            task_name: str,
+            payload: dict[str, object],
+            priority: int = 0,
+            dedupe_key: str | None = None,
+        ) -> str:
             return "task-race-123"
 
     monkeypatch.setattr("app.services.enrichment.service.get_task_queue_service", lambda: FakeQueue())
@@ -1707,7 +2081,8 @@ async def test_reconcile_success_does_not_clear_newer_enrichment_results(
                 "created_by": analyst.username,
                 "user_id": "alice@example.com",
                 "enrichment_status": "pending",
-                "enrichment_task_id": "task-race-success-123",
+                "enrichment_task_id": "456",
+                "enrichment_request_id": "request-race-success-1",
                 "enrichments": {},
             }
         ],
@@ -1729,7 +2104,7 @@ async def test_reconcile_success_does_not_clear_newer_enrichment_results(
         linked_task_ids_by_item_id: dict[str, str] | None = None,
     ) -> dict[str, QueueJobRead]:
         if item_ids == ["item-race-success-1"]:
-            assert linked_task_ids_by_item_id == {"item-race-success-1": "task-race-success-123"}
+            assert linked_task_ids_by_item_id == {"item-race-success-1": "456"}
             return {
                 "item-race-success-1": QueueJobRead(
                     id=456,
@@ -1758,13 +2133,16 @@ async def test_reconcile_success_does_not_clear_newer_enrichment_results(
             updated_items = {}
             for item in _timeline_values(fresh_alert.timeline_items):
                 if item.get("id") == "item-race-success-1":
-                    updated_items[str(item["id"])] = {
+                    completed_item = {
                         **item,
                         "enrichment_status": "complete",
                         "enrichments": {
                             "google_workspace": {"display_name": "Alice Example"}
                         },
                     }
+                    completed_item.pop("enrichment_task_id", None)
+                    completed_item.pop("enrichment_request_id", None)
+                    updated_items[str(item["id"])] = completed_item
                 else:
                     updated_items[str(item["id"])] = item
 
@@ -1776,7 +2154,9 @@ async def test_reconcile_success_does_not_clear_newer_enrichment_results(
         response_item = next(item for item in _timeline_values(detail.timeline_items) if item.get("id") == "item-race-success-1")
 
         assert response_item["enrichment_status"] == "complete"
-        assert response_item["enrichments"] == {}
+        assert response_item["enrichments"] == {
+            "google_workspace": {"display_name": "Alice Example"}
+        }
 
     async with session_maker() as session:
         refreshed_alert = await session.get(Alert, alert.id)
@@ -1977,8 +2357,7 @@ async def test_persist_task_link_does_not_clobber_concurrent_enrichment(
     session_maker: async_sessionmaker[AsyncSession],
     analyst_user_factory,
 ) -> None:
-    """Regression: _persist_enrichment_task_link must not overwrite enrichment
-    data that the worker committed between enqueue and the task-link persist.
+    """A late task-link write must not revive a completed enrichment request.
 
     Simulates the race by writing enrichment results to the DB (as the worker
     would) between the first commit and the task-link persist call.
@@ -1999,6 +2378,7 @@ async def test_persist_task_link_does_not_clobber_concurrent_enrichment(
                 "observable_type": "ip",
                 "value": "1.2.3.4",
                 "enrichment_status": "pending",
+                "enrichment_request_id": "request-race-1",
             }
         ],
         created_by=analyst.username,
@@ -2023,6 +2403,7 @@ async def test_persist_task_link_does_not_clobber_concurrent_enrichment(
                     "maxmind": {"country": "US", "city": "Los Angeles"},
                 }
                 item.pop("enrichment_task_id", None)
+                item.pop("enrichment_request_id", None)
         worker_alert.timeline_items = items
         flag_modified(worker_alert, "timeline_items")
         await worker_session.commit()
@@ -2037,6 +2418,7 @@ async def test_persist_task_link_does_not_clobber_concurrent_enrichment(
             entity_id=alert.id,
             item_id="item-race-1",
             task_id="task-race-456",
+            enrichment_request_id="request-race-1",
         )
 
     # Verify the worker's enrichment data survived the task-link persist.
@@ -2045,8 +2427,7 @@ async def test_persist_task_link_does_not_clobber_concurrent_enrichment(
         assert refreshed_alert is not None
         stored_item = next(item for item in _timeline_values(refreshed_alert.timeline_items) if item.get("id") == "item-race-1")
 
-    assert stored_item.get("enrichment_task_id") == "task-race-456", \
-        "enrichment_task_id was not set by _persist_enrichment_task_link"
+    assert "enrichment_task_id" not in stored_item
     assert stored_item["enrichments"] == {
         "maxmind": {"country": "US", "city": "Los Angeles"},
     }, "Worker enrichment data was clobbered by _persist_enrichment_task_link"

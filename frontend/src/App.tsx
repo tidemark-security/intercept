@@ -17,6 +17,7 @@ const AIChat = lazy(() => import("./pages/AIChat").then(m => ({ default: m.AICha
 const ContextEntries = lazy(() => import("./pages/ContextEntries"))
 const Home = lazy(() => import("./pages/Home"))
 const Login = lazy(() => import("./pages/Login"))
+const McpConsent = lazy(() => import("./pages/McpConsent"))
 const SetPasswordPage = lazy(() => import("./pages/SetPasswordPage"))
 const CasesListPage = lazy(() => import("./pages/CaseList"))
 const CaseDetailPage = lazy(() => import("./pages/CaseDetail"))
@@ -40,6 +41,7 @@ export default function App() {
           <Suspense fallback={null}>
           <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/oauth/mcp/consent" element={<McpConsent />} />
           <Route path="/reset-password" element={<SetPasswordPage />} />
           <Route
             path="/"

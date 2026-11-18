@@ -2,7 +2,11 @@ from datetime import datetime, timezone
 
 from app.models.enums import AlertStatus, CaseRunbookStatus, CaseStatus, PICERLStage, TaskStatus
 from app.models.models import AlertRead, CaseRead, CaseRunbookRead, TaskRead
-from app.services.tag_filter_utils import merge_persisted_tags, normalize_persisted_tags
+from app.services.tag_filter_utils import (
+    merge_persisted_tags,
+    normalize_persisted_tags,
+    persisted_tag_delta,
+)
 
 
 def test_normalize_persisted_tags_drops_invalid_values_and_deduplicates_case_insensitively() -> None:
@@ -16,6 +20,13 @@ def test_merge_persisted_tags_normalizes_existing_and_incoming_tags() -> None:
         "Existing",
         "New",
     ]
+
+
+def test_persisted_tag_delta_is_case_insensitive() -> None:
+    assert persisted_tag_delta(
+        ["Existing", "removed"],
+        ["existing", "added"],
+    ) == (["added"], ["removed"])
 
 
 def test_read_models_normalize_legacy_persisted_tags() -> None:

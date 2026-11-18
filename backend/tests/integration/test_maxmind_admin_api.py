@@ -5,7 +5,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.models import AppSetting
-from app.services.maxmind_service import maxmind_service
+from app.services.storage_service import storage_service
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -43,7 +43,7 @@ async def test_admin_maxmind_database_status_degrades_when_storage_unavailable(
     async def fail_ensure_bucket() -> None:
         raise ConnectionError("storage unavailable")
 
-    monkeypatch.setattr(maxmind_service, "_ensure_bucket", fail_ensure_bucket)
+    monkeypatch.setattr(storage_service, "ensure_bucket_exists", fail_ensure_bucket)
 
     response = await client.get(
         "/api/v1/admin/enrichments/maxmind/databases",

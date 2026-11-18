@@ -73,6 +73,7 @@ describe("ProfileManagement API keys", () => {
         name: "primary-key",
         prefix: "ik_live_abc",
         expires_at: "2030-01-01T00:00:00Z",
+        scopes: ["api:read"],
         last_used_at: null,
         revoked_at: null,
         created_at: "2026-01-01T00:00:00Z",
@@ -99,6 +100,7 @@ describe("ProfileManagement API keys", () => {
       name: "new-key",
       prefix: "ik_live_xyz",
       expires_at: "2030-02-01T00:00:00Z",
+      scopes: ["api:read"],
       last_used_at: null,
       revoked_at: null,
       created_at: "2026-02-01T00:00:00Z",
@@ -119,6 +121,7 @@ describe("ProfileManagement API keys", () => {
     const createCallArg = vi.mocked(ApiKeysService.createApiKeyApiV1ApiKeysPost).mock.calls[0]?.[0];
     expect(createCallArg?.requestBody.name).toBe("new-key");
     expect(createCallArg?.requestBody.expires_at).toBeTruthy();
+    expect(createCallArg?.requestBody.scopes).toEqual(["api:read"]);
     expect(createCallArg?.requestBody).not.toHaveProperty("user_id");
   });
 

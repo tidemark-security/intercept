@@ -145,7 +145,7 @@ type SidebarBadgeGroupProps = {
 };
 
 function SidebarNotificationBadge({ counts }: SidebarBadgeGroupProps) {
-  if (!counts || counts.open <= 0) {
+  if (!counts || counts.unassigned <= 0) {
     return null;
   }
 
@@ -154,7 +154,7 @@ function SidebarNotificationBadge({ counts }: SidebarBadgeGroupProps) {
       className="absolute right-0 top-0 inline-flex h-4 min-w-4 items-center justify-center border border-black bg-accent-2-primary px-1 text-[10px] font-monospace-body leading-none text-white"
       aria-hidden="true"
     >
-      {formatBadgeCount(counts.open)}
+      {formatBadgeCount(counts.unassigned)}
     </span>
   );
 }
@@ -180,7 +180,7 @@ type SidebarNavLabelProps = {
 
 function SidebarNavLabel({ label, counts }: SidebarNavLabelProps) {
   const describedBy = counts
-    ? `${label}: ${counts.open} open`
+    ? `${label}: ${counts.unassigned} unassigned`
     : label;
 
   return (

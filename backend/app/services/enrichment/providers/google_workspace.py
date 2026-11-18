@@ -9,11 +9,18 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from authlib.jose import jwt
 import httpx
+from joserfc import jwt
+from joserfc.jwk import import_key
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.enrichment.base import AliasMapping, EnrichmentProvider, EnrichmentResult
+from app.services.enrichment.base import (
+    EnrichmentProviderConfigurationError,
+    EnrichmentProviderError,
+    EnrichmentResult,
+    MalformedProviderRecordError,
+    UserDirectoryEnrichmentProvider,
+)
 from app.services.settings_service import SettingsService
 
 logger = logging.getLogger(__name__)
@@ -60,21 +67,16 @@ def _build_jwt(service_account: Dict[str, Any], subject_email: str) -> str:
         "iat": now,
         "exp": now + 3600,
     }
-    token = jwt.encode(header, payload, service_account["private_key"])
-    if isinstance(token, memoryview):
-        return token.tobytes().decode("utf-8")
-    if isinstance(token, (bytes, bytearray)):
-        return bytes(token).decode("utf-8")
-    return token
+    signing_key = import_key(service_account["private_key"], "RSA")
+    return jwt.encode(header, payload, signing_key, algorithms=["RS256"])
 
 
-class GoogleWorkspaceProvider(EnrichmentProvider):
+class GoogleWorkspaceProvider(UserDirectoryEnrichmentProvider):
     """Enrich InternalActorItem via Google Workspace Admin SDK."""
 
     provider_id = "google_workspace"
     display_name = "Google Workspace"
     settings_prefix = "enrichment.google_workspace"
-    supported_item_types = ("internal_actor",)
     supports_bulk_sync = True
 
     def __init__(self) -> None:
@@ -82,29 +84,41 @@ class GoogleWorkspaceProvider(EnrichmentProvider):
         self._token_expires_at: datetime | None = None
         self._token_cache_key: str | None = None
 
-    def can_enrich(self, item: Dict[str, Any]) -> bool:
-        return item.get("type") == "internal_actor" and bool(self._get_identifier(item))
-
-    def build_cache_key(self, item: Dict[str, Any]) -> str:
-        identifier = self._get_identifier(item)
-        if not identifier:
-            raise ValueError("Cannot determine identifier for Google Workspace cache key")
-        return f"user:{identifier}"
-
-    def _get_identifier(self, item: Dict[str, Any]) -> str:
-        for key in ("user_id", "contact_email", "name"):
-            value = item.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip().lower()
-        return ""
+    def _optional_mapping_list_field(
+        self,
+        record: Dict[str, Any],
+        field_name: str,
+    ) -> List[Dict[str, Any]]:
+        value = record.get(field_name)
+        if value is None:
+            return []
+        if not isinstance(value, list) or not all(
+            isinstance(item, dict) for item in value
+        ):
+            raise MalformedProviderRecordError(
+                f"Provider record field {field_name!r} must be a list of objects"
+            )
+        return value
 
     async def _get_settings(self, settings: SettingsService) -> Optional[Dict[str, Any]]:
-        domain = await settings.get(f"{self.settings_prefix}.domain", "")
-        admin_email = await settings.get(f"{self.settings_prefix}.admin_email", "")
-        client_email = await settings.get(f"{self.settings_prefix}.client_email", "")
-        private_key = await settings.get(f"{self.settings_prefix}.private_key", "")
-        token_uri = await settings.get(f"{self.settings_prefix}.token_uri", "")
-        private_key_id = await settings.get(f"{self.settings_prefix}.private_key_id", "")
+        values = await self._get_setting_values(
+            settings,
+            (
+                "domain",
+                "admin_email",
+                "client_email",
+                "private_key",
+                "token_uri",
+                "private_key_id",
+                "service_account_json",
+            ),
+        )
+        domain = values["domain"]
+        admin_email = values["admin_email"]
+        client_email = values["client_email"]
+        private_key = values["private_key"]
+        token_uri = values["token_uri"]
+        private_key_id = values["private_key_id"]
 
         sa: Dict[str, Any] | None = None
         if client_email and private_key and admin_email:
@@ -118,7 +132,7 @@ class GoogleWorkspaceProvider(EnrichmentProvider):
             if private_key_id:
                 sa["private_key_id"] = private_key_id
         else:
-            sa_json = await settings.get(f"{self.settings_prefix}.service_account_json", "")
+            sa_json = values["service_account_json"]
             if sa_json and admin_email:
                 try:
                     parsed = json.loads(sa_json)
@@ -161,23 +175,49 @@ class GoogleWorkspaceProvider(EnrichmentProvider):
                 },
             )
             resp.raise_for_status()
-            payload = resp.json()
-            self._token_value = payload["access_token"]
+            try:
+                payload = resp.json()
+            except ValueError as exc:
+                raise EnrichmentProviderError(
+                    "Google Workspace token response is not valid JSON"
+                ) from exc
+            access_token, expires_in = self._parse_oauth_access_token_response(
+                payload,
+                provider_name="Google Workspace",
+            )
+            self._token_value = access_token
             self._token_cache_key = cache_key
-            expires_in = int(payload.get("expires_in") or 3600)
             self._token_expires_at = now + timedelta(seconds=max(60, expires_in - 60))
-            return payload["access_token"]
+            return access_token
 
     def _build_result(self, user: Dict[str, Any]) -> EnrichmentResult:
-        google_id = user.get("id", "")
-        primary_email = user.get("primaryEmail", "")
-        name = user.get("name") or {}
-        display_name = name.get("fullName") or ""
-        given_name = name.get("givenName") or ""
-        family_name = name.get("familyName") or ""
+        user = self._require_record_mapping(user)
+        google_id = self._optional_string_field(user, "id")
+        primary_email = self._optional_string_field(user, "primaryEmail")
+        raw_name = user.get("name")
+        if raw_name is None:
+            name: Dict[str, Any] = {}
+        elif isinstance(raw_name, dict):
+            name = raw_name
+        else:
+            raise MalformedProviderRecordError(
+                "Provider record field 'name' must be an object"
+            )
+        display_name = self._optional_string_field(name, "fullName")
+        given_name = self._optional_string_field(name, "givenName")
+        family_name = self._optional_string_field(name, "familyName")
 
-        org_info = (user.get("organizations") or [{}])[0]
-        phone_info = (user.get("phones") or [{}])[0]
+        organizations = self._optional_mapping_list_field(user, "organizations")
+        phones = self._optional_mapping_list_field(user, "phones")
+        emails = self._optional_mapping_list_field(user, "emails")
+        aliases = self._optional_string_list_field(user, "aliases")
+        org_info = organizations[0] if organizations else {}
+        phone_info = phones[0] if phones else {}
+        suspended = user.get("suspended", False)
+        if not isinstance(suspended, bool):
+            raise MalformedProviderRecordError(
+                "Provider record field 'suspended' must be a boolean"
+            )
 
         enrichment_data = {
             "google_id": google_id,
@@ -185,15 +225,19 @@ class GoogleWorkspaceProvider(EnrichmentProvider):
             "display_name": display_name,
             "given_name": given_name,
             "family_name": family_name,
-            "job_title": org_info.get("title") or "",
-            "department": org_info.get("department") or "",
-            "organization": org_info.get("name") or "",
-            "org_unit_path": user.get("orgUnitPath") or "",
-            "phone": phone_info.get("value") or "",
-            "suspended": user.get("suspended", False),
+            "job_title": self._optional_string_field(org_info, "title"),
+            "department": self._optional_string_field(org_info, "department"),
+            "organization": self._optional_string_field(org_info, "name"),
+            "org_unit_path": self._optional_string_field(user, "orgUnitPath"),
+            "phone": self._optional_string_field(phone_info, "value"),
+            "suspended": suspended,
         }
 
-        canonical_value = primary_email.lower() or google_id
+        cache_key = self._build_user_cache_key_from_values(
+            primary_email,
+            google_id,
+        )
+        canonical_value = cache_key.removeprefix("user:")
         canonical_display = display_name or primary_email or google_id
         meta = {
             "department": enrichment_data["department"],
@@ -201,36 +245,31 @@ class GoogleWorkspaceProvider(EnrichmentProvider):
             "display_name": display_name,
         }
 
-        aliases: List[AliasMapping] = []
+        alias_values = [
+            ("google_id", google_id),
+            ("email", primary_email.lower() if primary_email else ""),
+            ("display_name", display_name.lower() if display_name else ""),
+        ]
 
-        def _add(alias_type: str, value: str) -> None:
-            if value:
-                aliases.append(
-                    AliasMapping(
-                        entity_type="user",
-                        canonical_value=canonical_value,
-                        canonical_display=canonical_display,
-                        alias_type=alias_type,
-                        alias_value=value,
-                        attributes=meta,
-                    )
-                )
-
-        _add("google_id", google_id)
-        _add("email", primary_email.lower() if primary_email else "")
-        _add("display_name", display_name.lower() if display_name else "")
-
-        for alt in user.get("emails") or []:
-            alt_addr = alt.get("address") or ""
+        for alt in emails:
+            alt_addr = self._optional_string_field(alt, "address")
             if alt_addr and alt_addr.lower() != primary_email.lower():
-                _add("email", alt_addr.lower())
+                alias_values.append(("email", alt_addr.lower()))
 
-        for alias_email in user.get("aliases") or []:
-            _add("email_alias", alias_email.lower())
+        for alias_email in aliases:
+            alias_values.append(("email_alias", alias_email.lower()))
+
+        aliases = self._build_alias_mappings(
+            entity_type="user",
+            canonical_value=canonical_value,
+            canonical_display=canonical_display,
+            attributes=meta,
+            aliases=alias_values,
+        )
 
         return EnrichmentResult(
             provider_id=self.provider_id,
-            cache_key=f"user:{canonical_value or google_id}",
+            cache_key=cache_key,
             enrichment_data=enrichment_data,
             aliases=aliases,
         )
@@ -246,11 +285,15 @@ class GoogleWorkspaceProvider(EnrichmentProvider):
     ) -> EnrichmentResult:
         cfg = await self._get_settings(settings)
         if not cfg:
-            raise ValueError("Google Workspace provider is not fully configured")
+            raise EnrichmentProviderConfigurationError(
+                "Google Workspace provider is not fully configured"
+            )
 
-        identifier = self._get_identifier(item)
+        identifier = self._get_user_identifier(item)
         if not identifier:
-            raise ValueError("Cannot determine identifier for Google Workspace lookup")
+            raise EnrichmentProviderError(
+                "Cannot determine identifier for Google Workspace lookup"
+            )
 
         token = await self._get_token(cfg["service_account"], cfg["admin_email"])
         headers = {"Authorization": f"Bearer {token}"}
@@ -274,12 +317,15 @@ class GoogleWorkspaceProvider(EnrichmentProvider):
     async def bulk_sync(self, *, db: AsyncSession, settings: SettingsService) -> List[EnrichmentResult]:
         cfg = await self._get_settings(settings)
         if not cfg:
-            raise ValueError("Google Workspace provider is not fully configured")
+            raise EnrichmentProviderConfigurationError(
+                "Google Workspace provider is not fully configured"
+            )
 
         token = await self._get_token(cfg["service_account"], cfg["admin_email"])
         headers = {"Authorization": f"Bearer {token}"}
         domain = cfg.get("domain") or ""
         results: List[EnrichmentResult] = []
+        malformed_records = 0
         page_token: Optional[str] = None
 
         async with httpx.AsyncClient(timeout=30) as client:
@@ -303,12 +349,17 @@ class GoogleWorkspaceProvider(EnrichmentProvider):
                 for user in data.get("users") or []:
                     try:
                         results.append(self._build_result(user))
-                    except Exception as exc:
-                        logger.warning("Google Workspace: skipping user %s: %s", user.get("id"), exc)
+                    except MalformedProviderRecordError:
+                        malformed_records += 1
                 page_token = data.get("nextPageToken")
                 if not page_token:
                     break
 
+        if malformed_records:
+            logger.warning(
+                "Google Workspace bulk sync skipped malformed user records (count=%d)",
+                malformed_records,
+            )
         logger.info("Google Workspace bulk sync: %d users", len(results))
         return results
 

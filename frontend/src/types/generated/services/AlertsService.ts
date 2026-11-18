@@ -191,7 +191,7 @@ export class AlertsService {
         alertId,
         includeLinkedTimelines = false,
     }: {
-        alertId: number,
+        alertId: (number | string),
         /**
          * Include timeline items from linked cases and tasks as nested source_timeline_items
          */
@@ -221,7 +221,7 @@ export class AlertsService {
         alertId,
         requestBody,
     }: {
-        alertId: number,
+        alertId: (number | string),
         requestBody: AlertUpdate,
     }): CancelablePromise<AlertRead> {
         return __request(OpenAPI, {
@@ -247,7 +247,7 @@ export class AlertsService {
         alertId,
         requestBody,
     }: {
-        alertId: number,
+        alertId: (number | string),
         requestBody: AlertTriageRequest,
     }): CancelablePromise<AlertRead> {
         return __request(OpenAPI, {
@@ -273,7 +273,7 @@ export class AlertsService {
         alertId,
         caseId,
     }: {
-        alertId: number,
+        alertId: (number | string),
         caseId: number,
     }): CancelablePromise<AlertRead> {
         return __request(OpenAPI, {
@@ -299,7 +299,7 @@ export class AlertsService {
     public static unlinkAlertFromCaseApiV1AlertsAlertIdUnlinkCasePost({
         alertId,
     }: {
-        alertId: number,
+        alertId: (number | string),
     }): CancelablePromise<AlertRead> {
         return __request(OpenAPI, {
             method: 'POST',
@@ -323,7 +323,7 @@ export class AlertsService {
         requestBody,
         migration = false,
     }: {
-        alertId: number,
+        alertId: (number | string),
         requestBody: Record<string, any>,
         /**
          * Allow authorized NHI migration clients to provide created_at
@@ -357,7 +357,7 @@ export class AlertsService {
         itemId,
         requestBody,
     }: {
-        alertId: number,
+        alertId: (number | string),
         itemId: string,
         requestBody: Record<string, any>,
     }): CancelablePromise<AlertRead> {
@@ -385,7 +385,7 @@ export class AlertsService {
         alertId,
         itemId,
     }: {
-        alertId: number,
+        alertId: (number | string),
         itemId: string,
     }): CancelablePromise<AlertRead> {
         return __request(OpenAPI, {
@@ -410,7 +410,7 @@ export class AlertsService {
         alertId,
         requestBody,
     }: {
-        alertId: number,
+        alertId: (number | string),
         requestBody: PresignedUploadRequest,
     }): CancelablePromise<PresignedUploadResponse> {
         return __request(OpenAPI, {
@@ -437,7 +437,7 @@ export class AlertsService {
         itemId,
         requestBody,
     }: {
-        alertId: number,
+        alertId: (number | string),
         itemId: string,
         requestBody: AttachmentStatusUpdate,
     }): CancelablePromise<AlertRead> {
@@ -466,7 +466,7 @@ export class AlertsService {
         itemId,
         download = false,
     }: {
-        alertId: number,
+        alertId: (number | string),
         itemId: string,
         /**
          * Generate a forced-download URL
@@ -499,7 +499,7 @@ export class AlertsService {
     public static getTriageRecommendationApiV1AlertsAlertIdTriageRecommendationGet({
         alertId,
     }: {
-        alertId: number,
+        alertId: (number | string),
     }): CancelablePromise<(TriageRecommendationRead | null)> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -517,8 +517,7 @@ export class AlertsService {
      * Enqueue AI triage for an alert.
      *
      * Creates a QUEUED placeholder recommendation and submits the triage job to the worker queue.
-     * If a QUEUED or FAILED recommendation already exists, it will be updated in-place.
-     * If a PENDING/ACCEPTED/REJECTED/SUPERSEDED recommendation exists, it will be superseded.
+     * If a recommendation already exists, its single per-alert row is reset in-place.
      *
      * Returns 400 if AI triage is not enabled (langflow.alert_triage_flow_id not configured).
      * @returns TriageRecommendationRead Successful Response
@@ -527,7 +526,7 @@ export class AlertsService {
     public static enqueueTriageRecommendationApiV1AlertsAlertIdTriageRecommendationEnqueuePost({
         alertId,
     }: {
-        alertId: number,
+        alertId: (number | string),
     }): CancelablePromise<TriageRecommendationRead> {
         return __request(OpenAPI, {
             method: 'POST',
@@ -560,7 +559,7 @@ export class AlertsService {
         alertId,
         requestBody,
     }: {
-        alertId: number,
+        alertId: (number | string),
         requestBody: AcceptRecommendationRequest,
     }): CancelablePromise<AcceptRecommendationResponse> {
         return __request(OpenAPI, {
@@ -589,7 +588,7 @@ export class AlertsService {
         alertId,
         requestBody,
     }: {
-        alertId: number,
+        alertId: (number | string),
         requestBody: RejectRecommendationRequest,
     }): CancelablePromise<TriageRecommendationRead> {
         return __request(OpenAPI, {

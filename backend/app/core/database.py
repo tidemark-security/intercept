@@ -1,25 +1,36 @@
-from sqlmodel import SQLModel
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.exc import OperationalError
-from sqlalchemy import text
-from typing import AsyncGenerator
 import logging
+from typing import AsyncGenerator
+
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
 from app.core.settings_registry import get_local
+from app.core.authentication_activity import flush_deferred_authentication_activity
 
 logger = logging.getLogger(__name__)
 
+
+def _redact_database_url(database_url: str) -> str:
+    """Render a database URL without credentials for diagnostics."""
+    return make_url(database_url).render_as_string(hide_password=True)
+
+
+_DATABASE_URL = get_local("database.url")
+
 # Create async engine
 engine = create_async_engine(
-    get_local("database.url"),
+    _DATABASE_URL,
     echo=bool(get_local("database.echo", False)),
-    future=True
+    future=True,
 )
 
 # Create async session factory
 async_session_factory = async_sessionmaker(
     engine,
     class_=AsyncSession,
-    expire_on_commit=False
+    expire_on_commit=False,
 )
 
 
@@ -29,24 +40,33 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
             await session.commit()
+            try:
+                if await flush_deferred_authentication_activity(session):
+                    await session.commit()
+                else:
+                    await session.rollback()
+            except Exception:
+                await session.rollback()
+                logger.warning(
+                    "Unable to persist deferred authentication activity",
+                    exc_info=True,
+                )
         except Exception:
             await session.rollback()
             raise
-        finally:
-            await session.close()
 
 
-async def test_db_connection():
+async def test_db_connection() -> bool:
     """Test database connection and provide helpful error messages."""
     try:
         async with engine.begin() as conn:
             # Simple test query
-            result = await conn.execute(text("SELECT 1"))
+            await conn.execute(text("SELECT 1"))
             logger.info("✅ Database connection successful!")
             return True
-    except (OperationalError, ConnectionRefusedError, OSError) as e:
+    except (OperationalError, OSError) as exc:
         error_msg = (
-            "\n" + "="*80 + "\n"
+            "\n" + "=" * 80 + "\n"
             "🚨 DATABASE CONNECTION TEST FAILED!\n"
             "="*80 + "\n"
             "PostgreSQL database is not available. This is likely because:\n\n"
@@ -58,9 +78,9 @@ async def test_db_connection():
             "🐘 Using local PostgreSQL:\n"
             "   sudo systemctl start postgresql\n"
             "   # or on macOS: brew services start postgresql\n\n"
-            f"Database URL: {get_local('database.url')}\n"
-            f"Error details: {str(e)}\n"
-            "="*80
+            f"Database URL: {_redact_database_url(_DATABASE_URL)}\n"
+            f"Error type: {type(exc).__name__}\n"
+            "=" * 80
         )
         logger.error(error_msg)
         return False

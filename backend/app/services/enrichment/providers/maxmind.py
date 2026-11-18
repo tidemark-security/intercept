@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-import ipaddress
-from typing import Any, Dict, List
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.enrichment.base import AliasMapping, EnrichmentProvider, EnrichmentResult
-from app.services.maxmind_service import maxmind_service
+from app.services.enrichment.base import (
+    AliasMapping,
+    EnrichmentProvider,
+    EnrichmentProviderError,
+    EnrichmentResult,
+)
+from app.services.enrichment.providers.ip_eligibility import normalize_public_ip_address
+from app.services.maxmind_service import MaxMindConfigurationError, maxmind_service
 from app.services.settings_service import SettingsService
 
 
@@ -17,13 +22,15 @@ class MaxMindProvider(EnrichmentProvider):
     supported_item_types = ("observable", "system", "network_traffic")
     supports_bulk_sync = False
 
-    def can_enrich(self, item: Dict[str, Any]) -> bool:
+    def can_enrich(self, item: dict[str, Any]) -> bool:
         return bool(self._extract_candidate_ips(item))
 
-    def build_cache_key(self, item: Dict[str, Any]) -> str:
+    def build_cache_key(self, item: dict[str, Any]) -> str:
         ips = sorted(self._extract_candidate_ips(item))
         if not ips:
-            raise ValueError("No IP addresses available for MaxMind enrichment")
+            raise EnrichmentProviderError(
+                "No IP addresses available for MaxMind enrichment"
+            )
         return "|".join(ips)
 
     async def enrich(
@@ -31,10 +38,24 @@ class MaxMindProvider(EnrichmentProvider):
         *,
         db: AsyncSession,
         settings: SettingsService,
-        item: Dict[str, Any],
+        item: dict[str, Any],
         entity_type: str,
         entity_id: int,
     ) -> EnrichmentResult:
+        raw_ttl = await settings.get("enrichment.maxmind.ttl_seconds", 604800)
+        if raw_ttl in (None, ""):
+            raw_ttl = 604800
+        try:
+            ttl_seconds = int(raw_ttl)
+        except (TypeError, ValueError) as exc:
+            raise MaxMindConfigurationError(
+                "MaxMind enrichment TTL must be an integer"
+            ) from exc
+        if ttl_seconds <= 0:
+            raise MaxMindConfigurationError(
+                "MaxMind enrichment TTL must be greater than zero"
+            )
+
         await maxmind_service.ensure_readers_loaded(settings=settings)
 
         ip_results: dict[str, Any] = {}
@@ -50,10 +71,10 @@ class MaxMindProvider(EnrichmentProvider):
             cache_key=self.build_cache_key(item),
             enrichment_data={"results": ip_results},
             aliases=aliases,
-            ttl_seconds=int(await settings.get("enrichment.maxmind.ttl_seconds", 604800) or 604800),
+            ttl_seconds=ttl_seconds,
         )
 
-    def _extract_candidate_ips(self, item: Dict[str, Any]) -> List[str]:
+    def _extract_candidate_ips(self, item: dict[str, Any]) -> list[str]:
         item_type = item.get("type")
         raw_values: list[str] = []
 
@@ -75,24 +96,24 @@ class MaxMindProvider(EnrichmentProvider):
             normalized = raw_value.strip()
             if not normalized:
                 continue
-            try:
-                parsed = ipaddress.ip_address(normalized)
-            except ValueError:
+            canonical = normalize_public_ip_address(normalized)
+            if canonical is None:
                 continue
-            if parsed.is_private or parsed.is_loopback or parsed.is_multicast or parsed.is_reserved or parsed.is_unspecified:
-                continue
-            canonical = str(parsed)
             if canonical in seen:
                 continue
             seen.add(canonical)
             ips.append(canonical)
         return ips
 
-    def _build_aliases(self, ip: str, lookup: Dict[str, Any]) -> List[AliasMapping]:
+    def _build_aliases(self, ip: str, lookup: dict[str, Any]) -> list[AliasMapping]:
         databases = lookup.get("databases") or {}
         aliases: list[AliasMapping] = []
 
-        def _add(alias_type: str, alias_value: str, attributes: Dict[str, Any]) -> None:
+        def _add(
+            alias_type: str,
+            alias_value: str,
+            attributes: dict[str, Any],
+        ) -> None:
             normalized = alias_value.strip().lower()
             if not normalized:
                 return

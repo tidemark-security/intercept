@@ -24,6 +24,7 @@ import {
 } from "@/components/entities/DuplicateTargetSelectorModal";
 import { useAlerts } from "@/hooks/useAlerts";
 import { useAlertDetail } from "@/hooks/useAlertDetail";
+import { formatEntityTitle, useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { convertHumanIdToNumeric } from "@/hooks/useAlertIdFromHumanId";
 import { useUsers } from "@/hooks/useUsers";
 import { useUpdateAlert } from "@/hooks/useUpdateAlert";
@@ -257,6 +258,9 @@ function Alerts() {
     isLoading: isLoadingDetail,
     error: detailError,
   } = useAlertDetail(selectedAlertId, { includeLinkedTimelines: true });
+  useDocumentTitle(
+    humanId ? formatEntityTitle(alertDetail?.human_id ?? humanId, alertDetail?.title) : "Alerts"
+  );
   const isAlertReadOnly = isAuditor || alertDetail?.status === 'ESCALATED' || !!alertDetail?.case_id;
   const bulkSelectedIds = Array.from(bulkSelectedAlertIds);
 

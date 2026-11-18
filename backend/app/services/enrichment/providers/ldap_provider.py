@@ -11,7 +11,13 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.enrichment.base import AliasMapping, EnrichmentProvider, EnrichmentResult
+from app.services.enrichment.base import (
+    EnrichmentProviderConfigurationError,
+    EnrichmentProviderError,
+    EnrichmentResult,
+    MalformedProviderRecordError,
+    UserDirectoryEnrichmentProvider,
+)
 from app.services.settings_service import SettingsService
 
 logger = logging.getLogger(__name__)
@@ -37,22 +43,18 @@ _DEFAULT_ATTRIBUTES = [
     "memberOf",
 ]
 
-_USER_SEARCH_FILTER_TEMPLATE = (
-    "(|"
-    "(sAMAccountName={uid})"
-    "(userPrincipalName={uid})"
-    "(mail={uid})"
-    "(cn={uid})"
-    "(displayName={uid})"
-    ")"
-)
-
 _BULK_SYNC_FILTER = "(&(objectClass=user)(objectCategory=person))"
 
 
 def _format_object_guid(raw: Any) -> str:
     """Format raw objectGUID bytes into a standard GUID string."""
-    if isinstance(raw, bytes) and len(raw) == 16:
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        if len(raw) != 16:
+            raise MalformedProviderRecordError(
+                "LDAP objectGUID must contain exactly 16 bytes"
+            )
         b = raw
         return (
             f"{b[3]:02x}{b[2]:02x}{b[1]:02x}{b[0]:02x}-"
@@ -63,45 +65,36 @@ def _format_object_guid(raw: Any) -> str:
         )
     if isinstance(raw, str):
         return raw
-    return str(raw)
+    raise MalformedProviderRecordError(
+        "LDAP objectGUID must be a string or 16-byte value"
+    )
 
 
-class LDAPProvider(EnrichmentProvider):
+class LDAPProvider(UserDirectoryEnrichmentProvider):
     """Enrich InternalActorItem via LDAP/Active Directory."""
 
     provider_id = "ldap"
     display_name = "LDAP / Active Directory"
     settings_prefix = "enrichment.ldap"
-    supported_item_types = ("internal_actor",)
     supports_bulk_sync = True
 
-    def can_enrich(self, item: Dict[str, Any]) -> bool:
-        return item.get("type") == "internal_actor" and bool(self._get_identifier(item))
-
-    def build_cache_key(self, item: Dict[str, Any]) -> str:
-        identifier = self._get_identifier(item)
-        if not identifier:
-            raise ValueError("Cannot determine identifier for LDAP cache key")
-        return f"user:{identifier}"
-
-    def _get_identifier(self, item: Dict[str, Any]) -> str:
-        for key in ("user_id", "contact_email", "name"):
-            value = item.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip().lower()
-        return ""
-
     async def _get_settings(self, settings: SettingsService) -> Optional[Dict[str, Any]]:
-        url = await settings.get(f"{self.settings_prefix}.url", "")
-        bind_dn = await settings.get(f"{self.settings_prefix}.bind_dn", "")
-        bind_password = await settings.get(f"{self.settings_prefix}.bind_password", "")
-        search_base = await settings.get(f"{self.settings_prefix}.search_base", "")
-        use_ssl = await settings.get(f"{self.settings_prefix}.use_ssl", True)
-        ca_certs_file = await settings.get(f"{self.settings_prefix}.ca_certs_file", None)
-        user_search_filter = await settings.get(
-            f"{self.settings_prefix}.user_search_filter",
-            _USER_SEARCH_FILTER_TEMPLATE,
+        values = await self._get_setting_values(
+            settings,
+            (
+                "url",
+                "bind_dn",
+                "bind_password",
+                "search_base",
+                "use_ssl",
+                "ca_certs_file",
+                "user_search_filter",
+            ),
         )
+        url = values["url"]
+        bind_dn = values["bind_dn"]
+        bind_password = values["bind_password"]
+        search_base = values["search_base"]
         if not (url and bind_dn and bind_password and search_base):
             return None
         return {
@@ -109,9 +102,9 @@ class LDAPProvider(EnrichmentProvider):
             "bind_dn": bind_dn,
             "bind_password": bind_password,
             "search_base": search_base,
-            "use_ssl": bool(use_ssl),
-            "ca_certs_file": str(ca_certs_file).strip() if ca_certs_file else None,
-            "user_search_filter": user_search_filter,
+            "use_ssl": bool(values["use_ssl"]),
+            "ca_certs_file": str(values["ca_certs_file"]).strip() if values["ca_certs_file"] else None,
+            "user_search_filter": values["user_search_filter"],
         }
 
     def _connect(
@@ -212,29 +205,27 @@ class LDAPProvider(EnrichmentProvider):
             "display_name": display_name,
         }
 
-        aliases: List[AliasMapping] = []
-
-        def _add(alias_type: str, value: str) -> None:
-            if value:
-                aliases.append(
-                    AliasMapping(
-                        entity_type="user",
-                        canonical_value=canonical_id,
-                        canonical_display=canonical_display,
-                        alias_type=alias_type,
-                        alias_value=value,
-                        attributes=meta,
-                    )
-                )
-
+        alias_values = []
         if object_guid:
-            _add("object_guid", object_guid)
-        _add("samaccountname", sam.lower() if sam else "")
-        _add("email", email.lower() if email else "")
-        _add("upn", upn.lower() if upn else "")
-        _add("display_name", display_name.lower() if display_name else "")
+            alias_values.append(("object_guid", object_guid))
+        alias_values.extend(
+            [
+                ("samaccountname", sam.lower() if sam else ""),
+                ("email", email.lower() if email else ""),
+                ("upn", upn.lower() if upn else ""),
+                ("display_name", display_name.lower() if display_name else ""),
+            ]
+        )
         if _s("employeeID"):
-            _add("employee_id", _s("employeeID"))
+            alias_values.append(("employee_id", _s("employeeID")))
+
+        aliases = self._build_alias_mappings(
+            entity_type="user",
+            canonical_value=canonical_id,
+            canonical_display=canonical_display,
+            attributes=meta,
+            aliases=alias_values,
+        )
 
         return EnrichmentResult(
             provider_id=self.provider_id,
@@ -263,11 +254,15 @@ class LDAPProvider(EnrichmentProvider):
     ) -> EnrichmentResult:
         cfg = await self._get_settings(settings)
         if not cfg:
-            raise ValueError("LDAP provider is not fully configured")
+            raise EnrichmentProviderConfigurationError(
+                "LDAP provider is not fully configured"
+            )
 
-        identifier = self._get_identifier(item)
+        identifier = self._get_user_identifier(item)
         if not identifier:
-            raise ValueError("Cannot determine identifier for LDAP lookup")
+            raise EnrichmentProviderError(
+                "Cannot determine identifier for LDAP lookup"
+            )
 
         result = await asyncio.to_thread(self._sync_lookup, cfg, identifier, self.build_cache_key(item))
         return result
@@ -294,7 +289,9 @@ class LDAPProvider(EnrichmentProvider):
     async def bulk_sync(self, *, db: AsyncSession, settings: SettingsService) -> List[EnrichmentResult]:
         cfg = await self._get_settings(settings)
         if not cfg:
-            raise ValueError("LDAP provider is not fully configured")
+            raise EnrichmentProviderConfigurationError(
+                "LDAP provider is not fully configured"
+            )
 
         results = await asyncio.to_thread(self._sync_bulk_search, cfg)
         logger.info("LDAP bulk sync: %d users", len(results))
@@ -304,6 +301,7 @@ class LDAPProvider(EnrichmentProvider):
         conn = self._connect_with_config(cfg)
         try:
             results: List[EnrichmentResult] = []
+            malformed_records = 0
             conn.search(
                 cfg["search_base"],
                 _BULK_SYNC_FILTER,
@@ -313,17 +311,23 @@ class LDAPProvider(EnrichmentProvider):
             while True:
                 for entry in conn.entries:
                     try:
-                        canonical = (
-                            self._entry_to_str(entry, "userPrincipalName")
-                            or self._entry_to_str(entry, "mail")
-                            or self._entry_to_str(entry, "sAMAccountName")
-                            or _format_object_guid(getattr(getattr(entry, "objectGUID", None), "value", None))
+                        cache_key = self._build_user_cache_key_from_values(
+                            self._entry_to_str(entry, "userPrincipalName"),
+                            self._entry_to_str(entry, "mail"),
+                            self._entry_to_str(entry, "sAMAccountName"),
+                            _format_object_guid(
+                                getattr(
+                                    getattr(entry, "objectGUID", None),
+                                    "value",
+                                    None,
+                                )
+                            ),
                         )
-                        if not canonical:
-                            continue
-                        results.append(self._build_result(entry, cache_key=f"user:{canonical.strip().lower()}"))
-                    except Exception as exc:
-                        logger.warning("LDAP: skipping entry %s: %s", getattr(entry, "distinguishedName", "?"), exc)
+                        results.append(
+                            self._build_result(entry, cache_key=cache_key)
+                        )
+                    except MalformedProviderRecordError:
+                        malformed_records += 1
 
                 # Handle paged results
                 cookie = conn.result.get("controls", {}).get("1.2.840.113556.1.4.319", {}).get("value", {}).get("cookie")
@@ -335,6 +339,11 @@ class LDAPProvider(EnrichmentProvider):
                     attributes=_DEFAULT_ATTRIBUTES,
                     paged_size=500,
                     paged_cookie=cookie,
+                )
+            if malformed_records:
+                logger.warning(
+                    "LDAP bulk sync skipped malformed user records (count=%d)",
+                    malformed_records,
                 )
             return results
         finally:

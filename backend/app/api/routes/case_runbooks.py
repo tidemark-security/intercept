@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.route_utils import create_human_id_decorator
 from app.api.routes.admin_auth import require_admin_user, require_authenticated_user, require_non_auditor_user
 from app.core.database import get_db
+from app.core.entity_ids import CASE_PREFIX, RUNBOOK_PREFIX
 from app.models.enums import CaseRunbookStatus
 from app.models.models import (
     CaseRunbookApplyRequest,
@@ -27,8 +28,8 @@ router = APIRouter(
     tags=["case-runbooks"],
     dependencies=[Depends(require_authenticated_user)],
 )
-handle_human_id = create_human_id_decorator("RUN-", "runbook_id")
-handle_case_human_id = create_human_id_decorator("CAS-", "case_id")
+handle_human_id = create_human_id_decorator(RUNBOOK_PREFIX, "runbook_id")
+handle_case_human_id = create_human_id_decorator(CASE_PREFIX, "case_id")
 
 
 @router.get("", response_model=Page[CaseRunbookRead])
@@ -162,5 +163,5 @@ async def apply_case_runbook(
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-    except (CaseRunbookValidationError, ValueError) as exc:
+    except CaseRunbookValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

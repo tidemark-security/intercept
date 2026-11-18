@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import Optional, Dict, Any
 from enum import Enum
-from datetime import datetime, timezone
 import hashlib
+import json
 
-from app.core.id_parser import parse_entity_id
-from app.models.models import Actor, ActorSnapshot, Task
+from app.core.entity_ids import TASK_PREFIX, format_entity_id
+from app.core.id_parser import EntityIdParseError, parse_entity_id
+from app.models.models import Actor, ActorSnapshot, Alert, Case, Task
 from app.models.enums import ActorType
 
 
@@ -36,13 +38,66 @@ INTERNAL_ACTOR_ENRICHMENT_FIELD_MAP: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
+ACTOR_SNAPSHOT_FIELDS = (
+    "actor_type",
+    "user_id",
+    "name",
+    "title",
+    "org",
+    "contact_phone",
+    "contact_email",
+)
+
+LINKED_ENTITY_DERIVED_FIELDS = frozenset(
+    {
+        "title",
+        "entity_description",
+        "status",
+        "priority",
+        "assignee",
+        "source_timeline_items",
+    }
+)
+
+TASK_DERIVED_FIELDS = LINKED_ENTITY_DERIVED_FIELDS | {
+    "task_human_id",
+    "due_date",
+    "picerl_stage",
+    "source_runbook",
+}
+
+
+class NormalizationValidationError(ValueError):
+    """Timeline reference data is missing or invalid for normalization."""
+
+
+@dataclass(slots=True)
+class TimelineReferenceIndex:
+    """Strong references used while denormalizing one timeline response."""
+
+    actors: Dict[int, Actor] = field(default_factory=dict)
+    actor_snapshots: Dict[tuple[int, str], ActorSnapshot] = field(default_factory=dict)
+    alerts: Dict[int, Alert] = field(default_factory=dict)
+    cases: Dict[int, Case] = field(default_factory=dict)
+    tasks: Dict[int, Task] = field(default_factory=dict)
+
 
 class NormalizationService:
-    """Encapsulates normalization and denormalization for timeline items
-    involving Actors, Alerts, and Cases.
-    """
+    """Normalize first-class entity references embedded in timeline items."""
 
-    async def normalize_actor_item(
+    @staticmethod
+    def _strip_linked_entity_fields(
+        item: Dict[str, Any],
+        derived_fields: frozenset[str] = LINKED_ENTITY_DERIVED_FIELDS,
+    ) -> Dict[str, Any]:
+        """Keep canonical identity and analyst-authored link metadata only."""
+        return {
+            field: value
+            for field, value in item.items()
+            if field not in derived_fields
+        }
+
+    async def normalize_item(
         self,
         db: AsyncSession,
         item: Dict[str, Any]
@@ -58,81 +113,96 @@ class NormalizationService:
         if t == "alert":
             return await self._normalize_alert(db, item)
         if t == "case":
-            return await self._normalize_case(db, item)
+            return self._normalize_case(item)
         if t == "task":
-            return await self._normalize_task(db, item)
+            return self._normalize_task(item)
         if t == "ttp":
             return self._normalize_ttp(item)
         return item
 
-    async def denormalize_actor_item(
+    async def denormalize_item(
         self,
         db: AsyncSession,
-        item: Dict[str, Any]
+        item: Dict[str, Any],
+        *,
+        references: TimelineReferenceIndex | None = None,
     ) -> Dict[str, Any]:
         """Populate denormalized fields on an actor timeline item for API responses."""
         t = item.get("type")
         # Handle all actor types: internal_actor, external_actor, threat_actor
         if t and ("actor" in t):
-            return await self._denormalize_actor(db, item)
+            return await self._denormalize_actor(db, item, references=references)
         if t == "alert":
-            return await self._denormalize_alert(db, item)
+            return await self._denormalize_alert(db, item, references=references)
         if t == "case":
-            return await self._denormalize_case(db, item)
+            return await self._denormalize_case(db, item, references=references)
         if t == "task":
-            return await self._denormalize_task(db, item)
+            return await self._denormalize_task(db, item, references=references)
         if t == "ttp":
             return self._denormalize_ttp(item)
         return item
 
-    async def _normalize_task(self, db: AsyncSession, item: Dict[str, Any]) -> Dict[str, Any]:
-        normalized = dict(item)
-
-        task_id = normalized.get("task_id")
-        if isinstance(task_id, str) and task_id.isdigit():
-            normalized["task_id"] = int(task_id)
-
-        if task_id is None:
-            human_id = normalized.get("task_human_id")
-            if isinstance(human_id, str) and human_id.startswith("TSK-"):
+    def resolve_task_id(self, item: Dict[str, Any]) -> Optional[int]:
+        """Resolve a task reference from either its numeric or human-readable field."""
+        for field in ("task_id", "task_human_id"):
+            raw_id = item.get(field)
+            if isinstance(raw_id, bool) or raw_id is None:
+                continue
+            if isinstance(raw_id, int):
+                if raw_id > 0:
+                    return raw_id
+                continue
+            if isinstance(raw_id, str):
                 try:
-                    normalized["task_id"] = int(human_id[4:])
-                except ValueError:
-                    pass
+                    numeric_id, _ = parse_entity_id(raw_id, "task")
+                except EntityIdParseError:
+                    continue
+                if numeric_id > 0:
+                    return numeric_id
+        return None
 
-        # Strip denormalized fields to keep canonical data in the Task table
-        for field in ("task_human_id", "title", "description", "status", "priority", "assignee", "due_date"):
-            normalized.pop(field, None)
+    def _normalize_task(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = dict(item)
+        task_id = self.resolve_task_id(normalized)
+        if task_id is not None:
+            normalized["task_id"] = task_id
 
-        return normalized
+        return self._strip_linked_entity_fields(normalized, TASK_DERIVED_FIELDS)
 
-    async def _denormalize_task(self, db: AsyncSession, item: Dict[str, Any]) -> Dict[str, Any]:
+    async def _denormalize_task(
+        self,
+        db: AsyncSession,
+        item: Dict[str, Any],
+        *,
+        references: TimelineReferenceIndex | None = None,
+    ) -> Dict[str, Any]:
         denorm = dict(item)
-        task_id = denorm.get("task_id")
-
-        if isinstance(task_id, str) and task_id.isdigit():
-            task_id = int(task_id)
-            denorm["task_id"] = task_id
-
-        if not isinstance(task_id, int):
+        task_id = self.resolve_task_id(denorm)
+        if task_id is None:
             return denorm
 
-        task = await db.get(Task, task_id)
+        task = references.tasks.get(task_id) if references is not None else await db.get(Task, task_id)
         if not task:
             return denorm
 
         denorm["task_id"] = task.id
-        denorm["task_human_id"] = f"TSK-{task.id:07d}"
+        denorm["task_human_id"] = format_entity_id(task.id, TASK_PREFIX)
         denorm["title"] = task.title
-        denorm["description"] = task.description or task.title
+        denorm["entity_description"] = task.description
         denorm["status"] = task.status.value if isinstance(task.status, Enum) else task.status
         denorm["priority"] = task.priority.value if isinstance(task.priority, Enum) else task.priority
         denorm["assignee"] = task.assignee
-
-        if task.due_date:
-            denorm["due_date"] = task.due_date.isoformat()
-        else:
-            denorm.pop("due_date", None)
+        denorm["due_date"] = task.due_date.isoformat() if task.due_date else None
+        denorm["picerl_stage"] = (
+            task.picerl_stage.value
+            if isinstance(task.picerl_stage, Enum)
+            else task.picerl_stage
+        )
+        denorm["source_runbook"] = task.source_runbook
+        denorm["created_at"] = (
+            task.created_at.isoformat() if task.created_at else denorm.get("created_at")
+        )
+        denorm["created_by"] = task.created_by or denorm.get("created_by")
 
         return denorm
 
@@ -163,7 +233,7 @@ class NormalizationService:
         Uses mitre_id to fetch live data from the STIX bundle. The ATT&CK
         database is the source of truth for technique names, tactics, URLs, etc.
         """
-        from app.services.mitre_service import mitre_service
+        from app.services.mitre_service import MitreDataUnavailableError, mitre_service
         
         denorm = dict(item)
         mitre_id = denorm.get("mitre_id")
@@ -172,7 +242,11 @@ class NormalizationService:
             return denorm
         
         # Look up the ATT&CK object (cached for performance)
-        attack_obj = mitre_service.get_attack_object_cached(mitre_id)
+        try:
+            attack_obj = mitre_service.get_attack_object_cached(mitre_id)
+        except MitreDataUnavailableError:
+            # Timeline reads remain usable when the optional ATT&CK bundle is absent.
+            return denorm
         if not attack_obj:
             # ATT&CK ID not found - leave item as-is (may have stale snapshot data)
             return denorm
@@ -222,21 +296,22 @@ class NormalizationService:
         actor_id = item.get("actor_id")
         if actor_id is None:
             actor_id = await self._get_or_create_actor(db, item)
+            actor = None
+        else:
+            actor = await db.get(Actor, actor_id)
+            if actor is None:
+                raise NormalizationValidationError(f"Actor {actor_id} not found")
 
         # Build snapshot payload from known fields
         snapshot_payload = {
             k: item.get(k)
-            for k in (
-                "actor_type",
-                "user_id",
-                "name",
-                "title",
-                "org",
-                "contact_phone",
-                "contact_email",
-            )
+            for k in ACTOR_SNAPSHOT_FIELDS
             if item.get(k) is not None
         }
+        if actor is not None:
+            canonical_payload = self._actor_snapshot_payload(actor)
+            for key, value in canonical_payload.items():
+                snapshot_payload.setdefault(key, value)
 
         snapshot_hash = await self._get_or_create_snapshot(db, actor_id, snapshot_payload)
 
@@ -281,19 +356,29 @@ class NormalizationService:
                     item["user_id"] = value.strip()
                     break
 
-    async def _denormalize_actor(self, db: AsyncSession, item: Dict[str, Any]) -> Dict[str, Any]:
+    async def _denormalize_actor(
+        self,
+        db: AsyncSession,
+        item: Dict[str, Any],
+        *,
+        references: TimelineReferenceIndex | None = None,
+    ) -> Dict[str, Any]:
         actor_id = item.get("actor_id")
         snapshot_hash = item.get("snapshot_hash")
         if actor_id is None:
             return item
-        actor = await db.get(Actor, actor_id)
+        actor = references.actors.get(actor_id) if references is not None else await db.get(Actor, actor_id)
         if actor is None:
             return item
         denorm = dict(item)
         denorm.setdefault("actor_type", actor.actor_type)
         payload: Optional[Dict[str, Any]] = None
         if snapshot_hash:
-            payload = await self._get_snapshot_payload(db, actor_id, snapshot_hash)
+            if references is not None:
+                snapshot = references.actor_snapshots.get((actor_id, snapshot_hash))
+                payload = snapshot.snapshot if snapshot is not None else None
+            else:
+                payload = await self._get_snapshot_payload(db, actor_id, snapshot_hash)
         if payload is None:
             payload = {
                 "actor_type": actor.actor_type,
@@ -364,7 +449,7 @@ class NormalizationService:
         if isinstance(alert_id_val, str) and alert_id_val:
             try:
                 numeric_id, _ = parse_entity_id(alert_id_val, "alert")
-            except Exception:
+            except EntityIdParseError:
                 numeric_id = None
 
             alert = await db.get(Alert, numeric_id) if isinstance(numeric_id, int) else None
@@ -374,40 +459,52 @@ class NormalizationService:
                 # If not found, drop it to avoid dangling reference
                 normalized.pop("alert_id", None)
 
-        # Strip denormalized fields
-        for k in ("title", "priority", "assignee"):
-            normalized.pop(k, None)
-        return normalized
+        return self._strip_linked_entity_fields(normalized)
 
-    async def _denormalize_alert(self, db: AsyncSession, item: Dict[str, Any]) -> Dict[str, Any]:
-        from app.models.models import Alert
+    async def _denormalize_alert(
+        self,
+        db: AsyncSession,
+        item: Dict[str, Any],
+        *,
+        references: TimelineReferenceIndex | None = None,
+    ) -> Dict[str, Any]:
         denorm = dict(item)
         pk = denorm.get("alert_id")
-        alert = await db.get(Alert, pk) if isinstance(pk, int) else None
+        if isinstance(pk, int):
+            alert = references.alerts.get(pk) if references is not None else await db.get(Alert, pk)
+        else:
+            alert = None
         if alert:
             # Populate live denormalized fields (source of truth is Alert entity)
             denorm["title"] = alert.title
+            denorm["entity_description"] = alert.description
             denorm["priority"] = alert.priority
             denorm["assignee"] = alert.assignee
             denorm["status"] = alert.status.value if isinstance(alert.status, Enum) else alert.status
         return denorm
 
     # --- Case helpers ---
-    async def _normalize_case(self, db: AsyncSession, item: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_case(self, item: Dict[str, Any]) -> Dict[str, Any]:
         # Case item requires case_id already (per contract)
-        normalized = dict(item)
-        # Strip denormalized fields
-        for k in ("title", "priority", "assignee"):
-            normalized.pop(k, None)
-        return normalized
+        return self._strip_linked_entity_fields(item)
 
-    async def _denormalize_case(self, db: AsyncSession, item: Dict[str, Any]) -> Dict[str, Any]:
-        from app.models.models import Case
+    async def _denormalize_case(
+        self,
+        db: AsyncSession,
+        item: Dict[str, Any],
+        *,
+        references: TimelineReferenceIndex | None = None,
+    ) -> Dict[str, Any]:
         denorm = dict(item)
-        case = await db.get(Case, denorm.get("case_id")) if denorm.get("case_id") is not None else None
+        case_id = denorm.get("case_id")
+        if isinstance(case_id, int):
+            case = references.cases.get(case_id) if references is not None else await db.get(Case, case_id)
+        else:
+            case = None
         if case:
             # Populate live denormalized fields (source of truth is Case entity)
             denorm["title"] = case.title
+            denorm["entity_description"] = case.description
             denorm["priority"] = case.priority
             denorm["assignee"] = case.assignee
             denorm["status"] = case.status.value if isinstance(case.status, Enum) else case.status
@@ -420,14 +517,19 @@ class NormalizationService:
         name = item.get("name")
         org = item.get("org")
 
-        query = None
-        if actor_type == ActorType.INTERNAL:
+        resolved_actor_type = actor_type or ActorType.EXTERNAL
+        if resolved_actor_type == ActorType.INTERNAL:
             if not user_id:
-                raise ValueError("user_id is required for internal actor")
+                raise NormalizationValidationError(
+                    "user_id is required for internal actor"
+                )
             query = select(Actor).where(Actor.actor_type == ActorType.INTERNAL, Actor.user_id == user_id)
         else:
-            # Treat missing actor_type as external by default if name exists
-            query = select(Actor).where(Actor.actor_type == ActorType.EXTERNAL, Actor.name == name, Actor.org == org)
+            query = select(Actor).where(
+                Actor.actor_type == resolved_actor_type,
+                Actor.name == name,
+                Actor.org == org,
+            )
 
         result = await db.execute(query)
         actor = result.scalar_one_or_none()
@@ -435,7 +537,7 @@ class NormalizationService:
             return actor.id  # type: ignore[return-value]
 
         actor = Actor(
-            actor_type=actor_type or ActorType.EXTERNAL,
+            actor_type=resolved_actor_type,
             user_id=user_id,
             name=name,
             title=item.get("title"),
@@ -447,10 +549,17 @@ class NormalizationService:
         await db.flush()
         return actor.id  # type: ignore[return-value]
 
+    @staticmethod
+    def _actor_snapshot_payload(actor: Actor) -> Dict[str, Any]:
+        return {
+            field_name: getattr(actor, field_name)
+            for field_name in ACTOR_SNAPSHOT_FIELDS
+            if getattr(actor, field_name) is not None
+        }
+
     async def _get_or_create_snapshot(self, db: AsyncSession, actor_id: int, payload: Dict[str, Any]) -> str:
         """Ensure a snapshot exists for the given payload; return its content hash."""
         # Stable JSON string for hashing
-        import json
         json_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         digest = hashlib.sha256(json_bytes).hexdigest()
 

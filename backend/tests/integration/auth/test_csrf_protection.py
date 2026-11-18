@@ -6,11 +6,13 @@ from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.csrf import CSRFMiddleware
 from app.core.settings_registry import get_local
 from app.models.enums import AccountType, UserRole, UserStatus
-from app.models.models import UserAccount
+from app.models.models import Case, UserAccount
 from app.services.api_key_service import api_key_service
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
@@ -183,3 +185,91 @@ async def test_valid_api_key_request_skips_csrf_even_with_session_cookie(
 
     assert response.status_code == 200
     assert response.json()["title"] == "API key CSRF bypass check"
+
+
+@pytest.mark.asyncio
+async def test_api_key_is_revalidated_after_csrf_middleware_authentication(
+    monkeypatch: pytest.MonkeyPatch,
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    monkeypatch.setenv("CSRF_ENABLED", "true")
+    human_user = analyst_user_factory()
+    nhi_user = UserAccount(
+        username=f"svc.csrf.revalidate.{uuid4().hex[:6]}",
+        role=UserRole.ANALYST,
+        status=UserStatus.ACTIVE,
+        account_type=AccountType.NHI,
+        description="CSRF API key revalidation account",
+    )
+    async with session_maker() as session:
+        session.add_all([human_user, nhi_user])
+        await session.commit()
+        api_key, raw_key = await api_key_service.create_api_key(
+            session,
+            user_id=nhi_user.id,
+            name="csrf-revalidation-key",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+        )
+        await session.commit()
+        api_key_id = api_key.id
+
+    login_response = await client.post(
+        "/api/v1/auth/login",
+        json={"username": human_user.username, "password": DEFAULT_TEST_PASSWORD},
+    )
+    assert login_response.status_code == 200
+    session_cookie = login_response.cookies.get(
+        get_local("auth.session.cookie_name")
+    )
+    assert session_cookie is not None
+
+    original_authenticate = CSRFMiddleware._authenticate_api_key
+    revoked_after_middleware_auth = False
+
+    async def authenticate_then_revoke(
+        middleware: CSRFMiddleware,
+        scope: dict[str, Any],
+        headers: Any,
+        presented_key: str,
+    ) -> bool:
+        nonlocal revoked_after_middleware_auth
+        authenticated = await original_authenticate(
+            middleware,
+            scope,
+            headers,
+            presented_key,
+        )
+        if authenticated and not revoked_after_middleware_auth:
+            async with session_maker() as session:
+                await api_key_service.revoke_api_key(
+                    session,
+                    api_key_id=api_key_id,
+                )
+                await session.commit()
+            revoked_after_middleware_auth = True
+        return authenticated
+
+    monkeypatch.setattr(
+        CSRFMiddleware,
+        "_authenticate_api_key",
+        authenticate_then_revoke,
+    )
+
+    case_title = "Must not cross CSRF API-key revocation"
+    response = await client.post(
+        "/api/v1/cases",
+        json={"title": case_title},
+        cookies={get_local("auth.session.cookie_name"): session_cookie},
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+
+    assert revoked_after_middleware_auth is True
+    assert response.status_code == 401, response.text
+    assert response.json()["detail"]["message"] == "API key has been revoked"
+    async with session_maker() as session:
+        assert (
+            await session.scalar(select(Case).where(Case.title == case_title))
+            is None
+        )

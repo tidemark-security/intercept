@@ -9,6 +9,9 @@ from urllib.parse import urlparse
 
 # Disable CSRF for tests (matches CI env) unless explicitly set
 os.environ.setdefault("CSRF_ENABLED", "false")
+# Dummy-data routes are disabled by default and mounted explicitly for the
+# integration tests that exercise their development-only behavior.
+os.environ.setdefault("DUMMY_DATA_ENABLED", "true")
 
 import httpx
 import pytest
@@ -22,7 +25,10 @@ from sqlalchemy.pool import NullPool
 from sqlmodel import SQLModel
 
 from app.core.database import get_db
-from app.main import app
+from app.core.authentication_activity import flush_deferred_authentication_activity
+from app.models.models import MCP_OAUTH_GRANT_EPOCH_SEQUENCE
+from app.main import api_app, app, compose_http_app
+from app.mcp.runtime import MCPAuthMode, MCPAuthSnapshot, build_mcp_runtime
 import app.main as app_main_module
 
 pytest_plugins = ["tests.fixtures.auth"]
@@ -46,6 +52,7 @@ MAXMIND_TEST_DB_FILES = [
     "GeoIP2-Enterprise-Test.mmdb",
     "GeoIP2-ISP-Test.mmdb",
 ]
+
 
 if not TEST_DATABASE_URL.startswith("postgresql+asyncpg://"):
     raise RuntimeError(
@@ -128,6 +135,19 @@ def _truncate_sqlmodel_tables(sync_connection) -> None:
     sync_connection.execute(text(f"TRUNCATE TABLE {table_names} RESTART IDENTITY CASCADE"))
 
 
+def _create_migration_managed_test_objects(sync_connection) -> None:
+    """Create non-metadata objects normally provisioned by Alembic."""
+
+    # Production receives this sequence from migration 026. Integration tests
+    # construct the current table schema directly from SQLModel metadata, so
+    # they must provision the migration-owned sequence explicitly.
+    MCP_OAUTH_GRANT_EPOCH_SEQUENCE.create(sync_connection, checkfirst=True)
+
+
+def _drop_migration_managed_test_objects(sync_connection) -> None:
+    MCP_OAUTH_GRANT_EPOCH_SEQUENCE.drop(sync_connection, checkfirst=True)
+
+
 def _download_maxmind_test_data(target_dir: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     headers = {"User-Agent": "intercept-tests"}
@@ -170,12 +190,15 @@ async def async_engine() -> AsyncGenerator[AsyncEngine, None]:
     engine = create_async_engine(TEST_DATABASE_URL, future=True, poolclass=NullPool)
     async with engine.begin() as conn:
         await conn.run_sync(SQLModel.metadata.drop_all)
+        await conn.run_sync(_drop_migration_managed_test_objects)
         await conn.run_sync(SQLModel.metadata.create_all)
+        await conn.run_sync(_create_migration_managed_test_objects)
     try:
         yield engine
     finally:
         async with engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.drop_all)
+            await conn.run_sync(_drop_migration_managed_test_objects)
         await engine.dispose()
 
 
@@ -314,13 +337,13 @@ async def client(
     async_engine: AsyncEngine,
     session_maker: async_sessionmaker[AsyncSession],
 ) -> AsyncGenerator[AsyncClient, None]:
-    original_lifespan = app.router.lifespan_context
+    original_lifespan = api_app.router.lifespan_context
 
     @asynccontextmanager
     async def _test_lifespan(app_instance):
         yield
 
-    app.router.lifespan_context = _test_lifespan  # type: ignore[assignment]
+    api_app.router.lifespan_context = _test_lifespan  # type: ignore[assignment]
     original_mcp_session_factory = app_main_module.async_session_factory
     app_main_module.async_session_factory = session_maker  # type: ignore[assignment]
 
@@ -329,15 +352,35 @@ async def client(
             try:
                 yield session
                 await session.commit()
+                if await flush_deferred_authentication_activity(session):
+                    await session.commit()
             except Exception:
                 await session.rollback()
                 raise
 
-    app.dependency_overrides[get_db] = override_get_db
+    api_app.dependency_overrides[get_db] = override_get_db
+    runtime = await build_mcp_runtime(
+        snapshot=MCPAuthSnapshot(
+            mode=MCPAuthMode.API_KEY_ONLY,
+            oauth_enabled=False,
+            public_origin="http://localhost:8000",
+            login_origin="http://localhost:8000",
+            access_token_ttl_seconds=3600,
+            refresh_token_ttl_days=30,
+            oidc=None,
+        ),
+        database_url=TEST_DATABASE_URL,
+        secret_key="test-fastmcp-secret-key",
+        session_factory=session_maker,
+    )
+    app.install(compose_http_app(api_app, runtime), runtime)
+    api_app.state.mcp_runtime = runtime
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as async_client:
         yield async_client
 
-    app.dependency_overrides.pop(get_db, None)
+    app.reset()
+    api_app.state.mcp_runtime = None
+    api_app.dependency_overrides.pop(get_db, None)
     app_main_module.async_session_factory = original_mcp_session_factory  # type: ignore[assignment]
-    app.router.lifespan_context = original_lifespan
+    api_app.router.lifespan_context = original_lifespan

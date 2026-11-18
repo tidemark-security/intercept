@@ -22,6 +22,7 @@ import type { CaseRunbookPayload, CaseRunbookRead, CaseRunbookStatus, PICERLStag
 import { PICERL_STAGES, PICERL_STAGE_LABELS } from '@/types/caseRunbooks';
 import { cn } from '@/utils/cn';
 import { ArrowDown, ArrowUp, Edit3, Plus, Save, Trash2, X } from 'lucide-react';
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const PRIORITIES: NonNullable<RunbookTaskDefinition['priority']>[] = ['INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL', 'EXTREME'];
 const PRIORITY_UNSET = '__unset__';
@@ -54,6 +55,7 @@ function parseTags(value: string): string[] {
 type EditorMode = 'create' | 'edit' | null;
 
 export default function CaseRunbooksPage() {
+  useDocumentTitle("Runbooks");
   const { isAdmin } = useSession();
   const [includeDrafts, setIncludeDrafts] = useState(false);
   const [includeDisabled, setIncludeDisabled] = useState(false);

@@ -1,7 +1,11 @@
 import React, { useEffect, useMemo, useReducer } from "react";
 import { ApiError } from "@/types/generated/core/ApiError";
 import { AuthenticationService } from "@/types/generated/services/AuthenticationService";
-import { browserSupportsPasskeys, getPasskeyAssertion } from "@/utils/webauthn";
+import {
+  browserSupportsPasskeys,
+  classifyPasskeyPromptError,
+  getPasskeyAssertion,
+} from "@/utils/webauthn";
 import {
   LockoutResponse,
   PasskeyLoginResult,
@@ -28,6 +32,18 @@ const sessionReducer = (state: SessionState, action: SessionAction): SessionStat
         session: action.payload.session,
         mustChangePassword: Boolean(action.payload.mustChangePassword),
         localCredentialManagementAllowed: action.payload.localCredentialManagementAllowed ?? true,
+        passwordLoginAllowed:
+          action.payload.passwordLoginAllowed
+          ?? action.payload.localCredentialManagementAllowed
+          ?? true,
+        passkeyAllowed:
+          action.payload.passkeyAllowed
+          ?? action.payload.localCredentialManagementAllowed
+          ?? true,
+        apiKeyAllowed:
+          action.payload.apiKeyAllowed
+          ?? action.payload.localCredentialManagementAllowed
+          ?? true,
         lockout: null,
         error: null,
       };
@@ -83,6 +99,9 @@ export const SessionProvider = ({ children }: SessionProviderProps) => {
             session: response.session,
             mustChangePassword: response.mustChangePassword || false,
             localCredentialManagementAllowed: response.localCredentialManagementAllowed ?? true,
+            passwordLoginAllowed: response.passwordLoginAllowed,
+            passkeyAllowed: response.passkeyAllowed,
+            apiKeyAllowed: response.apiKeyAllowed,
           },
         });
       } catch (error) {
@@ -109,6 +128,9 @@ export const SessionProvider = ({ children }: SessionProviderProps) => {
               session: response.session,
               mustChangePassword: response.mustChangePassword,
               localCredentialManagementAllowed: response.localCredentialManagementAllowed ?? true,
+              passwordLoginAllowed: response.passwordLoginAllowed,
+              passkeyAllowed: response.passkeyAllowed,
+              apiKeyAllowed: response.apiKeyAllowed,
             },
           });
         } catch (error) {
@@ -178,12 +200,14 @@ export const SessionProvider = ({ children }: SessionProviderProps) => {
           try {
             credential = await getPasskeyAssertion(begin.options);
           } catch (passkeyError) {
-            if (
-              (passkeyError instanceof DOMException && passkeyError.name === "AbortError")
-              || (passkeyError instanceof Error && passkeyError.message.toLowerCase().includes("cancelled"))
-            ) {
+            const promptError = classifyPasskeyPromptError(passkeyError);
+            if (promptError === "cancelled") {
               dispatch({ type: "SET_UNAUTHENTICATED" });
               return "cancelled";
+            }
+            if (promptError === "unavailable") {
+              dispatch({ type: "SET_UNAUTHENTICATED" });
+              return "password_required";
             }
             throw passkeyError;
           }
@@ -202,6 +226,9 @@ export const SessionProvider = ({ children }: SessionProviderProps) => {
               session: response.session,
               mustChangePassword: response.mustChangePassword,
               localCredentialManagementAllowed: response.localCredentialManagementAllowed ?? true,
+              passwordLoginAllowed: response.passwordLoginAllowed,
+              passkeyAllowed: response.passkeyAllowed,
+              apiKeyAllowed: response.apiKeyAllowed,
             },
           });
           return "authenticated";

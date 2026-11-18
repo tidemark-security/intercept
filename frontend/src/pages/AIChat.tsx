@@ -20,6 +20,7 @@ import { useSession } from '../contexts/sessionContext';
 import { useToast } from '@/contexts/ToastContext';
 import type { VisibleColumns } from '../components/layout/ThreeColumnLayout.types';
 import type { LangFlowSession } from '../services/langflowApi';
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 // LocalStorage keys for persistence
 const HISTORY_COLLAPSED_KEY = 'ai-chat-history-collapsed';
@@ -75,6 +76,7 @@ const aiChatColumnConfig = {
 };
 
 export function AIChat() {
+  useDocumentTitle("AI Chat");
   const [searchParams, setSearchParams] = useSearchParams();
   const { breakpoint } = useBreakpointContext();
   const { user, isAdmin } = useSession();

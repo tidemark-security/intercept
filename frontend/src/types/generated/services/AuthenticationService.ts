@@ -332,9 +332,13 @@ export class AuthenticationService {
     public static finishOidcLoginApiV1AuthOidcCallbackGet({
         code,
         state,
+        error,
+        errorDescription,
     }: {
-        code: string,
-        state: string,
+        code?: (string | null),
+        state?: (string | null),
+        error?: (string | null),
+        errorDescription?: (string | null),
     }): CancelablePromise<any> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -342,6 +346,8 @@ export class AuthenticationService {
             query: {
                 'code': code,
                 'state': state,
+                'error': error,
+                'error_description': errorDescription,
             },
             errors: {
                 422: `Validation Error`,

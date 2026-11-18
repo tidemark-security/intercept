@@ -6,22 +6,49 @@
  * Portable JSON representation shared by public and personal templates.
  */
 export type PortableLinkTemplate = {
+    /**
+     * Unique identifier for this template type (e.g., 'virustotal-domain')
+     */
     template_id: string;
+    /**
+     * Human-readable name of the link template
+     */
     name: string;
     /**
      * Lucide or custom icon identifier (e.g., 'Link2', 'VirusTotalIcon')
      */
     icon_name: string;
+    /**
+     * Tooltip text with {{variable}} placeholders for interpolation
+     */
     tooltip_template: string;
+    /**
+     * URL template with {{variable}} placeholders for interpolation
+     */
     url_template: string;
+    /**
+     * Array of field names this template applies to
+     */
     field_names?: (Array<string> | null);
+    /**
+     * Object of field/value pairs that must match
+     */
     conditions?: (Record<string, any> | null);
     /**
      * Single surface where this template can render
      */
     surface_scopes?: Array<'entity' | 'timeline_item'>;
+    /**
+     * Entity types this template applies to; empty means all entity types
+     */
     entity_types?: (Array<'alert' | 'case' | 'task'> | null);
+    /**
+     * Whether this template is currently active
+     */
     enabled?: boolean;
+    /**
+     * Sort order for display (lower numbers first)
+     */
     display_order?: number;
 };
 

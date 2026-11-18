@@ -5,9 +5,8 @@ These tests verify the search API behavior including:
 - Query validation
 - Response structure
 
-Note: These tests require PostgreSQL due to the use of JSONB columns in the
-model definitions and full-text search functionality. They are skipped when
-running with SQLite (the default test configuration).
+These tests require PostgreSQL due to the use of JSONB columns and full-text
+search functionality. The backend test fixture provides PostgreSQL.
 
 To run these tests, configure a PostgreSQL test database:
     export TEST_DATABASE_URL=postgresql+asyncpg://user:pass@host:port/testdb
@@ -16,18 +15,53 @@ To run these tests, configure a PostgreSQL test database:
 from __future__ import annotations
 
 import pytest
+import pytest_asyncio
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from app.models.models import Alert
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
-# Skip all tests in this module when using SQLite
-# The models use JSONB which is PostgreSQL-specific
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.skip(reason="Requires PostgreSQL - models use JSONB columns incompatible with SQLite"),
-]
+pytestmark = pytest.mark.asyncio
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="session", autouse=True)
+async def search_columns(async_engine: AsyncEngine) -> None:
+    """Add migration-managed search objects omitted by SQLModel metadata."""
+    async with async_engine.begin() as connection:
+        await connection.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+        for table_name in ("alerts", "cases", "tasks"):
+            await connection.execute(
+                text(
+                    f"ALTER TABLE {table_name} "
+                    "ADD COLUMN IF NOT EXISTS search_vector tsvector"
+                )
+            )
+
+
+async def _create_search_alert(
+    session_maker: async_sessionmaker[AsyncSession],
+    *,
+    title: str,
+    description: str,
+    index_for_fulltext: bool,
+) -> None:
+    async with session_maker() as session:
+        alert = Alert(title=title, description=description, source="search-test")
+        session.add(alert)
+        await session.flush()
+        if index_for_fulltext:
+            await session.execute(
+                text(
+                    "UPDATE alerts "
+                    "SET search_vector = to_tsvector('english', title || ' ' || description) "
+                    "WHERE id = :alert_id"
+                ),
+                {"alert_id": alert.id},
+            )
+        await session.commit()
 
 
 async def _login_and_get_session(
@@ -223,7 +257,7 @@ class TestSearchInvalidEntityTypes:
             "/api/v1/search",
             params={
                 "q": "test query",
-                "entity_types": "invalid_type",
+                "entity_type": "invalid_type",
             },
             cookies={"intercept_session": session_cookie},
         )
@@ -233,14 +267,6 @@ class TestSearchInvalidEntityTypes:
         assert response.status_code in [400, 422]
 
 
-# PostgreSQL-specific tests
-# These tests require the full-text search functionality which is PostgreSQL-only
-# Skip these when running with SQLite
-
-# To run these tests, configure a PostgreSQL test database and set:
-# TEST_DATABASE_URL=postgresql+asyncpg://user:pass@host:port/testdb
-
-@pytest.mark.skip(reason="Requires PostgreSQL for full-text search - run with 'pytest -m postgres'")
 class TestSearchResults:
     """Tests for search result functionality (requires PostgreSQL)."""
     
@@ -253,6 +279,12 @@ class TestSearchResults:
         """Search endpoint returns proper PaginatedSearchResponse structure."""
         session_cookie, _ = await _login_and_get_session(
             client, session_maker, analyst_user_factory
+        )
+        await _create_search_alert(
+            session_maker,
+            title="Test Query Alert",
+            description="A searchable integration-test record",
+            index_for_fulltext=True,
         )
         
         response = await client.get(
@@ -279,6 +311,7 @@ class TestSearchResults:
         
         # Verify results is a list
         assert isinstance(data["results"], list)
+        assert [result["title"] for result in data["results"]] == ["Test Query Alert"]
     
     async def test_search_no_results_returns_empty_array(
         self,
@@ -300,13 +333,10 @@ class TestSearchResults:
         
         assert response.status_code == 200
         data = response.json()
-        
-        assert data["results"] == []
-        assert data["total"]["alert"] == 0
-        assert data["total"]["case"] == 0
-        assert data["total"]["task"] == 0
 
-@pytest.mark.skip(reason="Requires PostgreSQL for full-text/fuzzy search - run with 'pytest -m postgres'")
+        assert data["results"] == []
+        assert data["total"] == 0
+
 class TestFuzzySearch:
     """Tests for fuzzy/typo-tolerant search functionality (requires PostgreSQL)."""
     
@@ -320,9 +350,13 @@ class TestFuzzySearch:
         session_cookie, _ = await _login_and_get_session(
             client, session_maker, analyst_user_factory
         )
+        await _create_search_alert(
+            session_maker,
+            title="Phishing Alert",
+            description="A suspicious credential-harvesting message",
+            index_for_fulltext=False,
+        )
         
-        # First, we'd need to create an alert with "Phishing" in the title
-        # For now, this test verifies the API accepts the typo query
         response = await client.get(
             "/api/v1/search",
             params={"q": "phising"},  # Common typo of "phishing"
@@ -338,6 +372,7 @@ class TestFuzzySearch:
         assert "total" in data
         assert "query" in data
         assert data["query"] == "phising"
+        assert [result["title"] for result in data["results"]] == ["Phishing Alert"]
     
     async def test_search_fuzzy_similarity_threshold(
         self,
@@ -349,6 +384,12 @@ class TestFuzzySearch:
         session_cookie, _ = await _login_and_get_session(
             client, session_maker, analyst_user_factory
         )
+        await _create_search_alert(
+            session_maker,
+            title="Malware Detection",
+            description="Endpoint malware was detected",
+            index_for_fulltext=False,
+        )
         
         # Query with slight variation
         response = await client.get(
@@ -359,8 +400,8 @@ class TestFuzzySearch:
         
         assert response.status_code == 200
         data = response.json()
-        
-        # If there are results, verify they have valid scores
+
+        assert [result["title"] for result in data["results"]] == ["Malware Detection"]
         for result in data["results"]:
             assert "score" in result
             assert 0 <= result["score"] <= 1

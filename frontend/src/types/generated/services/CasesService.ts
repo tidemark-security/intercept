@@ -62,8 +62,6 @@ export class CasesService {
      * @throws ApiError
      */
     public static getCasesApiV1CasesGet({
-        skip,
-        limit = 100,
         status,
         assignee,
         includeTags,
@@ -76,8 +74,6 @@ export class CasesService {
         page = 1,
         size = 50,
     }: {
-        skip?: number,
-        limit?: number,
         /**
          * Filter by multiple case statuses
          */
@@ -124,8 +120,6 @@ export class CasesService {
             method: 'GET',
             url: '/api/v1/cases',
             query: {
-                'skip': skip,
-                'limit': limit,
                 'status': status,
                 'assignee': assignee,
                 'include_tags': includeTags,
@@ -156,7 +150,7 @@ export class CasesService {
         caseId,
         includeLinkedTimelines = false,
     }: {
-        caseId: number,
+        caseId: (number | string),
         /**
          * Include timeline items from linked alerts and tasks as nested source_timeline_items
          */
@@ -187,7 +181,7 @@ export class CasesService {
         requestBody,
         migration = false,
     }: {
-        caseId: number,
+        caseId: (number | string),
         requestBody: CaseUpdate,
         /**
          * Allow authorized NHI migration clients to provide closed_at
@@ -219,7 +213,7 @@ export class CasesService {
     public static deleteCaseApiV1CasesCaseIdDelete({
         caseId,
     }: {
-        caseId: number,
+        caseId: (number | string),
     }): CancelablePromise<any> {
         return __request(OpenAPI, {
             method: 'DELETE',
@@ -241,7 +235,7 @@ export class CasesService {
     public static getTimelineGraphApiV1CasesCaseIdTimelineGraphGet({
         caseId,
     }: {
-        caseId: number,
+        caseId: (number | string),
     }): CancelablePromise<TimelineGraphRead> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -264,7 +258,7 @@ export class CasesService {
         caseId,
         requestBody,
     }: {
-        caseId: number,
+        caseId: (number | string),
         requestBody: TimelineGraphPatch,
     }): CancelablePromise<TimelineGraphRead> {
         return __request(OpenAPI, {
@@ -290,7 +284,7 @@ export class CasesService {
         caseId,
         requestBody,
     }: {
-        caseId: number,
+        caseId: (number | string),
         requestBody: CaseLinkedAlertResolutionRequest,
     }): CancelablePromise<AlertBulkActionResponse> {
         return __request(OpenAPI, {
@@ -317,7 +311,7 @@ export class CasesService {
         requestBody,
         migration = false,
     }: {
-        caseId: number,
+        caseId: (number | string),
         requestBody: Record<string, any>,
         /**
          * Allow authorized NHI migration clients to provide created_at
@@ -351,7 +345,7 @@ export class CasesService {
         itemId,
         requestBody,
     }: {
-        caseId: number,
+        caseId: (number | string),
         itemId: string,
         requestBody: Record<string, any>,
     }): CancelablePromise<CaseRead> {
@@ -379,7 +373,7 @@ export class CasesService {
         caseId,
         itemId,
     }: {
-        caseId: number,
+        caseId: (number | string),
         itemId: string,
     }): CancelablePromise<CaseRead> {
         return __request(OpenAPI, {
@@ -404,7 +398,7 @@ export class CasesService {
         caseId,
         requestBody,
     }: {
-        caseId: number,
+        caseId: (number | string),
         requestBody: PresignedUploadRequest,
     }): CancelablePromise<PresignedUploadResponse> {
         return __request(OpenAPI, {
@@ -431,7 +425,7 @@ export class CasesService {
         itemId,
         requestBody,
     }: {
-        caseId: number,
+        caseId: (number | string),
         itemId: string,
         requestBody: AttachmentStatusUpdate,
     }): CancelablePromise<CaseRead> {
@@ -460,7 +454,7 @@ export class CasesService {
         itemId,
         download = false,
     }: {
-        caseId: number,
+        caseId: (number | string),
         itemId: string,
         /**
          * Generate a forced-download URL

@@ -13,8 +13,9 @@ geoip2==5.2.0
 httpx==0.28.1
 ldap3==2.9.1
 mitreattack-python==5.4.7
+# drawsvg 2.5.0 fails to import on the supported Python 3.11 runtime.
+drawsvg!=2.5.0
 psycopg2-binary==2.9.12
-pysnow==0.7.17
 pydantic-settings==2.14.2
 python-dotenv==1.2.2
 PyJWT[crypto]>=2.12.1
@@ -25,7 +26,9 @@ webauthn==2.7.1
 uvicorn[standard]==0.44.0
 
 # MCP
-fastmcp>=3.2.4
+fastmcp==3.4.10
+mcp==1.30.0
+py-key-value-aio[postgresql,wrappers-encryption]==0.4.4
 
 # File upload dependencies
 magika==1.0.2

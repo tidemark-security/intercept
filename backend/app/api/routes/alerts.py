@@ -8,12 +8,17 @@ The dedicated /untriaged endpoint has been removed in favor of the enhanced filt
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List, Optional
+from typing import Any, List, Optional
 from fastapi_pagination import Page
-import logging
 
 from app.core.database import get_db
-from app.services.alert_service import alert_service
+from app.core.entity_ids import ALERT_PREFIX
+from app.services.alert_service import (
+    AlertRelatedEntityNotFoundError,
+    AlertValidationError,
+    alert_service,
+)
+from app.services.timeline_add_service import TimelineItemConflict
 from app.models.models import (
     AlertCreate, AlertUpdate, AlertTriageRequest,
     AlertBulkActionRequest, AlertBulkActionResponse,
@@ -30,12 +35,13 @@ from app.api.route_utils import (
     handle_update_attachment_status,
     handle_generate_download_url,
 )
-from app.api.timestamp_overrides import normalize_created_at_override, reject_created_at_update
+from app.api.timestamp_overrides import (
+    normalize_created_at_override,
+    prepare_timeline_item_create,
+    prepare_timeline_item_update,
+)
 from app.api.routes.admin_auth import require_authenticated_user, require_non_auditor_user
 
-logger = logging.getLogger(__name__)
-
-ID_PREFIX = "ALT-"
 router = APIRouter(
     prefix="/alerts", 
     tags=["alerts"],
@@ -47,7 +53,7 @@ TIMELINE_ITEM_TYPES = get_timeline_item_types(AlertTimelineItem)
 convert_timeline_item = create_timeline_converter(TIMELINE_ITEM_TYPES)
 
 # Human ID decorator configured for alerts
-handle_human_id = create_human_id_decorator(ID_PREFIX, "alert_id")
+handle_human_id = create_human_id_decorator(ALERT_PREFIX, "alert_id")
 
 @router.post("", response_model=AlertRead)
 async def create_alert(
@@ -57,18 +63,14 @@ async def create_alert(
     current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     """Create a new alert."""
-    try:
-        created_at_override = normalize_created_at_override(
-            current_user=current_user,
-            migration=migration,
-            created_at=alert_data.created_at,
-        )
-        db_alert = await alert_service.create_alert(db, alert_data, created_at_override=created_at_override)
-        return db_alert
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error creating alert: {str(e)}")
+    created_at_override = normalize_created_at_override(
+        current_user=current_user,
+        migration=migration,
+        created_at=alert_data.created_at,
+    )
+    return await alert_service.create_alert(
+        db, alert_data, created_at_override=created_at_override
+    )
 
 
 @router.get("", response_model=Page[AlertRead])
@@ -95,8 +97,8 @@ async def get_alerts(
     Search parameter matches against alert ID, title, or description using case-insensitive partial matching.
     """
     try:
-        alerts = await alert_service.get_alerts(
-            db=db, 
+        return await alert_service.get_alerts(
+            db=db,
             status=status,
             assignee=assignee,
             case_id=case_id,
@@ -109,11 +111,10 @@ async def get_alerts(
             end_date=end_date,
             search=search,
             sort_by=sort_by,
-            sort_order=sort_order
+            sort_order=sort_order,
         )
-        return alerts
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching alerts: {str(e)}")
+    except AlertValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/bulk-actions", response_model=AlertBulkActionResponse)
@@ -125,12 +126,8 @@ async def bulk_alert_action(
     """Apply a supported bulk action to selected alerts."""
     try:
         return await alert_service.bulk_action(db, bulk_request, current_user.username)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error applying bulk alert action: {str(e)}")
+    except AlertValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{alert_id}", response_model=AlertReadWithCase)
@@ -149,15 +146,12 @@ async def get_alert(
     When include_linked_timelines=true, case and task timeline items will include
     a source_timeline_items field containing the timeline from the linked entity.
     """
-    try:
-        db_alert = await alert_service.get_alert(db, alert_id, include_linked_timelines=include_linked_timelines)
-        if not db_alert:
-            raise HTTPException(status_code=404, detail="Alert not found")
-        return db_alert
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching alert: {str(e)}")
+    db_alert = await alert_service.get_alert(
+        db, alert_id, include_linked_timelines=include_linked_timelines
+    )
+    if not db_alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return db_alert
 
 
 @router.put("/{alert_id}", response_model=AlertRead)
@@ -171,14 +165,14 @@ async def update_alert(
 ):
     """Update an alert."""
     try:
-        db_alert = await alert_service.update_alert(db, alert_id, alert_update, updated_by=current_user.username)
-        if not db_alert:
-            raise HTTPException(status_code=404, detail="Alert not found")
-        return db_alert
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error updating alert: {str(e)}")
+        db_alert = await alert_service.update_alert(
+            db, alert_id, alert_update, updated_by=current_user.username
+        )
+    except AlertValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not db_alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return db_alert
 
 
 @router.post("/{alert_id}/triage", response_model=AlertRead)
@@ -192,14 +186,14 @@ async def triage_alert(
 ):
     """Triage an alert and optionally escalate to case."""
     try:
-        db_alert = await alert_service.triage_alert(db, alert_id, triage_request, current_user.username)
-        if not db_alert:
-            raise HTTPException(status_code=404, detail="Alert not found")
-        return db_alert
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error triaging alert: {str(e)}")
+        db_alert = await alert_service.triage_alert(
+            db, alert_id, triage_request, current_user.username
+        )
+    except AlertValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not db_alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    return db_alert
 
 
 @router.post("/{alert_id}/link-case/{case_id}", response_model=AlertRead)
@@ -217,12 +211,8 @@ async def link_alert_to_case(
         if not db_alert:
             raise HTTPException(status_code=404, detail="Alert not found")
         return db_alert
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error linking alert to case: {str(e)}")
+    except AlertRelatedEntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/{alert_id}/unlink-case", response_model=AlertRead)
@@ -242,12 +232,8 @@ async def unlink_alert_from_case(
         if not db_alert:
             raise HTTPException(status_code=404, detail="Alert not found")
         return db_alert
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error unlinking alert from case: {str(e)}")
+    except AlertValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/{alert_id}/timeline", response_model=AlertRead)
@@ -255,38 +241,34 @@ async def unlink_alert_from_case(
 async def add_timeline_item(
     alert_id: int,
     request: Request, # pylint: disable=unused-argument
-    timeline_item: dict,  # Using dict for now since we need to handle different timeline item types
+    timeline_item: dict[str, Any],
     migration: bool = Query(False, description="Allow authorized NHI migration clients to provide created_at"),
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Add a timeline item to an alert."""
     try:
-        has_created_at = "created_at" in timeline_item
-        typed_item = convert_timeline_item(timeline_item)
-        created_at_override = normalize_created_at_override(
+        typed_item, created_at_override = prepare_timeline_item_create(
+            timeline_item,
+            converter=convert_timeline_item,
             current_user=current_user,
             migration=migration,
-            created_at=typed_item.created_at if has_created_at else None,
         )
-        if created_at_override is not None:
-            typed_item.created_at = created_at_override
+        preserve_supplied_id = migration and bool(typed_item.id)
         db_alert = await alert_service.add_timeline_item(
             db,
             alert_id,
             typed_item,
             current_user.username,
             created_at_override=created_at_override,
+            preserve_item_id=preserve_supplied_id,
+            idempotent=preserve_supplied_id,
         )
         if not db_alert:
             raise HTTPException(status_code=404, detail="Alert not found")
         return db_alert
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error adding timeline item: {str(e)}")
+    except AlertValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.put("/{alert_id}/timeline/{item_id}", response_model=AlertRead)
@@ -295,24 +277,22 @@ async def update_timeline_item(
     alert_id: int,
     request: Request, # pylint: disable=unused-argument
     item_id: str,
-    timeline_item: dict,  # Using dict for now since we need to handle different timeline item types
+    timeline_item: dict[str, Any],
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Update a specific timeline item in an alert."""
     try:
-        reject_created_at_update(timeline_item)
-        typed_item = convert_timeline_item(timeline_item)
+        typed_item = prepare_timeline_item_update(
+            timeline_item,
+            converter=convert_timeline_item,
+        )
         db_alert = await alert_service.update_timeline_item(db, alert_id, item_id, typed_item, current_user.username)
         if not db_alert:
             raise HTTPException(status_code=404, detail="Alert not found")
         return db_alert
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error updating timeline item: {str(e)}")
+    except (AlertValidationError, TimelineItemConflict) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/{alert_id}/timeline/{item_id}", response_model=AlertRead)
@@ -330,12 +310,8 @@ async def remove_timeline_item(
         if not db_alert:
             raise HTTPException(status_code=404, detail="Alert not found")
         return db_alert
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error removing timeline item: {str(e)}")
+    except AlertValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +322,7 @@ async def remove_timeline_item(
 @handle_human_id()
 async def generate_upload_url(
     alert_id: int,
+    http_request: Request,  # pylint: disable=unused-argument
     request_data: PresignedUploadRequest,
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user)
@@ -365,6 +342,7 @@ async def generate_upload_url(
 async def update_attachment_status(
     alert_id: int,
     item_id: str,
+    http_request: Request,  # pylint: disable=unused-argument
     update_data: AttachmentStatusUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user)
@@ -385,6 +363,7 @@ async def update_attachment_status(
 async def generate_download_url(
     alert_id: int,
     item_id: str,
+    http_request: Request,  # pylint: disable=unused-argument
     download: bool = Query(False, description="Generate a forced-download URL"),
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_authenticated_user)

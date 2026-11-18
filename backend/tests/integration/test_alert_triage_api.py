@@ -320,4 +320,4 @@ async def test_triage_terminal_failure_marks_recommendation_failed_after_retries
         refreshed_recommendation = await session.get(TriageRecommendation, recommendation_id)
         assert refreshed_recommendation is not None
         assert refreshed_recommendation.status == RecommendationStatus.FAILED
-        assert refreshed_recommendation.error_message == "Retries exhausted: langflow unavailable"
+        assert refreshed_recommendation.error_message == "Retries exhausted"

@@ -1,21 +1,56 @@
 from __future__ import annotations
 
 import pytest
-from fastapi import HTTPException
 
 from app.models.enums import AlertStatus
 from app.services import triage_recommendation_service
 
 
 @pytest.mark.parametrize(
-    ("disposition", "input_escalate", "input_status", "expected_escalate", "expected_status"),
+    (
+        "disposition",
+        "input_escalate",
+        "input_status",
+        "expected_escalate",
+        "expected_status",
+    ),
     [
-        ("TRUE_POSITIVE", False, AlertStatus.CLOSED_TP.value, True, AlertStatus.ESCALATED.value),
-        ("FALSE_POSITIVE", True, AlertStatus.ESCALATED.value, False, AlertStatus.CLOSED_FP.value),
+        (
+            "TRUE_POSITIVE",
+            False,
+            AlertStatus.CLOSED_TP.value,
+            True,
+            AlertStatus.ESCALATED.value,
+        ),
+        (
+            "FALSE_POSITIVE",
+            True,
+            AlertStatus.ESCALATED.value,
+            False,
+            AlertStatus.CLOSED_FP.value,
+        ),
         ("BENIGN", True, AlertStatus.ESCALATED.value, False, AlertStatus.CLOSED_BP.value),
-        ("NEEDS_INVESTIGATION", False, AlertStatus.IN_PROGRESS.value, True, AlertStatus.ESCALATED.value),
-        ("DUPLICATE", True, AlertStatus.ESCALATED.value, False, AlertStatus.CLOSED_DUPLICATE.value),
-        ("UNKNOWN", False, AlertStatus.CLOSED_UNRESOLVED.value, True, AlertStatus.ESCALATED.value),
+        (
+            "NEEDS_INVESTIGATION",
+            False,
+            AlertStatus.IN_PROGRESS.value,
+            True,
+            AlertStatus.ESCALATED.value,
+        ),
+        (
+            "DUPLICATE",
+            True,
+            AlertStatus.ESCALATED.value,
+            False,
+            AlertStatus.CLOSED_DUPLICATE.value,
+        ),
+        (
+            "UNKNOWN",
+            False,
+            AlertStatus.CLOSED_UNRESOLVED.value,
+            True,
+            AlertStatus.ESCALATED.value,
+        ),
     ],
 )
 def test_normalize_recommendation_contract_derives_case_path_from_disposition(
@@ -40,7 +75,10 @@ def test_normalize_recommendation_contract_derives_case_path_from_disposition(
 
 
 def test_normalize_recommendation_contract_rejects_invalid_suggested_status() -> None:
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(
+        triage_recommendation_service.TriageRecommendationValidationError,
+        match="Invalid suggested_status",
+    ):
         triage_recommendation_service.normalize_recommendation_contract(
             {
                 "disposition": "TRUE_POSITIVE",
@@ -51,12 +89,12 @@ def test_normalize_recommendation_contract_rejects_invalid_suggested_status() ->
             }
         )
 
-    assert exc.value.status_code == 400
-    assert "Invalid suggested_status" in str(exc.value.detail)
-
 
 def test_normalize_recommendation_contract_rejects_dismissal_work() -> None:
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(
+        triage_recommendation_service.TriageRecommendationValidationError,
+        match="Dismissal recommendations cannot include work recommendations",
+    ):
         triage_recommendation_service.normalize_recommendation_contract(
             {
                 "disposition": "BENIGN",
@@ -66,5 +104,29 @@ def test_normalize_recommendation_contract_rejects_dismissal_work() -> None:
             }
         )
 
-    assert exc.value.status_code == 400
-    assert "Dismissal recommendations cannot include work recommendations" in str(exc.value.detail)
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("disposition", "INVALID"),
+        ("suggested_priority", "INVALID"),
+        ("confidence", -0.1),
+        ("confidence", float("nan")),
+    ],
+)
+def test_normalize_recommendation_contract_rejects_invalid_fields(
+    field: str,
+    value: object,
+) -> None:
+    data = {
+        "disposition": "TRUE_POSITIVE",
+        "confidence": 0.8,
+        "recommended_actions": [],
+        field: value,
+    }
+
+    with pytest.raises(
+        triage_recommendation_service.TriageRecommendationValidationError,
+        match=f"Invalid {field}",
+    ):
+        triage_recommendation_service.normalize_recommendation_contract(data)

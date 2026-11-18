@@ -41,6 +41,7 @@ async def test_get_summary_includes_observable_items_from_timeline(
                 "timestamp": "2026-03-09T11:38:09.676066+00:00",
                 "observable_type": "IP",
                 "observable_value": "81.2.69.160",
+                "created_by": "timeline-author",
                 "description": "Command-and-control endpoint observed during triage.",
                 "enrichment_status": "complete",
                 "enrichments": {
@@ -79,6 +80,7 @@ async def test_get_summary_includes_observable_items_from_timeline(
     assert result.timeline.items[0].preview == "81.2.69.160: Command-and-control endpoint observed during triage."
     assert result.timeline.items[0].observable_type == "IP"
     assert result.timeline.items[0].observable_value == "81.2.69.160"
+    assert result.timeline.items[0].author == "timeline-author"
     assert result.timeline.items[0].enrichment_status == "complete"
     assert result.timeline.items[0].enrichments == {
         "maxmind": {
@@ -100,6 +102,82 @@ async def test_get_summary_includes_observable_items_from_timeline(
     assert result.observables.items[0].count == 1
     assert result.context.items == []
     assert result.context.total_count == 0
+    assert result.resources[0].url == "/cases/CAS-0000001"
+
+
+@pytest.mark.asyncio
+async def test_get_summary_reports_observables_omitted_by_limit(
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    case = Case(
+        title="Bounded observables case",
+        created_by="analyst",
+        timeline_items=[
+            {
+                "id": f"observable-{index}",
+                "type": "observable",
+                "observable_type": "DOMAIN",
+                "observable_value": f"host-{index}.example.com",
+            }
+            for index in range(3)
+        ],
+    )
+
+    async with session_maker() as session:
+        session.add(case)
+        await session.commit()
+        await session.refresh(case)
+        assert case.id is not None
+
+        result = await mcp_service.get_summary(
+            db=session,
+            kind="case",
+            id_str=str(case.id),
+            max_observables=1,
+        )
+
+    assert len(result.observables.items) == 1
+    assert result.observables.total_count == 3
+    assert result.observables.omitted_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_summary_since_handles_naive_and_malformed_item_timestamps(
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    case = Case(
+        title="Mixed timestamp case",
+        created_by="analyst",
+        timeline_items=[
+            {
+                "id": "valid-naive",
+                "type": "note",
+                "timestamp": "2026-06-01T12:00:00",
+                "description": "Valid naive timestamp",
+            },
+            {
+                "id": "invalid",
+                "type": "note",
+                "timestamp": "not-a-timestamp",
+                "description": "Malformed timestamp",
+            },
+        ],
+    )
+
+    async with session_maker() as session:
+        session.add(case)
+        await session.commit()
+        await session.refresh(case)
+        assert case.id is not None
+
+        result = await mcp_service.get_summary(
+            db=session,
+            kind="case",
+            id_str=str(case.id),
+            since="2026-06-01T00:00:00Z",
+        )
+
+    assert [item.timeline_id for item in result.timeline.items] == ["valid-naive"]
 
 
 @pytest.mark.asyncio

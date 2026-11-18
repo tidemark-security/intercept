@@ -142,6 +142,7 @@ export function AttachmentTextPreview({ item, entityId, entityType, variant = 'd
           resolvedTheme={resolvedTheme}
           maxLines={snippetLines}
           showLineNumbers={!isTiny}
+          truncateLongLines
           className={isTiny
             ? "pointer-events-none text-[10px] [&_button]:hidden [&_pre]:border-0 [&_pre]:!mb-0 [&_pre]:!p-2"
             : "pointer-events-none [&_button]:hidden [&_pre]:border-0 [&_pre]:!mb-0"}

@@ -5,17 +5,36 @@ Tests cover User Story 4: Analyst proactively changes own password.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
+import threading
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlmodel import select
 
-from app.models.enums import SessionRevokedReason
-from app.models.models import AuthSession, UserAccount
+from app.models.enums import SessionRevokedReason, SettingType
+from app.models.models import AppSetting, AuthSession, UserAccount
+from app.core.authorization_lock import acquire_authorization_lock
+from app.services.auth_service import auth_service
 from app.services.security.password_hasher import PasswordHasher
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
+
+
+class _HeldPasswordChangeHasher:
+    def __init__(self, delegate: PasswordHasher) -> None:
+        self._delegate = delegate
+        self.hash_started = threading.Event()
+        self.release_hash = threading.Event()
+
+    def verify(self, password_hash: str, password: str) -> bool:
+        return self._delegate.verify(password_hash, password)
+
+    def hash(self, password: str) -> str:
+        self.hash_started.set()
+        assert self.release_hash.wait(timeout=5)
+        return self._delegate.hash(password)
 
 
 @pytest.mark.asyncio
@@ -70,6 +89,171 @@ async def test_voluntary_password_change_success(
         json={"username": user.username, "password": new_password},
     )
     assert new_login_response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_password_rotation_during_off_lock_hash_prevents_stale_change(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+    password_hasher: PasswordHasher,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = analyst_user_factory(username="password-change-off-lock-race")
+    async with session_maker() as db:
+        db.add(user)
+        await db.commit()
+
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"username": user.username, "password": DEFAULT_TEST_PASSWORD},
+    )
+    assert login.status_code == 200
+    original_session_id = login.json()["session"]["sessionId"]
+    emergency_hash = password_hasher.hash("EmergencyRotationPassword123!")
+
+    held_hasher = _HeldPasswordChangeHasher(password_hasher)
+    monkeypatch.setattr(auth_service, "_password_hasher", held_hasher)
+    change_task = asyncio.create_task(
+        client.post(
+            "/api/v1/auth/password/change",
+            json={
+                "currentPassword": DEFAULT_TEST_PASSWORD,
+                "newPassword": "StaleCandidatePassword123!",
+            },
+            cookies={"intercept_session": login.cookies.get("intercept_session")},
+        )
+    )
+    assert await asyncio.to_thread(held_hasher.hash_started.wait, 3)
+
+    async def emergency_rotation() -> None:
+        async with session_maker() as db:
+            await acquire_authorization_lock(db, user_id=user.id, shared=False)
+            stored = await db.get(UserAccount, user.id, with_for_update=True)
+            assert stored is not None
+            stored.password_hash = emergency_hash
+            stored.password_updated_at = datetime.now(timezone.utc)
+            await db.commit()
+
+    try:
+        await asyncio.wait_for(emergency_rotation(), timeout=1)
+    finally:
+        held_hasher.release_hash.set()
+
+    response = await asyncio.wait_for(change_task, timeout=5)
+    assert response.status_code == 401
+    async with session_maker() as db:
+        stored = await db.get(UserAccount, user.id)
+        session_ids = set(
+            str(value)
+            for value in await db.scalars(
+                select(AuthSession.id).where(AuthSession.user_id == user.id)
+            )
+        )
+    assert stored is not None
+    assert stored.password_hash == emergency_hash
+    assert session_ids == {original_session_id}
+
+
+@pytest.mark.asyncio
+async def test_oidc_linked_non_bypass_user_cannot_change_local_password(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    user = analyst_user_factory(username="oidc-password-change-user")
+
+    async with session_maker() as session:
+        session.add(user)
+        await session.commit()
+
+    login_response = await client.post(
+        "/api/v1/auth/login",
+        json={"username": user.username, "password": DEFAULT_TEST_PASSWORD},
+    )
+    assert login_response.status_code == 200
+    session_cookie = login_response.cookies.get("intercept_session")
+
+    async with session_maker() as session:
+        linked_user = await session.get(UserAccount, user.id)
+        assert linked_user is not None
+        linked_user.oidc_issuer = "https://issuer.example"
+        linked_user.oidc_subject = "oidc-password-change-subject"
+        await session.commit()
+
+    change_response = await client.post(
+        "/api/v1/auth/password/change",
+        json={
+            "currentPassword": DEFAULT_TEST_PASSWORD,
+            "newPassword": "RejectedNewPassword123!",
+        },
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert change_response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_oidc_break_glass_users_can_change_local_password(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+    analyst_user_factory,
+) -> None:
+    admin = admin_user_factory(username="password-change-break-glass-admin")
+    admin.oidc_issuer = "https://issuer.example"
+    admin.oidc_subject = "password-change-break-glass-admin-subject"
+    bypass_user = analyst_user_factory(username="password-change-bypass-user")
+    bypass_user.oidc_issuer = "https://issuer.example"
+    bypass_user.oidc_subject = "password-change-bypass-user-subject"
+
+    async with session_maker() as session:
+        session.add_all(
+            [
+                admin,
+                bypass_user,
+                AppSetting(
+                    key="oidc.enabled",
+                    value="true",
+                    value_type=SettingType.BOOLEAN,
+                    is_secret=False,
+                    category="oidc",
+                ),
+                AppSetting(
+                    key="oidc.sso_bypass_users",
+                    value='["password-change-bypass-user"]',
+                    value_type=SettingType.JSON,
+                    is_secret=False,
+                    category="oidc",
+                ),
+            ]
+        )
+        await session.commit()
+
+    for user, new_password in (
+        (admin, "AdminNewPassword123!"),
+        (bypass_user, "BypassNewPassword123!"),
+    ):
+        login_response = await client.post(
+            "/api/v1/auth/login",
+            json={"username": user.username, "password": DEFAULT_TEST_PASSWORD},
+        )
+        assert login_response.status_code == 200
+
+        change_response = await client.post(
+            "/api/v1/auth/password/change",
+            json={
+                "currentPassword": DEFAULT_TEST_PASSWORD,
+                "newPassword": new_password,
+            },
+            cookies={
+                "intercept_session": login_response.cookies.get(
+                    "intercept_session"
+                )
+            },
+        )
+
+        assert change_response.status_code == 204
 
 
 @pytest.mark.asyncio

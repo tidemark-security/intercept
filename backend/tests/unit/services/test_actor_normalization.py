@@ -15,7 +15,7 @@ async def test_normalize_actor_snapshots_external_display_name_alias(
     session_maker: Any,
 ) -> None:
     async with session_maker() as session:
-        normalized = await normalization_service.normalize_actor_item(
+        normalized = await normalization_service.normalize_item(
             session,
             {
                 'id': 'actor-ingested-1',
@@ -28,7 +28,7 @@ async def test_normalize_actor_snapshots_external_display_name_alias(
         await session.commit()
 
     async with session_maker() as session:
-        denormalized = await normalization_service.denormalize_actor_item(session, normalized)
+        denormalized = await normalization_service.denormalize_item(session, normalized)
 
     assert denormalized['name'] == 'External Payload User'
     assert denormalized['user_id'] == 'external.user'
@@ -85,7 +85,7 @@ async def test_denormalize_actor_coalesces_google_workspace_fields_without_overr
             },
         }
 
-        denormalized = await normalization_service.denormalize_actor_item(session, item)
+        denormalized = await normalization_service.denormalize_item(session, item)
 
     assert denormalized['name'] == 'Snapshot Name'
     assert denormalized['title'] == 'Principal Consultant'
@@ -129,7 +129,7 @@ async def test_denormalize_actor_coalesces_google_workspace_fields_from_actor_fa
             },
         }
 
-        denormalized = await normalization_service.denormalize_actor_item(session, item)
+        denormalized = await normalization_service.denormalize_item(session, item)
 
     assert denormalized['name'] == 'Glenn Bolton'
     assert denormalized['title'] == 'Principal Consultant'
@@ -176,7 +176,7 @@ async def test_denormalize_actor_coalesces_entra_id_fields_with_fallbacks(
             },
         }
 
-        denormalized = await normalization_service.denormalize_actor_item(session, item)
+        denormalized = await normalization_service.denormalize_item(session, item)
 
     assert denormalized['name'] == 'Glenn Bolton'
     assert denormalized['title'] == 'Principal Consultant'
@@ -224,10 +224,68 @@ async def test_denormalize_actor_coalesces_ldap_fields_with_fallbacks(
             },
         }
 
-        denormalized = await normalization_service.denormalize_actor_item(session, item)
+        denormalized = await normalization_service.denormalize_item(session, item)
 
     assert denormalized['name'] == 'Glenn Bolton'
     assert denormalized['title'] == 'Principal Consultant'
     assert denormalized['org'] == 'Incident Response'
     assert denormalized['contact_phone'] == '+61-4-1234-5678'
     assert denormalized['contact_email'] == 'glenn@glennjamin.com'
+
+
+@pytest.mark.asyncio
+async def test_threat_actor_does_not_reuse_external_actor_identity(session_maker: Any) -> None:
+    identity = {
+        'name': 'Shared Actor Name',
+        'org': 'Shared Organization',
+    }
+
+    async with session_maker() as session:
+        external = await normalization_service.normalize_item(
+            session,
+            {'id': 'external-1', 'type': 'external_actor', **identity},
+        )
+        threat = await normalization_service.normalize_item(
+            session,
+            {'id': 'threat-1', 'type': 'threat_actor', **identity},
+        )
+        await session.commit()
+        external_actor = await session.get(Actor, external['actor_id'])
+        threat_actor = await session.get(Actor, threat['actor_id'])
+
+    assert external['actor_id'] != threat['actor_id']
+    assert external_actor is not None
+    assert external_actor.actor_type == ActorType.EXTERNAL
+    assert threat_actor is not None
+    assert threat_actor.actor_type == ActorType.EXTERNAL_THREAT
+
+
+@pytest.mark.asyncio
+async def test_actor_id_only_item_snapshots_canonical_actor_fields(session_maker: Any) -> None:
+    async with session_maker() as session:
+        actor = Actor(
+            actor_type=ActorType.EXTERNAL,
+            name='Canonical Name',
+            title='Incident Contact',
+            org='Canonical Organization',
+            contact_email='contact@example.com',
+        )
+        session.add(actor)
+        await session.commit()
+        await session.refresh(actor)
+        assert actor.id is not None
+        actor_id = actor.id
+
+        normalized = await normalization_service.normalize_item(
+            session,
+            {'id': 'actor-reference', 'type': 'external_actor', 'actor_id': actor_id},
+        )
+        await session.commit()
+
+    async with session_maker() as session:
+        denormalized = await normalization_service.denormalize_item(session, normalized)
+
+    assert denormalized['name'] == 'Canonical Name'
+    assert denormalized['title'] == 'Incident Contact'
+    assert denormalized['org'] == 'Canonical Organization'
+    assert denormalized['contact_email'] == 'contact@example.com'

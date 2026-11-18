@@ -21,6 +21,9 @@ export interface SessionState {
   session: SessionSummary | null;
   mustChangePassword: boolean;
   localCredentialManagementAllowed?: boolean;
+  passwordLoginAllowed?: boolean;
+  passkeyAllowed?: boolean;
+  apiKeyAllowed?: boolean;
   lockout: LockoutResponse | null;
   error: string | null;
 }
@@ -31,6 +34,9 @@ export const sessionInitialState: SessionState = {
   session: null,
   mustChangePassword: false,
   localCredentialManagementAllowed: true,
+  passwordLoginAllowed: true,
+  passkeyAllowed: true,
+  apiKeyAllowed: true,
   lockout: null,
   error: null,
 };
@@ -44,6 +50,9 @@ export type SessionAction =
         session: SessionSummary;
         mustChangePassword?: boolean;
         localCredentialManagementAllowed?: boolean;
+        passwordLoginAllowed?: boolean;
+        passkeyAllowed?: boolean;
+        apiKeyAllowed?: boolean;
       };
     }
   | { type: "SET_UNAUTHENTICATED" }

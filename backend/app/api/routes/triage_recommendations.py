@@ -3,13 +3,14 @@ Triage Recommendation API Routes
 
 API endpoints for managing AI-generated triage recommendations on alerts.
 """
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import NoReturn, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from typing import Optional
-import logging
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.entity_ids import ALERT_PREFIX, CASE_PREFIX, format_entity_id
 from app.models.models import TriageRecommendationRead, UserAccount
 from app.models.enums import RejectionCategory
 from app.services import triage_recommendation_service
@@ -18,10 +19,14 @@ from app.api.routes.admin_auth import (
     require_authenticated_user,
     require_non_auditor_user,
 )
+from app.services.triage_recommendation_service import (
+    AcceptRecommendationOptions,
+    TriageRecommendationConflictError,
+    TriageRecommendationError,
+    TriageRecommendationNotFoundError,
+)
 
-logger = logging.getLogger(__name__)
 
-ID_PREFIX = "ALT-"
 router = APIRouter(
     prefix="/alerts",
     tags=["alerts"],
@@ -29,7 +34,20 @@ router = APIRouter(
 )
 
 # Human ID decorator configured for alerts
-handle_human_id = create_human_id_decorator(ID_PREFIX, "alert_id")
+handle_human_id = create_human_id_decorator(ALERT_PREFIX, "alert_id")
+
+
+def _raise_triage_recommendation_http_error(
+    error: TriageRecommendationError,
+) -> NoReturn:
+    """Translate an expected triage failure at the HTTP seam."""
+    if isinstance(error, TriageRecommendationNotFoundError):
+        status_code = status.HTTP_404_NOT_FOUND
+    elif isinstance(error, TriageRecommendationConflictError):
+        status_code = status.HTTP_409_CONFLICT
+    else:
+        status_code = status.HTTP_400_BAD_REQUEST
+    raise HTTPException(status_code=status_code, detail=str(error)) from error
 
 
 class AcceptRecommendationRequest(BaseModel):
@@ -88,9 +106,10 @@ class AcceptRecommendationResponse(BaseModel):
 @handle_human_id()
 async def get_triage_recommendation(
     alert_id: int,
+    http_request: Request,  # pylint: disable=unused-argument
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user),
-):
+    _current_user: UserAccount = Depends(require_authenticated_user),
+) -> Optional[TriageRecommendationRead]:
     """Get the current triage recommendation for an alert.
 
     Returns None if no recommendation exists.
@@ -105,21 +124,25 @@ async def get_triage_recommendation(
 @handle_human_id()
 async def enqueue_triage_recommendation(
     alert_id: int,
+    http_request: Request,  # pylint: disable=unused-argument
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user),
-):
+) -> TriageRecommendationRead:
     """Enqueue AI triage for an alert.
 
     Creates a QUEUED placeholder recommendation and submits the triage job to the worker queue.
-    If a QUEUED or FAILED recommendation already exists, it will be updated in-place.
-    If a PENDING/ACCEPTED/REJECTED/SUPERSEDED recommendation exists, it will be superseded.
+    If a recommendation already exists, its single per-alert row is reset in-place.
 
     Returns 400 if AI triage is not enabled (langflow.alert_triage_flow_id not configured).
     """
-    recommendation = await triage_recommendation_service.enqueue_triage(
-        db=db, alert_id=alert_id, enqueued_by=current_user.username
-    )
-    return recommendation
+    try:
+        return await triage_recommendation_service.enqueue_triage(
+            db=db,
+            alert_id=alert_id,
+            enqueued_by=current_user.username,
+        )
+    except TriageRecommendationError as error:
+        _raise_triage_recommendation_http_error(error)
 
 
 @router.post(
@@ -129,10 +152,11 @@ async def enqueue_triage_recommendation(
 @handle_human_id()
 async def accept_triage_recommendation(
     alert_id: int,
-    request: AcceptRecommendationRequest,
+    http_request: Request,  # pylint: disable=unused-argument
+    payload: AcceptRecommendationRequest,
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user),
-):
+) -> AcceptRecommendationResponse:
     """Accept a triage recommendation and apply selected changes.
 
     By default, all suggested changes are applied. Use the request body
@@ -145,25 +169,32 @@ async def accept_triage_recommendation(
 
     Returns the updated recommendation and case info if escalated.
     """
-    result = await triage_recommendation_service.accept_recommendation(
-        db=db,
-        alert_id=alert_id,
-        options={
-            "apply_status": request.apply_status,
-            "apply_priority": request.apply_priority,
-            "apply_assignee": request.apply_assignee,
-            "apply_tags": request.apply_tags,
-            "case_runbook_id": request.case_runbook_id,
-            "skip_case_runbook": request.skip_case_runbook,
-        },
-        reviewed_by=current_user.username,
-    )
+    try:
+        result = await triage_recommendation_service.accept_recommendation(
+            db=db,
+            alert_id=alert_id,
+            options=AcceptRecommendationOptions(
+                apply_status=payload.apply_status,
+                apply_priority=payload.apply_priority,
+                apply_assignee=payload.apply_assignee,
+                apply_tags=payload.apply_tags,
+                case_runbook_id=payload.case_runbook_id,
+                skip_case_runbook=payload.skip_case_runbook,
+            ),
+            reviewed_by=current_user.username,
+        )
+    except TriageRecommendationError as error:
+        _raise_triage_recommendation_http_error(error)
 
     return AcceptRecommendationResponse(
-        recommendation=result["recommendation"],
-        case_id=result.get("case_id"),
-        case_human_id=f"CAS-{result['case_id']:07d}" if result.get("case_id") else None,
-        tasks_created=result.get("tasks_created", 0),
+        recommendation=result.recommendation,
+        case_id=result.case_id,
+        case_human_id=(
+            format_entity_id(result.case_id, CASE_PREFIX)
+            if result.case_id
+            else None
+        ),
+        tasks_created=result.tasks_created,
     )
 
 
@@ -173,27 +204,23 @@ async def accept_triage_recommendation(
 @handle_human_id()
 async def reject_triage_recommendation(
     alert_id: int,
-    request: RejectRecommendationRequest,
+    http_request: Request,  # pylint: disable=unused-argument
+    payload: RejectRecommendationRequest,
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user),
-):
+) -> TriageRecommendationRead:
     """Reject a triage recommendation with a category and optional reason.
 
     The rejection category is required. Additional details are optional
     unless the category is OTHER, in which case a reason should be provided.
     """
-    # Validate that OTHER category has a reason
-    if request.category == RejectionCategory.OTHER and not request.reason:
-        raise HTTPException(
-            status_code=400, detail="Reason is required when category is OTHER"
+    try:
+        return await triage_recommendation_service.reject_recommendation(
+            db=db,
+            alert_id=alert_id,
+            category=payload.category,
+            reason=payload.reason,
+            reviewed_by=current_user.username,
         )
-
-    recommendation = await triage_recommendation_service.reject_recommendation(
-        db=db,
-        alert_id=alert_id,
-        category=request.category,
-        reason=request.reason,
-        reviewed_by=current_user.username,
-    )
-
-    return recommendation
+    except TriageRecommendationError as error:
+        _raise_triage_recommendation_http_error(error)

@@ -1,26 +1,17 @@
-"""Pydantic schemas for MCP tool inputs and outputs.
+"""Pydantic output schemas for the explicitly registered MCP tools.
 
-These schemas define the contract for MCP tools as documented in
-specs/004-mcp-server-v1/contracts/mcp-protocol.md
+Input schemas are generated from the registered functions in ``server.py``.
 """
 
 from datetime import datetime
-from typing import Any, Dict, Optional, List, Literal
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, Field
 
 
 # ============================================================================
-# User Story 1: get_summary
+# get_summary
 # ============================================================================
-
-class GetSummaryInput(BaseModel):
-    """Input schema for get_summary tool."""
-    kind: Literal["alert", "case", "task"]
-    id: str  # Forgiving format (123, ALT-000123, etc.)
-    max_timeline_items: int = Field(default=25, ge=1, le=50)
-    max_observables: int = Field(default=20, ge=1, le=50)
-    since: Optional[str] = None  # ISO-8601 for incremental refresh
-
 
 class ObjectHeader(BaseModel):
     """Object metadata (title, status, priority, etc.)."""
@@ -117,50 +108,8 @@ class GetSummaryOutput(BaseModel):
 
 
 # ============================================================================
-# User Story 2: record_triage_decision
+# record_triage_decision and case runbooks
 # ============================================================================
-
-class RecommendedAction(BaseModel):
-    """A recommended action with title and optional description."""
-    title: str = Field(max_length=200, description="Short action title (max 200 chars)")
-    description: Optional[str] = Field(default=None, description="Detailed action description (markdown supported)")
-
-
-class RecordTriageDecisionInput(BaseModel):
-    """Input schema for record_triage_decision tool."""
-    alert_id: str
-    disposition: Literal[
-        "TRUE_POSITIVE",
-        "FALSE_POSITIVE",
-        "BENIGN",
-        "NEEDS_INVESTIGATION",
-        "DUPLICATE",
-        "UNKNOWN"
-    ]
-    confidence: float = Field(ge=0.0, le=1.0)
-    reasoning_bullets: Optional[List[str]] = None
-    recommended_actions: Optional[List[RecommendedAction]] = Field(
-        default=None,
-        description="Suggested next steps for escalating dispositions only.",
-    )
-    recommended_case_runbook_id: Optional[str | int] = Field(
-        default=None,
-        description="Published Case Runbook ID for escalating dispositions only.",
-    )
-    suggested_status: Optional[str] = Field(
-        default=None,
-        description="Optional status patch; persisted value is derived from disposition.",
-    )
-    suggested_priority: Optional[str] = None
-    suggested_assignee: Optional[str] = None
-    suggested_tags_add: Optional[List[str]] = None
-    suggested_tags_remove: Optional[List[str]] = None
-    request_escalate_to_case: bool = Field(
-        default=False,
-        description="Optional/deprecated request; persisted value is derived from disposition.",
-    )
-    commit: bool = False  # Dry-run if false
-
 
 class SuggestedPatch(BaseModel):
     """Suggested change to alert."""
@@ -178,13 +127,6 @@ class RecordTriageDecisionOutput(BaseModel):
     message: str
 
 
-class SearchCaseRunbooksInput(BaseModel):
-    """Input schema for search_case_runbooks tool."""
-
-    query: Optional[str] = None
-    limit: int = Field(default=10, ge=1, le=25)
-
-
 class CaseRunbookSearchResult(BaseModel):
     id: int
     human_id: str
@@ -197,12 +139,6 @@ class CaseRunbookSearchResult(BaseModel):
 
 class SearchCaseRunbooksOutput(BaseModel):
     items: List[CaseRunbookSearchResult]
-
-
-class GetCaseRunbookInput(BaseModel):
-    """Input schema for get_case_runbook tool."""
-
-    id: str
 
 
 class LeanRunbookTask(BaseModel):
@@ -224,21 +160,8 @@ class GetCaseRunbookOutput(BaseModel):
 
 
 # ============================================================================
-# User Story 3: list_work
+# list_work
 # ============================================================================
-
-class ListWorkInput(BaseModel):
-    """Input schema for list_work tool."""
-    kind: Literal["alert", "case", "task"]
-    statuses: Optional[List[str]] = None
-    priorities: Optional[List[str]] = None
-    assignees: Optional[List[str]] = None
-    contains: Optional[str] = None  # Search in title + description
-    time_range_start: Optional[str] = None  # ISO-8601
-    time_range_end: Optional[str] = None  # ISO-8601
-    limit: int = Field(default=50, ge=1, le=50)
-    cursor: Optional[str] = None  # Pagination cursor
-
 
 class WorkItemPreview(BaseModel):
     """Preview of a work item (alert/case/task)."""
@@ -261,15 +184,8 @@ class ListWorkOutput(BaseModel):
 
 
 # ============================================================================
-# User Story 4: find_related
+# find_related
 # ============================================================================
-
-class FindRelatedInput(BaseModel):
-    """Input schema for find_related tool."""
-    seed_kind: Literal["alert", "case", "task"]
-    seed_id: str  # Forgiving format
-    max_matches: int = Field(default=10, ge=1, le=20)
-
 
 class RelatedMatch(BaseModel):
     """Related item with explainable similarity."""
@@ -290,22 +206,8 @@ class FindRelatedOutput(BaseModel):
 
 
 # ============================================================================
-# User Story 5: add_timeline_item
+# add_timeline_item
 # ============================================================================
-
-class AddTimelineItemInput(BaseModel):
-    """Input schema for add_timeline_item tool."""
-    target_kind: Literal["alert", "case", "task"]
-    target_id: str  # Forgiving format
-    item_id: str  # Client-provided unique ID (for idempotency)
-    body: str = Field(max_length=16000)
-    created_at: Optional[datetime] = Field(
-        default=None, 
-        description="Migration-only timestamp when item was created. Requires migration=true and an authorized NHI."
-    )
-    migration: bool = False
-    commit: bool = False  # Dry-run if false
-
 
 class AddTimelineItemOutput(BaseModel):
     """Output schema for add_timeline_item tool."""
@@ -317,20 +219,8 @@ class AddTimelineItemOutput(BaseModel):
 
 
 # ============================================================================
-# User Story 6: get_item
+# get_item
 # ============================================================================
-
-class GetItemInput(BaseModel):
-    """Input schema for get_item tool."""
-    model_config = ConfigDict(extra="forbid")
-
-    parent_entity_type: Literal["alert", "case", "task"]
-    parent_entity_id: str
-    item_id: str
-    mode: Literal["full", "head", "tail"] = "full"
-    max_chars: int = Field(default=4000, ge=100, le=10000)
-    cursor: Optional[str] = None  # Pagination cursor
-
 
 class ItemMetadata(BaseModel):
     """Metadata about timeline item."""
@@ -352,13 +242,8 @@ class GetItemOutput(BaseModel):
 
 
 # ============================================================================
-# User Story 7: validate_mermaid
+# validate_mermaid
 # ============================================================================
-
-class ValidateMermaidInput(BaseModel):
-    """Input schema for validate_mermaid tool."""
-    diagram: str = Field(min_length=1, max_length=100000)
-
 
 class ValidateMermaidOutput(BaseModel):
     """Output schema for validate_mermaid tool."""

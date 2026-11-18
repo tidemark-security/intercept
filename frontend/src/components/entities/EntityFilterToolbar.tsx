@@ -5,7 +5,6 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
-  Calendar,
   Check,
   CheckSquare,
   FileText,
@@ -15,28 +14,19 @@ import {
   Search,
   Square,
   Tag as TagIcon,
-  User,
   X,
 } from "lucide-react";
 
 import { Toolbar, ToolbarButton } from "@/components/toolbar";
-import { Button } from "@/components/buttons/Button";
+import { AssigneeSelector } from "@/components/forms/AssigneeSelector";
+import { DateRangePicker } from "@/components/forms/DateRangePicker";
 import { TextField } from "@/components/forms/TextField";
 import { DropdownMenu } from "@/components/overlays/DropdownMenu";
-import { Accordion } from "@/components/misc/Accordion";
+import { SessionContext } from "@/contexts/sessionContext";
 import type { FilterState, SortOrder } from "@/types/filters";
 import type { AlertStatus } from "@/types/generated/models/AlertStatus";
 import type { app__api__routes__admin_auth__UserSummary } from "@/types/generated/models/app__api__routes__admin_auth__UserSummary";
 import { cn } from "@/utils/cn";
-import {
-  formatForBackend,
-  formatForDisplay,
-  getRelativeTimeLabel,
-  getUserTimezone,
-  isValidDateRange,
-  parseISO8601,
-  parseRelativeTime,
-} from "@/utils/dateFilters";
 import { ALERT_STATUS_OPTIONS, formatAlertStatusLabel, type StatusOption } from "@/utils/statusLabels";
 
 export interface EntityFilterToolbarProps
@@ -112,30 +102,6 @@ function compactStatusLabel(
   if (selected.length === 0) return "Any";
   if (selected.length === 1) return statusButtonLabel(filters, statusOptions);
   return `${selected.length} statuses`;
-}
-
-function compactAssigneeLabel(
-  filters: FilterState | undefined,
-  users: app__api__routes__admin_auth__UserSummary[],
-) {
-  const selected = filters?.assignee ?? [];
-  if (selected.length === 0) return "Any";
-  if (selected.length === 1) {
-    if (selected[0] === "__unassigned__") return "Unassigned";
-    return (
-      users.find((user) => user.username === selected[0])?.username ??
-      selected[0]
-    );
-  }
-  return `${selected.length} assignees`;
-}
-
-function compactTimeLabel(value: FilterState["dateRange"]) {
-  if (!value) return "All time";
-  if (value.preset && value.preset !== "custom") {
-    return getRelativeTimeLabel(value.preset);
-  }
-  return "Custom";
 }
 
 function compactTagLabel(includeTags: string[], excludeTags: string[]) {
@@ -233,311 +199,6 @@ function FilterValueChip({
   );
 }
 
-function AssigneeFilterDropdown({
-  filters,
-  users,
-  isLoadingUsers,
-  onChange,
-}: {
-  filters?: FilterState;
-  users: app__api__routes__admin_auth__UserSummary[];
-  isLoadingUsers: boolean;
-  onChange: (assignees: string[] | null) => void;
-}) {
-  const [searchQuery, setSearchQuery] = React.useState("");
-  const selected = filters?.assignee ?? [];
-  const filteredUsers = React.useMemo(() => {
-    const query = searchQuery.toLowerCase();
-    if (!query) return users;
-    return users.filter(
-      (user) =>
-        user.username.toLowerCase().includes(query) ||
-        user.email?.toLowerCase().includes(query),
-    );
-  }, [searchQuery, users]);
-
-  const toggleAssignee = (username: string) => {
-    const next = selected.includes(username)
-      ? selected.filter((assignee) => assignee !== username)
-      : [...selected, username];
-    onChange(next.length ? next : null);
-  };
-
-  return (
-    <DropdownMenu.Root
-      modal={false}
-      onOpenChange={(open) => !open && setSearchQuery("")}
-    >
-      <DropdownMenu.Trigger asChild>
-        <ToolbarButton
-          icon={<User />}
-          label="Assignee"
-          value={compactAssigneeLabel(filters, users)}
-          chevron
-          active={selected.length > 0}
-        />
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Content
-        side="bottom"
-        align="start"
-        sideOffset={6}
-        className="max-h-[400px] min-w-[260px] overflow-y-auto"
-      >
-        {users.length > 0 ? (
-          <div className="w-full border-b border-neutral-border px-2 py-2">
-            <TextField
-              className="h-8 w-full"
-              variant="filled"
-              label=""
-              helpText=""
-              icon={<Search />}
-            >
-              <TextField.Input
-                placeholder="Search users..."
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                onKeyDown={(event) => event.stopPropagation()}
-              />
-            </TextField>
-          </div>
-        ) : null}
-        <DropdownMenu.DropdownItem
-          icon={selected.includes("__unassigned__") ? <CheckSquare /> : <Square />}
-          label="Unassigned"
-          onClick={() => toggleAssignee("__unassigned__")}
-          onSelect={(event) => event.preventDefault()}
-        />
-        {users.length > 0 ? <DropdownMenu.DropdownDivider /> : null}
-        {isLoadingUsers ? (
-          <DropdownMenu.DropdownItem icon={null} label="Loading users..." />
-        ) : filteredUsers.length ? (
-          filteredUsers.map((user) => (
-            <DropdownMenu.DropdownItem
-              key={user.userId}
-              icon={selected.includes(user.username) ? <CheckSquare /> : <Square />}
-              label={user.username}
-              hint={user.email}
-              onClick={() => toggleAssignee(user.username)}
-              onSelect={(event) => event.preventDefault()}
-            />
-          ))
-        ) : (
-          <DropdownMenu.DropdownItem
-            icon={null}
-            label={searchQuery ? "No users found" : "No users available"}
-          />
-        )}
-        {users.length > 0 ? (
-          <>
-            <DropdownMenu.DropdownDivider />
-            <DropdownMenu.DropdownItem
-              icon={null}
-              label="Clear selection"
-              onClick={() => onChange(null)}
-            />
-          </>
-        ) : null}
-      </DropdownMenu.Content>
-    </DropdownMenu.Root>
-  );
-}
-
-function TimeFilterDropdown({
-  value,
-  onChange,
-}: {
-  value: FilterState["dateRange"];
-  onChange: (value: FilterState["dateRange"]) => void;
-}) {
-  const [customStart, setCustomStart] = React.useState("");
-  const [customEnd, setCustomEnd] = React.useState("");
-  const [dateError, setDateError] = React.useState<string | null>(null);
-  const [isOpen, setIsOpen] = React.useState(false);
-  const userTimezone = React.useMemo(() => getUserTimezone(), []);
-  const presets = ["-15m", "-1h", "-24h", "-7d", "-30d", "-90d"];
-
-  const resetCustomState = () => {
-    setCustomStart("");
-    setCustomEnd("");
-    setDateError(null);
-  };
-
-  const handlePresetClick = (relativeExpression: string | null) => {
-    if (relativeExpression === null) {
-      onChange(null);
-      setIsOpen(false);
-      resetCustomState();
-      return;
-    }
-
-    const range = parseRelativeTime(relativeExpression);
-    if (!range) return;
-
-    onChange({
-      start: formatForBackend(range.start),
-      end: formatForBackend(range.end),
-      preset: relativeExpression,
-    });
-    setIsOpen(false);
-    resetCustomState();
-  };
-
-  const handleCustomApply = () => {
-    setDateError(null);
-    if (!customStart || !customEnd) {
-      setDateError("Please enter both start and end dates");
-      return;
-    }
-
-    const relativeStart = parseRelativeTime(customStart);
-    const startDate = relativeStart ? relativeStart.start : parseISO8601(customStart);
-    const relativeEnd = parseRelativeTime(customEnd);
-    const endDate = relativeEnd ? relativeEnd.end : parseISO8601(customEnd);
-
-    if (!startDate) {
-      setDateError("Invalid start date format. Use YYYY-MM-DD HH:mm:ss or -7d");
-      return;
-    }
-    if (!endDate) {
-      setDateError("Invalid end date format. Use YYYY-MM-DD HH:mm:ss or now");
-      return;
-    }
-    if (!isValidDateRange(startDate, endDate)) {
-      setDateError("End date must be after start date");
-      return;
-    }
-
-    onChange({
-      start: formatForBackend(startDate),
-      end: formatForBackend(endDate),
-      preset: "custom",
-    });
-    setIsOpen(false);
-    resetCustomState();
-  };
-
-  const customRangeLabel = React.useMemo(() => {
-    if (!value || value.preset !== "custom") return "";
-    const start = parseISO8601(value.start);
-    const end = parseISO8601(value.end);
-    if (!start || !end) return "Custom range";
-    return `${formatForDisplay(start)} - ${formatForDisplay(end)}`;
-  }, [value]);
-
-  return (
-    <DropdownMenu.Root open={isOpen} onOpenChange={setIsOpen}>
-      <DropdownMenu.Trigger asChild>
-        <ToolbarButton
-          icon={<Calendar />}
-          label="Time"
-          value={compactTimeLabel(value)}
-          chevron
-          active={!!value}
-          title={customRangeLabel || undefined}
-        />
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Content
-        className="w-[320px] items-stretch p-0"
-        side="bottom"
-        align="start"
-        sideOffset={6}
-      >
-        <Accordion
-          trigger={
-            <div className="flex w-full items-center justify-start gap-2 px-3 py-3">
-              <span className="grow text-left text-body-bold font-body-bold text-default-font">
-                Presets
-              </span>
-              <Accordion.Chevron />
-            </div>
-          }
-          defaultOpen
-        >
-          <div className="flex w-full flex-col border-t border-neutral-border">
-            {presets.map((expr) => (
-              <button
-                type="button"
-                key={expr}
-                className="flex w-full cursor-pointer items-center gap-2 bg-neutral-50 px-3 py-2 text-left hover:bg-neutral-100"
-                onClick={() => handlePresetClick(expr)}
-              >
-                <span className="grow text-body font-body text-default-font">
-                  {getRelativeTimeLabel(expr)}
-                </span>
-              </button>
-            ))}
-            <button
-              type="button"
-              className="flex w-full cursor-pointer items-center gap-2 bg-neutral-50 px-3 py-2 text-left hover:bg-neutral-100"
-              onClick={() => handlePresetClick(null)}
-            >
-              <span className="grow text-body font-body text-default-font">
-                All time
-              </span>
-            </button>
-          </div>
-        </Accordion>
-        <div className="h-px w-full bg-neutral-border" />
-        <Accordion
-          trigger={
-            <div className="flex w-full items-center justify-start gap-2 px-3 py-3">
-              <span className="grow text-left text-body-bold font-body-bold text-default-font">
-                Custom Range
-              </span>
-              <Accordion.Chevron />
-            </div>
-          }
-        >
-          <div className="flex w-full flex-col gap-3 border-t border-neutral-border bg-neutral-50 px-3 py-3">
-            <span className="text-caption font-caption text-subtext-color">
-              Times shown in your local timezone ({userTimezone})
-            </span>
-            <TextField
-              className="h-auto w-full"
-              label="Start date"
-              helpText={dateError || ""}
-              error={!!dateError}
-            >
-              <TextField.Input
-                className="h-8 w-full"
-                type="text"
-                value={customStart}
-                onChange={(event) => {
-                  setCustomStart(event.target.value);
-                  setDateError(null);
-                }}
-                onKeyDown={(event) => event.stopPropagation()}
-                placeholder="YYYY-MM-DD HH:mm or -7d"
-              />
-            </TextField>
-            <TextField className="h-auto w-full" label="End date" helpText="">
-              <TextField.Input
-                className="h-8 w-full"
-                type="text"
-                value={customEnd}
-                onChange={(event) => {
-                  setCustomEnd(event.target.value);
-                  setDateError(null);
-                }}
-                onKeyDown={(event) => event.stopPropagation()}
-                placeholder="YYYY-MM-DD HH:mm or now"
-              />
-            </TextField>
-            <Button
-              className="h-6 w-full"
-              size="small"
-              onClick={handleCustomApply}
-              disabled={!customStart || !customEnd}
-            >
-              Apply
-            </Button>
-          </div>
-        </Accordion>
-      </DropdownMenu.Content>
-    </DropdownMenu.Root>
-  );
-}
-
 function SortDropdown({
   filters,
   options,
@@ -611,6 +272,9 @@ export function EntityFilterToolbar({
   const [tagMode, setTagMode] = React.useState<TagMode>("include");
   const [tagSearch, setTagSearch] = React.useState("");
   const [customTag, setCustomTag] = React.useState("");
+
+  const sessionContext = React.useContext(SessionContext);
+  const currentUsername = sessionContext?.user?.username ?? null;
 
   const effectiveStatusOptions = statusOptions ?? ALERT_STATUS_OPTIONS;
   const includeTags = normalizeTags(filters?.includeTags);
@@ -714,11 +378,16 @@ export function EntityFilterToolbar({
   return (
     <div className={cn("flex w-full flex-col gap-3", className)} {...otherProps}>
       <Toolbar>
-        <AssigneeFilterDropdown
-          filters={filters}
+        <AssigneeSelector
+          presentation="toolbar"
+          mode="filter"
+          currentUser={currentUsername}
+          selectedAssignees={filters?.assignee ?? null}
           users={assignees}
           isLoadingUsers={assigneesLoading}
-          onChange={(assignees) => updateFilter("assignee", assignees)}
+          onSelectionChange={(nextAssignees) =>
+            updateFilter("assignee", nextAssignees)
+          }
         />
 
         <DropdownMenu.Root>
@@ -760,7 +429,8 @@ export function EntityFilterToolbar({
           </DropdownMenu.Content>
         </DropdownMenu.Root>
 
-        <TimeFilterDropdown
+        <DateRangePicker
+          presentation="toolbar"
           value={filters?.dateRange ?? null}
           onChange={(value) => updateFilter("dateRange", value)}
         />

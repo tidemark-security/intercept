@@ -1,39 +1,55 @@
-"""Unit tests for the MCP transport routing contract."""
+"""Unit tests for the public MCP transport and application boundary."""
+
 from __future__ import annotations
 
-from fastapi.routing import Mount
+from types import SimpleNamespace
 
-from app.main import (
-    app,
-    authenticated_mcp_sse_app,
-    authenticated_mcp_streamable_app,
-    mcp_sse_app,
-    mcp_streamable_app,
-)
+from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse
+from starlette.routing import Mount, Route
+
+from app.main import api_app, compose_http_app
 
 
-def test_mcp_mounts_expose_expected_public_paths() -> None:
-    mcp_mounts = [route for route in app.routes if isinstance(route, Mount) and route.path.startswith("/mcp")]
-    mount_paths = [route.path for route in mcp_mounts]
-
-    assert mount_paths == ["/mcp/streamable", "/mcp"]
-    assert mcp_mounts[0].app is authenticated_mcp_streamable_app
-    assert mcp_mounts[1].app is authenticated_mcp_sse_app
+def _ok(_request):
+    return PlainTextResponse("ok")
 
 
-def test_sse_transport_keeps_legacy_child_paths() -> None:
-    child_paths = [route.path for route in mcp_sse_app.routes]
+def test_existing_api_app_does_not_own_mcp_or_oauth_protocol_routes() -> None:
+    route_paths = [route.path for route in api_app.routes]
 
-    assert "/sse" in child_paths
-    assert "/messages" in child_paths
-
-
-def test_streamable_transport_is_rooted_at_mount_prefix() -> None:
-    child_paths = [route.path for route in mcp_streamable_app.routes]
-
-    assert child_paths == ["/"]
+    assert not any(path.startswith("/.well-known/") for path in route_paths)
+    assert not any(path.startswith("/oauth/") for path in route_paths)
+    assert not any(path.startswith("/mcp/") for path in route_paths)
 
 
-def test_auth_wrappers_target_the_expected_transport_apps() -> None:
-    assert authenticated_mcp_sse_app.app is mcp_sse_app
-    assert authenticated_mcp_streamable_app.app is mcp_streamable_app
+def test_top_level_composition_orders_discovery_mcp_then_api() -> None:
+    discovery = Route("/.well-known/example", _ok)
+    mounted_mcp = Starlette(routes=[Route("/streamable/", _ok)])
+    runtime = SimpleNamespace(
+        well_known_routes=[discovery],
+        mounted_app=mounted_mcp,
+    )
+
+    composed = compose_http_app(api_app, runtime)
+
+    assert composed.routes[0] is discovery
+    assert isinstance(composed.routes[1], Mount)
+    assert composed.routes[1].path == "/mcp"
+    assert composed.routes[1].app is mounted_mcp
+    assert isinstance(composed.routes[2], Mount)
+    assert composed.routes[2].path == ""
+    assert composed.routes[2].app is api_app
+
+
+def test_streamable_http_is_the_only_mcp_transport() -> None:
+    mounted_mcp = Starlette(routes=[Route("/streamable/", _ok)])
+    runtime = SimpleNamespace(well_known_routes=[], mounted_app=mounted_mcp)
+
+    composed = compose_http_app(api_app, runtime)
+    mcp_mount = next(route for route in composed.routes if route.path == "/mcp")
+    child_paths = [route.path for route in mcp_mount.app.routes]
+
+    assert child_paths == ["/streamable/"]
+    assert "/sse" not in child_paths
+    assert "/messages" not in child_paths

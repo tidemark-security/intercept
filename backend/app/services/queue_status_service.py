@@ -16,6 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.models import QueueJobRead, QueueStatsRead
+from app.services.date_filter_utils import parse_utc_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +27,62 @@ def _parse_payload(raw: Any) -> Optional[Dict[str, Any]]:
         return None
     try:
         if isinstance(raw, (bytes, bytearray, memoryview)):
-            return json.loads(bytes(raw))
-        if isinstance(raw, str):
-            return json.loads(raw)
+            decoded = json.loads(bytes(raw))
+        elif isinstance(raw, str):
+            decoded = json.loads(raw)
+        else:
+            return None
     except (json.JSONDecodeError, UnicodeDecodeError):
-        pass
-    return None
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def _safe_failure_summary(raw: Any) -> Optional[str]:
+    """Return a bounded exception type without exposing stored traceback details."""
+    if not raw:
+        return None
+    try:
+        decoded = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return "Task failed"
+    if not isinstance(decoded, dict):
+        return "Task failed"
+
+    exception_type = decoded.get("exception_type")
+    if not isinstance(exception_type, str):
+        return "Task failed"
+    normalized = "".join(
+        character
+        for character in exception_type.strip()
+        if character.isalnum() or character in {"_", "."}
+    )[:200]
+    return f"Task failed ({normalized})" if normalized else "Task failed"
+
+
+def _build_collapsed_log_cte(*, log_where_sql: str = "") -> str:
+    """Collapse pgqueuer status-transition rows into one row per job."""
+    return f"""
+        collapsed_log AS (
+            SELECT
+                job_id AS id,
+                entrypoint,
+                (array_agg(status ORDER BY id DESC))[1]::text AS status,
+                max(priority) AS priority,
+                NULL::bytea AS payload,
+                min(created) AS created,
+                max(created) AS updated,
+                max(created) FILTER (WHERE status = 'picked') AS picked_at,
+                max(created) FILTER (WHERE status IN ('successful', 'exception', 'canceled')) AS finished_at,
+                (EXTRACT(EPOCH FROM (
+                    max(created) FILTER (WHERE status IN ('successful', 'exception', 'canceled'))
+                    - max(created) FILTER (WHERE status = 'picked')
+                )) * 1000)::int AS duration_ms,
+                max(traceback::text) FILTER (WHERE status = 'exception') AS traceback
+            FROM pgqueuer_log
+            {log_where_sql}
+            GROUP BY job_id, entrypoint
+        )
+    """
 
 
 def _build_job_union_sql(*, active_where_sql: str = "") -> str:
@@ -54,6 +105,25 @@ def _build_job_union_sql(*, active_where_sql: str = "") -> str:
             WHERE active.id = log.id
         )
     """
+
+
+_DEFAULT_PAYLOAD = object()
+
+
+def _queue_job_from_row(row: Any, *, payload: Any = _DEFAULT_PAYLOAD) -> QueueJobRead:
+    return QueueJobRead(
+        id=row.id,
+        entrypoint=row.entrypoint,
+        status=row.status,
+        priority=row.priority,
+        payload=_parse_payload(row.payload) if payload is _DEFAULT_PAYLOAD else payload,
+        created=row.created,
+        updated=row.updated,
+        picked_at=row.picked_at,
+        finished_at=row.finished_at,
+        duration_ms=row.duration_ms,
+        traceback=_safe_failure_summary(row.traceback),
+    )
 
 
 class QueueStatusService:
@@ -81,8 +151,8 @@ class QueueStatusService:
         *,
         entrypoint: Optional[str] = None,
         status: Optional[str] = None,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
+        start_date: Optional[str | datetime] = None,
+        end_date: Optional[str | datetime] = None,
         page: int = 1,
         size: int = 25,
     ) -> Dict[str, Any]:
@@ -96,39 +166,13 @@ class QueueStatusService:
         Returns a dict compatible with ``fastapi_pagination`` ``Page``:
         ``{"items": [...], "total": N, "page": P, "size": S, "pages": T}``
         """
+        start_at = parse_utc_datetime(start_date) if start_date is not None else None
+        end_at = parse_utc_datetime(end_date) if end_date is not None else None
+
         if not await self._has_pgqueuer_tables():
             return {"items": [], "total": 0, "page": page, "size": size, "pages": 0}
 
-        # ---- Collapsed log CTE ----
-        # One row per job_id with the final (latest) status, first created
-        # timestamp, picked timestamp, finished timestamp, and traceback.
-        collapsed_log_cte = """
-            collapsed_log AS (
-                SELECT
-                    job_id AS id,
-                    entrypoint,
-                    -- final status is the one with the highest log id
-                    (array_agg(status ORDER BY id DESC))[1]::text AS status,
-                    max(priority) AS priority,
-                    NULL::bytea AS payload,
-                    -- first log entry is the queue time
-                    min(created) AS created,
-                    max(created) AS updated,
-                    -- picked timestamp
-                    max(created) FILTER (WHERE status = 'picked') AS picked_at,
-                    -- finished timestamp (terminal states)
-                    max(created) FILTER (WHERE status IN ('successful', 'exception', 'canceled')) AS finished_at,
-                    -- duration in ms from picked to finished
-                    EXTRACT(EPOCH FROM (
-                        max(created) FILTER (WHERE status IN ('successful', 'exception', 'canceled'))
-                        - max(created) FILTER (WHERE status = 'picked')
-                    ))::int * 1000 AS duration_ms,
-                    -- traceback from exception entries (jsonb → text)
-                    max(traceback::text) FILTER (WHERE status = 'exception') AS traceback
-                FROM pgqueuer_log
-                GROUP BY job_id, entrypoint
-            )
-        """
+        collapsed_log_cte = _build_collapsed_log_cte()
 
         # Build WHERE clauses and params
         where_clauses: List[str] = []
@@ -142,13 +186,13 @@ class QueueStatusService:
             where_clauses.append("q.status = :status")
             params["status"] = status
 
-        if start_date:
+        if start_at is not None:
             where_clauses.append("q.created >= CAST(:start_date AS timestamptz)")
-            params["start_date"] = datetime.fromisoformat(start_date.replace("Z", "+00:00")) if isinstance(start_date, str) else start_date
+            params["start_date"] = start_at
 
-        if end_date:
+        if end_at is not None:
             where_clauses.append("q.created <= CAST(:end_date AS timestamptz)")
-            params["end_date"] = datetime.fromisoformat(end_date.replace("Z", "+00:00")) if isinstance(end_date, str) else end_date
+            params["end_date"] = end_at
 
         where_sql = (" AND " + " AND ".join(where_clauses)) if where_clauses else ""
 
@@ -161,7 +205,7 @@ class QueueStatusService:
         )
         total = (await self.db.execute(count_sql, params)).scalar() or 0
 
-        pages = max(1, -(-total // size))  # ceil division
+        pages = -(-total // size) if total else 0
 
         # Data query
         offset = (page - 1) * size
@@ -177,22 +221,7 @@ class QueueStatusService:
 
         rows = (await self.db.execute(data_sql, params)).fetchall()
 
-        items = [
-            QueueJobRead(
-                id=row.id,
-                entrypoint=row.entrypoint,
-                status=row.status,
-                priority=row.priority,
-                payload=_parse_payload(row.payload),
-                created=row.created,
-                updated=row.updated,
-                picked_at=row.picked_at,
-                finished_at=row.finished_at,
-                duration_ms=row.duration_ms,
-                traceback=row.traceback,
-            )
-            for row in rows
-        ]
+        items = [_queue_job_from_row(row) for row in rows]
 
         return {
             "items": items,
@@ -262,28 +291,9 @@ class QueueStatusService:
             if item_id in item_ids and str(task_id or "").strip()
         }
 
-        collapsed_log_cte = """
-            collapsed_log AS (
-                SELECT
-                    job_id AS id,
-                    entrypoint,
-                    (array_agg(status ORDER BY id DESC))[1]::text AS status,
-                    max(priority) AS priority,
-                    NULL::bytea AS payload,
-                    min(created) AS created,
-                    max(created) AS updated,
-                    max(created) FILTER (WHERE status = 'picked') AS picked_at,
-                    max(created) FILTER (WHERE status IN ('successful', 'exception', 'canceled')) AS finished_at,
-                    EXTRACT(EPOCH FROM (
-                        max(created) FILTER (WHERE status IN ('successful', 'exception', 'canceled'))
-                        - max(created) FILTER (WHERE status = 'picked')
-                    ))::int * 1000 AS duration_ms,
-                    max(traceback::text) FILTER (WHERE status = 'exception') AS traceback
-                FROM pgqueuer_log
-                WHERE entrypoint = 'enrich_item'
-                GROUP BY job_id, entrypoint
-            )
-        """
+        collapsed_log_cte = _build_collapsed_log_cte(
+            log_where_sql="WHERE entrypoint = 'enrich_item'",
+        )
 
         union_sql = _build_job_union_sql(active_where_sql="WHERE entrypoint = 'enrich_item'")
 
@@ -320,19 +330,7 @@ class QueueStatusService:
             if not item_id:
                 continue
 
-            job = QueueJobRead(
-                id=row.id,
-                entrypoint=row.entrypoint,
-                status=row.status,
-                priority=row.priority,
-                payload=payload,
-                created=row.created,
-                updated=row.updated,
-                picked_at=row.picked_at,
-                finished_at=row.finished_at,
-                duration_ms=row.duration_ms,
-                traceback=row.traceback,
-            )
+            job = _queue_job_from_row(row, payload=payload)
 
             existing = jobs_by_item_id.get(item_id)
             if existing is None or self._prefer_enrichment_job(job, existing):
