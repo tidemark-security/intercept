@@ -32,7 +32,7 @@ def test_fastmcp_auth_storage_dependencies_are_pinned() -> None:
     fastmcp = _requirement_named("fastmcp")
     key_value = _requirement_named("py-key-value-aio")
 
-    assert str(fastmcp.specifier) == "==3.4.4"
+    assert str(fastmcp.specifier) == "==3.4.10"
     assert str(key_value.specifier) == "==0.4.4"
     assert key_value.extras == {"postgresql", "wrappers-encryption"}
 

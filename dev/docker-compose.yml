@@ -24,12 +24,12 @@ services:
       POSTGRES_USER: intercept_user
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-intercept_password}
       LANGFLOW_DB_PASSWORD: ${LANGFLOW_DB_PASSWORD:-langflow_password}
-      PGDATA: /var/lib/postgresql/data/pgdata
+      PGDATA: /var/lib/postgresql/pgdata
     ports:
       # Kept loopback-only for host-run migrations and backend tests.
       - "127.0.0.1:5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
       - ../backend/init.sql:/docker-entrypoint-initdb.d/01-init.sql
       - ../backend/init-pgcron.sql:/docker-entrypoint-initdb.d/02-init-pgcron.sql
       - ../backend/init-pgvector.sql:/docker-entrypoint-initdb.d/03-init-pgvector.sql
