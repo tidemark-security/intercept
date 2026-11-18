@@ -145,7 +145,7 @@ EOF
   echo "  Services:"
   echo "    Frontend UI ·····  http://localhost"
   echo "    Backend API ·····  http://localhost:8000"
-  echo "    MinIO Console ···  http://localhost:9001"
+  echo "    Silo Console ···  http://localhost:9001"
   echo "    Langflow AI ·····  http://localhost:7860"
   echo ""
   echo -e "  ${YELLOW}You will be prompted to change the generated admin password after first login.${NC}"

@@ -18,7 +18,7 @@
 # Default ports:
 #   80    — Frontend UI
 #   8000  — Backend API
-#   9001  — MinIO Console (object storage admin)
+#   9001  — Silo Console (object storage admin)
 #   7860  — Langflow AI Designer
 #
 # Override the image version:
@@ -103,11 +103,11 @@ services:
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
-  # MinIO — S3-compatible object storage for file attachments
+  # Silo — S3-compatible object storage for file attachments
   # ---------------------------------------------------------------------------
   minio:
-    image: minio/minio:latest
-    environment:
+    image: &silo-image docker.io/pgsty/silo:RELEASE.2026-11-12T00-00-00Z
+    environment: &silo-credentials
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     ports:
@@ -124,18 +124,17 @@ services:
     restart: unless-stopped
 
   minio-init:
-    image: minio/mc:latest
+    image: *silo-image
+    environment: *silo-credentials
     depends_on:
       minio:
         condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set minio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
-      mc mb minio/intercept-attachments --ignore-existing;
-      mc anonymous set none minio/intercept-attachments;
-      echo 'MinIO bucket initialized successfully';
-      exit 0;
-      "
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mcli alias set minio http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mcli mb --ignore-existing minio/intercept-attachments
+        mcli anonymous set none minio/intercept-attachments
 
   # ---------------------------------------------------------------------------
   # Backend API — FastAPI application with auto-migration and user seeding

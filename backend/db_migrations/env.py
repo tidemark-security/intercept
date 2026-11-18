@@ -1,3 +1,4 @@
+from importlib import import_module
 from logging.config import fileConfig
 import sys
 import os
@@ -12,7 +13,9 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 # Import SQLModel and our models
 from sqlmodel import SQLModel
-from app.models import models as _registered_models  # noqa: E402, F401
+
+# Register all application tables before Alembic inspects SQLModel.metadata.
+import_module("app.models.models")
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

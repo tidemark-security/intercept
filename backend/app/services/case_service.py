@@ -31,7 +31,6 @@ from app.services.date_filter_utils import DateFilterValidationError, parse_date
 from app.services.tag_filter_utils import (
     ProtectedTagMutationError,
     append_tag_filters,
-    normalize_persisted_tags,
     validate_protected_tag_mutation,
 )
 from app.services.committed_response import load_committed_response

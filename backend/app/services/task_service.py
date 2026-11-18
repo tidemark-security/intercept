@@ -9,7 +9,7 @@ from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import apaginate
 
 from app.core.entity_ids import TASK_PREFIX
-from app.models.models import Task, TaskCreate, TaskUpdate, TaskTimelineItem, UserAccount
+from app.models.models import Task, TaskCreate, TaskUpdate, TaskTimelineItem
 from app.models.enums import TaskStatus, RealtimeEventType
 from app.services.timeline_add_service import (
     TimelineItemConflict,
@@ -24,7 +24,6 @@ from app.services.date_filter_utils import DateFilterValidationError, parse_date
 from app.services.tag_filter_utils import (
     ProtectedTagMutationError,
     append_tag_filters,
-    normalize_persisted_tags,
     validate_protected_tag_mutation,
 )
 from app.services.committed_response import load_committed_response
