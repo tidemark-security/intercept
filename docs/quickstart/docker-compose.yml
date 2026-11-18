@@ -125,7 +125,11 @@ services:
 
   minio-init:
     image: *silo-image
-    environment: *silo-credentials
+    environment:
+      <<: *silo-credentials
+      # Bucket initialization talks only to the storage service on this network.
+      NO_PROXY: minio
+      no_proxy: minio
     depends_on:
       minio:
         condition: service_healthy
