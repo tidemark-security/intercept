@@ -26,6 +26,7 @@ import {
   ChevronRight,
   RotateCcw,
 } from "lucide-react";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const STATUS_OPTIONS = [
   { label: "All statuses", value: "__all__" },
@@ -78,6 +79,7 @@ function hasExpandableDetails(job: QueueJobRead): boolean {
 }
 
 export default function AdminQueueStatus() {
+  useDocumentTitle("Queue Status");
   const { user: currentUser } = useSession();
   const isAdmin = currentUser?.role === "ADMIN";
 

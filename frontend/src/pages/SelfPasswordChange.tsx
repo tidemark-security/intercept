@@ -8,6 +8,7 @@ import interceptLogo from "../assets/Intercept-White.svg?url";
 import interceptLogoDark from "../assets/Intercept-Black.svg?url";
 import tidemarkLogoDark from "../assets/TMS-logo-black.svg?url";
 import tidemarkLogoNeon from "../assets/TMS-logo-green.svg?url";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 /**
  * SelfPasswordChange - Voluntary password change page
@@ -19,6 +20,7 @@ import tidemarkLogoNeon from "../assets/TMS-logo-green.svg?url";
  * from mandatory password changes after admin reset.
  */
 function SelfPasswordChange() {
+  useDocumentTitle("Change Password");
   const navigate = useViewTransitionNavigate();
   const { resolvedTheme } = useTheme();
   const passwordChangeLogo = resolvedTheme === "dark" ? interceptLogo : interceptLogoDark;

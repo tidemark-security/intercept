@@ -11,6 +11,7 @@ import interceptLogoDark from "../assets/Intercept-Black.svg?url";
 import tidemarkLogoDark from "../assets/TMS-logo-black.svg?url";
 import tidemarkLogoNeon from "../assets/TMS-logo-green.svg?url";
 import { AlertCircle, CheckCircle, KeyRound } from "lucide-react";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 function validatePassword(password: string): string | null {
   if (password.length < 12) {
@@ -32,6 +33,7 @@ function validatePassword(password: string): string | null {
 }
 
 export default function SetPasswordPage() {
+  useDocumentTitle("Reset Password");
   const navigate = useViewTransitionNavigate();
   const { resolvedTheme } = useTheme();
   const [searchParams] = useSearchParams();

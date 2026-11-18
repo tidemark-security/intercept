@@ -18,6 +18,7 @@ import { parseRelativeTime, formatForBackend } from '@/utils/dateFilters';
 import { cn } from '@/utils/cn';
 import { AlertCircle, Check, CheckCircle, ChevronLeft, ChevronRight, Clock3, Copy, HelpCircle, XCircle } from 'lucide-react';
 import type { RejectionCategory, TriageDisposition, RecommendationStatus, TriageRecommendationDetail } from '@/types/generated';
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 // Friendly labels
 const REJECTION_CATEGORY_LABELS: Record<string, string> = {
@@ -112,6 +113,7 @@ const DEFAULT_TIMEFRAME = '-7d';
 const PAGE_SIZE = 25;
 
 export default function AITriageDetails() {
+  useDocumentTitle("AI Triage Details");
   const { user } = useSession();
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === 'dark';

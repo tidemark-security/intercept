@@ -66,6 +66,7 @@ import {
   UserPlus,
   UserX,
 } from "lucide-react";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 interface User {
   id: string;
   username: string;
@@ -189,6 +190,7 @@ function mapApiUser(raw: Record<string, unknown>): User {
 }
 
 function AdminUsers() {
+  useDocumentTitle("Users");
   const { user: currentUser } = useSession();
   const { resolvedTheme } = useTheme();
   const queryClient = useQueryClient();

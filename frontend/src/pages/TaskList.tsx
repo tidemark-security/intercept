@@ -24,6 +24,7 @@ import type { TaskFilterState } from "@/types/filters";
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { taskStatusToUIState, priorityToUIPriority, taskStateToMenuCardState } from "@/utils/statusHelpers";
 import { TASK_STATUS_OPTIONS } from "@/utils/statusLabels";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const TASK_SORT_OPTIONS = [
   {
@@ -60,6 +61,7 @@ const TASK_SORT_OPTIONS = [
  * @returns The Tasks List page component
  */
 function TasksListPage() {
+  useDocumentTitle("Tasks");
   const navigate = useViewTransitionNavigate();
   const location = useLocation();
   const { user } = useSession();

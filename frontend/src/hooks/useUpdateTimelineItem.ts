@@ -71,18 +71,11 @@ export function useUpdateTimelineItem(
         throw new Error('Timeline item not found');
       }
       
-      // Merge the updates with the current item
-      // Remove replies to avoid sending nested structures that would overwrite existing replies
-      const { replies, ...itemWithoutReplies } = currentItem;
-      const updatedItem = {
-        ...itemWithoutReplies,
-        ...updates,
-        // Ensure id is preserved
-        id: itemId,
-      };
-      
-      // DO NOT include replies field at all - this prevents overwriting nested replies on the backend
-      
+      const updatedItem = { ...currentItem, ...updates, id: itemId };
+      // The API owns the creation time and preserves nested replies on edit.
+      delete updatedItem.created_at;
+      delete updatedItem.replies;
+
       switch (entityType) {
         case 'alert':
           return AlertsService.updateTimelineItemApiV1AlertsAlertIdTimelineItemIdPut({

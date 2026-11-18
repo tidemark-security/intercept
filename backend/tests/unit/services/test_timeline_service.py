@@ -16,7 +16,7 @@ from app.services.normalization_service import (
     normalization_service,
 )
 from app.services.task_service import task_service
-from app.services.timeline_service import TimelineValidationError, timeline_service
+from app.services.timeline_service import TimelineValidationError, attachment_storage_writes, timeline_service
 
 
 class _FakeScalarResult:
@@ -704,3 +704,170 @@ async def test_linked_timeline_embedding_surfaces_unexpected_lookup_failures(
 
     with pytest.raises(RuntimeError, match="lookup failed"):
         await embed(session, item)
+
+
+def _attachment_item(**overrides: Any) -> dict[str, Any]:
+    item = {
+        "id": "attachment-1",
+        "type": "attachment",
+        "created_by": "analyst",
+        "created_at": "2026-10-25T23:13:38Z",
+        "timestamp": "2026-10-25T23:13:38Z",
+        "description": None,
+        "tags": [],
+        "file_name": "evidence.html",
+        "mime_type": "text/html",
+        "file_size": 1619844,
+        "storage_key": "cases/15301/attachments/attachment-1/stored.html",
+        "upload_storage_key": "_uploads/cases/15301/attachments/attachment-1/upload",
+        "file_hash": "abc123",
+        "uploaded_by": "analyst",
+        "uploaded_by_user_id": "42",
+        "upload_status": "COMPLETE",
+        "replies": {},
+    }
+    item.update(overrides)
+    return item
+
+
+@pytest.mark.parametrize("upload_status", ["COMPLETE", "complete", "FAILED", None])
+def test_update_finalized_attachment_preserves_storage_fields(upload_status: str | None) -> None:
+    original = _attachment_item(upload_status=upload_status)
+    if upload_status is None:
+        original.pop("upload_status")
+    items = {"attachment-1": dict(original)}
+
+    updated = timeline_service._update_item_recursive(
+        items,
+        "attachment-1",
+        {
+            "type": "attachment",
+            "description": "Edited description",
+            "tags": ["edited"],
+            "timestamp": "2026-10-26T11:51:00",
+            "storage_key": None,
+            "upload_storage_key": None,
+            "file_hash": None,
+            "upload_status": None,
+            "file_name": "renamed.exe",
+            "mime_type": "application/x-msdownload",
+            "file_size": 1,
+            "url": "https://attacker.example/file",
+        },
+    )
+
+    assert updated is True
+    stored = items["attachment-1"]
+    assert stored["description"] == "Edited description"
+    assert stored["tags"] == ["edited"]
+    assert stored["timestamp"] == "2026-10-26T11:51:00"
+    for field in (
+        "file_name",
+        "mime_type",
+        "file_size",
+        "storage_key",
+        "upload_storage_key",
+        "file_hash",
+        "uploaded_by",
+        "uploaded_by_user_id",
+        "upload_status",
+        "url",
+    ):
+        assert stored.get(field) == original.get(field), field
+        assert (field in stored) == (field in original), field
+
+
+def test_update_uploading_attachment_allows_finalization() -> None:
+    items = {
+        "attachment-1": _attachment_item(
+            upload_status="UPLOADING",
+            storage_key="cases/15301/attachments/attachment-1/pending.html",
+            file_hash=None,
+        )
+    }
+
+    with attachment_storage_writes("attachment-1"):
+        timeline_service._update_item_recursive(
+            items,
+            "attachment-1",
+            {
+                "type": "attachment",
+                "storage_key": "cases/15301/attachments/attachment-1/final.html",
+                "upload_storage_key": None,
+                "file_hash": "def456",
+                "mime_type": "text/plain",
+                "upload_status": "COMPLETE",
+            },
+        )
+
+    stored = items["attachment-1"]
+    assert stored["storage_key"] == "cases/15301/attachments/attachment-1/final.html"
+    assert stored["upload_storage_key"] is None
+    assert stored["file_hash"] == "def456"
+    assert stored["mime_type"] == "text/plain"
+    assert stored["upload_status"] == "COMPLETE"
+
+
+def test_metadata_edit_on_uploading_attachment_preserves_storage_fields() -> None:
+    original = _attachment_item(upload_status="UPLOADING")
+    items = {"attachment-1": dict(original)}
+
+    timeline_service._update_item_recursive(
+        items,
+        "attachment-1",
+        {
+            "type": "attachment",
+            "description": "Edited mid-upload",
+            "storage_key": None,
+            "upload_storage_key": None,
+            "upload_status": "COMPLETE",
+        },
+    )
+
+    stored = items["attachment-1"]
+    assert stored["description"] == "Edited mid-upload"
+    assert stored["storage_key"] == original["storage_key"]
+    assert stored["upload_storage_key"] == original["upload_storage_key"]
+    assert stored["upload_status"] == "UPLOADING"
+
+
+def test_status_change_on_finalized_attachment_cannot_rewrite_storage() -> None:
+    original = _attachment_item()
+    items = {"attachment-1": dict(original)}
+
+    with attachment_storage_writes("attachment-1"):
+        timeline_service._update_item_recursive(
+            items,
+            "attachment-1",
+            {
+                "type": "attachment",
+                "storage_key": "cases/15301/attachments/attachment-1/other.html",
+                "upload_status": "FAILED",
+            },
+        )
+
+    stored = items["attachment-1"]
+    assert stored["storage_key"] == original["storage_key"]
+    assert stored["upload_status"] == "COMPLETE"
+
+
+def test_update_non_attachment_item_is_not_restricted() -> None:
+    items = {
+        "note-1": {
+            "id": "note-1",
+            "type": "note",
+            "created_by": "analyst",
+            "created_at": "2026-10-25T23:13:38Z",
+            "description": "Original",
+            "url": "https://old.example",
+        }
+    }
+
+    timeline_service._update_item_recursive(
+        items,
+        "note-1",
+        {"type": "note", "description": "Edited", "url": "https://new.example"},
+    )
+
+    assert items["note-1"]["description"] == "Edited"
+    assert items["note-1"]["url"] == "https://new.example"

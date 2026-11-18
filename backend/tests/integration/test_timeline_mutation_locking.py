@@ -20,6 +20,7 @@ from app.models.models import (
     Task,
     TaskItem,
 )
+from app.services.timeline_service import attachment_storage_writes
 from app.services.storage_service import storage_service
 from app.services.timeline_add_service import (
     TimelineItemConflict,
@@ -434,27 +435,28 @@ async def test_companion_timeline_item_rolls_back_with_attachment_update(
         AsyncMock(side_effect=[None, RuntimeError("companion event failed")]),
     )
     async with session_maker() as mutation_session:
-        with pytest.raises(RuntimeError, match="companion event failed"):
-            await update_timeline_item_and_commit(
-                mutation_session,
-                entity_id=case_id,
-                entity_type="case",
-                item_id=attachment_id,
-                timeline_item=AttachmentItem(
-                    id=attachment_id,
-                    file_name="evidence.eml",
-                    mime_type="message/rfc822",
-                    file_size=128,
-                    storage_key=f"cases/1/attachments/{attachment_id}/evidence.eml",
-                    file_hash="a" * 64,
-                    upload_status="COMPLETE",
-                ),
-                companion_timeline_item=EmailItem(
-                    id="derived-email",
-                    subject="Derived evidence",
-                ),
-                performed_by="analyst",
-            )
+        with attachment_storage_writes(attachment_id):
+            with pytest.raises(RuntimeError, match="companion event failed"):
+                await update_timeline_item_and_commit(
+                    mutation_session,
+                    entity_id=case_id,
+                    entity_type="case",
+                    item_id=attachment_id,
+                    timeline_item=AttachmentItem(
+                        id=attachment_id,
+                        file_name="evidence.eml",
+                        mime_type="message/rfc822",
+                        file_size=128,
+                        storage_key=f"cases/1/attachments/{attachment_id}/evidence.eml",
+                        file_hash="a" * 64,
+                        upload_status="COMPLETE",
+                    ),
+                    companion_timeline_item=EmailItem(
+                        id="derived-email",
+                        subject="Derived evidence",
+                    ),
+                    performed_by="analyst",
+                )
         await mutation_session.rollback()
 
     async with session_maker() as verification_session:
@@ -591,19 +593,20 @@ async def test_staged_attachment_cleanup_runs_after_committed_completion(
     delete_file = AsyncMock(side_effect=RuntimeError("storage unavailable"))
     monkeypatch.setattr(storage_service, "delete_file", delete_file)
     async with session_maker() as mutation_session:
-        updated_item = await update_timeline_item_and_commit(
-            mutation_session,
-            entity_id=case_id,
-            entity_type="case",
-            item_id=attachment_id,
-            timeline_item=AttachmentItem(
-                id=attachment_id,
-                file_name="evidence.txt",
-                upload_status="COMPLETE",
-                upload_storage_key=None,
-            ),
-            performed_by="analyst",
-        )
+        with attachment_storage_writes(attachment_id):
+            updated_item = await update_timeline_item_and_commit(
+                mutation_session,
+                entity_id=case_id,
+                entity_type="case",
+                item_id=attachment_id,
+                timeline_item=AttachmentItem(
+                    id=attachment_id,
+                    file_name="evidence.txt",
+                    upload_status="COMPLETE",
+                    upload_storage_key=None,
+                ),
+                performed_by="analyst",
+            )
 
     assert updated_item is not None
     delete_file.assert_awaited_once_with(staged_storage_key)

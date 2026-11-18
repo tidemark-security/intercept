@@ -65,6 +65,7 @@ import {
   Shield,
   Trash2,
 } from "lucide-react";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const visualFilterLimits = getVisualFilterLimits();
 
@@ -125,6 +126,7 @@ function ProfileSectionHeader({
 }
 
 function ProfileManagement() {
+  useDocumentTitle("Profile");
   const { themePreference, setThemePreference, resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === "dark";
   const breakpoint = useBreakpoint();

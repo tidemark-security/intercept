@@ -25,6 +25,7 @@ import {
   listContextEntries,
   updateContextEntry,
 } from '@/services/contextEntriesApi';
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const QUERY_KEY = ['context-entries'] as const;
 
@@ -102,6 +103,7 @@ function parseIdFilter(value: string | null): Set<number> {
 }
 
 export default function ContextEntries() {
+  useDocumentTitle("Context");
   const { isAuditor } = useSession();
   const { showToast } = useToast();
   const queryClient = useQueryClient();

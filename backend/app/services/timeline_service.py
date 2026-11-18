@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional, Set, TYPE_CHECKING, TypeVar
@@ -47,6 +50,26 @@ TASK_REFERENCE_FIELDS: Set[str] = {
     "id", "type", "task_id", "description", "created_at", "created_by",
     "parent_id", "replies", "flagged", "highlighted", "tags", "timestamp",
 }
+
+
+ATTACHMENT_STORAGE_FIELDS = frozenset({
+    "file_name", "mime_type", "file_size", "storage_key", "upload_storage_key",
+    "file_hash", "uploaded_by", "uploaded_by_user_id", "upload_status", "url",
+})
+
+_attachment_transition_item: ContextVar[str | None] = ContextVar(
+    "attachment_transition_item", default=None
+)
+
+
+@contextmanager
+def attachment_storage_writes(item_id: str) -> Iterator[None]:
+    """Allow the upload-status handler to persist verified fields for this item."""
+    token = _attachment_transition_item.set(item_id)
+    try:
+        yield
+    finally:
+        _attachment_transition_item.reset(token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1372,6 +1395,13 @@ class TimelineService:
         created_at = item.get("created_at") or item.get("timestamp") or datetime.now(timezone.utc).isoformat()
         created_by = item.get("created_by")
         existing_replies = item.get("replies")
+
+        if item.get("type") == "attachment":
+            status = item.get("upload_status")
+            status_value = getattr(status, "value", status)
+            terminal = str(status_value or "COMPLETE").strip().upper() in {"", "COMPLETE", "FAILED"}
+            if terminal or _attachment_transition_item.get() != item_id:
+                updated = {key: value for key, value in updated.items() if key not in ATTACHMENT_STORAGE_FIELDS}
 
         new_item = {**item, **updated}
         new_item["id"] = item_id

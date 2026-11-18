@@ -10,6 +10,7 @@ import { getPersistedCollapsedState, getPersistedWidth, persistCollapsedState } 
 import { UnifiedTimeline } from "@/components/timeline/UnifiedTimeline";
 import { RightDock } from '@/components/layout/RightDock';
 import { useTaskDetail } from "@/hooks/useTaskDetail";
+import { formatEntityTitle, useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { useUsers } from "@/hooks/useUsers";
 import { useUpdateTask } from "@/hooks/useUpdateTask";
 import { useUpdateTimelineItem } from "@/hooks/useUpdateTimelineItem";
@@ -135,6 +136,8 @@ function TaskDetailPage() {
     isLoading: isLoadingDetail,
     error: detailError,
   } = useTaskDetail(selectedTaskId, { includeLinkedTimelines: true });
+
+  useDocumentTitle(formatEntityTitle(taskDetail?.human_id ?? humanId, taskDetail?.title));
 
   // Check if the error is a 404
   const is404Error = detailError && (

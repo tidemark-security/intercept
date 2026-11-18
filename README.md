@@ -117,6 +117,7 @@ The `v*.*.*` tag triggers the [Release workflow](.github/workflows/release.yml),
 
 ### Key Documentation
 
+- [Attachment lifecycle](docs/attachment-lifecycle.md) covers upload, edit, download, and cleanup.
 - [MCP Integration Guide](docs/mcp/integration-guide.md) — Connect AI tools to Intercept
 - [Search Architecture](docs/search-architecture.md) — How search works
 - [Task Queue](docs/task-queue.md) — Background job processing, in-worker retry/backoff, and terminal failure handling

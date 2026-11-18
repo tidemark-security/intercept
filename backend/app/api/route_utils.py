@@ -116,9 +116,6 @@ def create_timeline_converter(timeline_item_types: Dict[str, Any]):
         "id",
         "type",
         "description",
-        "file_name",
-        "mime_type",
-        "file_size",
         "created_at",
         "timestamp",
         "created_by",
@@ -607,6 +604,7 @@ async def handle_update_attachment_status(
     from app.models.enums import UploadStatus
     from app.models.models import AttachmentItem
     from app.services.timeline_add_service import TimelineItemConflict
+    from app.services.timeline_service import attachment_storage_writes
 
     try:
         timeline_item = find_attachment_item(entity.timeline_items, item_id)
@@ -666,14 +664,15 @@ async def handle_update_attachment_status(
         }
         if companion_timeline_item is not None:
             update_kwargs["companion_timeline_item"] = companion_timeline_item
-        updated = await service.update_timeline_item(
-            db,
-            parent_id,
-            item_id,
-            attachment_item,
-            current_user.username,
-            **update_kwargs,
-        )
+        with attachment_storage_writes(item_id):
+            updated = await service.update_timeline_item(
+                db,
+                parent_id,
+                item_id,
+                attachment_item,
+                current_user.username,
+                **update_kwargs,
+            )
         if updated is None:
             raise HTTPException(status_code=404, detail=f"Attachment item {item_id} not found")
 

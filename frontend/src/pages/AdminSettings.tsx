@@ -62,6 +62,7 @@ import {
   Upload,
   Workflow,
 } from "lucide-react";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const DEFAULT_CASE_CLOSURE_RECOMMENDED_TAGS = [
   "Resolved",
@@ -332,6 +333,7 @@ const deriveBackendApiBaseUrlFromMcpUrl = (
 };
 
 function AdminSettings() {
+  useDocumentTitle("Settings");
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === "dark";
   const breakpoint = useBreakpoint();

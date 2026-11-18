@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useMemo } from "react";
 import { useLocation } from "react-router-dom";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { Button } from "@/components/buttons/Button";
 import { AuthSplitLayout } from "@/components/auth";
@@ -23,6 +24,7 @@ import { ArrowRight, KeyRound } from 'lucide-react';
 type LoginStep = "username" | "password";
 
 function Login() {
+  useDocumentTitle("Sign In");
   const navigate = useViewTransitionNavigate();
   const location = useLocation();
   const { resolvedTheme } = useTheme();

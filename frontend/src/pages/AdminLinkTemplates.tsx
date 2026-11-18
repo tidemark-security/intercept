@@ -7,10 +7,12 @@ import { useSession } from "@/contexts/sessionContext";
 import { LinkTemplatesService } from "@/types/generated/services/LinkTemplatesService";
 import type { LinkTemplateCreate, LinkTemplateUpdate } from "@/types/generated";
 import type { PortableLinkTemplate } from "@/types/generated/models/PortableLinkTemplate";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const PUBLIC_LINK_TEMPLATE_QUERY_KEY = ["admin-link-templates"] as const;
 
 function AdminLinkTemplates() {
+  useDocumentTitle("Link Templates");
   const { user: currentUser } = useSession();
   const queryClient = useQueryClient();
   const isAdmin = currentUser?.role === "ADMIN";

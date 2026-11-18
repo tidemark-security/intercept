@@ -5,6 +5,7 @@ import { useSession } from "../contexts/sessionContext";
 import { DashboardCard } from "@/components/cards/DashboardCard";
 
 import { AlertCircle, Activity, Link2, ScrollText, Settings, Users } from 'lucide-react';
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 interface AdminCard {
   title: string;
   description: string;
@@ -46,6 +47,7 @@ const adminCards: AdminCard[] = [
 ];
 
 function Admin() {
+  useDocumentTitle("Admin");
   const { user: currentUser } = useSession();
   const isAdmin = currentUser?.role === "ADMIN";
 
