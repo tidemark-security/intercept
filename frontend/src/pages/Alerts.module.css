@@ -1,0 +1,68 @@
+.overlap {
+  --alert-pane-gutter: 1rem;
+  --alert-pane-peek: clamp(7rem, 14%, 11rem);
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.overlap > .listLayer,
+.overlap > .detailLayer {
+  position: absolute;
+  inset-block: var(--alert-pane-gutter);
+  min-width: 0;
+  transition: transform 180ms ease-out, box-shadow 180ms ease-out;
+}
+
+.listLayer {
+  inset-inline: var(--alert-pane-gutter) calc(var(--alert-pane-gutter) + var(--alert-pane-peek));
+  z-index: 0;
+  transform-origin: left center;
+  transform: translateX(-4px) scale(0.98);
+}
+
+.detailLayer {
+  inset-inline: calc(var(--alert-pane-gutter) + var(--alert-pane-peek)) var(--alert-pane-gutter);
+  z-index: 1;
+  box-shadow: -8px 0 24px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(var(--color-neutral-border));
+  transform-origin: right center;
+  animation: reveal-detail 180ms ease-out;
+}
+
+.listInFront .listLayer {
+  z-index: 2;
+  transform: none;
+  box-shadow: 8px 0 24px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(var(--color-neutral-border));
+}
+
+.listInFront .detailLayer {
+  transform: translateX(4px) scale(0.98);
+  box-shadow: none;
+}
+
+/* The exposed detail edge can receive hover without exposing clipped actions to taps. */
+.listInFront .detailLayer > div > * {
+  pointer-events: none;
+}
+
+@media (hover: none) {
+  .overlap:not(.listInFront) .listLayer > div > * {
+    pointer-events: none;
+  }
+}
+
+.listBehindDock {
+  display: none;
+}
+
+@keyframes reveal-detail {
+  from { transform: translateX(1rem) scale(0.98); }
+  to { transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlap > .listLayer,
+  .overlap > .detailLayer {
+    animation: none;
+    transition: none;
+  }
+}

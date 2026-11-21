@@ -432,6 +432,7 @@ function TaskDetailPage() {
         onVisibleColumnsChange={setVisibleColumns}
         columnConfig={taskDetailColumnConfig}
         showLeftRail={breakpoint !== 'mobile'}
+        leftRailLabel="Resize assistant pane"
         leftRailCollapsed={aiPaneCollapsed}
         onLeftRailToggle={handleToggleAiPane}
         leftColumnWidth={aiPaneWidth}

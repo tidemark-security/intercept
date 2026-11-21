@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 
 const now = "2026-01-01T00:00:00.000Z";
 
@@ -36,6 +36,8 @@ const sampleAlert = {
   created_at: now,
   updated_at: now,
 };
+
+const secondAlert = { ...sampleAlert, id: 2, human_id: "ALT-0000002", title: "Second smoke alert" };
 
 const sampleCase = {
   id: 1,
@@ -170,8 +172,9 @@ function apiResponse(pathname: string): unknown {
     return { items: [] };
   }
 
-  if (pathname === "/api/v1/alerts") return emptyPage;
-  if (/^\/api\/v1\/alerts\/\d+$/.test(pathname)) return sampleAlert;
+  if (pathname === "/api/v1/alerts") return { ...emptyPage, items: [sampleAlert, secondAlert], total: 2, pages: 1 };
+  if (pathname === "/api/v1/alerts/1") return sampleAlert;
+  if (pathname === "/api/v1/alerts/2") return secondAlert;
   if (pathname === "/api/v1/cases") return emptyPage;
   if (/^\/api\/v1\/cases\/\d+$/.test(pathname)) return sampleCase;
   if (pathname === "/api/v1/case-runbooks") return emptyPage;
@@ -428,6 +431,154 @@ for (const { resource, sample, prefix } of assigneeFilterRoutes) {
     for (const [key, value] of filters) expect(actual.get(key)).toBe(value);
   });
 }
+
+const wideSplitRoutes = [
+  { name: "Alerts", path: "/alerts/ALT-0000001", entity: "alert", railLabel: "Resize alert list", list: "alerts", item: sampleAlert },
+  { name: "Cases list", path: "/cases", entity: "case", railLabel: "Resize case list", list: "cases", item: sampleCase },
+  { name: "Tasks list", path: "/tasks", entity: "task", railLabel: "Resize task list", list: "tasks", item: sampleTask },
+  { name: "Case detail", path: "/cases/CAS-0000001", entity: "case", railLabel: "Resize assistant pane" },
+  { name: "Task detail", path: "/tasks/TSK-0000001", entity: "task", railLabel: "Resize assistant pane" },
+] as const;
+
+for (const split of wideSplitRoutes) {
+  test(`wide ${split.name} divider tracks the pointer and saves the clamped width on release`, async ({ page }) => {
+    const widthKey = "intercept-ai-pane-width";
+    await installProductionApiMocks(page);
+    if ("list" in split) {
+      const prefix = split.item.human_id.split("-")[0];
+      const items = Array.from({ length: 50 }, (_, index) => ({
+        ...split.item,
+        id: index + 1,
+        human_id: `${prefix}-${String(index + 1).padStart(7, "0")}`,
+        tags: ["smoke", "triage", "resize"],
+      }));
+      await page.route(new RegExp(`/api/v1/${split.list}(?:\\?|$)`), (route) =>
+        route.fulfill(jsonResponse({ ...emptyPage, items, total: items.length, pages: 1 })),
+      );
+    }
+    await page.addInitScript(({ key }) => {
+      if (localStorage.getItem(key) === null) localStorage.setItem(key, "640");
+    }, { key: widthKey });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(split.path);
+    if ("list" in split) {
+      const links = page.locator(`a[href^="/${split.list}/"]`);
+      await expect(links).toHaveCount(50);
+      if (split.path === `/${split.list}`) await links.first().click();
+    }
+    const timeline = page.getByLabel(`${split.entity} timeline content`);
+    await expect(timeline).toBeVisible();
+    await expect(page.locator('[class~="bg-p4/60"]').locator('..')).toHaveCSS("opacity", "0.45");
+
+    const rail = page.getByRole("separator", { name: split.railLabel });
+    const start = await rail.boundingBox();
+    if (!start) throw new Error("Expected the wide split divider");
+
+    const x = start.x + start.width / 2;
+    const y = start.y + start.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x - 80, y);
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    const tracking = await rail.boundingBox();
+    expect(tracking?.x).toBeCloseTo(start.x - 80, 0);
+    expect(await page.evaluate((key) => localStorage.getItem(key), widthKey)).toBe("640");
+
+    await page.mouse.move(x + 140, y, { steps: 4 });
+    await expect(rail).toBeVisible();
+    expect(await page.evaluate((key) => localStorage.getItem(key), widthKey)).toBe("640");
+    await page.mouse.up();
+    expect(await page.evaluate((key) => localStorage.getItem(key), widthKey)).toBe("706");
+    const detail = await timeline.boundingBox();
+    expect(detail?.width).toBeGreaterThanOrEqual(600);
+
+    await page.reload();
+    await expect(rail).toHaveAttribute("aria-valuenow", "706");
+    await rail.press("ArrowLeft");
+    await expect(rail).toHaveAttribute("aria-valuenow", "690");
+    expect(await page.evaluate((key) => localStorage.getItem(key), widthKey)).toBe("690");
+
+    const beforeCancel = await rail.boundingBox();
+    if (!beforeCancel) throw new Error("Expected the divider to remain visible after reload");
+    const cancelX = beforeCancel.x + beforeCancel.width / 2;
+    await page.mouse.move(cancelX, y);
+    await page.mouse.down();
+    await page.mouse.move(cancelX - 120, y);
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+    expect((await rail.boundingBox())?.x).toBe(beforeCancel.x);
+    expect(await page.evaluate((key) => localStorage.getItem(key), widthKey)).toBe("690");
+
+    if (!("list" in split)) {
+      await rail.click();
+      await expect(rail).toHaveCount(0);
+      await expect(timeline).toBeVisible();
+    }
+  });
+}
+
+test("wide chat history divider saves to its existing width preference", async ({ page }) => {
+  await installProductionApiMocks(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("intercept-ai-pane-width", "512");
+    if (localStorage.getItem("ai-chat-history-width") === null) {
+      localStorage.setItem("ai-chat-history-width", "640");
+    }
+  });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/ai-chat");
+  const rail = page.getByRole("separator", { name: "Resize chat history" });
+  await expect(rail).toHaveAttribute("aria-valuenow", "640");
+  await rail.press("End");
+  await expect(rail).toHaveAttribute("aria-valuenow", "706");
+  expect(await page.evaluate(() => localStorage.getItem("ai-chat-history-width"))).toBe("706");
+  expect(await page.evaluate(() => localStorage.getItem("intercept-ai-pane-width"))).toBe("512");
+});
+
+test("narrow alerts view keeps the queue and detail reachable", async ({ page }) => {
+  await installProductionApiMocks(page);
+  await page.setViewportSize({ width: 1000, height: 900 });
+  await page.goto("/alerts");
+  const alertLinks = page.locator('a[href^="/alerts/ALT-"]');
+  await alertLinks.first().click();
+
+  const list = page.getByRole("region", { name: "Alert list", exact: true });
+  const detail = page.getByRole("region", { name: "Alert detail", exact: true });
+  const paneScale = (pane: Locator) => pane.evaluate((el) => el.getBoundingClientRect().width / el.clientWidth);
+  await expect(detail).toBeFocused();
+  await expect.poll(() => paneScale(list)).toBeCloseTo(0.98, 2);
+
+  // Each pane retains a reachable edge when behind the other pane.
+  await list.hover({ position: { x: 30, y: 100 } });
+  await expect.poll(() => paneScale(list)).toBeCloseTo(1, 2);
+  await expect.poll(() => paneScale(detail)).toBeCloseTo(0.98, 2);
+  const detailBounds = await detail.boundingBox();
+  if (!detailBounds) throw new Error("Expected the detail edge to remain visible");
+  await detail.hover({ position: { x: detailBounds.width - 30, y: 100 } });
+  await expect.poll(() => paneScale(detail)).toBeCloseTo(1, 2);
+
+  const nextAlert = list.getByRole("link", { name: /Second smoke alert/ });
+  await nextAlert.focus();
+  await expect.poll(() => paneScale(list)).toBeCloseTo(1, 2);
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/alerts\/ALT-0000002$/);
+  await expect(detail).toBeFocused();
+  await expect.poll(() => paneScale(detail)).toBeCloseTo(1, 2);
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(list).toBeVisible();
+  await expect(detail).toBeVisible();
+
+  await page.setViewportSize({ width: 700, height: 900 });
+  await expect(list).toHaveCount(0);
+  await expect(alertLinks).toHaveCount(0);
+  await expect(page.getByLabel("alert timeline content")).toBeVisible();
+
+  await page.setViewportSize({ width: 1920, height: 900 });
+  await expect(alertLinks.first()).toBeVisible();
+  await expect(page.getByLabel("alert timeline content")).toBeVisible();
+  await expect(list).toHaveCount(0);
+});
 
 test("MCP consent keeps its capability out of request URLs and posts FastMCP fields", async ({ page, baseURL }) => {
   const consentContext = {

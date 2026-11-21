@@ -205,10 +205,6 @@ function CasesListPage() {
     setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
   };
 
-  const handleCaseListRailToggle = () => {
-    // The case list/detail split pane is resizable but not collapsible.
-  };
-
   const handleCreateCase = async (payload: {
     title: string;
     description: string;
@@ -303,11 +299,11 @@ function CasesListPage() {
         visibleColumns={visibleColumns}
         onVisibleColumnsChange={setVisibleColumns}
         columnConfig={getColumnConfig(selectedCaseId, caseListWidth, isLeftOnlyView)}
-        dimLeftColumn={!!selectedCaseId}
-        showLeftRail={!isLeftOnlyView}
-        onLeftRailToggle={handleCaseListRailToggle}
-        leftColumnWidth={isLeftOnlyView ? undefined : caseListWidth}
-        onLeftColumnWidthChange={isLeftOnlyView ? undefined : setCaseListWidth}
+        dimLeftColumn={!bulk.hasMultiple && !!selectedCaseId}
+        showLeftRail={showSplitCenter}
+        leftRailLabel="Resize case list"
+        leftColumnWidth={caseListWidth}
+        onLeftColumnWidthChange={setCaseListWidth}
       />
 
       <CreateCaseModal

@@ -200,9 +200,6 @@ function TasksListPage() {
     setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
   };
 
-  const handleTaskListRailToggle = () => {
-    // The task list/detail split pane is resizable but not collapsible.
-  };
   const isLeftOnlyView = visibleColumns === 'left';
 
   return (
@@ -267,11 +264,11 @@ function TasksListPage() {
         visibleColumns={visibleColumns}
         onVisibleColumnsChange={setVisibleColumns}
         columnConfig={getColumnConfig(selectedTaskId, taskListWidth, isLeftOnlyView)}
-        dimLeftColumn={!!selectedTaskId}
-        showLeftRail={!isLeftOnlyView}
-        onLeftRailToggle={handleTaskListRailToggle}
-        leftColumnWidth={isLeftOnlyView ? undefined : taskListWidth}
-        onLeftColumnWidthChange={isLeftOnlyView ? undefined : setTaskListWidth}
+        dimLeftColumn={!bulk.hasMultiple && !!selectedTaskId}
+        showLeftRail={showSplitCenter}
+        leftRailLabel="Resize task list"
+        leftColumnWidth={taskListWidth}
+        onLeftColumnWidthChange={setTaskListWidth}
       />
     </DefaultPageLayout>
   );
