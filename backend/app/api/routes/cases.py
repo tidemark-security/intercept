@@ -8,8 +8,11 @@ from app.core.database import get_db
 from app.core.entity_ids import CASE_PREFIX
 from app.api.id_parsing import parse_entity_id_or_400
 from app.services.case_service import CaseValidationError, case_service
+from app.services.entity_bulk_update import BulkEntityNotFoundError
 from app.services.timeline_add_service import TimelineItemConflict
 from app.models.models import (
+    BulkUpdateResult,
+    CaseBulkUpdate,
     CaseCreate,
     CaseUpdate,
     CaseRead,
@@ -443,6 +446,22 @@ async def generate_download_url(
         as_download=download,
         current_user=current_user,
     )
+
+
+@router.post("/bulk-actions", response_model=BulkUpdateResult)
+async def bulk_case_action(
+    request: CaseBulkUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_non_auditor_user),
+):
+    """Apply a batch update to selected cases."""
+    try:
+        count = await case_service.bulk_update(db, request, current_user.username)
+    except BulkEntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CaseValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return BulkUpdateResult(updated_count=count)
 
 
 @router.post("/bulk-update", response_model=List[CaseRead])

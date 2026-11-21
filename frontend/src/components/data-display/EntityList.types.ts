@@ -34,13 +34,16 @@ export interface EntityListProps<T, F = FilterState> {
   selectable?: boolean;
 
   /** Currently selected row IDs */
-  selectedIds?: Set<number>;
+  selectedIds?: { has(id: number): boolean; readonly size: number };
 
   /** Callback when one row checkbox changes */
   onSelectionChange?: (id: number, selected: boolean) => void;
 
   /** Callback when the visible page selection changes */
   onSelectVisible?: (selected: boolean, ids: number[]) => void;
+
+  /** Accessible label for the current-page checkbox. */
+  selectVisibleLabel?: string;
 
   /** Optional multi-select or contextual actions rendered in the filter header */
   toolbarActions?: React.ReactNode;

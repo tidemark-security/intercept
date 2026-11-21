@@ -11,7 +11,7 @@ from fastapi_pagination.ext.sqlalchemy import apaginate
 from app.core.entity_ids import CASE_PREFIX, format_entity_id
 from app.models.models import (
     Case, Alert, Task,
-    CaseCreate, CaseUpdate,
+    CaseCreate, CaseUpdate, CaseBulkUpdate,
     CaseTimelineItem, CaseAlertClosureUpdate,
     CaseLinkedAlertResolutionRequest, AlertBulkActionResponse,
 )
@@ -29,9 +29,11 @@ from app.services.realtime_service import emit_event
 from app.services import triage_recommendation_service
 from app.services.assignee_filter_utils import append_assignee_filter
 from app.services.date_filter_utils import DateFilterValidationError, parse_datetime_filter
+from app.services.entity_bulk_update import run_bulk_update
 from app.services.tag_filter_utils import (
     ProtectedTagMutationError,
     append_tag_filters,
+    merge_persisted_tags,
     validate_protected_tag_mutation,
 )
 from app.services.committed_response import load_committed_response
@@ -293,90 +295,13 @@ class CaseService:
     ) -> Optional[Case]:
         """Update a case and create audit logs."""
         try:
-            # Get existing case
-            db_case = await self.lock_case_for_update(db, case_id)
+            db_case = await self.update_case_in_transaction(
+                db, case_id, case_update, updated_by,
+                closed_at_override=closed_at_override,
+                closed_at_override_supplied=closed_at_override_supplied,
+            )
             if not db_case:
                 return None
-            
-            # Track changes for audit
-            changes = []
-            update_data = case_update.model_dump(exclude_unset=True)
-            update_data.pop("closed_at", None)
-            
-            # Track if status changed to CLOSED
-            status_changed_to_closed = False
-            old_status = db_case.status
-            
-            for field, new_value in update_data.items():
-                if hasattr(db_case, field):
-                    if field == "tags":
-                        try:
-                            new_value = validate_protected_tag_mutation(
-                                db_case.tags,
-                                new_value,
-                            )
-                        except ProtectedTagMutationError as exc:
-                            raise CaseValidationError(str(exc)) from exc
-                    old_value = getattr(db_case, field)
-                    if old_value != new_value:
-                        changes.append((field, str(old_value), str(new_value)))
-                        setattr(db_case, field, new_value)
-                        # Track specific changes for metrics
-                        if field == 'status' and new_value == CaseStatus.CLOSED:
-                            status_changed_to_closed = True
-            
-            # Handle status change special case
-            if closed_at_override_supplied:
-                old_value = db_case.closed_at
-                if old_value != closed_at_override:
-                    changes.append(("closed_at", str(old_value), str(closed_at_override)))
-                    db_case.closed_at = closed_at_override
-            elif status_changed_to_closed:
-                db_case.closed_at = datetime.now(timezone.utc)
-            
-            # Create audit logs for changes
-            for field, old_val, new_val in changes:
-                await self._create_audit_log(
-                    db, case_id, f"{field}_changed", 
-                    f"{field.title()} changed from {old_val} to {new_val}",
-                    old_val, new_val, updated_by
-                )
-            
-            # If case status changed to CLOSED, close all linked tasks and alerts
-            if status_changed_to_closed and old_status != CaseStatus.CLOSED:
-                self._add_case_closure_summary_note(
-                    db_case, case_update.closure_summary, updated_by
-                )
-
-                # Extract alert closure statuses if provided
-                alert_closure_statuses = self._build_alert_closure_status_map(
-                    case_update.alert_closure_updates
-                )
-                
-                closure_results = await self._close_linked_items(
-                    db, case_id, updated_by, alert_closure_statuses
-                )
-
-                # Create audit log for linked item closures
-                summary = (
-                    f"Closed {closure_results['tasks_closed']} linked tasks and "
-                    f"{closure_results['alerts_closed']} linked alerts."
-                )
-
-                await self._create_audit_log(
-                    db, case_id, "linked_items_closed",
-                    summary,
-                    None, None, updated_by
-                )
-            
-            await emit_event(
-                db,
-                entity_type="case",
-                entity_id=case_id,
-                event_type=RealtimeEventType.ENTITY_UPDATED,
-                performed_by=updated_by,
-            )
-
             await db.commit()
         except Exception as e:
             await db.rollback()
@@ -392,6 +317,98 @@ class CaseService:
             entity_type="case",
             entity_id=case_id,
             operation="update",
+        )
+
+    async def update_case_in_transaction(
+        self,
+        db: AsyncSession,
+        case_id: int,
+        case_update: CaseUpdate,
+        updated_by: str,
+        *,
+        closed_at_override: Optional[datetime] = None,
+        closed_at_override_supplied: bool = False,
+        add_tags: Optional[List[str]] = None,
+    ) -> Optional[Case]:
+        """Apply and audit a case update, leaving commit ownership to the caller."""
+        db_case = await self.lock_case_for_update(db, case_id)
+        if db_case is None:
+            return None
+
+        update_data = case_update.model_dump(exclude_unset=True)
+        update_data.pop("closed_at", None)
+        if add_tags:
+            update_data["tags"] = merge_persisted_tags(db_case.tags, add_tags)
+        changes = []
+        old_status = db_case.status
+
+        for field, new_value in update_data.items():
+            if not hasattr(db_case, field):
+                continue
+            if field == "tags":
+                try:
+                    new_value = validate_protected_tag_mutation(db_case.tags, new_value)
+                except ProtectedTagMutationError as exc:
+                    raise CaseValidationError(str(exc)) from exc
+            old_value = getattr(db_case, field)
+            if old_value != new_value:
+                changes.append((field, str(old_value), str(new_value)))
+                setattr(db_case, field, new_value)
+
+        closing = old_status != CaseStatus.CLOSED and db_case.status == CaseStatus.CLOSED
+        if closed_at_override_supplied:
+            old_value = db_case.closed_at
+            if old_value != closed_at_override:
+                changes.append(("closed_at", str(old_value), str(closed_at_override)))
+                db_case.closed_at = closed_at_override
+        elif closing:
+            db_case.closed_at = datetime.now(timezone.utc)
+
+        for field, old_val, new_val in changes:
+            await self._create_audit_log(
+                db, case_id, f"{field}_changed",
+                f"{field.title()} changed from {old_val} to {new_val}",
+                old_val, new_val, updated_by
+            )
+        if closing:
+            self._add_case_closure_summary_note(db_case, case_update.closure_summary, updated_by)
+            statuses = self._build_alert_closure_status_map(case_update.alert_closure_updates)
+            closed = await self._close_linked_items(db, case_id, updated_by, statuses)
+            await self._create_audit_log(
+                db, case_id, "linked_items_closed",
+                f"Closed {closed['tasks_closed']} linked tasks and {closed['alerts_closed']} linked alerts.",
+                None, None, updated_by
+            )
+        await emit_event(
+            db, entity_type="case", entity_id=case_id,
+            event_type=RealtimeEventType.ENTITY_UPDATED, performed_by=updated_by,
+        )
+        return db_case
+
+    async def bulk_update(self, db: AsyncSession, request: CaseBulkUpdate, user: str) -> int:
+        changes = CaseUpdate.model_validate(request.model_dump(include={"status", "assignee"}, exclude_none=True))
+
+        async def update(case_id: int) -> Case | None:
+            return await self.update_case_in_transaction(db, case_id, changes, user, add_tags=request.tags)
+
+        async def lock_closure_batch(ids: list[int]) -> None:
+            # Lock parents first, then all children in ID order across the batch.
+            # A concurrent task/alert batch locks in ID order regardless of parent.
+            case_ids = (
+                await db.execute(
+                    select(Case.id, Case.status).where(col(Case.id).in_(ids)).order_by(Case.id).with_for_update()
+                )
+            ).all()
+            closing_ids = [case_id for case_id, status in case_ids if status != CaseStatus.CLOSED]
+            for child in (Task, Alert):
+                if closing_ids:
+                    await db.execute(
+                        select(child.id).where(col(child.case_id).in_(closing_ids)).order_by(child.id).with_for_update()
+                    )
+
+        return await run_bulk_update(
+            db, request.entity_ids, "case", request.note, user, update,
+            prepare=lock_closure_batch if request.status == CaseStatus.CLOSED else None,
         )
     
     def _close_linked_task(

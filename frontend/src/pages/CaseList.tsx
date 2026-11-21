@@ -7,6 +7,9 @@ import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
 import { getPersistedWidth } from "@/components/layout/ColumnRail";
 import { EntityList } from "@/components/data-display/EntityList";
+import { BulkActionModal } from "@/components/entities/BulkActionModal";
+import { BulkSelectionSummary, BulkSelectionToolbar } from "@/components/entities/BulkSelection";
+import { useEntityBulkActions } from "@/hooks/useEntityBulkActions";
 import { Button } from "@/components/buttons/Button";
 import { CreateCaseModal } from "@/components/entities/CreateCaseModal";
 import { UnifiedTimeline } from "@/components/timeline/UnifiedTimeline";
@@ -70,7 +73,7 @@ function CasesListPage() {
   useDocumentTitle("Cases");
   const navigate = useViewTransitionNavigate();
   const location = useLocation();
-  const { user } = useSession();
+  const { user, isAuditor } = useSession();
   const { showToast } = useToast();
   const currentUser = user?.username || null;
 
@@ -126,6 +129,9 @@ function CasesListPage() {
     page: currentPage,
     size: pageSize,
   });
+  const bulk = useEntityBulkActions("case", casesData?.items, {
+    enabled: !isAuditor, users, currentUser, usersLoading: isLoadingUsers, showSplitCenter,
+  });
 
   // Fetch selected case details from API (only when a case is selected)
   const {
@@ -180,6 +186,7 @@ function CasesListPage() {
 
   // Case selection handler
   const handleCaseSelect = (caseId: number, caseHumanId: string) => {
+    bulk.clear();
     setSelectedCaseId(caseId);
     
     if (breakpoint === 'mobile' || !showSplitCenter) {
@@ -225,15 +232,18 @@ function CasesListPage() {
       // Error state is handled by mutation onError callback
     }
   };
-  const isLeftOnlyView = visibleColumns === 'left';
+  const layoutColumns = bulk.selectionColumns ?? visibleColumns;
+  const isLeftOnlyView = layoutColumns === 'left';
 
   return (
-    <DefaultPageLayout priority={caseDetail?.priority || undefined}>
+    <DefaultPageLayout priority={bulk.hasMultiple ? undefined : caseDetail?.priority || undefined}>
       <ThreeColumnLayout
         leftColumn={
           <EntityList
             items={casesData?.items ?? []}
-            selectedId={selectedCaseId}
+            selectedId={bulk.hasMultiple ? null : selectedCaseId}
+            {...bulk.listProps}
+            toolbarActions={bulk.hasMultiple && <BulkSelectionToolbar {...bulk.toolbarProps} />}
             onSelect={handleCaseSelect}
             onDoubleClick={handleCaseDoubleClick}
             getItemHref={(_id, humanId) => `/cases/${humanId}${location.search}`}
@@ -276,7 +286,9 @@ function CasesListPage() {
             emptyMessage="No cases found"
           />
         }
-        centerColumn={
+        centerColumn={bulk.hasMultiple ? (
+          <BulkSelectionSummary {...bulk.summaryProps} />
+        ) : (
           <UnifiedTimeline
             entityDetail={caseDetail ?? null}
             entityType="case"
@@ -294,9 +306,9 @@ function CasesListPage() {
             onBackToList={handleBackToList}
             onOpenEntity={handleOpenCase}
           />
-        }
+        )}
         rightColumn={<div></div>}
-        visibleColumns={visibleColumns}
+        visibleColumns={layoutColumns}
         onVisibleColumnsChange={setVisibleColumns}
         columnConfig={getColumnConfig(selectedCaseId, caseListWidth, isLeftOnlyView)}
         dimLeftColumn={!bulk.hasMultiple && !!selectedCaseId}
@@ -305,6 +317,7 @@ function CasesListPage() {
         leftColumnWidth={caseListWidth}
         onLeftColumnWidthChange={setCaseListWidth}
       />
+      {bulk.dialogProps && <BulkActionModal {...bulk.dialogProps} />}
 
       <CreateCaseModal
         open={isCreateCaseModalOpen}

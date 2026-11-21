@@ -21,6 +21,7 @@ export function EntityList<T, F = FilterState>({
   selectedIds,
   onSelectionChange,
   onSelectVisible,
+  selectVisibleLabel = "Select visible alerts",
   toolbarActions,
   filters,
   onFilterChange,
@@ -94,14 +95,14 @@ export function EntityList<T, F = FilterState>({
         {selectable && hasItems && (
           <div className="flex w-full items-center gap-3 border-b border-solid border-neutral-border pb-3">
             <Checkbox
-              aria-label="Select visible alerts"
+              aria-label={selectVisibleLabel}
               checked={allVisibleSelected}
               indeterminate={someVisibleSelected}
               onCheckedChange={(checked) => onSelectVisible?.(checked, visibleIds)}
               size="small"
             />
             <span className="text-caption font-caption text-subtext-color">
-              {selectedIds?.size ? `${selectedIds.size} selected` : 'Select visible alerts'}
+              {selectedIds?.size ? `${selectedIds.size} selected` : selectVisibleLabel}
             </span>
           </div>
         )}

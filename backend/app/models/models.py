@@ -1,7 +1,7 @@
 import re
 import json
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any, Union, Literal, TypeAlias
+from typing import Optional, List, Dict, Any, Union, Literal, TypeAlias, Generic, TypeVar
 from uuid import UUID, uuid4
 
 from sqlmodel import SQLModel, Field, Relationship, Column
@@ -989,6 +989,7 @@ class AlertTriageRequest(SQLModel):
 
 
 AlertBulkAction = Literal[
+    "update",
     "update_status",
     "link_case",
     "create_case",
@@ -996,6 +997,35 @@ AlertBulkAction = Literal[
     "add_tags",
     "assign",
 ]
+
+
+BulkStatus = TypeVar("BulkStatus", CaseStatus, TaskStatus)
+
+
+class EntityBulkUpdate(SQLModel, Generic[BulkStatus]):
+    entity_ids: List[int] = Field(min_length=1, max_length=200)
+    status: Optional[BulkStatus] = None
+    assignee: Optional[str] = Field(default=None, max_length=100)
+    tags: Optional[List[str]] = None
+    note: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_changes(self):
+        if not (self.status or self.assignee or self.tags or (self.note or "").strip()):
+            raise ValueError("At least one status, assignee, tag, or note is required")
+        return self
+
+
+class CaseBulkUpdate(EntityBulkUpdate[CaseStatus]):
+    """Apply optional status, assignee, tags and a note to the selected cases."""
+
+
+class TaskBulkUpdate(EntityBulkUpdate[TaskStatus]):
+    """Apply optional status, assignee, tags and a note to the selected tasks."""
+
+
+class BulkUpdateResult(SQLModel):
+    updated_count: int
 
 
 class AlertBulkActionRequest(SQLModel):
@@ -1018,6 +1048,15 @@ class AlertBulkActionRequest(SQLModel):
     def validate_action_payload(self) -> "AlertBulkActionRequest":
         if self.action == "update_status" and self.status is None and self.disposition is None:
             raise ValueError("status or disposition is required for update_status")
+        if self.action == "update" and not (
+            self.status or self.disposition or self.assignee or self.tags or (self.note or "").strip()
+        ):
+            raise ValueError("At least one status, assignee, tag, or note is required for update")
+        if self.action == "update" and (
+            self.status == AlertStatus.CLOSED_DUPLICATE
+            or self.disposition == TriageDisposition.DUPLICATE
+        ):
+            raise ValueError("Use close_duplicate to close alerts as duplicates")
         if (
             self.action == "update_status"
             and (

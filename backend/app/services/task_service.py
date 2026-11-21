@@ -9,7 +9,7 @@ from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import apaginate
 
 from app.core.entity_ids import TASK_PREFIX
-from app.models.models import Task, TaskCreate, TaskUpdate, TaskTimelineItem
+from app.models.models import Task, TaskBulkUpdate, TaskCreate, TaskUpdate, TaskTimelineItem
 from app.models.enums import TaskStatus, RealtimeEventType
 from app.services.timeline_add_service import (
     TimelineItemConflict,
@@ -22,9 +22,11 @@ from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
 from app.services.assignee_filter_utils import append_assignee_filter
 from app.services.date_filter_utils import DateFilterValidationError, parse_datetime_filter
+from app.services.entity_bulk_update import run_bulk_update
 from app.services.tag_filter_utils import (
     ProtectedTagMutationError,
     append_tag_filters,
+    merge_persisted_tags,
     validate_protected_tag_mutation,
 )
 from app.services.committed_response import load_committed_response
@@ -277,12 +279,35 @@ class TaskService:
             operation="update",
         )
 
+    async def bulk_update(self, db: AsyncSession, request: TaskBulkUpdate, user: str) -> int:
+        changes = TaskUpdate.model_validate(request.model_dump(include={"status", "assignee"}, exclude_none=True))
+        enqueues: list[tuple[int, str]] = []
+
+        async def update(task_id: int) -> Task | None:
+            outcome = await self.update_task_in_transaction(
+                db, task_id, changes, user, add_tags=request.tags, start_on_assign=True
+            )
+            if outcome is None:
+                return None
+            task, autonomous_assignee = outcome
+            if autonomous_assignee is not None:
+                enqueues.append((task_id, autonomous_assignee))
+            return task
+
+        count = await run_bulk_update(db, request.entity_ids, "task", request.note, user, update)
+        for task_id, assignee in enqueues:
+            await self.enqueue_autonomous_task_after_commit(db, task_id=task_id, assignee=assignee)
+        return count
+
     async def update_task_in_transaction(
         self,
         db: AsyncSession,
         task_id: int,
         task_update: TaskUpdate,
         updated_by: str,
+        *,
+        add_tags: Optional[List[str]] = None,
+        start_on_assign: bool = False,
     ) -> Optional[tuple[Task, Optional[str]]]:
         """Update and audit a locked task while leaving commit ownership to the caller.
 
@@ -318,6 +343,11 @@ class TaskService:
         db_task = result.scalar_one_or_none()
         if db_task is None:
             return None
+
+        if add_tags:
+            update_data["tags"] = merge_persisted_tags(db_task.tags, add_tags)
+        if start_on_assign and update_data.get("assignee") and db_task.status == TaskStatus.TODO:
+            update_data.setdefault("status", TaskStatus.IN_PROGRESS)
 
         old_status = db_task.status
         original_values = {

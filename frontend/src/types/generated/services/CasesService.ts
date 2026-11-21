@@ -5,6 +5,8 @@
 import type { AlertBulkActionResponse } from '../models/AlertBulkActionResponse';
 import type { AttachmentStatusUpdate } from '../models/AttachmentStatusUpdate';
 import type { Body_bulk_update_cases_api_v1_cases_bulk_update_post } from '../models/Body_bulk_update_cases_api_v1_cases_bulk_update_post';
+import type { BulkUpdateResult } from '../models/BulkUpdateResult';
+import type { CaseBulkUpdate } from '../models/CaseBulkUpdate';
 import type { CaseCreate } from '../models/CaseCreate';
 import type { CaseLinkedAlertResolutionRequest } from '../models/CaseLinkedAlertResolutionRequest';
 import type { CaseRead } from '../models/CaseRead';
@@ -474,6 +476,27 @@ export class CasesService {
             query: {
                 'download': download,
             },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Bulk Case Action
+     * Apply a batch update to selected cases.
+     * @returns BulkUpdateResult Successful Response
+     * @throws ApiError
+     */
+    public static bulkCaseActionApiV1CasesBulkActionsPost({
+        requestBody,
+    }: {
+        requestBody: CaseBulkUpdate,
+    }): CancelablePromise<BulkUpdateResult> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/cases/bulk-actions',
+            body: requestBody,
+            mediaType: 'application/json',
             errors: {
                 422: `Validation Error`,
             },

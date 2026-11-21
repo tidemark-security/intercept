@@ -2,12 +2,9 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { useLocation, useParams } from 'react-router-dom';
-import { CheckCircle2, Copy, FolderPlus, Link2, Tags, X } from 'lucide-react';
+import { Copy, FolderPlus, Link2, X } from 'lucide-react';
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { Button } from "@/components/buttons/Button";
-import { Select } from "@/components/forms/Select";
-import { AssigneeSelector } from "@/components/forms/AssigneeSelector";
-import { TagsManager } from "@/components/forms/TagsManager";
 import { TextArea } from "@/components/forms/TextArea";
 import { TextField } from "@/components/forms/TextField";
 import { Dialog } from "@/components/overlays/Dialog";
@@ -17,6 +14,8 @@ import { getPersistedWidth } from "@/components/layout/ColumnRail";
 import { EntityList } from "@/components/data-display/EntityList";
 import { UnifiedTimeline } from "@/components/timeline/UnifiedTimeline";
 import { RightDock } from '@/components/layout/RightDock';
+import { BulkActionModal } from "@/components/entities/BulkActionModal";
+import { BulkSelectionSummary, BulkSelectionToolbar } from "@/components/entities/BulkSelection";
 import { CaseSelectorModal } from "@/components/entities/CaseSelectorModal";
 import {
   DuplicateTargetSelectorModal,
@@ -32,6 +31,7 @@ import { useTriageAlert } from "@/hooks/useTriageAlert";
 import { useLinkAlertToCase } from "@/hooks/useLinkAlertToCase";
 import { useUnlinkAlertFromCase } from "@/hooks/useUnlinkAlertFromCase";
 import { useBulkAlertAction } from "@/hooks/useBulkAlertAction";
+import { useEntityBulkActions } from "@/hooks/useEntityBulkActions";
 import { useUpdateTimelineItem } from "@/hooks/useUpdateTimelineItem";
 import { useDeleteTimelineItem } from "@/hooks/useDeleteTimelineItem";
 import { useQuickTerminalSubmit } from "@/hooks/useQuickTerminalSubmit";
@@ -41,6 +41,7 @@ import { useEnqueueTriage } from "@/hooks/useEnqueueTriage";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useSession } from "@/contexts/sessionContext";
 import { useURLFilters } from "@/hooks/useURLFilters";
+import { toEntityListQueryFilters } from "@/utils/entityListQueryFilters";
 import { useTagFilterClick } from "@/hooks/useTagFilterClick";
 import type { RejectionCategory } from "@/types/generated/models/RejectionCategory";
 import { cleanupExpiredDrafts } from "@/utils/draftStorage";
@@ -58,8 +59,7 @@ import type { FilterState } from "@/types/filters";
 import type { TimelineItemType } from '@/types/drafts';
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { alertStatusToUIState, priorityToUIPriority, uiStateToAlertStatus, type UIState } from "@/utils/statusHelpers";
-import { ALERT_STATUS_OPTIONS } from "@/utils/statusLabels";
-import { ApiError } from "@/types/generated/core/ApiError";
+import { getApiErrorMessage } from "@/utils/entityBulkActions";
 import { NotFoundError } from "@/pages/NotFoundError";
 import styles from './Alerts.module.css';
 
@@ -85,22 +85,6 @@ const ALERT_SORT_OPTIONS = [
     directionLabel: { desc: "Status Z-A", asc: "Status A-Z" },
   },
 ];
-
-function getApiErrorMessage(error: Error, fallback: string): string {
-  if (error instanceof ApiError) {
-    if (error.body && typeof error.body === 'object' && 'detail' in error.body) {
-      const detail = error.body.detail;
-      if (typeof detail === 'string') return detail;
-      if (detail && typeof detail === 'object' && 'message' in detail && typeof detail.message === 'string') {
-        return detail.message;
-      }
-    }
-    if (error.body && typeof error.body === 'object' && 'message' in error.body && typeof error.body.message === 'string') {
-      return error.body.message;
-    }
-  }
-  return error.message || fallback;
-}
 
 /**
  * Alerts page component for displaying and managing security alerts.
@@ -146,13 +130,10 @@ function Alerts() {
   });
   const [selectedAlertId, setSelectedAlertId] = useState<number | null>(null);
   const handleFilterByTag = useTagFilterClick(filters, setFilters);
-  const [bulkSelectedAlertIds, setBulkSelectedAlertIds] = useState<Set<number>>(new Set());
-  const [bulkDialog, setBulkDialog] = useState<'status' | 'create_case' | 'duplicate' | 'tags' | null>(null);
+  const [bulkDialog, setBulkDialog] = useState<'create_case' | 'duplicate' | null>(null);
   const [isBulkCaseSelectorOpen, setIsBulkCaseSelectorOpen] = useState(false);
-  const [bulkStatus, setBulkStatus] = useState<AlertStatus>('IN_PROGRESS');
   const [bulkCaseTitle, setBulkCaseTitle] = useState('');
   const [bulkCaseDescription, setBulkCaseDescription] = useState('');
-  const [bulkTags, setBulkTags] = useState<string[]>([]);
   const [acceptRecommendationError, setAcceptRecommendationError] = useState<string | null>(null);
 
   // Column visibility state: controls which columns are visible
@@ -246,19 +227,23 @@ function Alerts() {
     page: currentPage,
     size: pageSize,
   });
-  const showDock = dockOpen;
-  const useOverlappingPanes = breakpoint !== 'mobile' && !showSplitCenter && selectedAlertId !== null;
+  const bulk = useEntityBulkActions("alert", alertsData?.items, {
+    enabled: !isAuditor, users, currentUser, usersLoading: isLoadingUsers, showSplitCenter,
+  });
+  const bulkSelectedIds = bulk.ids;
+  const showDock = dockOpen && !bulk.hasMultiple;
+  const useOverlappingPanes = breakpoint !== 'mobile' && !showSplitCenter && (selectedAlertId !== null || bulk.hasMultiple);
   const showFloatingDetail = useOverlappingPanes && !showDock;
 
   useEffect(() => {
-    setListInFront(false);
-    if (showFloatingDetail && (
+    setListInFront(bulk.hasMultiple);
+    if (!bulk.hasMultiple && showFloatingDetail && (
       focusDetailOnOpen.current || listPaneRef.current?.contains(document.activeElement)
     )) {
       detailPaneRef.current?.focus({ preventScroll: true });
       focusDetailOnOpen.current = false;
     }
-  }, [humanId, showFloatingDetail]);
+  }, [humanId, showFloatingDetail, bulk.hasMultiple]);
 
   // Fetch selected alert details from API (only when an alert is selected)
   // TanStack Query automatically cancels previous requests when selectedAlertId changes
@@ -272,7 +257,6 @@ function Alerts() {
     humanId ? formatEntityTitle(alertDetail?.human_id ?? humanId, alertDetail?.title) : "Alerts"
   );
   const isAlertReadOnly = isAuditor || alertDetail?.status === 'ESCALATED' || !!alertDetail?.case_id;
-  const bulkSelectedIds = Array.from(bulkSelectedAlertIds);
 
   // Check if the error is a 404 (only relevant when an alert is selected)
   const is404Error = selectedAlertId && detailError && (
@@ -349,9 +333,8 @@ function Alerts() {
 
   const bulkAlertActionMutation = useBulkAlertAction({
     onSuccess: (data) => {
-      setBulkSelectedAlertIds(new Set());
+      bulk.clear();
       setBulkDialog(null);
-      setBulkTags([]);
       setIsBulkCaseSelectorOpen(false);
       if (data.case_human_id) {
         navigate(`/cases/${data.case_human_id}`);
@@ -493,45 +476,11 @@ function Alerts() {
     linkAlertToCaseMutation.mutate(caseId);
   };
 
-  const handleBulkSelectionChange = (alertId: number, selected: boolean) => {
-    setBulkSelectedAlertIds((previous) => {
-      const next = new Set(previous);
-      if (selected) {
-        next.add(alertId);
-      } else {
-        next.delete(alertId);
-      }
-      return next;
-    });
-  };
-
-  const handleBulkSelectVisible = (selected: boolean, alertIds: number[]) => {
-    setBulkSelectedAlertIds((previous) => {
-      const next = new Set(previous);
-      alertIds.forEach((alertId) => {
-        if (selected) {
-          next.add(alertId);
-        } else {
-          next.delete(alertId);
-        }
-      });
-      return next;
-    });
-  };
-
   const handleBulkLinkToCase = (caseId: number) => {
     bulkAlertActionMutation.mutate({
       alert_ids: bulkSelectedIds,
       action: 'link_case',
       case_id: caseId,
-    });
-  };
-
-  const handleBulkStatusSubmit = () => {
-    bulkAlertActionMutation.mutate({
-      alert_ids: bulkSelectedIds,
-      action: 'update_status',
-      status: bulkStatus,
     });
   };
 
@@ -551,32 +500,6 @@ function Alerts() {
       duplicate_target_case_id: target.type === 'case' ? target.id : null,
       duplicate_target_alert_id: target.type === 'alert' ? target.id : null,
     });
-  };
-
-  const handleBulkTagsSubmit = () => {
-    bulkAlertActionMutation.mutate({
-      alert_ids: bulkSelectedIds,
-      action: 'add_tags',
-      tags: bulkTags,
-    });
-  };
-
-  const handleBulkAssignToMe = () => {
-    if (!currentUser) return;
-    handleBulkAssignToUser(currentUser);
-  };
-
-  const handleBulkAssignToUser = (username: string) => {
-    bulkAlertActionMutation.mutate({
-      alert_ids: bulkSelectedIds,
-      action: 'assign',
-      assignee: username,
-    });
-  };
-
-  const handleBulkTagsClose = () => {
-    setBulkTags([]);
-    setBulkDialog(null);
   };
 
   // Tag update handler
@@ -743,6 +666,7 @@ function Alerts() {
 
   // Alert selection handler
   const handleAlertSelect = (alertId: number, humanId: string) => {
+    bulk.clear();
     const opensFloatingDetail = breakpoint !== 'mobile' && !showSplitCenter;
     if (opensFloatingDetail) {
       setListInFront(false);
@@ -766,19 +690,15 @@ function Alerts() {
     navigate(`/alerts${location.search}`);
   };
 
-  const bulkActionsPanel = !isAuditor && bulkSelectedIds.length > 1 ? (
-    <div className="flex w-full flex-wrap items-center gap-2 rounded-md border border-solid border-neutral-border bg-default-background px-3 py-2">
-      <span className="mr-auto text-body-bold font-body-bold text-default-font">
-        {bulkSelectedIds.length} selected
-      </span>
-      <Button
-        size="small"
-        variant="neutral-secondary"
-        icon={<CheckCircle2 />}
-        onClick={() => setBulkDialog('status')}
-      >
-        Status
-      </Button>
+  const isBulkPending = bulk.isPending || bulkAlertActionMutation.isPending;
+  const bulkActionsPanel = bulk.hasMultiple ? (
+    <BulkSelectionToolbar
+      {...bulk.toolbarProps}
+      onReview={showFloatingDetail
+        ? () => detailPaneRef.current?.focus({ preventScroll: true })
+        : bulk.toolbarProps.onReview}
+      disabled={isBulkPending}
+    >
       <Button
         size="small"
         variant="neutral-secondary"
@@ -803,38 +723,11 @@ function Alerts() {
       >
         Duplicate
       </Button>
-      <Button
-        size="small"
-        variant="neutral-secondary"
-        icon={<Tags />}
-        onClick={() => setBulkDialog('tags')}
-      >
-        Tags
-      </Button>
-      <AssigneeSelector
-        mode="assign"
-        size="small"
-        className="!h-6 w-auto px-2 py-0"
-        currentAssignee={null}
-        currentUser={currentUser}
-        users={users}
-        isLoadingUsers={isLoadingUsers}
-        disabled={bulkAlertActionMutation.isPending}
-        onAssignToMe={handleBulkAssignToMe}
-        onAssignToUser={handleBulkAssignToUser}
-        unassignedLabel="Assign"
-      />
-      <Button
-        size="small"
-        variant="neutral-tertiary"
-        icon={<X />}
-        onClick={() => setBulkSelectedAlertIds(new Set())}
-      />
-    </div>
+    </BulkSelectionToolbar>
   ) : null;
   // Keep the list mounted when the dock opens so its scroll position survives.
   const layoutColumns = useOverlappingPanes ? (showDock ? 'all' : 'left+center')
-    : visibleColumns;
+    : bulk.selectionColumns ?? visibleColumns;
   const isLeftOnlyView = layoutColumns === 'left';
   const paneClassName = showFloatingDetail ? 'flex h-full min-h-0 w-full flex-col items-start focus:outline-none' : 'contents';
   const columnConfig = getColumnConfig(selectedAlertId, alertListWidth, isLeftOnlyView);
@@ -848,7 +741,7 @@ function Alerts() {
   }
 
   // Show 404 error if alert not found (when viewing a specific alert)
-  if (is404Error) {
+  if (is404Error && !bulk.hasMultiple) {
     return (
       <DefaultPageLayout>
         <NotFoundError
@@ -862,7 +755,7 @@ function Alerts() {
 
   // Main render
   return (
-    <DefaultPageLayout priority={alertDetail?.priority || undefined}>
+    <DefaultPageLayout priority={bulk.hasMultiple ? undefined : alertDetail?.priority || undefined}>
       <ThreeColumnLayout
         className={showFloatingDetail ? `${styles.overlap} ${listInFront ? styles.listInFront : ''}` : undefined}
         showLeftRail={showSplitCenter}
@@ -886,13 +779,10 @@ function Alerts() {
           >
             <EntityList
               items={alertsData?.items ?? []}
-              selectedId={selectedAlertId}
+              selectedId={bulk.hasMultiple ? null : selectedAlertId}
               onSelect={handleAlertSelect}
               getItemHref={(_id, humanId) => `/alerts/${humanId}${location.search}`}
-              selectable={!isAuditor}
-              selectedIds={bulkSelectedAlertIds}
-              onSelectionChange={handleBulkSelectionChange}
-              onSelectVisible={handleBulkSelectVisible}
+              {...bulk.listProps}
               toolbarActions={bulkActionsPanel}
               filters={filters}
               onFilterChange={setFilters}
@@ -938,7 +828,15 @@ function Alerts() {
               if (event.target === event.currentTarget) setListInFront(false);
             } : undefined}
           >
-            <UnifiedTimeline
+            {bulk.hasMultiple ? (
+              <BulkSelectionSummary
+                {...bulk.summaryProps}
+                onBack={showFloatingDetail
+                  ? () => listPaneRef.current?.focus({ preventScroll: true })
+                  : bulk.summaryProps.onBack}
+                disabled={isBulkPending}
+              />
+            ) : <UnifiedTimeline
               entityDetail={alertDetail ?? null}
               entityType="alert"
               mode={isAlertReadOnly ? 'readonly' : 'editable'}
@@ -984,7 +882,7 @@ function Alerts() {
               onRequestTriage={isAuditor ? undefined : handleRequestTriage}
               isEnqueuingTriage={enqueueTriageMutation.isPending}
               isTriageEnabled={isTriageEnabled}
-            />
+            />}
           </div>
         }
         rightColumn={
@@ -1008,7 +906,7 @@ function Alerts() {
         visibleColumns={layoutColumns}
         onVisibleColumnsChange={setVisibleColumns}
         columnConfig={columnConfig}
-        dimLeftColumn={!!selectedAlertId && !useOverlappingPanes}
+        dimLeftColumn={!bulk.hasMultiple && !!selectedAlertId && !useOverlappingPanes}
       />
 
       {/* Case Selector Modal */}
@@ -1036,40 +934,7 @@ function Alerts() {
         />
       ) : null}
 
-      <Dialog open={bulkDialog === 'status'} onOpenChange={(open) => !open && setBulkDialog(null)}>
-        <Dialog.Content className="w-[520px] max-w-[90vw]">
-          <div className="flex w-full items-center justify-between border-b border-solid border-neutral-border px-6 py-4">
-            <span className="text-heading-3 font-heading-3 text-default-font">Update Status</span>
-            <Button
-              variant="neutral-tertiary"
-              size="small"
-              icon={<X />}
-              onClick={() => setBulkDialog(null)}
-            />
-          </div>
-          <div className="w-full px-6 py-4">
-            <Select
-              className="w-full"
-              label="Status"
-              placeholder="Select status"
-              value={bulkStatus}
-              onValueChange={(value) => setBulkStatus(value as AlertStatus)}
-            >
-              {ALERT_STATUS_OPTIONS.map((option) => (
-                <Select.Item key={option.value} value={option.value}>
-                  {option.label}
-                </Select.Item>
-              ))}
-            </Select>
-          </div>
-          <div className="flex w-full items-center justify-end gap-2 border-t border-solid border-neutral-border px-6 py-4">
-            <Button variant="neutral-secondary" onClick={() => setBulkDialog(null)}>Cancel</Button>
-            <Button onClick={handleBulkStatusSubmit} loading={bulkAlertActionMutation.isPending}>
-              Apply
-            </Button>
-          </div>
-        </Dialog.Content>
-      </Dialog>
+      {bulk.dialogProps && <BulkActionModal {...bulk.dialogProps} />}
 
       <Dialog open={bulkDialog === 'create_case'} onOpenChange={(open) => !open && setBulkDialog(null)}>
         <Dialog.Content className="w-[560px] max-w-[90vw]">
@@ -1106,39 +971,6 @@ function Alerts() {
               loading={bulkAlertActionMutation.isPending}
             >
               Create
-            </Button>
-          </div>
-        </Dialog.Content>
-      </Dialog>
-
-      <Dialog open={bulkDialog === 'tags'} onOpenChange={(open) => !open && handleBulkTagsClose()}>
-        <Dialog.Content className="w-[520px] max-w-[90vw]">
-          <div className="flex w-full items-center justify-between border-b border-solid border-neutral-border px-6 py-4">
-            <span className="text-heading-3 font-heading-3 text-default-font">Add Tags</span>
-            <Button
-              variant="neutral-tertiary"
-              size="small"
-              icon={<X />}
-              onClick={handleBulkTagsClose}
-            />
-          </div>
-          <div className="w-full px-6 py-4">
-            <TagsManager
-              tags={bulkTags}
-              onTagsChange={setBulkTags}
-              label="Tags"
-              placeholder="Enter tags and press Enter"
-              className="w-full"
-            />
-          </div>
-          <div className="flex w-full items-center justify-end gap-2 border-t border-solid border-neutral-border px-6 py-4">
-            <Button variant="neutral-secondary" onClick={handleBulkTagsClose}>Cancel</Button>
-            <Button
-              onClick={handleBulkTagsSubmit}
-              disabled={bulkTags.length === 0}
-              loading={bulkAlertActionMutation.isPending}
-            >
-              Add
             </Button>
           </div>
         </Dialog.Content>

@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { CaseClosureModal } from "./CaseClosureModal";
@@ -56,6 +56,7 @@ function renderModal(
     linkedAlert(2, "CLOSED_TP"),
   ],
   onConfirm = vi.fn(),
+  initialTags: string[] = [],
 ) {
   renderWithProviders(
     <CaseClosureModal
@@ -63,7 +64,7 @@ function renderModal(
       onOpenChange={vi.fn()}
       linkedAlerts={linkedAlerts}
       linkedTaskCount={0}
-      initialTags={[]}
+      initialTags={initialTags}
       onConfirm={onConfirm}
     />,
   );
@@ -162,5 +163,33 @@ describe("CaseClosureModal", () => {
       tags: [],
       note: undefined,
     });
+  });
+
+  it("moves a clicked suggestion into the tag picker and restores it after removal", () => {
+    const onConfirm = renderModal([]);
+
+    const suggestedTag = screen.getByRole("button", { name: "Resolved" });
+    fireEvent.click(within(suggestedTag).getByText("Resolved"));
+
+    const removeTag = screen.getByRole("button", { name: "Remove Resolved" });
+    expect(screen.queryByRole("button", { name: "Resolved" })).not.toBeInTheDocument();
+
+    fireEvent.click(removeTag);
+
+    expect(screen.queryByRole("button", { name: "Remove Resolved" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Resolved" }));
+    fireEvent.click(screen.getByRole("button", { name: /close case/i }));
+    expect(onConfirm).toHaveBeenCalledWith({ alert_updates: [], tags: ["Resolved"], note: undefined });
+  });
+
+  it("hides suggestions for tags already in the picker regardless of case", () => {
+    renderModal([], vi.fn(), ["resolved"]);
+
+    const removeTag = screen.getByRole("button", { name: "Remove resolved" });
+    expect(screen.queryByRole("button", { name: "Resolved" })).not.toBeInTheDocument();
+
+    fireEvent.click(removeTag);
+
+    expect(screen.getByRole("button", { name: "Resolved" })).toBeInTheDocument();
   });
 });

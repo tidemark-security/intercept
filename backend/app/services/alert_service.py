@@ -33,6 +33,7 @@ from app.services.timeline_add_service import (
 )
 from app.services.timeline_service import TimelineValidationError, timeline_service
 from app.services.audit_service import get_audit_service
+from app.services.entity_bulk_update import add_bulk_analyst_note
 from app.services.realtime_service import emit_event
 from app.services import triage_recommendation_service
 from app.services.date_filter_utils import DateFilterValidationError, parse_datetime_filter
@@ -645,7 +646,9 @@ class AlertService:
 
     @staticmethod
     def _resolve_bulk_update_status(request: AlertBulkActionRequest) -> Optional[AlertStatus]:
-        if request.action != "update_status":
+        if request.action not in {"update", "update_status"} or (
+            request.status is None and request.disposition is None
+        ):
             return None
         return request.status or AlertService._status_from_disposition(request.disposition)
 
@@ -753,10 +756,13 @@ class AlertService:
     ) -> None:
         handler = self._bulk_action_handler(request.action)
         should_auto_reject = self._bulk_action_should_auto_reject(request, context)
+        analyst_note = (request.note or "").strip() if request.action == "update" else ""
 
         for alert in alerts:
             before = self._bulk_audit_snapshot(alert)
             handler(alert, request, context, performed_by)
+            if analyst_note:
+                await add_bulk_analyst_note(db, alert, "alert", analyst_note, performed_by)
 
             if should_auto_reject:
                 await triage_recommendation_service.auto_reject_if_pending(
@@ -773,6 +779,7 @@ class AlertService:
 
     def _bulk_action_handler(self, action: str) -> _BulkActionHandler:
         handlers: Dict[str, _BulkActionHandler] = {
+            "update": self._apply_bulk_update,
             "update_status": self._apply_bulk_status_update,
             "link_case": self._apply_bulk_existing_case_link,
             "create_case": self._apply_bulk_created_case_link,
@@ -789,7 +796,21 @@ class AlertService:
     ) -> bool:
         if request.action in {"link_case", "create_case", "close_duplicate"}:
             return True
-        return request.action == "update_status" and is_triage_completion_status(context.status)
+        return request.action in {"update", "update_status"} and is_triage_completion_status(context.status)
+
+    def _apply_bulk_update(
+        self,
+        alert: Alert,
+        request: AlertBulkActionRequest,
+        context: _BulkActionContext,
+        performed_by: str,
+    ) -> None:
+        if context.status is not None:
+            self._apply_bulk_status_update(alert, request, context, performed_by)
+        if request.assignee:
+            self._apply_bulk_assign(alert, request, context, performed_by)
+        if request.tags:
+            self._apply_bulk_tags(alert, request, context, performed_by)
 
     def _apply_bulk_status_update(
         self,
@@ -878,13 +899,13 @@ class AlertService:
         self,
         alert: Alert,
         request: AlertBulkActionRequest,
-        _context: _BulkActionContext,
+        context: _BulkActionContext,
         performed_by: str,
     ) -> None:
         if not request.assignee:
             raise AlertValidationError("assignee is required for assign")
         alert.assignee = request.assignee
-        if alert.status == AlertStatus.NEW:
+        if alert.status == AlertStatus.NEW and context.status is None:
             alert.status = AlertStatus.IN_PROGRESS
         alert.updated_at = datetime.now(timezone.utc)
         self._add_bulk_note(
@@ -929,9 +950,10 @@ class AlertService:
         request: AlertBulkActionRequest,
         status: AlertStatus,
     ) -> Optional[str]:
-        if status != AlertStatus.CLOSED_DUPLICATE:
-            return request.note
-        return AlertService._duplicate_note(request)
+        # The combined action adds its analyst note as a separate timeline item.
+        if status == AlertStatus.CLOSED_DUPLICATE:
+            return AlertService._duplicate_note(request)
+        return request.note if request.action == "update_status" else None
 
     @staticmethod
     def _duplicate_note(request: AlertBulkActionRequest) -> str:

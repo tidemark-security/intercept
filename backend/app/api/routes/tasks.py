@@ -7,8 +7,11 @@ from fastapi_pagination import Page
 from app.core.database import get_db
 from app.core.entity_ids import TASK_PREFIX
 from app.services.task_service import TaskValidationError, task_service
+from app.services.entity_bulk_update import BulkEntityNotFoundError
 from app.services.timeline_add_service import TimelineItemConflict
 from app.models.models import (
+    BulkUpdateResult,
+    TaskBulkUpdate,
     TaskCreate,
     TaskUpdate,
     TaskRead,
@@ -146,6 +149,22 @@ async def get_task(
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
     return db_task
+
+
+@router.post("/bulk-actions", response_model=BulkUpdateResult)
+async def bulk_task_action(
+    request: TaskBulkUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserAccount = Depends(require_non_auditor_user),
+):
+    """Apply a batch update to selected tasks."""
+    try:
+        count = await task_service.bulk_update(db, request, current_user.username)
+    except BulkEntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TaskValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return BulkUpdateResult(updated_count=count)
 
 
 @router.get("/{task_id}/timeline-graph", response_model=TimelineGraphRead)

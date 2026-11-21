@@ -7,6 +7,9 @@ import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
 import { getPersistedWidth } from "@/components/layout/ColumnRail";
 import { EntityList } from "@/components/data-display/EntityList";
+import { BulkActionModal } from "@/components/entities/BulkActionModal";
+import { BulkSelectionSummary, BulkSelectionToolbar } from "@/components/entities/BulkSelection";
+import { useEntityBulkActions } from "@/hooks/useEntityBulkActions";
 import { UnifiedTimeline } from "@/components/timeline/UnifiedTimeline";
 import { useTasks } from "@/hooks/useTasks";
 import { useTaskDetail } from "@/hooks/useTaskDetail";
@@ -65,7 +68,7 @@ function TasksListPage() {
   useDocumentTitle("Tasks");
   const navigate = useViewTransitionNavigate();
   const location = useLocation();
-  const { user } = useSession();
+  const { user, isAuditor } = useSession();
   const currentUser = user?.username || null;
 
   // UI state for filtering - synced with URL query params
@@ -117,6 +120,9 @@ function TasksListPage() {
     ...toEntityListQueryFilters(filters),
     page: currentPage,
     size: pageSize,
+  });
+  const bulk = useEntityBulkActions("task", tasksData?.items, {
+    enabled: !isAuditor, users, currentUser, usersLoading: isLoadingUsers, showSplitCenter,
   });
 
   // Fetch selected task details from API (only when a task is selected)
@@ -175,6 +181,7 @@ function TasksListPage() {
 
   // Task selection handler
   const handleTaskSelect = (taskId: number, taskHumanId: string) => {
+    bulk.clear();
     setSelectedTaskId(taskId);
     
     if (breakpoint === 'mobile' || !showSplitCenter) {
@@ -200,15 +207,18 @@ function TasksListPage() {
     setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
   };
 
-  const isLeftOnlyView = visibleColumns === 'left';
+  const layoutColumns = bulk.selectionColumns ?? visibleColumns;
+  const isLeftOnlyView = layoutColumns === 'left';
 
   return (
-    <DefaultPageLayout priority={taskDetail?.priority || undefined}>
+    <DefaultPageLayout priority={bulk.hasMultiple ? undefined : taskDetail?.priority || undefined}>
       <ThreeColumnLayout
         leftColumn={
           <EntityList
             items={tasksData?.items ?? []}
-            selectedId={selectedTaskId}
+            selectedId={bulk.hasMultiple ? null : selectedTaskId}
+            {...bulk.listProps}
+            toolbarActions={bulk.hasMultiple && <BulkSelectionToolbar {...bulk.toolbarProps} />}
             onSelect={handleTaskSelect}
             onDoubleClick={handleTaskDoubleClick}
             getItemHref={(_id, humanId) => `/tasks/${humanId}${location.search}`}
@@ -241,7 +251,9 @@ function TasksListPage() {
             emptyMessage="No tasks found"
           />
         }
-        centerColumn={
+        centerColumn={bulk.hasMultiple ? (
+          <BulkSelectionSummary {...bulk.summaryProps} />
+        ) : (
           <UnifiedTimeline
             entityDetail={taskDetail ?? null}
             entityType="task"
@@ -259,9 +271,9 @@ function TasksListPage() {
             onBackToList={handleBackToList}
             onOpenEntity={handleOpenTask}
           />
-        }
+        )}
         rightColumn={<div></div>}
-        visibleColumns={visibleColumns}
+        visibleColumns={layoutColumns}
         onVisibleColumnsChange={setVisibleColumns}
         columnConfig={getColumnConfig(selectedTaskId, taskListWidth, isLeftOnlyView)}
         dimLeftColumn={!bulk.hasMultiple && !!selectedTaskId}
@@ -270,6 +282,7 @@ function TasksListPage() {
         leftColumnWidth={taskListWidth}
         onLeftColumnWidthChange={setTaskListWidth}
       />
+      {bulk.dialogProps && <BulkActionModal {...bulk.dialogProps} />}
     </DefaultPageLayout>
   );
 }

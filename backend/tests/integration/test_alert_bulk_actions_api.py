@@ -147,6 +147,71 @@ async def test_bulk_assign_updates_assignee_and_starts_new_alerts(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_other_changes", [False, True], ids=["note-only", "combined"])
+async def test_bulk_update_adds_an_analyst_note_to_each_selected_alert(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    with_other_changes: bool,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+    first, second, unselected = await _seed_alerts(session_maker, count=3)
+    async with session_maker() as session:
+        for alert_id in (first, second):
+            alert = await session.get(Alert, alert_id)
+            assert alert is not None
+            alert.tags = ["existing"]
+        await session.commit()
+
+    payload = {"alert_ids": [first, second], "action": "update", "note": "  Reviewed both alerts.  "}
+    if with_other_changes:
+        payload.update(status="CLOSED_BP", assignee="specialist", tags=["reviewed"])
+
+    response = await client.post(
+        "/api/v1/alerts/bulk-actions",
+        json=payload,
+        cookies={"intercept_session": session_cookie},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["updated_count"] == 2
+    note_ids = set()
+    async with session_maker() as session:
+        for alert_id in (first, second):
+            alert = await session.get(Alert, alert_id)
+            assert alert is not None
+            assert alert.status == (AlertStatus.CLOSED_BP if with_other_changes else AlertStatus.NEW)
+            assert alert.assignee == ("specialist" if with_other_changes else None)
+            assert alert.tags == (["existing", "reviewed"] if with_other_changes else ["existing"])
+            notes = [
+                item for item in (alert.timeline_items or {}).values()
+                if item["description"] == "Reviewed both alerts."
+            ]
+            assert len(notes) == 1
+            note = notes[0]
+            assert note["type"] == "note"
+            note_ids.add(note["id"])
+            audit = await session.scalar(
+                select(AuditLog).where(
+                    AuditLog.entity_type == "alert",
+                    AuditLog.entity_id == str(alert_id),
+                    AuditLog.event_type == "timeline.item.added",
+                    AuditLog.item_id == note["id"],
+                )
+            )
+            assert audit is not None
+            assert note["created_by"] == audit.performed_by
+
+        other = await session.get(Alert, unselected)
+        assert other is not None
+        assert other.status == AlertStatus.NEW
+        assert other.assignee is None
+        assert not other.tags
+        assert not other.timeline_items
+    assert len(note_ids) == 2
+
+
+@pytest.mark.asyncio
 async def test_bulk_link_existing_case_links_all_selected_alerts(
     client: AsyncClient,
     session_maker: Any,

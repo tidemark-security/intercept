@@ -3,10 +3,12 @@
 /* tslint:disable */
 /* eslint-disable */
 import type { AttachmentStatusUpdate } from '../models/AttachmentStatusUpdate';
+import type { BulkUpdateResult } from '../models/BulkUpdateResult';
 import type { Page_TaskRead_ } from '../models/Page_TaskRead_';
 import type { PresignedDownloadResponse } from '../models/PresignedDownloadResponse';
 import type { PresignedUploadRequest } from '../models/PresignedUploadRequest';
 import type { PresignedUploadResponse } from '../models/PresignedUploadResponse';
+import type { TaskBulkUpdate } from '../models/TaskBulkUpdate';
 import type { TaskCreate } from '../models/TaskCreate';
 import type { TaskRead } from '../models/TaskRead';
 import type { TaskStatus } from '../models/TaskStatus';
@@ -223,6 +225,27 @@ export class TasksService {
             path: {
                 'task_id': taskId,
             },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Bulk Task Action
+     * Apply a batch update to selected tasks.
+     * @returns BulkUpdateResult Successful Response
+     * @throws ApiError
+     */
+    public static bulkTaskActionApiV1TasksBulkActionsPost({
+        requestBody,
+    }: {
+        requestBody: TaskBulkUpdate,
+    }): CancelablePromise<BulkUpdateResult> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/tasks/bulk-actions',
+            body: requestBody,
+            mediaType: 'application/json',
             errors: {
                 422: `Validation Error`,
             },

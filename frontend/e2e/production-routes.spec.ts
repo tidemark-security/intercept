@@ -580,6 +580,148 @@ test("narrow alerts view keeps the queue and detail reachable", async ({ page })
   await expect(list).toHaveCount(0);
 });
 
+test("alert Bulk Action sends one update with status, assignee, suggested tag and note", async ({ page }) => {
+  await installProductionApiMocks(page);
+  await page.route("**/api/v1/features", (route) => route.fulfill(jsonResponse({
+    case_closure_recommended_tags: ["Reviewed"],
+  })));
+  const updates: unknown[] = [];
+  await page.route("**/api/v1/alerts/bulk-actions", async (route) => {
+    updates.push(route.request().postDataJSON());
+    await route.fulfill(jsonResponse({ updated_count: 2, updated_alerts: [sampleAlert, secondAlert] }));
+  });
+  await page.setViewportSize({ width: 1920, height: 1000 });
+  await page.goto("/alerts");
+  await page.getByRole("checkbox", { name: "Select visible alerts" }).press("Space");
+  const summary = page.getByRole("region", { name: "Selection summary" });
+  await expect(summary.getByRole("heading")).toHaveText("2 alerts selected");
+  await expect(summary.getByRole("listitem").filter({ hasText: "ALT-0000002" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Duplicate", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Bulk", exact: true }).click();
+
+  const dialog = page.getByRole("dialog", { name: "Bulk Action" });
+  const apply = dialog.getByRole("button", { name: "Apply" });
+  await expect(apply).toBeDisabled();
+  await dialog.getByRole("combobox").filter({ hasText: "No status selected" }).click({ timeout: 5000 });
+  const statuses = page.getByRole("listbox");
+  await expect(statuses.getByRole("option", { name: "Closed (Duplicate)" })).toHaveCount(0);
+  for (const label of ["New", "In Progress", "Escalated", "Closed (Benign Positive)"]) {
+    await expect(statuses.getByRole("option", { name: label, exact: true }).locator("svg[aria-hidden=true]")).toHaveCount(1);
+  }
+  await statuses.getByRole("option", { name: "Closed (Benign Positive)" }).click({ timeout: 5000 });
+  await dialog.getByRole("combobox").filter({ hasText: "No assignee selected" }).click({ timeout: 5000 });
+  await page.getByRole("option", { name: "Assign to me" }).click({ timeout: 5000 });
+  await dialog.getByRole("button", { name: "Reviewed", exact: true }).click({ timeout: 5000 });
+  await expect(dialog.getByRole("button", { name: "Reviewed", exact: true })).toHaveCount(0);
+  await dialog.getByRole("textbox", { name: "Analyst note" }).fill("  Reviewed both alerts.  ");
+  await apply.click();
+
+  await expect(dialog).toHaveCount(0);
+  expect(updates).toEqual([{
+    action: "update",
+    alert_ids: [1, 2],
+    status: "CLOSED_BP",
+    assignee: "admin",
+    tags: ["Reviewed"],
+    note: "Reviewed both alerts.",
+  }]);
+});
+
+for (const { resource, singular, sample, buttonLabel, status, forbiddenStatus } of [
+  { resource: "cases", singular: "case", sample: sampleCase, buttonLabel: "Closed", status: "CLOSED", forbiddenStatus: "Done" },
+  { resource: "tasks", singular: "task", sample: sampleTask, buttonLabel: "Done", status: "DONE", forbiddenStatus: "Closed" },
+] as const) {
+  test(`${resource} share Bulk Action and replace the previous detail with a selection summary`, async ({ page }) => {
+    await installProductionApiMocks(page);
+    const prefix = sample.human_id.slice(0, 3);
+    const second = { ...sample, id: 2, human_id: `${prefix}-0000002`, title: `Second ${singular}` };
+    const previous = { ...sample, id: 3, human_id: `${prefix}-0000003`, title: `Previously opened ${singular}` };
+    await page.route(`**/api/v1/${resource}?**`, (route) => route.fulfill(jsonResponse({
+      ...emptyPage, items: [sample, second, previous], pages: 1, total: 3,
+    })));
+    await page.route(`**/api/v1/${resource}/3**`, (route) => route.fulfill(jsonResponse(previous)));
+    const updates: unknown[] = [];
+    await page.route(`**/api/v1/${resource}/bulk-actions`, async (route) => {
+      updates.push(route.request().postDataJSON());
+      await route.fulfill(jsonResponse({ updated_count: 2 }));
+    });
+    await page.setViewportSize({ width: 1920, height: 1000 });
+    await page.goto(`/${resource}`);
+    await page.getByRole("link", { name: new RegExp(previous.title) }).click();
+    const detail = page.getByLabel(`${singular} timeline content`);
+    await expect(detail).toBeVisible();
+
+    await page.getByRole("checkbox", { name: `Select ${sample.human_id}` }).press("Space");
+    await page.getByRole("checkbox", { name: `Select ${second.human_id}` }).press("Space");
+    const summary = page.getByRole("region", { name: "Selection summary" });
+    await expect(summary.getByRole("heading")).toHaveText(`2 ${resource} selected`);
+    await expect(summary.getByRole("listitem").filter({ hasText: sample.human_id })).toBeVisible();
+    await expect(summary.getByRole("listitem").filter({ hasText: second.human_id })).toBeVisible();
+    await expect(summary.getByText(previous.human_id)).toHaveCount(0);
+    await expect(detail).toHaveCount(0);
+
+    await summary.getByRole("button", { name: `Deselect ${second.human_id}` }).click();
+    await expect(summary).toHaveCount(0);
+    await expect(detail).toBeVisible();
+    await page.getByRole("checkbox", { name: `Select ${second.human_id}` }).press("Space");
+    await summary.getByRole("button", { name: "Bulk Action" }).click();
+    const dialog = page.getByRole("dialog", { name: "Bulk Action" });
+    await dialog.getByRole("combobox").filter({ hasText: "No status selected" }).click();
+    await expect(page.getByRole("option", { name: forbiddenStatus, exact: true })).toHaveCount(0);
+    await page.getByRole("option", { name: buttonLabel, exact: true }).click();
+    if (resource === "cases") await expect(dialog.getByText(/closes open linked alerts as Unresolved/)).toBeVisible();
+    await dialog.getByRole("combobox").filter({ hasText: "No assignee selected" }).click();
+    await page.getByRole("option", { name: "Assign to me" }).click();
+    await dialog.getByRole("button", { name: "Resolved", exact: true }).click();
+    await dialog.getByRole("textbox", { name: "Analyst note" }).fill("Reviewed as a group");
+    await dialog.getByRole("button", { name: "Apply" }).click();
+
+    await expect(summary).toHaveCount(0);
+    await expect(detail).toBeVisible();
+    expect(updates).toEqual([{
+      entity_ids: [sample.id, second.id], status, assignee: "admin", tags: ["Resolved"], note: "Reviewed as a group",
+    }]);
+  });
+}
+
+test("the shared selection summary keeps checked tasks across pages and works on mobile", async ({ page }) => {
+  await installProductionApiMocks(page);
+  const second = { ...sampleTask, id: 2, human_id: "TSK-0000002", title: "Task on page two" };
+  await page.route("**/api/v1/tasks?**", (route) => {
+    const pageNumber = Number(new URL(route.request().url()).searchParams.get("page")) || 1;
+    return route.fulfill(jsonResponse({
+      ...emptyPage, items: [pageNumber === 2 ? second : sampleTask], page: pageNumber, pages: 2, total: 2,
+    }));
+  });
+  await page.setViewportSize({ width: 700, height: 900 });
+  await page.goto("/tasks");
+  await page.getByRole("checkbox", { name: `Select ${sampleTask.human_id}` }).press("Space");
+  await page.getByRole("button", { name: "2", exact: true }).click();
+  await page.getByRole("checkbox", { name: `Select ${second.human_id}` }).press("Space");
+  await page.getByRole("button", { name: "Review selection" }).click();
+  const summary = page.getByRole("region", { name: "Selection summary" });
+  await expect(summary.getByRole("heading")).toHaveText("2 tasks selected");
+  await expect(summary.getByText(sampleTask.title)).toBeVisible();
+  await expect(summary.getByText(second.title)).toBeVisible();
+  await summary.getByRole("button", { name: "Back to list" }).click();
+  await expect(page.getByRole("checkbox", { name: `Select ${second.human_id}` })).toBeChecked();
+});
+
+test("the narrow alerts overlay can bring the selection summary and list to the front", async ({ page }) => {
+  await installProductionApiMocks(page);
+  await page.setViewportSize({ width: 1000, height: 900 });
+  await page.goto("/alerts/ALT-0000001");
+  const list = page.getByRole("region", { name: "Alert list", exact: true });
+  await list.getByRole("checkbox", { name: "Select visible alerts" }).press("Space");
+  const summary = page.getByRole("region", { name: "Selection summary" });
+  await page.getByRole("button", { name: "Review selection" }).click();
+  await expect(page.getByRole("region", { name: "Alert detail", exact: true })).toBeFocused();
+  await expect(summary.getByRole("heading")).toHaveText("2 alerts selected");
+  await summary.getByRole("button", { name: "Back to list" }).click();
+  await expect(list).toBeFocused();
+  await expect(list.getByRole("checkbox", { name: "Select visible alerts" })).toBeChecked();
+});
+
 test("MCP consent keeps its capability out of request URLs and posts FastMCP fields", async ({ page, baseURL }) => {
   const consentContext = {
     transaction_id: "transaction-123",
