@@ -21,6 +21,10 @@ export interface InlineMarkdownProps {
   content: string;
   /** Additional class names for the wrapper span */
   className?: string;
+  /** Render links as plain text in non-interactive previews. */
+  linkStyle?: 'badge' | 'plain';
+  /** Strip inline formatting and links, keeping only their text. */
+  plainText?: boolean;
 }
 
 /**
@@ -46,7 +50,7 @@ const inlineSanitizeConfig = {
   },
 };
 
-export function InlineMarkdown({ content, className }: InlineMarkdownProps) {
+export function InlineMarkdown({ content, className, linkStyle = 'badge', plainText = false }: InlineMarkdownProps) {
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === 'dark';
 
@@ -58,7 +62,7 @@ export function InlineMarkdown({ content, className }: InlineMarkdownProps) {
     <span className={className}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[[rehypeSanitize, inlineSanitizeConfig]]}
+        rehypePlugins={[[rehypeSanitize, plainText ? { tagNames: [] } : inlineSanitizeConfig]]}
         components={{
           // Override p to render as fragment - avoids block nesting
           p: ({ children }) => <>{children}</>,
@@ -78,7 +82,7 @@ export function InlineMarkdown({ content, className }: InlineMarkdownProps) {
               {children}
             </code>
           ),
-          a: ({ href, children }) => (
+          a: ({ href, children }) => linkStyle === 'plain' ? <>{children}</> : (
             <LinkBadge href={href || '#'}>
               {children}
             </LinkBadge>

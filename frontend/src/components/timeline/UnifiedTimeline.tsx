@@ -1121,17 +1121,24 @@ function UnifiedTimelineInner({
               {(() => {
                 const timelineItems = getTimelineItems(entityDetail);
                 const hasTimelineItems = timelineItems.length > 0;
+                const alert = entityType === 'alert' ? entityDetail as AlertRead : null;
 
                 return (
                   <div className={cn(
                     "flex w-full flex-col items-start",
                     timelineViewMode === 'swimlane' && "h-full min-h-0",
                   )}>
+                    {alert?.context?.items?.length ? (
+                      <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
+                        <ContextCard context={alert.context} />
+                      </div>
+                    ) : null}
+
                     {/* Triage Recommendation Card (Alerts only) */}
-                    {entityType === 'alert' && (entityDetail as AlertRead).triage_recommendation && (
+                    {alert?.triage_recommendation && (
                       <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
                         <TriageRecommendationCard
-                          recommendation={(entityDetail as AlertRead).triage_recommendation!}
+                          recommendation={alert.triage_recommendation}
                           onAccept={onAcceptTriageRecommendation || (() => { })}
                           onReject={onRejectTriageRecommendation || (() => { })}
                           onRetry={canReviewTriage ? onRetryTriage : undefined}
@@ -1146,8 +1153,8 @@ function UnifiedTimelineInner({
                     )}
 
                     {/* Triage Request Card (Alerts only - when no recommendation exists and triage is enabled) */}
-                    {entityType === 'alert' &&
-                      !(entityDetail as AlertRead).triage_recommendation &&
+                    {alert &&
+                      !alert.triage_recommendation &&
                       isTriageEnabled &&
                       !isEntityClosed &&
                       canRequestTriage && (
@@ -1158,12 +1165,6 @@ function UnifiedTimelineInner({
                           />
                         </div>
                       )}
-
-                    {entityType === 'alert' && Array.isArray((entityDetail as AlertRead).context?.items) && (entityDetail as AlertRead).context!.items!.length > 0 ? (
-                      <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
-                        <ContextCard context={(entityDetail as AlertRead).context} />
-                      </div>
-                    ) : null}
 
                     {/* Entity Metadata Card */}
                     <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">

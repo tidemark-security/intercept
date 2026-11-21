@@ -23,6 +23,8 @@ export interface CopyableTimestampProps {
   label?: string;
   /** Whether to show the full ISO8601 timestamp with relative time in brackets (default: true) */
   showFull?: boolean;
+  /** Show only the relative time while retaining the exact timestamp for copying. */
+  relativeOnly?: boolean;
   /** Whether relative time appears inline or beneath the timestamp (default: inline) */
   relativePlacement?: 'inline' | 'below';
   /** Visual variant controlling color and icon placement (default: "accent-1-left") */
@@ -37,6 +39,7 @@ export function CopyableTimestamp({
   value,
   label,
   showFull = true,
+  relativeOnly = false,
   relativePlacement = 'inline',
   variant = 'default-right',
   className,
@@ -108,6 +111,29 @@ export function CopyableTimestamp({
   ) : (
     <Copy className={iconClasses} />
   );
+
+  if (relativeOnly) {
+    return (
+      <button
+        type="button"
+        className={cn(
+          "flex max-w-full flex-wrap items-center gap-1 text-left text-caption font-caption focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus-border",
+          supportingTextClasses,
+          className,
+        )}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        onFocus={() => setIsHovered(true)}
+        onBlur={() => setIsHovered(false)}
+        onClick={handleCopyTimestamp}
+        title={`Click to copy: ${displayTime}`}
+      >
+        {!isRightVariant && icon}
+        <span>{label ? `${label} ` : ""}{relativeTime}</span>
+        {isRightVariant && icon}
+      </button>
+    );
+  }
 
   if (relativePlacement === 'below') {
     return (

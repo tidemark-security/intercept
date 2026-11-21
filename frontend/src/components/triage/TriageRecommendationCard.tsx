@@ -1,24 +1,27 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
+import { Accordion } from '@tidemark-security/ux';
 
 import { Badge } from '@/components/data-display/Badge';
 import { RelativeTime } from '@/components/data-display/RelativeTime';
+import { InlineMarkdown } from '@/components/data-display/InlineMarkdown';
 import { Button } from '@/components/buttons/Button';
 import { IconButton } from '@/components/buttons/IconButton';
 import { Select } from '@/components/forms/Select';
 import { Priority } from '@/components/misc/Priority';
-import { Progress } from '@/components/feedback/Progress';
 import { State } from '@/components/misc/State';
 import { useTheme } from '@/contexts/ThemeContext';
+import { useAlertPanelExpansion } from '@/hooks/useAlertPanelExpansion';
 import { useCaseRunbooks } from '@/hooks/useCaseRunbooks';
 import { cn } from '@/utils/cn';
+import { IconWrapper } from '@/utils/IconWrapper';
 import type { TriageRecommendationRead } from '@/types/generated/models/TriageRecommendationRead';
 import type { AcceptRecommendationRequest } from '@/types/generated/models/AcceptRecommendationRequest';
 import type { RejectionCategory } from '@/types/generated/models/RejectionCategory';
 import { alertStatusToUIState, priorityToUIPriority } from '@/utils/statusHelpers';
 import type { AlertStatus } from '@/types/generated/models/AlertStatus';
-import type { Priority as PriorityType } from '@/types/generated/models/Priority';
 import { ReasoningText } from './ReasoningText';
 import { TriageRejectionDialog } from './TriageRejectionDialog';
+import styles from './TriageRecommendationCard.module.css';
 
 import { AlertCircle, ArrowRight, Check, ChevronDown, ChevronUp, Loader2, RefreshCw, Sparkles, Tag, TriangleAlert, X } from 'lucide-react';
 // Helper to format disposition for display
@@ -103,8 +106,6 @@ function getRecommendedAction(recommendation: TriageRecommendationRead): {
 // Get status label for badge display
 function getStatusLabel(status: string): string {
   switch (status) {
-    case 'PENDING':
-      return 'Pending Review';
     case 'ACCEPTED':
       return 'Accepted';
     case 'REJECTED':
@@ -116,11 +117,65 @@ function getStatusLabel(status: string): string {
   }
 }
 
-function formatContextScope(entry: Record<string, any>): string {
-  const scope = entry.scope && typeof entry.scope === 'object' ? entry.scope : {};
-  const type = typeof scope.type === 'string' ? scope.type.replace(/_/g, ' ').toLowerCase() : 'context';
-  const label = type.replace(/\b\w/g, (char: string) => char.toUpperCase());
-  return scope.value ? `${label}: ${scope.value}` : label;
+function TriageDetailRow({
+  label,
+  preview,
+  hint,
+  children,
+}: {
+  label: string;
+  preview: ReactNode;
+  hint?: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Accordion
+      open={open}
+      onOpenChange={setOpen}
+      className="min-w-0 rounded-none border-t border-solid border-neutral-border [&>button]:text-left [&>button:hover]:bg-neutral-50 [&>button:focus-visible]:outline [&>button:focus-visible]:outline-2 [&>button:focus-visible]:outline-focus-border [&>button:focus-visible]:-outline-offset-2"
+      trigger={(
+        <span className={cn(styles.disclosure, 'grid w-full min-w-0 items-center gap-x-3 gap-y-1 px-1 py-2')}>
+          <span className="text-heading-3 font-heading-3 text-default-font">{label}</span>
+          {!open && <span className={cn(styles.preview, 'min-w-0')}>{preview}</span>}
+          <span className={cn(styles.toggle, 'flex shrink-0 items-center justify-end gap-2 text-caption font-caption text-subtext-color')}>
+            {!open && hint && <span>{hint}</span>}
+            <Accordion.Chevron className="h-4 w-4" aria-hidden="true" />
+          </span>
+        </span>
+      )}
+    >
+      <div className="w-full min-w-0 px-1 pb-3">{children}</div>
+    </Accordion>
+  );
+}
+
+function TriageDetailList({ children }: { children: ReactNode }) {
+  return (
+    <ul className="flex min-w-0 flex-col gap-2 text-body font-body text-default-font [overflow-wrap:anywhere]">
+      {children}
+    </ul>
+  );
+}
+
+function TriageDetailItem({ children }: { children: ReactNode }) {
+  return (
+    <li className="flex min-w-0 items-start gap-2">
+      <IconWrapper className="mt-0.5 h-4 w-4 shrink-0 text-subtext-color" aria-hidden="true">
+        <ArrowRight />
+      </IconWrapper>
+      {children}
+    </li>
+  );
+}
+
+function getTaskTitle(action: unknown): string {
+  if (typeof action === 'string') return action;
+  if (action && typeof action === 'object' && 'title' in action && typeof action.title === 'string') {
+    return action.title;
+  }
+  return '';
 }
 
 interface TriageRecommendationCardProps {
@@ -142,7 +197,6 @@ export function TriageRecommendationCard({
   onAccept,
   onReject,
   onRetry,
-  onNavigateToCase,
   acceptError,
   isAccepting = false,
   isRejecting = false,
@@ -159,34 +213,25 @@ export function TriageRecommendationCard({
   const isFailed = recommendation.status === 'FAILED';
   const isReviewed = ['ACCEPTED', 'REJECTED', 'SUPERSEDED'].includes(recommendation.status);
   
-  // Collapse/expand state - reviewed recommendations start collapsed by default
-  const [isExpanded, setIsExpanded] = useState(isReviewed ? defaultExpanded : true);
+  const [isExpanded, setIsExpanded] = useAlertPanelExpansion('triage-recommendation', !isReviewed || defaultExpanded);
+  const contentId = useId();
   const [replacementRunbookId, setReplacementRunbookId] = useState<string>('');
   
   // Rejection dialog state
   const [showRejectDialog, setShowRejectDialog] = useState(false);
-  const previousRecommendationStatusRef = useRef(recommendation.status);
 
   const inferredSuggestedStatus = useMemo(() => {
     return getInferredSuggestedStatus(recommendation);
   }, [recommendation]);
   
-  // Calculate if there are any suggested changes
-  const hasSuggestedChanges = useMemo(() => {
-    return !!(
-      inferredSuggestedStatus ||
-      recommendation.suggested_priority ||
-      recommendation.suggested_assignee ||
-      (recommendation.suggested_tags_add && recommendation.suggested_tags_add.length > 0) ||
-      (recommendation.suggested_tags_remove && recommendation.suggested_tags_remove.length > 0)
-    );
-  }, [
-    inferredSuggestedStatus,
-    recommendation.suggested_priority,
-    recommendation.suggested_assignee,
-    recommendation.suggested_tags_add,
-    recommendation.suggested_tags_remove,
-  ]);
+  const reasons = recommendation.reasoning_bullets ?? [];
+  const tasks = (recommendation.recommended_actions ?? []).map(getTaskTitle).filter(Boolean);
+  const tagsToAdd = recommendation.suggested_tags_add ?? [];
+  const tagsToRemove = recommendation.suggested_tags_remove ?? [];
+  const suggestedState = inferredSuggestedStatus ? alertStatusToUIState(inferredSuggestedStatus as AlertStatus) : null;
+  const suggestedPriority = recommendation.suggested_priority ? priorityToUIPriority(recommendation.suggested_priority) : null;
+  const hasSuggestedChanges = suggestedState || suggestedPriority || recommendation.suggested_assignee
+    || tagsToAdd.length > 0 || tagsToRemove.length > 0;
   
   const buildAcceptOptions = (patch: Partial<AcceptRecommendationRequest> = {}): AcceptRecommendationRequest => ({
       apply_status: true,
@@ -202,7 +247,12 @@ export function TriageRecommendationCard({
   
   // Get inferred action for display
   const recommendedAction = useMemo(() => getRecommendedAction(recommendation), [recommendation]);
-  const appliedContextEntries = recommendation.applied_context_entries ?? [];
+  const contextIndicator = recommendation.applied_context_entries?.length ? (
+    <span className="inline-flex items-center gap-1.5 text-caption font-caption text-subtext-color" title="Analyst context included in this triage">
+      <Check aria-hidden="true" className={cn("h-4 w-4 shrink-0", brandTextClass)} />
+      Context included
+    </span>
+  ) : null;
   const shouldShowRunbookRecovery = Boolean(
     isPending &&
     canReview &&
@@ -213,14 +263,6 @@ export function TriageRecommendationCard({
   const { data: publishedRunbooksData, isLoading: isLoadingRunbooks } = useCaseRunbooks(['PUBLISHED'], null);
   const publishedRunbooks = useMemo(() => publishedRunbooksData?.items ?? [], [publishedRunbooksData?.items]);
   
-  useEffect(() => {
-    const previousStatus = previousRecommendationStatusRef.current;
-    if (previousStatus !== recommendation.status && recommendation.status === 'ACCEPTED') {
-      setIsExpanded(false);
-    }
-    previousRecommendationStatusRef.current = recommendation.status;
-  }, [recommendation.status]);
-
   useEffect(() => {
     if (!shouldShowRunbookRecovery || replacementRunbookId || publishedRunbooks.length === 0) {
       return;
@@ -310,305 +352,226 @@ export function TriageRecommendationCard({
     );
   }
 
-  // Collapsed view for reviewed (accepted/rejected/superseded) recommendations
-  if (isReviewed && !isExpanded) {
-    return (
-      <div
-        className={`flex w-full items-center gap-4 rounded-md border border-solid ${
-          isDarkTheme ? 'border-neutral-100' : 'border-neutral-600'
-        } bg-neutral-50 px-4 py-3 shadow-sm flex-wrap`}
+  const reviewActions = isPending && canReview ? (
+    <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-2">
+      <Button
+        variant="neutral-secondary"
+        size={isExpanded ? "medium" : "small"}
+        aria-label="Reject"
+        aria-busy={isRejecting}
+        onClick={() => setShowRejectDialog(true)}
+        disabled={isRejecting || isAccepting}
+        loading={isRejecting}
       >
-        <div className="flex items-center gap-3">
-          <Sparkles className="h-5 w-5 text-subtext-color" />
-          <span className="text-heading-3 font-heading-3 text-subtext-color">
-            AI Triage Recommendation
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge 
-            variant={getStatusVariant(recommendation.status)} 
-            icon={recommendation.status === 'ACCEPTED' ? <Check className="h-3 w-3" /> : recommendation.status === 'REJECTED' ? <X className="h-3 w-3" /> : undefined}
-          >
-            {getStatusLabel(recommendation.status)}
-          </Badge>
-        </div>
-        <div className="hidden sm:flex h-4 w-px flex-none flex-col items-center gap-2 bg-neutral-border" />
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <span className="text-body font-body text-subtext-color">
-              Confidence:
-            </span>
-            <span className="text-body-bold font-body-bold text-default-font">
-              {formatConfidence(recommendation.confidence)}
-            </span>
-          </div>
-          <Badge 
-            variant={getDispositionVariant(recommendation.disposition)} 
-            icon={recommendation.disposition === 'TRUE_POSITIVE' ? <TriangleAlert className="h-3 w-3" /> : undefined}
-          >
-            {formatDisposition(recommendation.disposition).toUpperCase()}
-          </Badge>
-        </div>
-        <div className="flex grow shrink-0 basis-0 items-center justify-end gap-2">
-          <span className="text-caption font-caption text-subtext-color">
-            {recommendation.status === 'ACCEPTED' && recommendation.reviewed_by && (
-              <>Accepted by {recommendation.reviewed_by}</>
-            )}
-            {recommendation.status === 'REJECTED' && recommendation.reviewed_by && (
-              <>Rejected by {recommendation.reviewed_by}</>
-            )}
-            {recommendation.status === 'SUPERSEDED' && (
-              <>Superseded</>
-            )}
-            {recommendation.reviewed_at && (
-              <>
-                {' • '}
-                <RelativeTime value={recommendation.reviewed_at} />
-              </>
-            )}
-          </span>
-          <IconButton
-            variant="neutral-tertiary"
-            icon={<ChevronDown className="h-4 w-4" />}
-            onClick={() => setIsExpanded(true)}
-          />
-        </div>
-      </div>
-    );
-  }
+        Reject
+      </Button>
+      <Button
+        variant="brand-primary"
+        size={isExpanded ? "medium" : "small"}
+        aria-label="Accept Recommendation"
+        aria-busy={isAccepting}
+        onClick={handleAccept}
+        disabled={isAccepting || isRejecting}
+        loading={isAccepting}
+      >
+        Accept Recommendation
+      </Button>
+    </div>
+  ) : null;
 
   return (
-    <div
-      className={`flex w-full flex-col items-start gap-6 border border-solid ${
-        isDarkTheme ? 'border-neutral-100' : 'border-neutral-400'
-      } bg-default-background px-6 py-6`}
+    <section
+      aria-label="AI Triage Recommendation"
+      className={cn(styles.card, 'flex w-full min-w-0 flex-col border border-solid px-3 py-3 sm:px-4',
+        isExpanded ? 'gap-3 bg-default-background' : 'gap-2 bg-neutral-50',
+        isDarkTheme ? 'border-neutral-100' : 'border-neutral-400')}
     >
-      {/* Header */}
-      <div className="flex w-full flex-wrap items-center gap-4">
-        <div className="flex items-center gap-2">
-          <Sparkles className="h-5 w-5 text-default-font" />
-          <span className="text-heading-3 font-heading-3 text-default-font">
-            AI Triage Recommendation
-          </span>
-        </div>
-        <Badge variant={getStatusVariant(recommendation.status)}>
-          {getStatusLabel(recommendation.status)}
-        </Badge>
-        {/* Collapse button for reviewed recommendations */}
-        {isReviewed && (
-          <div className="flex grow shrink-0 basis-0 items-center justify-end">
-            <IconButton
-              variant="neutral-tertiary"
-              icon={<ChevronUp className="h-4 w-4" />}
-              onClick={() => setIsExpanded(false)}
-            />
+      <header className="flex w-full items-start gap-3">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+            <div className="flex items-center gap-2">
+              <IconWrapper className="h-4 w-4 shrink-0 text-default-font" aria-hidden="true"><Sparkles /></IconWrapper>
+              <h2 className="text-heading-3 font-heading-3 text-default-font">
+                AI Triage Recommendation
+              </h2>
+            </div>
+            <Badge variant={getDispositionVariant(recommendation.disposition)}>
+              {formatDisposition(recommendation.disposition)}
+            </Badge>
+            {!isPending && (
+              <Badge
+                variant={getStatusVariant(recommendation.status)}
+                icon={!isExpanded && recommendation.status === 'ACCEPTED' ? <Check className="h-3 w-3" /> :
+                  !isExpanded && recommendation.status === 'REJECTED' ? <X className="h-3 w-3" /> : undefined}
+              >
+                {getStatusLabel(recommendation.status)}
+              </Badge>
+            )}
+            {!isExpanded && isReviewed && (recommendation.reviewed_by || recommendation.reviewed_at) && (
+              <span className="text-caption font-caption text-subtext-color">
+                {(recommendation.status === 'ACCEPTED' || recommendation.status === 'REJECTED') && recommendation.reviewed_by && (
+                  <>{getStatusLabel(recommendation.status)} by {recommendation.reviewed_by}{recommendation.reviewed_at ? ' · ' : ''}</>
+                )}
+                {recommendation.reviewed_at && <RelativeTime value={recommendation.reviewed_at} />}
+              </span>
+            )}
           </div>
-        )}
-      </div>
-      
-      {/* Confidence & Disposition Row */}
-      <div className="flex w-full flex-wrap items-center gap-6">
-        <div className="flex min-w-[240px] grow shrink-0 basis-0 flex-col items-start gap-2">
-          <span className="text-body-bold font-body-bold text-subtext-color">
-            Confidence
-          </span>
-          <div className="flex w-full items-center gap-3">
-            <Progress value={Math.round(recommendation.confidence * 100)} />
-            <span
-              className={cn(
-                'text-heading-2 font-heading-2',
-                brandTextClass
-              )}
-            >
-              {formatConfidence(recommendation.confidence)}
+          <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
+            <span className="whitespace-nowrap text-caption font-caption text-subtext-color">
+              <strong className={brandTextClass}>{formatConfidence(recommendation.confidence)}</strong> confidence
             </span>
+            {contextIndicator}
           </div>
         </div>
-        <div className="flex flex-col items-start gap-2">
-          <span className="text-body-bold font-body-bold text-subtext-color">
-            Disposition
-          </span>
-          <Badge 
-            variant={getDispositionVariant(recommendation.disposition)} 
-            icon={recommendation.disposition === 'TRUE_POSITIVE' ? <TriangleAlert className="h-3 w-3" /> : undefined}
+        <IconButton
+          className="shrink-0"
+          variant="neutral-tertiary"
+          icon={isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          aria-label={isExpanded ? "Collapse triage recommendation" : "Expand triage recommendation"}
+          aria-expanded={isExpanded}
+          aria-controls={contentId}
+          onClick={() => setIsExpanded(!isExpanded)}
+        />
+      </header>
+
+      {!isExpanded && reasons[0]?.trim() && (
+        <InlineMarkdown
+          content={reasons[0]}
+          plainText
+          className="block truncate text-caption font-caption text-subtext-color"
+        />
+      )}
+
+      <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
+        <div className={cn(
+          'flex min-w-0 flex-[1_1_15rem] items-center gap-2 border border-solid px-2.5 text-default-font',
+          isExpanded ? 'py-1.5 text-heading-3 font-heading-3' : 'h-6 text-caption-bold font-caption-bold',
+          recommendedAction.variant === 'escalate' && (isDarkTheme ? 'border-error-500 bg-error-1000' : 'border-error-500 bg-error-100'),
+          recommendedAction.variant === 'dismiss' && (isDarkTheme ? 'border-success-500 bg-success-1000' : 'border-success-500 bg-success-100'),
+          recommendedAction.variant === 'manual' && (isDarkTheme ? 'border-warning-500 bg-warning-1000' : 'border-warning-500 bg-warning-100'),
+        )}>
+          <IconWrapper
+            aria-hidden="true"
+            className={cn('h-4 w-4 shrink-0',
+              recommendedAction.variant === 'escalate' && (isDarkTheme ? 'text-error-600' : 'text-error-800'),
+              recommendedAction.variant === 'dismiss' && (isDarkTheme ? 'text-success-600' : 'text-success-800'),
+              recommendedAction.variant === 'manual' && (isDarkTheme ? 'text-warning-600' : 'text-warning-800'))}
           >
-            {formatDisposition(recommendation.disposition).toUpperCase()}
-          </Badge>
-        </div>
-      </div>
-      
-      {/* Recommended Action Banner */}
-      <div className="flex w-full flex-col items-start gap-2">
-        <span className="text-body-bold font-body-bold text-subtext-color">
-          Recommended Action
-        </span>
-        <div className={`flex w-full items-center gap-3 px-4 py-3 border border-solid ${
-          recommendedAction.variant === 'escalate' 
-            ? `border-error-500 ${isDarkTheme ? 'bg-error-1000' : 'bg-error-100'}` 
-            : recommendedAction.variant === 'dismiss'
-            ? `border-success-500 ${isDarkTheme ? 'bg-success-1000' : 'bg-success-100'}`
-            : `border-warning-500 ${isDarkTheme ? 'bg-warning-1000' : 'bg-warning-100'}`
-        }`}>
-          {recommendedAction.variant === 'escalate' && (
-            <TriangleAlert className="h-6 w-6 text-error-600 flex-shrink-0" />
-          )}
-          {recommendedAction.variant === 'dismiss' && (
-            <Check className={cn("h-6 w-6 flex-shrink-0", isDarkTheme ? "text-success-600" : "text-success-800")} />
-          )}
-          {recommendedAction.variant === 'manual' && (
-            <AlertCircle className="h-6 w-6 text-warning-600 flex-shrink-0" />
-          )}
-          <span className="grow shrink-0 basis-0 text-heading-3 font-heading-3 text-default-font">
+            {recommendedAction.variant === 'escalate' ? <TriangleAlert /> :
+              recommendedAction.variant === 'dismiss' ? <Check /> : <AlertCircle />}
+          </IconWrapper>
+          <span className={isExpanded ? undefined : "min-w-0 truncate"} title={isExpanded ? undefined : recommendedAction.text}>
             {recommendedAction.text}
           </span>
         </div>
+        {!isExpanded && reviewActions}
       </div>
-      
-      {/* Divider */}
-      <div className="flex h-px w-full flex-none bg-neutral-border" />
-      
-      {/* Reasoning Section */}
-      {recommendation.reasoning_bullets && recommendation.reasoning_bullets.length > 0 && (
+
+      <div id={contentId} hidden={!isExpanded} className={isExpanded ? "contents" : "hidden"}>
+      {(reasons.length > 0 || hasSuggestedChanges || tasks.length > 0) && (
+        <div className="flex min-w-0 flex-col border-b border-solid border-neutral-border">
+          {reasons.length > 0 && (
+            <TriageDetailRow
+              label="Reasoning"
+              preview={<InlineMarkdown content={reasons[0]} linkStyle="plain" className="block truncate text-body font-body text-subtext-color" />}
+              hint={reasons.length > 1 ? `Show ${reasons.length - 1} more` : undefined}
+            >
+              <TriageDetailList>
+                {reasons.map((reason, index) => (
+                  <TriageDetailItem key={index}><ReasoningText text={reason} className="min-w-0" /></TriageDetailItem>
+                ))}
+              </TriageDetailList>
+            </TriageDetailRow>
+          )}
+          {hasSuggestedChanges && (
+            <TriageDetailRow
+              label="Recommended Changes"
+              preview={(
+                <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+                  {suggestedState && <State state={suggestedState} variant="small" />}
+                  {suggestedPriority && <Priority priority={suggestedPriority} size="mini" />}
+                  {recommendation.suggested_assignee && <Badge variant="neutral" className="max-w-full">Assign to {recommendation.suggested_assignee}</Badge>}
+                  {tagsToAdd.length > 0 && <Badge variant="neutral">+{tagsToAdd.length} {tagsToAdd.length === 1 ? 'tag' : 'tags'}</Badge>}
+                  {tagsToRemove.length > 0 && <Badge variant="error">−{tagsToRemove.length} {tagsToRemove.length === 1 ? 'tag' : 'tags'}</Badge>}
+                </span>
+              )}
+            >
+              <dl className="grid min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,10rem),1fr))] gap-x-4 gap-y-2">
+                {suggestedState && (
+                  <div className="flex min-w-0 flex-col items-start gap-1">
+                    <dt className="text-caption-bold font-caption-bold text-subtext-color">Status</dt>
+                    <dd><State state={suggestedState} variant="small" /></dd>
+                  </div>
+                )}
+                {suggestedPriority && (
+                  <div className="flex min-w-0 flex-col items-start gap-1">
+                    <dt className="text-caption-bold font-caption-bold text-subtext-color">Priority</dt>
+                    <dd><Priority priority={suggestedPriority} /></dd>
+                  </div>
+                )}
+                {recommendation.suggested_assignee && (
+                  <div className="flex min-w-0 flex-col items-start gap-1">
+                    <dt className="text-caption-bold font-caption-bold text-subtext-color">Assignee</dt>
+                    <dd className="text-body font-body text-default-font [overflow-wrap:anywhere]">{recommendation.suggested_assignee}</dd>
+                  </div>
+                )}
+                {([
+                  { label: 'Add Tags', tags: tagsToAdd, variant: 'neutral' },
+                  { label: 'Remove Tags', tags: tagsToRemove, variant: 'error' },
+                ] as const).map(({ label, tags, variant }) => tags.length > 0 && (
+                  <div key={label} className="flex min-w-0 flex-col items-start gap-1">
+                    <dt className="text-caption-bold font-caption-bold text-subtext-color">{label}</dt>
+                    <dd className="flex min-w-0 flex-wrap items-center gap-1">
+                      {tags.map((tag, index) => (
+                        <Badge key={index} variant={variant} icon={<Tag className="h-3 w-3" />} className="max-w-full">{tag}</Badge>
+                      ))}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </TriageDetailRow>
+          )}
+          {tasks.length > 0 && (
+            <TriageDetailRow
+              label="Recommended Tasks"
+              preview={<span className="block truncate text-body font-body text-subtext-color">{tasks[0]}</span>}
+              hint={`${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'}`}
+            >
+              <TriageDetailList>
+                {tasks.map((task, index) => <TriageDetailItem key={index}><span className="min-w-0">{task}</span></TriageDetailItem>)}
+              </TriageDetailList>
+            </TriageDetailRow>
+          )}
+        </div>
+      )}
+
+      {/* Rejection Reason (Rejected only) */}
+      {recommendation.status === 'REJECTED' && recommendation.rejection_reason && (
         <>
-          <div className="flex w-full flex-col items-start gap-4">
-            <span className="text-heading-3 font-heading-3 text-default-font">
-              Reasoning
+          <div className="flex w-full flex-col gap-2 rounded-md bg-error-50 p-3">
+            <span className="text-caption-bold font-caption-bold text-error-700">
+              Rejection Reason
             </span>
-            <div className="flex w-full flex-col items-start gap-3">
-              {recommendation.reasoning_bullets.map((bullet, idx) => (
-                <div key={idx} className="flex items-start gap-3">
-                  <ArrowRight className={cn("h-4 w-4 flex-shrink-0 mt-0.5", brandTextClass)} />
-                  <ReasoningText 
-                    text={bullet} 
-                    className="grow shrink-0 basis-0 text-body font-body text-default-font"
-                  />
-                </div>
-              ))}
-            </div>
+            <span className="text-body font-body text-error-700">
+              {recommendation.rejection_reason}
+            </span>
           </div>
           <div className="flex h-px w-full flex-none bg-neutral-border" />
         </>
       )}
 
-      {appliedContextEntries.length > 0 && (
+      {/* Superseded Notice */}
+      {recommendation.status === 'SUPERSEDED' && (
         <>
-          <div className="flex w-full flex-col items-start gap-4">
-            <span className="text-heading-3 font-heading-3 text-default-font">
-              Applied Context
+          <div className="flex w-full items-center gap-2 rounded-md bg-neutral-100 p-3">
+            <span className="text-caption font-caption text-subtext-color">
+              This recommendation has been superseded by a newer one.
             </span>
-            <div className="flex w-full flex-col gap-3">
-              {appliedContextEntries.map((entry, idx) => (
-                <div key={`${entry.id ?? idx}`} className="flex flex-col gap-1 rounded-md border border-neutral-border px-3 py-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="neutral">{formatContextScope(entry)}</Badge>
-                    {entry.author && (
-                      <span className="text-caption text-subtext-color">by {entry.author}</span>
-                    )}
-                  </div>
-                  {entry.body && (
-                    <p className="whitespace-pre-wrap text-body text-default-font">{entry.body}</p>
-                  )}
-                </div>
-              ))}
-            </div>
           </div>
           <div className="flex h-px w-full flex-none bg-neutral-border" />
         </>
       )}
-      
-      {/* Recommended Changes Section */}
-      {hasSuggestedChanges && (
-        <>
-          <div className="flex w-full flex-col items-start gap-4">
-            <span className="text-heading-3 font-heading-3 text-default-font">
-              Recommended Changes
-            </span>
-            <div className="flex w-full flex-wrap items-start gap-4">
-              {inferredSuggestedStatus && (
-                <div className="flex min-w-[160px] grow shrink-0 basis-0 flex-col items-start gap-2">
-                  <span className="text-caption-bold font-caption-bold text-subtext-color">
-                    Status
-                  </span>
-                  <State 
-                    state={alertStatusToUIState(inferredSuggestedStatus as AlertStatus)} 
-                    variant="small" 
-                  />
-                </div>
-              )}
-              {recommendation.suggested_priority && (
-                <div className="flex min-w-[160px] grow shrink-0 basis-0 flex-col items-start gap-2">
-                  <span className="text-caption-bold font-caption-bold text-subtext-color">
-                    Priority
-                  </span>
-                  <Priority 
-                    priority={priorityToUIPriority(recommendation.suggested_priority as PriorityType)} 
-                  />
-                </div>
-              )}
-              {recommendation.suggested_assignee && (
-                <div className="flex min-w-[160px] grow shrink-0 basis-0 flex-col items-start gap-2">
-                  <span className="text-caption-bold font-caption-bold text-subtext-color">
-                    Assignee
-                  </span>
-                  <span className="text-body-bold font-body-bold text-default-font">
-                    {recommendation.suggested_assignee}
-                  </span>
-                </div>
-              )}
-              {recommendation.suggested_tags_add && recommendation.suggested_tags_add.length > 0 && (
-                <div className="flex min-w-[160px] grow shrink-0 basis-0 flex-col items-start gap-2">
-                  <span className="text-caption-bold font-caption-bold text-subtext-color">
-                    Add Tags
-                  </span>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {recommendation.suggested_tags_add.map((tag, idx) => (
-                      <Badge key={idx} variant="neutral" icon={<Tag className="h-3 w-3" />}>
-                        {tag}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {recommendation.suggested_tags_remove && recommendation.suggested_tags_remove.length > 0 && (
-                <div className="flex min-w-[160px] grow shrink-0 basis-0 flex-col items-start gap-2">
-                  <span className="text-caption-bold font-caption-bold text-subtext-color">
-                    Remove Tags
-                  </span>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {recommendation.suggested_tags_remove.map((tag, idx) => (
-                      <Badge key={idx} variant="error" icon={<Tag className="h-3 w-3" />}>
-                        {tag}
-                      </Badge>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="flex h-px w-full flex-none bg-neutral-border" />
-        </>
-      )}
-      
-      {/* Recommended Tasks Section */}
-      {recommendation.recommended_actions && recommendation.recommended_actions.length > 0 && (
-        <>
-          <div className="flex w-full flex-col items-start gap-4">
-            <span className="text-heading-3 font-heading-3 text-default-font">
-              Recommended Tasks
-            </span>
-            <div className="flex w-full flex-col items-start gap-3">
-              {recommendation.recommended_actions.map((action, idx) => (
-                <div key={idx} className="flex items-start gap-3">
-                  <ArrowRight className={cn("h-4 w-4 flex-shrink-0 mt-0.5", brandTextClass)} />
-                  <span className="grow shrink-0 basis-0 text-body font-body text-default-font">
-                    {typeof action === 'string' ? action : action.title}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </>
-      )}
+      </div>
 
       {shouldShowRunbookRecovery && (
         <>
@@ -658,66 +621,14 @@ export function TriageRecommendationCard({
           <div className="flex h-px w-full flex-none bg-neutral-border" />
         </>
       )}
-      
+      {isExpanded && reviewActions}
 
-      
-      {/* Rejection Reason (Rejected only) */}
-      {recommendation.status === 'REJECTED' && recommendation.rejection_reason && (
-        <>
-          <div className="flex w-full flex-col gap-2 rounded-md bg-error-50 p-3">
-            <span className="text-caption-bold font-caption-bold text-error-700">
-              Rejection Reason
-            </span>
-            <span className="text-body font-body text-error-700">
-              {recommendation.rejection_reason}
-            </span>
-          </div>
-          <div className="flex h-px w-full flex-none bg-neutral-border" />
-        </>
-      )}
-      
-      {/* Superseded Notice */}
-      {recommendation.status === 'SUPERSEDED' && (
-        <>
-          <div className="flex w-full items-center gap-2 rounded-md bg-neutral-100 p-3">
-            <span className="text-caption font-caption text-subtext-color">
-              This recommendation has been superseded by a newer one.
-            </span>
-          </div>
-          <div className="flex h-px w-full flex-none bg-neutral-border" />
-        </>
-      )}
-      
-      {/* Action Buttons (Pending only) */}
-      {isPending && canReview && (
-        <div className="flex w-full flex-wrap items-center justify-end gap-3">
-          <Button
-            variant="neutral-secondary"
-            icon={<X className="h-4 w-4" />}
-            onClick={() => setShowRejectDialog(true)}
-            disabled={isRejecting || isAccepting}
-            loading={isRejecting}
-          >
-            Reject
-          </Button>
-          <Button
-            variant="brand-primary"
-            icon={<Check className="h-4 w-4" />}
-            onClick={handleAccept}
-            disabled={isAccepting || isRejecting}
-            loading={isAccepting}
-          >
-            Accept Recommendation
-          </Button>
-        </div>
-      )}
-      
       {/* Rejection Dialog */}
       <TriageRejectionDialog
         open={canReview && showRejectDialog}
         onOpenChange={setShowRejectDialog}
         onReject={onReject}
       />
-    </div>
+    </section>
   );
 }

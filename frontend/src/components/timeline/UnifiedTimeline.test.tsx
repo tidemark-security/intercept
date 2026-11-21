@@ -170,7 +170,7 @@ describe("UnifiedTimeline", () => {
     expect(screen.getByRole("button", { name: /request ai triage/i })).toBeInTheDocument();
   });
 
-  it("renders alert context between AI triage and metadata", () => {
+  it("renders alert context above AI triage and metadata", () => {
     renderWithProviders(
       <UnifiedTimeline
         entityDetail={{
@@ -206,8 +206,8 @@ describe("UnifiedTimeline", () => {
     const contextCard = screen.getByText("Analyst Context");
     const metadataSource = screen.getByText("Threat Intelligence");
 
-    expect(triageCard.compareDocumentPosition(contextCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(contextCard.compareDocumentPosition(metadataSource) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(contextCard.compareDocumentPosition(triageCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(triageCard.compareDocumentPosition(metadataSource) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("does not show the AI triage request card for closed alerts without a recommendation", () => {

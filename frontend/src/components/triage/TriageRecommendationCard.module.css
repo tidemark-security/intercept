@@ -1,0 +1,32 @@
+.card {
+  container-type: inline-size;
+}
+
+.disclosure {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.preview {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
+.toggle {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+@container (min-width: 36rem) {
+  .disclosure {
+    grid-template-columns: 10.5rem minmax(0, 1fr) auto;
+  }
+
+  .preview {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .toggle {
+    grid-column: 3;
+  }
+}

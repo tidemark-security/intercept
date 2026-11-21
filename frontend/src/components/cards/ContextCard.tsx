@@ -1,16 +1,18 @@
 "use client";
 
-import React, { useState } from "react";
+import { useId } from "react";
+import { BrainCircuit, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
 
 import { IconButton } from "@/components/buttons/IconButton";
 import { Badge } from "@/components/data-display/Badge";
 import { CopyableTimestamp } from "@/components/data-display/CopyableTimestamp";
 import MarkdownContent from "@/components/data-display/MarkdownContent";
 import { useTheme } from "@/contexts/ThemeContext";
+import { useAlertPanelExpansion } from "@/hooks/useAlertPanelExpansion";
 import type { MatchedContextSection } from "@/types/generated/models/MatchedContextSection";
 import { cn } from "@/utils/cn";
-
-import { BrainCircuit, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
+import { IconWrapper } from "@/utils/IconWrapper";
+import styles from "./ContextCard.module.css";
 
 interface ContextCardProps {
   context?: MatchedContextSection | null;
@@ -72,175 +74,117 @@ function buildContextEntriesHref(contextItems: MatchedContextSection["items"]) {
 export function ContextCard({ context }: ContextCardProps) {
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === "dark";
-  const [isExpanded, setIsExpanded] = useState(true);
+  const [isExpanded, setIsExpanded] = useAlertPanelExpansion("analyst-context", true);
+  const contentId = useId();
   const contextItems = Array.isArray(context?.items) ? context.items : [];
 
-  if (contextItems.length === 0) {
-    return null;
-  }
+  if (contextItems.length === 0) return null;
 
   const contextTotalCount = context?.total_count ?? contextItems.length;
   const contextOmittedCount = context?.omitted_count ?? 0;
   const visibleContextItems = contextItems.slice(0, 3);
-  const contextEntriesHref = buildContextEntriesHref(contextItems);
-
-  if (!isExpanded) {
-    return (
-      <div
-        className={cn(
-          "flex w-full flex-wrap items-center gap-4 rounded-md border border-solid bg-neutral-50 px-4 py-3 shadow-sm",
-          isDarkTheme ? "border-neutral-100" : "border-neutral-600",
-        )}
-      >
-        <div className="flex items-center gap-3">
-          <BrainCircuit className="h-5 w-5 text-subtext-color" />
-          <span className="text-heading-3 font-heading-3 text-subtext-color">
-            Analyst Context
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge variant="brand">{contextTotalCount} active</Badge>
-          {contextOmittedCount > 0 ? (
-            <Badge variant="neutral">{contextOmittedCount} omitted</Badge>
-          ) : null}
-        </div>
-        <div className="hidden h-4 w-px flex-none flex-col items-center gap-2 bg-neutral-border sm:flex" />
-        <span className="min-w-[200px] grow shrink basis-0 truncate text-body font-body text-subtext-color">
-          {contextItems[0]?.body ?? "Matched analyst context entries"}
-        </span>
-        <div className="flex grow shrink-0 basis-0 items-center justify-end gap-2">
-          <a
-            href={contextEntriesHref}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex min-h-7 flex-none items-center gap-1 rounded-md border border-solid border-neutral-border px-2 text-caption-bold font-caption-bold text-default-font transition-colors hover:border-brand-primary hover:text-brand-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus-border"
-          >
-            <span>View all context</span>
-            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-          </a>
-          <IconButton
-            variant="neutral-tertiary"
-            icon={<ChevronDown className="h-4 w-4" />}
-            aria-label="Expand analyst context"
-            onClick={() => setIsExpanded(true)}
-          />
-        </div>
-      </div>
-    );
-  }
 
   return (
-    <div
+    <section
+      aria-label="Analyst Context"
       className={cn(
-        "flex w-full flex-col items-start gap-6 border border-solid bg-default-background px-6 py-6",
+        "flex w-full min-w-0 flex-col gap-2 border border-solid px-3 py-2",
+        isExpanded ? "bg-default-background" : "bg-neutral-50",
         isDarkTheme ? "border-neutral-100" : "border-neutral-400",
       )}
     >
-      <div className="flex w-full flex-wrap items-center gap-4">
-        <div className="flex items-center gap-2">
-          <BrainCircuit className="h-5 w-5 text-default-font" />
-          <span className="text-heading-3 font-heading-3 text-default-font">
-            Analyst Context
-          </span>
+      <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <IconWrapper className="text-heading-3 text-default-font" aria-hidden="true">
+            <BrainCircuit />
+          </IconWrapper>
+          <h2 className="text-heading-3 font-heading-3 text-default-font">Analyst Context</h2>
+          <Badge variant="brand" className="h-5">{contextTotalCount} active</Badge>
+          {contextOmittedCount > 0 && (
+            <Badge variant="neutral" className="h-5">{contextOmittedCount} omitted</Badge>
+          )}
         </div>
-        <Badge variant="brand">{contextTotalCount} active</Badge>
-        {contextOmittedCount > 0 ? (
-          <Badge variant="neutral">{contextOmittedCount} omitted</Badge>
-        ) : null}
-        <div className="flex grow shrink-0 basis-0 items-center justify-end gap-2">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
           <a
-            href={contextEntriesHref}
+            href={buildContextEntriesHref(contextItems)}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex min-h-7 flex-none items-center gap-1 rounded-md border border-solid border-neutral-border px-2 text-caption-bold font-caption-bold text-default-font transition-colors hover:border-brand-primary hover:text-brand-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus-border"
+            className={cn(
+              "inline-flex min-h-7 items-center gap-1 rounded-md border border-solid border-neutral-border px-2 text-caption-bold font-caption-bold text-default-font transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus-border",
+              isDarkTheme ? "hover:border-brand-primary hover:text-brand-primary" : "hover:border-brand-800 hover:text-brand-800",
+            )}
           >
-            <span>View all context</span>
+            View all context
             <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
           </a>
           <IconButton
             variant="neutral-tertiary"
-            icon={<ChevronUp className="h-4 w-4" />}
-            aria-label="Collapse analyst context"
-            onClick={() => setIsExpanded(false)}
+            icon={isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            aria-label={isExpanded ? "Collapse analyst context" : "Expand analyst context"}
+            aria-expanded={isExpanded}
+            aria-controls={contentId}
+            onClick={() => setIsExpanded(!isExpanded)}
           />
         </div>
       </div>
 
-      <div className="flex h-px w-full flex-none bg-neutral-border" />
+      {!isExpanded && (
+        <p className="truncate text-caption font-caption text-subtext-color">
+          {contextItems[0]?.body ?? "Matched analyst context entries"}
+        </p>
+      )}
 
-      <div className="flex w-full flex-col items-start gap-4">
-        <span className="text-heading-3 font-heading-3 text-default-font">
-          Matched Context
-        </span>
-        <div className="grid w-full min-w-0 gap-3">
-          {visibleContextItems.map((item, index) => {
-            const scopes = formatContextScope(item.criteria as ContextCriterion[] | null | undefined);
-            const key = item.id ?? `${item.body ?? "context"}-${index}`;
-            const isPrimary = index === 0;
+      <div id={contentId} hidden={!isExpanded}>
+        {isExpanded && (
+          <div className={cn(styles.entries, "grid min-w-0 gap-2")}>
+            {visibleContextItems.map((item, index) => {
+              const scopes = formatContextScope(item.criteria);
+              const isPrimary = index === 0;
 
-            return (
-              <article
-                key={key}
-                className={cn(
-                  "flex min-w-0 flex-col gap-2 rounded-md border border-solid px-3 py-2",
-                  isPrimary
-                    ? cn(
-                      "border-brand-primary",
-                      isDarkTheme ? "bg-brand-1100" : "bg-brand-50",
-                    )
-                    : "border-neutral-border bg-default-background",
-                )}
-              >
-                {item.body ? (
-                  <MarkdownContent
-                    content={item.body}
-                    className={cn(
-                      "[overflow-wrap:anywhere] [&_*]:text-inherit [&_p]:!my-0",
-                      isPrimary
-                        ? "text-body-bold font-body-bold text-default-font"
-                        : "text-body font-body text-default-font",
-                    )}
-                  />
-                ) : null}
-
-                <div className="flex min-w-0 flex-wrap gap-1.5">
-                  {scopes.map((scope, scopeIndex) => (
-                    <Badge key={`${scope}-${scopeIndex}`} variant="neutral">
-                      {scope}
-                    </Badge>
-                  ))}
-                </div>
-
-                <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-caption font-caption text-subtext-color">
-                  {item.author ? (
-                    <span className="min-w-0 truncate">
-                      Author: <span className="text-default-font">{item.author}</span>
-                    </span>
-                  ) : null}
-                  {item.expires_at ? (
-                    <div className="flex min-w-0 items-center gap-1">
-                      <span>Expires:</span>
-                      <CopyableTimestamp
-                        value={item.expires_at}
-                        showFull
-                        variant="default-right"
-                        className="min-w-0 max-w-full flex-wrap"
-                        textClassName="text-default-font"
-                      />
+              return (
+                <article
+                  key={item.id ?? `${item.body}-${index}`}
+                  className={cn(
+                    styles.entry,
+                    "grid min-w-0 items-center gap-x-2 gap-y-1 border border-solid border-neutral-border px-2.5 py-2",
+                    isPrimary && (isDarkTheme
+                      ? "border-l-2 border-l-brand-primary bg-brand-1100"
+                      : "border-l-2 border-l-brand-800 bg-brand-50"),
+                  )}
+                >
+                  <MarkdownContent content={item.body} className={styles.body} />
+                  <div className={cn(styles.metadata, "flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1")}>
+                    {scopes.map((scope, scopeIndex) => (
+                      <Badge key={`${scope}-${scopeIndex}`} variant="neutral" className="h-auto min-h-5 max-w-full [&>span]:line-clamp-none [&>span]:[overflow-wrap:anywhere]">
+                        {scope}
+                      </Badge>
+                    ))}
+                    <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-caption font-caption text-subtext-color">
+                      {item.author && (
+                        <span className="min-w-0 [overflow-wrap:anywhere]">
+                          Author: <span className="text-default-font">{item.author}</span>
+                        </span>
+                      )}
+                      {item.expires_at && (
+                        <CopyableTimestamp
+                          value={item.expires_at}
+                          label={Date.parse(item.expires_at) <= Date.now() ? "Expired" : "Expires"}
+                          relativeOnly
+                        />
+                      )}
                     </div>
-                  ) : null}
-                </div>
-              </article>
-            );
-          })}
-        </div>
+                  </div>
+                </article>
+              );
+            })}
+            {contextItems.length > visibleContextItems.length && (
+              <span className="text-caption font-caption text-subtext-color">
+                Showing first {visibleContextItems.length} of {contextTotalCount} matched context entries
+              </span>
+            )}
+          </div>
+        )}
       </div>
-
-      {contextItems.length > visibleContextItems.length ? (
-        <span className="text-caption font-caption text-subtext-color">
-          Showing first {visibleContextItems.length} of {contextTotalCount} matched context entries
-        </span>
-      ) : null}
-    </div>
+    </section>
   );
 }
