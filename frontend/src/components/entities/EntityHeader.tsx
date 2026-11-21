@@ -7,13 +7,15 @@ import { cn } from "@/utils/cn";
 import { Button } from "@/components/buttons/Button";
 import { IconButton } from "@/components/buttons/IconButton";
 import { LinkButton } from "@/components/timeline/LinkButton";
-import { DropdownMenu, DropdownMenuRoot, DropdownMenuTrigger, DropdownMenuContent } from "@/components/overlays/DropdownMenu";
+import { DropdownMenu, DropdownMenuRoot, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuSeparator } from "@/components/overlays/DropdownMenu";
 import { AssigneeSelector } from "@/components/forms/AssigneeSelector";
 import { TimelineFilter } from "@/components/timeline/TimelineFilter";
 import { AdaptiveToggleLabel } from "@/components/timeline/AdaptiveToggleLabel";
 import { CaseClosureModal } from "@/components/entities/CaseClosureModal";
+import { AlertStatusIcon } from "@/components/entities/AlertStatusIcon";
 import { TriageRejectionDialog } from "@/components/triage/TriageRejectionDialog";
-import { ToggleGroup } from "@tidemark-security/ux";
+import { IconWrapper, ToggleGroup } from "@tidemark-security/ux";
+import styles from "./EntityHeader.module.css";
 
 import type { AlertStatus } from "@/types/generated/models/AlertStatus";
 import type { AcceptRecommendationRequest } from "@/types/generated/models/AcceptRecommendationRequest";
@@ -25,11 +27,11 @@ import type { Priority as PriorityType } from "@/types/generated/models/Priority
 import type { TimelineItem } from "@/types/timeline";
 import type { PICERLStage } from "@/types/caseRunbooks";
 import type { GeneratedLink } from "@/utils/linkTemplates";
-import type { UIState } from "@/utils/statusHelpers";
-import { ALERT_STATUS_LABELS } from "@/utils/statusLabels";
+import { alertStatusToUIState, type UIState } from "@/utils/statusHelpers";
+import { CLOSED_ALERT_STATUS_OPTIONS } from "@/utils/statusLabels";
 import type { LinkedAlertResolutionUpdate } from "@/hooks/useResolveLinkedAlerts";
 
-import { ArrowRight, Check, CheckCircle, ChevronLeft, Columns3, Copy, Edit2, HelpCircle, Link, Link2Off, List, Network, SlidersHorizontal, Users, X, XCircle } from 'lucide-react';
+import { ArrowRight, Check, ChevronDown, ChevronLeft, Columns3, Edit2, Link, Link2Off, List, Network, SlidersHorizontal, Sparkles, User, Users, X } from 'lucide-react';
 // Unified status type that works for alerts, cases, and tasks (API format: UPPERCASE)
 export type EntityStatus = AlertStatus | CaseStatus | TaskStatus;
 
@@ -209,6 +211,48 @@ const EntityHeaderRoot = React.forwardRef<
   const isReadOnly = mode === 'readonly';
   const isEditable = mode === 'editable';
   const isCompactHeader = isMobile || isTablet;
+  const hasAdaptiveAlertActions = isAlert && !isCompactHeader;
+  const titleRowRef = React.useRef<HTMLDivElement>(null);
+  const alertActionsRef = React.useRef<HTMLDivElement>(null);
+
+  React.useLayoutEffect(() => {
+    const row = titleRowRef.current;
+    const actions = alertActionsRef.current;
+    if (!hasAdaptiveAlertActions || !row || !actions) return;
+
+    let fullWidth = 0;
+    let disposed = false;
+    let resizeFrame = 0;
+    const fitActions = () => {
+      actions.toggleAttribute("data-icons-only", fullWidth > row.clientWidth);
+    };
+    const measureFullWidth = () => {
+      if (disposed) return;
+      // Measure the real triggers on one line, including the current assignee
+      // and whichever actions are available for this alert.
+      actions.setAttribute("data-measuring", "");
+      fullWidth = actions.offsetWidth;
+      actions.removeAttribute("data-measuring");
+      fitActions();
+    };
+
+    measureFullWidth();
+    const resizeObserver = new ResizeObserver(() => {
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(fitActions);
+    });
+    resizeObserver.observe(row);
+    const contentObserver = new MutationObserver(measureFullWidth);
+    contentObserver.observe(actions, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["class"] });
+    void document.fonts?.ready.then(measureFullWidth);
+
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(resizeFrame);
+      resizeObserver.disconnect();
+      contentObserver.disconnect();
+    };
+  }, [hasAdaptiveAlertActions]);
 
   // Determine if entity is closed (works for alerts, cases, and tasks)
   // Status prop comes from API in UPPERCASE format
@@ -398,11 +442,13 @@ const EntityHeaderRoot = React.forwardRef<
 
   const renderHeaderActions = (variant: "desktop" | "compact") => {
     const compact = variant === "compact";
-    const controlButtonClassName = compact ? "h-8 w-full" : "h-auto w-auto flex-none self-stretch";
-    const linkButtonClassName = compact ? "h-8 flex-1" : "h-auto w-auto flex-none self-stretch";
+    const adaptive = !compact && hasAdaptiveAlertActions;
+    const desktopButtonClassName = adaptive ? "h-9 w-auto flex-none" : "h-auto w-auto flex-none self-stretch";
+    const controlButtonClassName = compact ? "h-8 w-full" : desktopButtonClassName;
+    const linkButtonClassName = compact ? "h-8 flex-1" : desktopButtonClassName;
     const controlGroupClassName = compact
       ? "flex w-full min-w-0 items-center justify-stretch gap-2"
-      : "flex flex-none items-center justify-end gap-2 self-stretch";
+      : adaptive ? "contents" : "flex flex-none items-center justify-end gap-2 self-stretch";
     const customLinksClassName = compact
       ? "flex w-full min-w-0 items-center justify-stretch gap-1"
       : "flex flex-none items-center justify-end gap-1 self-stretch";
@@ -411,9 +457,11 @@ const EntityHeaderRoot = React.forwardRef<
 
     return (
       <div
+        ref={adaptive ? alertActionsRef : undefined}
         className={cn(
           "flex min-h-9 flex-wrap items-stretch justify-end gap-2",
           compact ? "w-full justify-stretch" : "flex",
+          adaptive && cn(styles.alertActions, "max-w-full items-center"),
         )}
       >
         {isAlert && isEscalated && onUnlinkFromCase && (
@@ -444,11 +492,11 @@ const EntityHeaderRoot = React.forwardRef<
           </div>
         ) : null}
         {showAssignmentControls && (
-          <div className={controlGroupClassName}>
+          <div className={controlGroupClassName} title={adaptive ? `Assignee: ${assignee || "Unassigned"}` : undefined}>
             <AssigneeSelector
               mode="assign"
               size={actionsAssigneeSize}
-              className={actionsAssigneeSize === "medium" ? "h-auto w-auto flex-none self-stretch" : "h-8 w-full"}
+              className={cn(controlButtonClassName, adaptive && styles.collapsibleAction, adaptive && styles.assigneeAction)}
               currentAssignee={assignee || null}
               currentUser={currentUser || null}
               users={users}
@@ -508,45 +556,25 @@ const EntityHeaderRoot = React.forwardRef<
                   <DropdownMenuRoot modal={false}>
                     <DropdownMenuTrigger asChild={true}>
                       <Button
-                        className={controlButtonClassName}
+                        className={cn(controlButtonClassName, adaptive && styles.collapsibleAction)}
                         variant="neutral-secondary"
                         size={actionsButtonSize}
                         icon={<X />}
+                        title={adaptive ? closeButtonLabel : undefined}
                         disabled={isUpdating}
                       >
                         {compact ? "Close" : closeButtonLabel}
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent side="bottom" align="start" sideOffset={4}>
-                      {isAlert ? (
-                        <>
-                          <DropdownMenu.DropdownItem
-                            icon={<Check />}
-                            label={ALERT_STATUS_LABELS.CLOSED_TP}
-                            onClick={() => onCloseAlert?.("closed_true_positive")}
-                          />
-                          <DropdownMenu.DropdownItem
-                            icon={<CheckCircle />}
-                            label={ALERT_STATUS_LABELS.CLOSED_BP}
-                            onClick={() => onCloseAlert?.("closed_benign_positive")}
-                          />
-                          <DropdownMenu.DropdownItem
-                            icon={<XCircle />}
-                            label={ALERT_STATUS_LABELS.CLOSED_FP}
-                            onClick={() => onCloseAlert?.("closed_false_positive")}
-                          />
-                          <DropdownMenu.DropdownItem
-                            icon={<HelpCircle />}
-                            label={ALERT_STATUS_LABELS.CLOSED_UNRESOLVED}
-                            onClick={() => onCloseAlert?.("closed_unresolved")}
-                          />
-                          <DropdownMenu.DropdownItem
-                            icon={<Copy />}
-                            label={ALERT_STATUS_LABELS.CLOSED_DUPLICATE}
-                            onClick={() => onCloseAlert?.("closed_duplicate")}
-                          />
-                        </>
-                      ) : (
+                      {isAlert ? CLOSED_ALERT_STATUS_OPTIONS.map(({ value, label }) => (
+                        <DropdownMenu.DropdownItem
+                          key={value}
+                          icon={<AlertStatusIcon status={value} />}
+                          label={label}
+                          onClick={() => onCloseAlert?.(alertStatusToUIState(value))}
+                        />
+                      )) : (
                         <DropdownMenu.DropdownItem
                           icon={<Check />}
                           label="Mark as Done"
@@ -560,10 +588,11 @@ const EntityHeaderRoot = React.forwardRef<
             )}
             {isAlert && !isEscalated && !isClosed && onLinkToCase && (
               <Button
-                className={controlButtonClassName}
+                className={cn(controlButtonClassName, adaptive && styles.collapsibleAction)}
                 variant="neutral-secondary"
                 size={actionsButtonSize}
                 icon={<Link />}
+                title={adaptive ? "Link to Case" : undefined}
                 onClick={onLinkToCase}
                 disabled={isUpdating}
               >
@@ -571,29 +600,58 @@ const EntityHeaderRoot = React.forwardRef<
               </Button>
             )}
             {showAiEscalationDecision ? (
-              <>
-                <Button
-                  className={controlButtonClassName}
-                  variant="destructive-secondary"
-                  size={actionsButtonSize}
-                  icon={<X />}
-                  onClick={() => setIsTriageRejectDialogOpen(true)}
-                  disabled={isUpdating || isAcceptingRecommendation || isRejectingRecommendation}
-                  loading={isRejectingRecommendation}
-                >
-                  {compact ? "Reject AI" : "Escalate to Case (Reject AI)"}
-                </Button>
-                <Button
-                  className={controlButtonClassName}
-                  size={actionsButtonSize}
-                  iconRight={<ArrowRight />}
-                  onClick={handleAcceptAiEscalation}
-                  disabled={isUpdating || isAcceptingRecommendation || isRejectingRecommendation}
-                  loading={isAcceptingRecommendation}
-                >
-                  {compact ? "Accept AI" : "Escalate to Case (Accept AI)"}
-                </Button>
-              </>
+              <DropdownMenuRoot modal={false}>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    className={controlButtonClassName}
+                    size={actionsButtonSize}
+                    iconRight={<ChevronDown />}
+                    disabled={isUpdating || isAcceptingRecommendation || isRejectingRecommendation}
+                    loading={isAcceptingRecommendation || isRejectingRecommendation}
+                  >
+                    Escalate to case
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent side="bottom" align="end" collisionPadding={8} className="max-w-[calc(100vw-1rem)]">
+                  {[
+                    {
+                      label: "Use AI recommendation",
+                      description: "Apply suggested changes",
+                      icon: <Sparkles />,
+                      onSelect: handleAcceptAiEscalation,
+                    },
+                    {
+                      label: "Escalate manually",
+                      description: "Reject the recommendation",
+                      icon: <User />,
+                      onSelect: () => setIsTriageRejectDialogOpen(true),
+                    },
+                  ].map(({ label, description, icon, onSelect }, index) => (
+                    <React.Fragment key={label}>
+                      {index > 0 && <DropdownMenuSeparator className="my-1 w-full border-t border-neutral-border" />}
+                      <DropdownMenu.Item
+                        textValue={label}
+                        className={cn(
+                          "flex w-full cursor-pointer items-center gap-3 rounded-md px-3 py-2 text-default-font outline-none data-[highlighted]:bg-neutral-100",
+                          index === 0 && "bg-brand-primary/10",
+                        )}
+                        onSelect={onSelect}
+                      >
+                        <IconWrapper className={cn(
+                          "flex-none text-body",
+                          index === 0 && (isDarkTheme ? "text-brand-primary" : "text-brand-800"),
+                        )}>
+                          {icon}
+                        </IconWrapper>
+                        <span className="flex flex-col">
+                          <span className="text-body-bold font-body-bold">{label}</span>
+                          <span className="text-caption font-caption text-subtext-color">{description}</span>
+                        </span>
+                      </DropdownMenu.Item>
+                    </React.Fragment>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenuRoot>
             ) : showPrimaryAction && onPrimaryAction && (
               <Button
                 className={controlButtonClassName}
@@ -617,7 +675,7 @@ const EntityHeaderRoot = React.forwardRef<
       ref={ref}
       {...otherProps}
     >
-      <div className="flex w-full flex-wrap items-center gap-4 mobile:gap-2 ">
+      <div ref={titleRowRef} className="flex w-full flex-wrap items-center gap-4 mobile:gap-2 ">
         <div className={cn(
           "flex grow shrink-0 basis-0 flex-col items-start gap-1",
           isCompactHeader ? "min-w-0" : "min-w-[288px]",

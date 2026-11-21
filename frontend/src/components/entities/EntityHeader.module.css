@@ -1,0 +1,20 @@
+.alertActions[data-measuring] {
+  position: absolute;
+  width: max-content;
+  max-width: none;
+  flex-wrap: nowrap;
+}
+
+.alertActions[data-icons-only]:not([data-measuring]) .collapsibleAction {
+  @apply w-9 gap-0 px-0;
+}
+
+/* Keep trigger labels accessible without taking up space in the icon-only layout. */
+.alertActions[data-icons-only]:not([data-measuring]) .collapsibleAction > span:not(:has(svg)) {
+  @apply sr-only;
+}
+
+/* AssigneeSelector uses the shared button's trailing icon slot for its chevron. */
+.alertActions[data-icons-only]:not([data-measuring]) .assigneeAction > span:last-child:has(svg) {
+  display: none;
+}

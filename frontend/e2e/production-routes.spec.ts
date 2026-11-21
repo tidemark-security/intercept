@@ -517,6 +517,140 @@ for (const split of wideSplitRoutes) {
   });
 }
 
+test("alert header fits icon-only secondary actions without shrinking buttons", async ({ page }) => {
+  await installProductionApiMocks(page);
+  const assignee = "lead-investigator-with-a-long-username@example.test";
+  await page.route(/\/api\/v1\/alerts\/1(?:\?|$)/, (route) => route.fulfill(jsonResponse({
+    ...sampleAlert,
+    assignee,
+    triage_recommendation: {
+      id: 1,
+      alert_id: 1,
+      created_at: now,
+      created_by: "tidemark_ai",
+      status: "PENDING",
+      disposition: "NEEDS_INVESTIGATION",
+      confidence: 0.8,
+      request_escalate_to_case: true,
+      suggested_status: "ESCALATED",
+    },
+  })));
+  await page.addInitScript(() => localStorage.setItem("intercept-ai-pane-width", "400"));
+  await page.setViewportSize({ width: 1660, height: 1000 });
+  await page.goto("/alerts/ALT-0000001");
+
+  const assign = page.getByRole("button", { name: assignee, exact: true });
+  const close = page.getByRole("button", { name: /^Close Alert/ });
+  const link = page.getByRole("button", { name: "Link to Case", exact: true });
+  const escalate = page.getByRole("button", { name: "Escalate to case", exact: true });
+  const collapseTargets = [assign, close, link];
+  const labelWidth = (button: Locator) => button.locator(":scope > span:not(:has(svg))").evaluate((label) => label.getBoundingClientRect().width);
+
+  for (const button of [...collapseTargets, escalate]) await expect(button).toHaveCSS("height", "36px");
+  for (const button of collapseTargets) expect(await labelWidth(button)).toBeGreaterThan(1);
+
+  const rail = page.getByRole("separator", { name: "Resize alert list" });
+  await rail.press("End");
+  for (const button of collapseTargets) {
+    await expect(button).toHaveCSS("width", "36px");
+    await expect(button).toHaveCSS("height", "36px");
+    expect(await labelWidth(button)).toBeLessThanOrEqual(1);
+  }
+  await expect(escalate).toHaveCSS("height", "36px");
+  expect(await labelWidth(escalate)).toBeGreaterThan(1);
+  const actionTops = await Promise.all([...collapseTargets, escalate].map(
+    (button) => button.evaluate((element) => element.getBoundingClientRect().top),
+  ));
+  expect(Math.max(...actionTops) - Math.min(...actionTops)).toBeLessThan(1);
+
+  await assign.press("Enter");
+  await expect(page.getByRole("menuitem", { name: /Assign to me/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(assign).toBeFocused();
+  await close.click();
+  await expect(close).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByRole("menuitem", { name: /Closed \(False Positive\)/ })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(close).toBeFocused();
+  await link.click();
+  await expect(page.getByRole("dialog").getByText("Link to Case", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await rail.press("Home");
+  await expect.poll(() => labelWidth(assign)).toBeGreaterThan(1);
+  for (const button of collapseTargets) expect(await labelWidth(button)).toBeGreaterThan(1);
+});
+
+for (const { viewport, width, useAi } of [
+  { viewport: "desktop", width: 1660, useAi: true },
+  { viewport: "mobile", width: 390, useAi: false },
+]) {
+  test(`alert escalation menu preserves the ${useAi ? "AI" : "manual"} flow on ${viewport}`, async ({ page }) => {
+    await installProductionApiMocks(page);
+    const recommendation = {
+      id: 1,
+      alert_id: 1,
+      created_at: now,
+      created_by: "tidemark_ai",
+      status: "PENDING",
+      disposition: "NEEDS_INVESTIGATION",
+      request_escalate_to_case: true,
+    };
+    await page.route(/\/api\/v1\/alerts\/1(?:\?|$)/, (route) => route.fulfill(jsonResponse({
+      ...sampleAlert,
+      triage_recommendation: recommendation,
+    })));
+    const mutations: Record<string, unknown> = {};
+    await page.route(/\/api\/v1\/alerts\/1\/(?:triage|triage-recommendation\/(?:accept|reject))$/, (route) => {
+      const action = new URL(route.request().url()).pathname.split("/").pop()!;
+      mutations[action] = route.request().postDataJSON();
+      return route.fulfill(jsonResponse(
+        action === "accept" ? { recommendation: { ...recommendation, status: "ACCEPTED" } }
+          : action === "reject" ? { ...recommendation, status: "REJECTED" }
+          : { ...sampleAlert, status: "ESCALATED" },
+      ));
+    });
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/alerts/ALT-0000001");
+    if (viewport === "mobile") await page.getByRole("button", { name: "Timeline controls" }).click();
+
+    const escalate = page.getByRole("button", { name: "Escalate to case", exact: true });
+    await escalate.press("Enter");
+    const withAi = page.getByRole("menuitem", { name: "Use AI recommendation" });
+    const manual = page.getByRole("menuitem", { name: "Escalate manually" });
+    await expect(withAi).toHaveAccessibleName("Use AI recommendation Apply suggested changes");
+    await expect(manual).toHaveAccessibleName("Escalate manually Reject the recommendation");
+    expect(mutations).toEqual({});
+
+    if (useAi) {
+      await page.keyboard.press("Escape");
+      await expect(escalate).toBeFocused();
+      await escalate.press("ArrowDown");
+      await expect(withAi).toBeFocused();
+      await page.keyboard.press("Enter");
+      await expect.poll(() => mutations).toEqual({
+        accept: { apply_status: true, apply_priority: true, apply_assignee: true, apply_tags: true },
+      });
+    } else {
+      await manual.click();
+      const confirm = page.getByRole("dialog").getByRole("button", { name: "Reject Recommendation" });
+      await expect(confirm).toBeDisabled();
+      expect(mutations).toEqual({});
+      await page.getByRole("dialog").getByRole("combobox").click();
+      await page.getByRole("option", { name: "Prefer Manual Review" }).click();
+      await confirm.click();
+      await expect.poll(() => mutations).toEqual({
+        reject: { category: "PREFER_MANUAL_REVIEW", reason: null },
+        triage: {
+          status: "ESCALATED",
+          escalate_to_case: true,
+          case_title: sampleAlert.title,
+          case_description: sampleAlert.description,
+        },
+      });
+    }
+  });
+}
+
 test("wide chat history divider saves to its existing width preference", async ({ page }) => {
   await installProductionApiMocks(page);
   await page.addInitScript(() => {
