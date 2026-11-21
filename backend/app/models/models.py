@@ -875,7 +875,7 @@ class TimelineGraph(SQLModel, table=True):
 class AlertBase(SQLModel):
     title: str = Field(min_length=1, max_length=500)
     description: Optional[str] = None
-    priority: Optional[Priority] = None
+    priority: Priority
     source: Optional[str] = None  # General source field from frontend
 
 
@@ -887,6 +887,10 @@ class Alert(AlertBase, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     status: AlertStatus = Field(default=AlertStatus.NEW)
+    priority: Priority = Field(
+        default=Priority.MEDIUM,
+        sa_column_kwargs={"server_default": text("'MEDIUM'")},
+    )
 
     # Assignment
     assignee: Optional[str] = Field(default=None, max_length=100)
@@ -936,6 +940,7 @@ class Alert(AlertBase, table=True):
 
 class AlertCreate(AlertBase):
     """Schema for creating an alert."""
+    priority: Priority = Priority.MEDIUM
     created_at: Optional[datetime] = Field(
         default=None,
         description="Migration-only override for the alert creation timestamp",
@@ -948,7 +953,8 @@ class AlertUpdate(SQLModel):
     title: Optional[str] = Field(None, min_length=1, max_length=500)
     description: Optional[str] = None
     status: Optional[AlertStatus] = None
-    priority: Optional[Priority] = None
+    # The update service uses exclude_unset so omissions preserve the current priority.
+    priority: Priority = Field(default_factory=lambda: Priority.MEDIUM)
     source: Optional[str] = None
     assignee: Optional[str] = Field(None, max_length=100)
     tags: Optional[List[str]] = None

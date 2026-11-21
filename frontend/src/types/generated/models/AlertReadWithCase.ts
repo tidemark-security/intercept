@@ -28,7 +28,7 @@ import type { TTPItem } from './TTPItem';
 export type AlertReadWithCase = {
     title: string;
     description?: (string | null);
-    priority?: (Priority | null);
+    priority: Priority;
     source?: (string | null);
     id: number;
     status: AlertStatus;

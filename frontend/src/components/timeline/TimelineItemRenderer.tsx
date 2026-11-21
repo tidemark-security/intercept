@@ -1103,7 +1103,7 @@ export function TimelineItemRenderer({
           timelineCurrentItem.title ||
           (timelineCurrentItem.alert_id ? convertNumericToAlertId(timelineCurrentItem.alert_id) : 'Alert'),
         description: getLinkedEntityDescription(timelineCurrentItem),
-        priority: timelineCurrentItem.priority,
+        priority: timelineCurrentItem.priority ?? undefined,
         status: ((timelineCurrentItem as TimelineItem & { status?: AlertStatus | null }).status ?? 'NEW') as AlertStatus,
         created_at: timelineCurrentItem.created_at || '',
         updated_at:
@@ -1285,7 +1285,7 @@ export function TimelineItemRenderer({
           replyItem.title ||
           (replyItem.alert_id ? convertNumericToAlertId(replyItem.alert_id) : 'Alert'),
         description: getLinkedEntityDescription(replyItem),
-        priority: replyItem.priority,
+        priority: replyItem.priority ?? undefined,
         status: ((replyItem as TimelineItem & { status?: AlertStatus | null }).status ?? 'NEW') as AlertStatus,
         created_at: replyItem.created_at || '',
         updated_at:

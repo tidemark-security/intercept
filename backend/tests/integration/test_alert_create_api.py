@@ -56,10 +56,45 @@ async def test_create_alert_returns_unloaded_optional_relationships_as_null(
     payload = response.json()
     assert payload["title"] == "TEST"
     assert payload["source"] == "Swagger"
+    assert payload["priority"] == "INFO"
     assert "triage_recommendation" in payload
     triage_recommendation = payload["triage_recommendation"]
     if triage_recommendation is not None:
         assert triage_recommendation["alert_id"] == payload["id"]
+
+
+@pytest.mark.asyncio
+async def test_alert_priority_defaults_on_create_and_cannot_be_cleared(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+) -> None:
+    session_cookie = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+    cookies = {"intercept_session": session_cookie}
+
+    response = await client.post("/api/v1/alerts", json={"title": "Default priority"}, cookies=cookies)
+    assert response.status_code == 200
+    assert response.json()["priority"] == "MEDIUM"
+    alert_url = f"/api/v1/alerts/{response.json()['id']}"
+
+    response = await client.post(
+        "/api/v1/alerts", json={"title": "Null priority", "priority": None}, cookies=cookies,
+    )
+    assert response.status_code == 422
+
+    response = await client.put(alert_url, json={"priority": "HIGH"}, cookies=cookies)
+    assert response.status_code == 200
+    assert response.json()["priority"] == "HIGH"
+
+    response = await client.put(alert_url, json={"description": "Keep priority"}, cookies=cookies)
+    assert response.status_code == 200
+    assert response.json()["priority"] == "HIGH"
+
+    response = await client.put(alert_url, json={"priority": None}, cookies=cookies)
+    assert response.status_code == 422
+    response = await client.get(alert_url, cookies=cookies)
+    assert response.status_code == 200
+    assert response.json()["priority"] == "HIGH"
 
 
 @pytest.mark.asyncio

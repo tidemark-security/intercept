@@ -27,7 +27,7 @@ import type { TTPItem } from './TTPItem';
 export type AlertRead = {
     title: string;
     description?: (string | null);
-    priority?: (Priority | null);
+    priority: Priority;
     source?: (string | null);
     id: number;
     status: AlertStatus;
