@@ -85,7 +85,7 @@ export class AlertsService {
          */
         status?: (Array<AlertStatus> | null),
         /**
-         * Filter by multiple assignee usernames
+         * Match any selected username or __unassigned__
          */
         assignee?: (Array<string> | null),
         caseId?: (number | null),

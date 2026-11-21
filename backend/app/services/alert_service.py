@@ -18,6 +18,7 @@ from app.models.models import (
 )
 from app.models.enums import AlertStatus, Priority, TriageDisposition, RealtimeEventType
 from app.services.case_service import case_service
+from app.services.assignee_filter_utils import append_assignee_filter
 from app.services.alert_triage_apply_service import (
     apply_triage_state,
     create_case_from_alert,
@@ -273,22 +274,7 @@ class AlertService:
         filters = []
         if status:
             filters.append(Alert.status.in_(status))  # type: ignore
-        if assignee:
-            unassigned_requested = "__unassigned__" in assignee
-            regular_assignees = [
-                username for username in assignee if username != "__unassigned__"
-            ]
-            if unassigned_requested and regular_assignees:
-                filters.append(
-                    or_(
-                        Alert.assignee.is_(None),  # type: ignore
-                        Alert.assignee.in_(regular_assignees),  # type: ignore
-                    )
-                )
-            elif unassigned_requested:
-                filters.append(Alert.assignee.is_(None))  # type: ignore
-            elif regular_assignees:
-                filters.append(Alert.assignee.in_(regular_assignees))  # type: ignore
+        append_assignee_filter(filters, col(Alert.assignee), assignee)
         if case_id:
             filters.append(Alert.case_id == case_id)
         if priority:

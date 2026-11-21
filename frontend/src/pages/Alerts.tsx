@@ -41,6 +41,7 @@ import { useEnqueueTriage } from "@/hooks/useEnqueueTriage";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useSession } from "@/contexts/sessionContext";
 import { useURLFilters } from "@/hooks/useURLFilters";
+import { toEntityListQueryFilters } from "@/utils/entityListQueryFilters";
 import { useTagFilterClick } from "@/hooks/useTagFilterClick";
 import type { RejectionCategory } from "@/types/generated/models/RejectionCategory";
 import { cleanupExpiredDrafts } from "@/utils/draftStorage";
@@ -237,15 +238,7 @@ function Alerts() {
   // Fetch alerts list from API with TanStack Query (automatic caching, retries, and deduplication)
   const pageSize = 50;
   const { data: alertsData, isLoading, error } = useAlerts({
-    status: filters.status, // Pass array directly, null if no filter
-    assignee: filters.assignee,
-    startDate: filters.dateRange?.start || null,
-    endDate: filters.dateRange?.end || null,
-    search: filters.search || null,
-    includeTags: filters.includeTags || null,
-    excludeTags: filters.excludeTags || null,
-    sortBy: filters.sortBy ?? "created_at",
-    sortOrder: filters.sortOrder ?? "desc",
+    ...toEntityListQueryFilters(filters),
     page: currentPage,
     size: pageSize,
   });

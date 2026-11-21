@@ -88,7 +88,7 @@ async def create_task(
 @router.get("", response_model=Page[TaskRead])
 async def get_tasks(
     status: Optional[List[TaskStatus]] = Query(None, description="Filter by multiple task statuses"),
-    assignee: Optional[str] = None,
+    assignee: Optional[List[str]] = Query(None, description="Match any selected username or __unassigned__"),
     case_id: Optional[int] = Query(None, description="Filter by case ID"),
     include_tags: Optional[List[str]] = Query(None, description="Require tasks to include all of these tags"),
     exclude_tags: Optional[List[str]] = Query(None, description="Require tasks to exclude all of these tags"),

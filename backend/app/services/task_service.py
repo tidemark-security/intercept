@@ -20,6 +20,7 @@ from app.services.timeline_add_service import (
 from app.services.timeline_service import TimelineValidationError, timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
+from app.services.assignee_filter_utils import append_assignee_filter
 from app.services.date_filter_utils import DateFilterValidationError, parse_datetime_filter
 from app.services.tag_filter_utils import (
     ProtectedTagMutationError,
@@ -161,7 +162,7 @@ class TaskService:
         self, 
         db: AsyncSession, 
         status: Optional[List[TaskStatus]] = None,
-        assignee: Optional[str] = None,
+        assignee: Optional[List[str]] = None,
         case_id: Optional[int] = None,
         include_tags: Optional[List[str]] = None,
         exclude_tags: Optional[List[str]] = None,
@@ -175,7 +176,7 @@ class TaskService:
         
         Args:
             status: Filter by task status (can filter by multiple statuses)
-            assignee: Filter by assignee username (exact match)
+            assignee: Match any selected username or unassigned
             case_id: Filter by case ID (for tasks linked to a specific case)
             include_tags: Tags tasks must include
             exclude_tags: Tags tasks must exclude
@@ -189,12 +190,7 @@ class TaskService:
         filters = []
         if status:
             filters.append(col(Task.status).in_(status))
-        if assignee:
-            filters.append(
-                Task.assignee.is_(None)  # type: ignore
-                if assignee == "__unassigned__"
-                else Task.assignee == assignee
-            )
+        append_assignee_filter(filters, col(Task.assignee), assignee)
         if case_id is not None:
             filters.append(Task.case_id == case_id)
 

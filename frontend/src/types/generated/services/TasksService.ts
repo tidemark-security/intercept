@@ -78,7 +78,10 @@ export class TasksService {
          * Filter by multiple task statuses
          */
         status?: (Array<TaskStatus> | null),
-        assignee?: (string | null),
+        /**
+         * Match any selected username or __unassigned__
+         */
+        assignee?: (Array<string> | null),
         /**
          * Filter by case ID
          */

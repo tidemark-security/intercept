@@ -9,7 +9,7 @@ export interface UseCasesParams {
   page?: number;
   size?: number;
   status?: CaseStatus[] | null;
-  assignee?: string | null;
+  assignee?: string[] | null;
   includeTags?: string[] | null;
   excludeTags?: string[] | null;
   search?: string | null;
@@ -28,7 +28,7 @@ export interface UseCasesParams {
  *   page: 1,
  *   size: 50,
  *   status: ['NEW', 'IN_PROGRESS'],
- *   assignee: 'john.doe',
+ *   assignee: ['john.doe'],
  *   search: 'phishing'
  * });
  * ```

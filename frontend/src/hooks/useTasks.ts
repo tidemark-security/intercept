@@ -9,7 +9,7 @@ export interface UseTasksParams {
   page?: number;
   size?: number;
   status?: TaskStatus[] | null;
-  assignee?: string | null;
+  assignee?: string[] | null;
   caseId?: number | null;
   includeTags?: string[] | null;
   excludeTags?: string[] | null;
@@ -29,7 +29,7 @@ export interface UseTasksParams {
  *   page: 1,
  *   size: 50,
  *   status: ['TODO', 'IN_PROGRESS'],
- *   assignee: 'john.doe',
+ *   assignee: ['john.doe'],
  *   search: 'urgent'
  * });
  * ```

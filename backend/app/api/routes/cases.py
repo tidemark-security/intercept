@@ -102,7 +102,7 @@ async def get_cases(
     status: Optional[List[CaseStatus]] = Query(
         None, description="Filter by multiple case statuses"
     ),
-    assignee: Optional[str] = None,
+    assignee: Optional[List[str]] = Query(None, description="Match any selected username or __unassigned__"),
     include_tags: Optional[List[str]] = Query(None, description="Require cases to include all of these tags"),
     exclude_tags: Optional[List[str]] = Query(None, description="Require cases to exclude all of these tags"),
     search: Optional[str] = Query(

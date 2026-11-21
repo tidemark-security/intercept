@@ -27,6 +27,7 @@ from app.services.timeline_service import TimelineValidationError, timeline_serv
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
 from app.services import triage_recommendation_service
+from app.services.assignee_filter_utils import append_assignee_filter
 from app.services.date_filter_utils import DateFilterValidationError, parse_datetime_filter
 from app.services.tag_filter_utils import (
     ProtectedTagMutationError,
@@ -203,7 +204,7 @@ class CaseService:
         self, 
         db: AsyncSession, 
         status: Optional[List[CaseStatus]] = None,
-        assignee: Optional[str] = None,
+        assignee: Optional[List[str]] = None,
         include_tags: Optional[List[str]] = None,
         exclude_tags: Optional[List[str]] = None,
         search: Optional[str] = None,
@@ -216,7 +217,7 @@ class CaseService:
         
         Args:
             status: Filter by case status (can filter by multiple statuses)
-            assignee: Filter by assignee username (exact match)
+            assignee: Match any selected username or unassigned
             include_tags: Tags cases must include
             exclude_tags: Tags cases must exclude
             search: Search string to match against case ID, human ID, title, or description (case-insensitive partial match)
@@ -229,12 +230,7 @@ class CaseService:
         filters = []
         if status:
             filters.append(col(Case.status).in_(status))
-        if assignee:
-            filters.append(
-                Case.assignee.is_(None)  # type: ignore
-                if assignee == "__unassigned__"
-                else Case.assignee == assignee
-            )
+        append_assignee_filter(filters, col(Case.assignee), assignee)
 
         append_tag_filters(filters, Case.tags, include_tags, exclude_tags)
         try:

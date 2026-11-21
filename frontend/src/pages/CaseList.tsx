@@ -20,6 +20,7 @@ import { useToast } from "@/contexts/ToastContext";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
 import { canShowSplitPaneCenter, useViewportWidth } from "@/hooks/useSplitPaneCenter";
 import { useURLFilters } from "@/hooks/useURLFilters";
+import { toEntityListQueryFilters } from "@/utils/entityListQueryFilters";
 import { useTagFilterClick } from "@/hooks/useTagFilterClick";
 import { getColumnConfig, getInitialVisibleColumns } from "@/utils/columnConfig";
 import type { CaseStatus } from "@/types/generated/models/CaseStatus";
@@ -121,15 +122,7 @@ function CasesListPage() {
   // Fetch cases list from API
   const pageSize = 50;
   const { data: casesData, isLoading, error } = useCases({
-    status: filters.status || null,
-    assignee: filters.assignee?.[0] || null,
-    includeTags: filters.includeTags || null,
-    excludeTags: filters.excludeTags || null,
-    search: filters.search || null,
-    startDate: filters.dateRange?.start || null,
-    endDate: filters.dateRange?.end || null,
-    sortBy: filters.sortBy ?? "created_at",
-    sortOrder: filters.sortOrder ?? "desc",
+    ...toEntityListQueryFilters(filters),
     page: currentPage,
     size: pageSize,
   });

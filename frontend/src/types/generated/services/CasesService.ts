@@ -78,7 +78,10 @@ export class CasesService {
          * Filter by multiple case statuses
          */
         status?: (Array<CaseStatus> | null),
-        assignee?: (string | null),
+        /**
+         * Match any selected username or __unassigned__
+         */
+        assignee?: (Array<string> | null),
         /**
          * Require cases to include all of these tags
          */

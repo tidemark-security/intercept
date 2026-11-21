@@ -353,6 +353,82 @@ test("production bundle loads all major lazy routes", async ({ page }) => {
   }
 });
 
+const assigneeFilterRoutes = [
+  { resource: "alerts", sample: sampleAlert, prefix: "ALT" },
+  { resource: "cases", sample: sampleCase, prefix: "CAS" },
+  { resource: "tasks", sample: sampleTask, prefix: "TSK" },
+] as const;
+
+for (const { resource, sample, prefix } of assigneeFilterRoutes) {
+  test(`${resource} returns the selected assignees in either order and updates when they are removed`, async ({ page }) => {
+    await installProductionApiMocks(page);
+    const analystA = { userId: "analyst-a-id", username: "analyst-a" };
+    const analystB = { userId: "analyst-b-id", username: "analyst-b" };
+    const rows = [
+      { ...sample, title: "Unassigned item", assignee: null },
+      { ...sample, title: "Analyst A item", assignee: analystA.username, id: 2, human_id: `${prefix}-0000002` },
+      { ...sample, title: "Analyst B item", assignee: analystB.username, id: 3, human_id: `${prefix}-0000003` },
+    ];
+    await page.route("**/api/v1/admin/auth/users/summary**", (route) => route.fulfill(jsonResponse([analystA, analystB])));
+    await page.route(new RegExp(`/api/v1/${resource}(?:\\?|$)`), (route) => {
+      const assignees = new URL(route.request().url()).searchParams.getAll("assignee");
+      const items = assignees.length === 0 ? rows : rows.filter(({ assignee }) => assignees.includes(assignee ?? "__unassigned__"));
+      return route.fulfill(jsonResponse({ ...emptyPage, items, total: items.length, pages: 1 }));
+    });
+
+    await page.setViewportSize({ width: 1640, height: 900 });
+    await page.goto(`/${resource}`);
+    const trigger = page.getByRole("button", { name: /^Assignee/ });
+    const entityLinks = page.locator(`a[href^="/${resource}/${prefix}-"]`);
+    const choose = async (name: string) => {
+      const option = page.getByRole("menuitem", { name, exact: true });
+      if (!await option.isVisible()) await trigger.click();
+      await option.click();
+    };
+    const expectItems = async (...titles: string[]) => {
+      await expect(entityLinks).toHaveCount(titles.length);
+      for (const title of titles) await expect(entityLinks.filter({ hasText: title })).toBeVisible();
+    };
+    await expectItems("Unassigned item", "Analyst A item", "Analyst B item");
+    await choose("Unassigned");
+    await choose("analyst-a");
+    await expect(trigger).toContainText("2 assignees");
+    await expectItems("Unassigned item", "Analyst A item");
+
+    await choose("analyst-a");
+    await expectItems("Unassigned item");
+    await choose("Clear selection");
+    await choose("analyst-a");
+    await choose("Unassigned");
+    await expectItems("Unassigned item", "Analyst A item");
+
+    await choose("analyst-a");
+    await expectItems("Unassigned item");
+    await choose("Clear selection");
+    await choose("analyst-b");
+    await choose("analyst-a");
+    await expectItems("Analyst A item", "Analyst B item");
+    await choose("analyst-b");
+    await expectItems("Analyst A item");
+
+    const filters = new URLSearchParams({
+      status: sample.status,
+      start_date: "2026-01-01T00:00:00Z",
+      end_date: "2026-01-02T00:00:00Z",
+      include_tags: "incident",
+      exclude_tags: "internal",
+    });
+    const request = page.waitForRequest((req) => {
+      const url = new URL(req.url());
+      return url.pathname === `/api/v1/${resource}` && url.searchParams.has("start_date");
+    });
+    await page.goto(`/${resource}?${filters}&assignee=__unassigned__,${analystA.username}`);
+    const actual = new URL((await request).url()).searchParams;
+    expect(actual.getAll("assignee").sort()).toEqual(["__unassigned__", analystA.username].sort());
+    for (const [key, value] of filters) expect(actual.get(key)).toBe(value);
+  });
+}
+
 test("MCP consent keeps its capability out of request URLs and posts FastMCP fields", async ({ page, baseURL }) => {
   const consentContext = {
     transaction_id: "transaction-123",

@@ -76,7 +76,7 @@ async def create_alert(
 @router.get("", response_model=Page[AlertRead])
 async def get_alerts(
     status: Optional[List[AlertStatus]] = Query(None, description="Filter by multiple alert statuses"),
-    assignee: Optional[List[str]] = Query(None, description="Filter by multiple assignee usernames"),
+    assignee: Optional[List[str]] = Query(None, description="Match any selected username or __unassigned__"),
     case_id: Optional[int] = None,
     priority: Optional[List[Priority]] = Query(None, description="Filter by multiple priorities"),
     source: Optional[str] = None,
