@@ -199,6 +199,7 @@ export type { TaskStatus } from './models/TaskStatus';
 export type { TaskUpdate } from './models/TaskUpdate';
 export type { TestConnectionResponse } from './models/TestConnectionResponse';
 export type { ThreatActorItem } from './models/ThreatActorItem';
+export type { TimelineActivityKind } from './models/TimelineActivityKind';
 export type { TimelineGraphDocument } from './models/TimelineGraphDocument';
 export type { TimelineGraphOperation } from './models/TimelineGraphOperation';
 export type { TimelineGraphPatch } from './models/TimelineGraphPatch';

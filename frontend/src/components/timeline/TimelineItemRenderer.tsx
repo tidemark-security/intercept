@@ -26,6 +26,7 @@ import type { AlertRead } from '@/types/generated/models/AlertRead';
 import type { AlertStatus } from '@/types/generated/models/AlertStatus';
 import type { TaskRead } from '@/types/generated/models/TaskRead';
 import type { TaskStatus } from '@/types/generated/models/TaskStatus';
+import type { TimelineActivityKind } from '@/types/generated/models/TimelineActivityKind';
 import type { CaseRead } from '@/types/generated/models/CaseRead';
 import type { CaseStatus } from '@/types/generated/models/CaseStatus';
 import type { Priority as PriorityType } from '@/types/generated/models/Priority';
@@ -49,7 +50,11 @@ import { cn } from '@/utils/cn';
 
 import { IconButton } from '@/components/buttons/IconButton';
 
-import { ArrowRight, Bot, Maximize2, MessageSquareReply as ReplyIcon, Minimize2, Pencil, RefreshCw } from 'lucide-react';
+import {
+  ArrowRight, ArrowRightLeft, Bot, CircleCheck, ClipboardCheck, CopyX, Link2, ListChecks,
+  LockKeyhole, Maximize2, MessageSquareReply as ReplyIcon, Minimize2, Pencil, RefreshCw,
+  UserRound, type LucideIcon,
+} from 'lucide-react';
 import { Tooltip } from '@/components/overlays/Tooltip';
 import {
   isTimelineItemEnrichmentActive,
@@ -138,23 +143,25 @@ function mergeTags(...tagGroups: string[][]): string[] {
   return merged;
 }
 
-function isAutomationNote(item: TimelineItem): boolean {
-  if (!isNoteItem(item)) {
-    return false;
+const NOTE_ACTIVITIES: Record<TimelineActivityKind, { label: string; icon: LucideIcon }> = {
+  status_changed: { label: 'Status changed', icon: ArrowRightLeft },
+  closed_as_duplicate: { label: 'Closed as duplicate', icon: CopyX },
+  assignee_changed: { label: 'Assignee changed', icon: UserRound },
+  linked_to_case: { label: 'Linked to case', icon: Link2 },
+  alert_resolved: { label: 'Alert resolved', icon: CircleCheck },
+  closed_with_case: { label: 'Closed with case', icon: LockKeyhole },
+  runbook_applied: { label: 'Runbook applied', icon: ListChecks },
+  recommendation_applied: { label: 'Recommendation applied', icon: ClipboardCheck },
+  automation_started: { label: 'Automation started', icon: Bot },
+  automation_completed: { label: 'Automation completed', icon: Bot },
+  automation_failed: { label: 'Automation failed', icon: Bot },
+};
+
+function getNoteActivity(item: TimelineItem) {
+  const kind = isNoteItem(item) ? item.activity_kind : null;
+  if (kind && Object.prototype.hasOwnProperty.call(NOTE_ACTIVITIES, kind)) {
+    return NOTE_ACTIVITIES[kind];
   }
-
-  const creator = item.created_by?.trim().toLowerCase();
-  const tags = getTimelineTags(item).map(tag => tag.toLowerCase());
-
-  return (
-    !creator ||
-    ['api_user', 'automation', 'langflow', 'system', 'tidemark_ai'].includes(creator) ||
-    tags.some(tag => tag.startsWith('automation-') || ['automation', 'bulk-action', 'enrichment', 'status-change', 'system'].includes(tag))
-  );
-}
-
-function getTimelineActorLabel(item: TimelineItem): string {
-  return isAutomationNote(item) ? 'system' : item.created_by || 'System';
 }
 
 function getLinkedEntityDescription(item: TimelineItem): string | undefined {
@@ -370,7 +377,8 @@ function renderNoteCard(
     itemKey?: React.Key;
   }
 ): React.ReactNode {
-  const isAutomation = isAutomationNote(currentItem);
+  const activity = getNoteActivity(currentItem);
+  const ActivityIcon = activity?.icon;
   const currentTags = getTimelineTags(currentItem);
   const noteDescription = hasText(currentItem.description) ? currentItem.description : null;
   const noteCardConfig = createTimelineCard(currentItem, {
@@ -388,15 +396,14 @@ function renderNoteCard(
   ) : null;
 
   clearCardLines(baseCardProps);
-  baseCardProps.title = isAutomation ? 'Automation note' : 'Analyst note';
-  baseCardProps.baseIcon = isAutomation ? <Bot /> : baseCardProps.baseIcon;
+  baseCardProps.title = activity?.label ?? 'Note';
+  if (ActivityIcon) baseCardProps.baseIcon = <ActivityIcon />;
   baseCardProps.size = 'x-large';
   baseCardProps.system = 'default';
   baseCardProps.className = cn(
     baseCardProps.className,
     'min-h-0 w-full',
     TIMELINE_ITEM_MAX_WIDTH_CLASS,
-    !isAutomation && 'border-neutral-1000',
     options.compactPreview && 'max-w-none !border-0 !bg-transparent',
     options.isGrouped && 'flex-1 self-stretch min-w-40',
   );
@@ -646,13 +653,11 @@ export function TimelineItemRenderer({
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === 'dark';
 
-  const Icon = getTimelineItemIcon(item.type || 'note');
-  const ActivityIcon = isAutomationNote(item) ? Bot : Icon;
-  
-  const action = `${getTimelineItemAction(item.type || 'note')} ${getTimelineItemLabel(item.type || 'note')}`;
+  const activity = getNoteActivity(item);
+  const ActivityIcon = activity?.icon ?? getTimelineItemIcon(item.type || 'note');
+  const action = activity ? undefined : `${getTimelineItemAction(item.type || 'note')} ${getTimelineItemLabel(item.type || 'note')}`;
 
-  // Determine username based on item type
-  const username = getTimelineActorLabel(item);
+  const username = item.created_by?.trim() || 'System';
 
   // Determine variant based on item type
   const variant = undefined;
@@ -721,9 +726,9 @@ export function TimelineItemRenderer({
     return (
       <div className="flex min-w-0 flex-col gap-1.5">
         <div className="flex min-w-0 items-center gap-2">
-          <Icon className="h-3.5 w-3.5 flex-none text-subtext-color" />
+          <ActivityIcon className="h-3.5 w-3.5 flex-none text-subtext-color" />
           <span className="min-w-0 flex-1 truncate text-caption-bold font-caption-bold uppercase text-subtext-color">
-            {getTimelineItemLabel(item.type || 'note')}
+            {activity?.label ?? getTimelineItemLabel(item.type || 'note')}
           </span>
           <span className="flex-none text-caption font-caption text-subtext-color">
             {formatTimestampForCompact(item.timestamp || item.created_at || null)}
@@ -1383,16 +1388,17 @@ export function TimelineItemRenderer({
     <>
       {flattenedReplies.map((reply: TimelineItem, replyIndex: number) => {
         const isReplyDeleted = isDeletedItem(reply);
+        const replyActivity = getNoteActivity(reply);
         const ReplyItemIcon = isReplyDeleted
           ? getTimelineItemIcon(reply.original_type || 'note')
-          : isAutomationNote(reply)
-            ? Bot
-            : ReplyIcon;
+          : replyActivity?.icon ?? ReplyIcon;
         const replyAction = isReplyDeleted
           ? getDeletedItemAction(reply)
-          : `${getTimelineItemAction(reply.type || 'note')} ${getTimelineItemLabel(reply.type || 'note')}`;
+          : replyActivity ? undefined : `${getTimelineItemAction(reply.type || 'note')} ${getTimelineItemLabel(reply.type || 'note')}`;
         
-        const replyUsername = isReplyDeleted ? reply.deleted_by || 'System' : getTimelineActorLabel(reply);
+        const replyUsername = isReplyDeleted
+          ? reply.deleted_by || 'System'
+          : reply.created_by?.trim() || 'System';
         const isLastReply = replyIndex === flattenedReplies.length - 1;
 
         const replyContents = renderReplyContents(reply);

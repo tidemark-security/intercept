@@ -15,7 +15,7 @@ from app.models.models import (
     CaseTimelineItem, CaseAlertClosureUpdate,
     CaseLinkedAlertResolutionRequest, AlertBulkActionResponse,
 )
-from app.models.enums import CaseStatus, AlertStatus, TaskStatus, RealtimeEventType
+from app.models.enums import CaseStatus, AlertStatus, TaskStatus, RealtimeEventType, TimelineActivityKind
 from app.services.alert_triage_apply_service import CLOSED_ALERT_STATUSES, apply_triage_state
 from app.services.timeline_add_service import (
     add_timeline_item_and_commit,
@@ -433,6 +433,7 @@ class CaseService:
             created_by=closed_by,
             created_at=now.isoformat(),
             timestamp=now.isoformat(),
+            activity_kind=TimelineActivityKind.CLOSED_WITH_CASE,
             tags=["auto-close", "case-closure"],
         )
         timeline_service.add_timeline_item(task, closure_note, created_by=closed_by)
@@ -476,6 +477,7 @@ class CaseService:
             created_by=closed_by,
             created_at=now.isoformat(),
             timestamp=now.isoformat(),
+            activity_kind=TimelineActivityKind.CLOSED_WITH_CASE,
             tags=["auto-close", "case-closure"],
         )
         timeline_service.add_timeline_item(alert, closure_note, created_by=closed_by)
@@ -752,10 +754,9 @@ class CaseService:
         status_desc = ALERT_STATUS_DESCRIPTIONS.get(
             status, status.value
         )
-        description = (
-            note
-            or f"Alert resolved as {status_desc} during case {case_human_id} closure"
-        )
+        description = f"Alert resolved as {status_desc} during case {case_human_id} closure"
+        if note:
+            description = f"{description}\n\n{note}"
         now = datetime.now(timezone.utc)
         timeline_service.add_timeline_item(
             alert,
@@ -764,6 +765,7 @@ class CaseService:
                 created_by=resolved_by,
                 created_at=now.isoformat(),
                 timestamp=now.isoformat(),
+                activity_kind=TimelineActivityKind.ALERT_RESOLVED,
                 tags=["bulk-action", "case-closure"],
             ),
             created_by=resolved_by,

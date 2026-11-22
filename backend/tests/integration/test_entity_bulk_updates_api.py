@@ -78,6 +78,7 @@ async def test_bulk_update_merges_tags_and_appends_notes_only_to_selected_entiti
             notes = [item for item in entity.timeline_items.values() if item["description"] == "Reviewed in bulk."]
             assert len(notes) == 1
             assert notes[0]["created_by"] == actor.username
+            assert notes[0].get("activity_kind") is None
             note_ids.add(notes[0]["id"])
             assert await session.scalar(select(AuditLog).where(
                 AuditLog.event_type == "timeline.item.added", AuditLog.item_id == notes[0]["id"]
@@ -88,6 +89,17 @@ async def test_bulk_update_merges_tags_and_appends_notes_only_to_selected_entiti
         assert untouched.assignee is None
         assert untouched.tags == ["original-2"]
         assert not untouched.timeline_items
+
+    detail = await client.get(f"/api/v1/{resource}/{first}", cookies=cookies)
+    assert detail.status_code == 200, detail.text
+    timeline = detail.json()["timeline_items"].values()
+    bulk_note, = [item for item in timeline if item.get("description") == "Reviewed in bulk."]
+    assert bulk_note.get("activity_kind") is None
+    if resource == "tasks":
+        status_note, = [item for item in timeline if item.get("activity_kind") == "status_changed"]
+        assert status_note["type"] == "note"
+        assert status_note["created_by"] == actor.username
+        assert status_note["description"] == "Task marked as Done (from To Do)"
 
 
 @pytest.mark.asyncio
@@ -115,5 +127,51 @@ async def test_bulk_case_closure_runs_existing_linked_entity_rules(
     )
     assert response.status_code == 200, response.text
     async with session_maker() as session:
-        assert (await session.get(Task, task_id)).status == TaskStatus.DONE
-        assert (await session.get(Alert, alert_id)).status == AlertStatus.CLOSED_UNRESOLVED
+        task = await session.get(Task, task_id)
+        alert = await session.get(Alert, alert_id)
+        assert task.status == TaskStatus.DONE
+        assert alert.status == AlertStatus.CLOSED_UNRESOLVED
+        for entity in (task, alert):
+            note, = entity.timeline_items.values()
+            assert note["activity_kind"] == "closed_with_case"
+            assert note["created_by"] == actor.username
+
+
+@pytest.mark.asyncio
+async def test_timeline_clients_cannot_set_or_replace_activity_kind(client, session_maker, analyst_user_factory):
+    actor = analyst_user_factory()
+    cookies = await sign_in(client, session_maker, actor)
+    async with session_maker() as session:
+        task = Task(title="Activity classification", created_by=actor.username)
+        session.add(task)
+        await session.flush()
+        task_id = task.id
+        await session.commit()
+
+    result = await client.post(
+        "/api/v1/tasks/bulk-actions",
+        json={"entity_ids": [task_id], "status": "DONE"},
+        cookies=cookies,
+    )
+    assert result.status_code == 200, result.text
+    timeline_url = f"/api/v1/tasks/{task_id}/timeline"
+    client_note = {"type": "note", "description": "A comment", "activity_kind": "automation_failed"}
+    result = await client.post(
+        timeline_url,
+        json={**client_note, "replies": {"reply": {**client_note, "id": "reply"}}},
+        cookies=cookies,
+    )
+    assert result.status_code == 200, result.text
+    items = result.json()["timeline_items"].values()
+    activity, = [item for item in items if item.get("activity_kind") == "status_changed"]
+    comment, = [item for item in items if item["description"] == "A comment"]
+    reply, = comment["replies"].values()
+    assert comment.get("activity_kind") is None
+    assert reply.get("activity_kind") is None
+
+    result = await client.put(f"{timeline_url}/{activity['id']}", json=client_note, cookies=cookies)
+    assert result.status_code == 200, result.text
+    edited = result.json()["timeline_items"][activity["id"]]
+    assert edited["description"] == "A comment"
+    assert edited["activity_kind"] == "status_changed"
+    assert edited["created_by"] == actor.username

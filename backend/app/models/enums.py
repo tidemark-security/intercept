@@ -430,6 +430,20 @@ class MessageRole(str, Enum):
     SYSTEM = "SYSTEM"
 
 
+class TimelineActivityKind(str, Enum):
+    STATUS_CHANGED = "status_changed"
+    CLOSED_AS_DUPLICATE = "closed_as_duplicate"
+    ASSIGNEE_CHANGED = "assignee_changed"
+    LINKED_TO_CASE = "linked_to_case"
+    ALERT_RESOLVED = "alert_resolved"
+    CLOSED_WITH_CASE = "closed_with_case"
+    RUNBOOK_APPLIED = "runbook_applied"
+    RECOMMENDATION_APPLIED = "recommendation_applied"
+    AUTOMATION_STARTED = "automation_started"
+    AUTOMATION_COMPLETED = "automation_completed"
+    AUTOMATION_FAILED = "automation_failed"
+
+
 class AccountType(str, Enum):
     """Type of user account"""
     HUMAN = "HUMAN"  # Human user with email/password authentication

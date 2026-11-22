@@ -13,7 +13,7 @@ from sqlmodel import col
 
 from app.core.entity_ids import CASE_PREFIX, RUNBOOK_PREFIX, format_entity_id
 from app.core.id_parser import EntityIdParseError, parse_entity_id
-from app.models.enums import CaseRunbookStatus, TaskStatus
+from app.models.enums import CaseRunbookStatus, TaskStatus, TimelineActivityKind
 from app.models.models import (
     Case,
     CaseRunbook,
@@ -328,6 +328,7 @@ class CaseRunbookService:
                 created_by="system",
                 created_at=now,
                 timestamp=now,
+                activity_kind=TimelineActivityKind.RUNBOOK_APPLIED,
                 tags=["case-runbook", "system"],
             ),
             created_by="system",

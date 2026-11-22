@@ -93,12 +93,18 @@ async def test_bulk_status_update_audits_every_alert(
             "alert_ids": alert_ids,
             "action": "update_status",
             "status": AlertStatus.CLOSED_FP.value,
+            "note": "Confirmed during review.",
         },
         cookies={"intercept_session": session_cookie},
     )
 
     assert response.status_code == 200
     assert response.json()["updated_count"] == len(alert_ids)
+    for updated_alert in response.json()["updated_alerts"]:
+        note, = updated_alert["timeline_items"].values()
+        assert note["type"] == "note"
+        assert note["activity_kind"] == "status_changed"
+        assert note["description"] == "Bulk closed alert as False Positive (from New)\n\nConfirmed during review."
 
     async with session_maker() as session:
         for alert_id in alert_ids:
@@ -144,6 +150,8 @@ async def test_bulk_assign_updates_assignee_and_starts_new_alerts(
             assert alert is not None
             assert alert.assignee == "analyst"
             assert alert.status == AlertStatus.IN_PROGRESS
+            note, = alert.timeline_items.values()
+            assert note["activity_kind"] == "assignee_changed"
 
 
 @pytest.mark.asyncio
@@ -190,6 +198,7 @@ async def test_bulk_update_adds_an_analyst_note_to_each_selected_alert(
             assert len(notes) == 1
             note = notes[0]
             assert note["type"] == "note"
+            assert note.get("activity_kind") is None
             note_ids.add(note["id"])
             audit = await session.scalar(
                 select(AuditLog).where(
@@ -234,6 +243,8 @@ async def test_bulk_link_existing_case_links_all_selected_alerts(
             assert alert is not None
             assert alert.case_id == case_id
             assert alert.status == AlertStatus.ESCALATED
+            note, = alert.timeline_items.values()
+            assert note["activity_kind"] == "linked_to_case"
 
 
 @pytest.mark.asyncio
@@ -316,3 +327,5 @@ async def test_bulk_close_duplicate_requires_target_and_add_tags_merges(
             assert alert.status == AlertStatus.CLOSED_DUPLICATE
             assert alert.case_id == case_id
             assert alert.tags == ["bulk", "review"]
+            note, = alert.timeline_items.values()
+            assert note["activity_kind"] == "closed_as_duplicate"

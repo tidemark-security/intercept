@@ -36,6 +36,7 @@ from app.models.enums import (
     RecommendationStatus,
     RejectionCategory,
     TaskStatus,
+    TimelineActivityKind,
     TriageDisposition,
 )
 from app.services.alert_triage_apply_service import (
@@ -1042,6 +1043,7 @@ async def accept_recommendation(
                 description=state_change_note,
                 created_by=reviewed_by,
                 timestamp=accepted_at,
+                activity_kind=TimelineActivityKind.RECOMMENDATION_APPLIED,
                 tags=["triage-recommendation", "state-change"],
             ),
             created_by=reviewed_by,

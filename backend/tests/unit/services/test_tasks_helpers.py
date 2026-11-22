@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from pgqueuer.errors import MaxRetriesExceeded
 
-from app.models.enums import TaskStatus
+from app.models.enums import TaskStatus, TimelineActivityKind
 from app.services import tasks
 from app.services.task_service import _task_status_description
 from app.services.timeline_service import timeline_service
@@ -32,7 +32,7 @@ def test_add_task_agent_note_has_only_required_input(monkeypatch) -> None:
         task,
         "agent-user",
         "Autonomous task execution started.",
-        ["ai-agent", "automation-started"],
+        TimelineActivityKind.AUTOMATION_STARTED,
     )
 
     args, kwargs = add_timeline_item.call_args
@@ -42,6 +42,7 @@ def test_add_task_agent_note_has_only_required_input(monkeypatch) -> None:
     assert "id" not in item
     assert item["created_at"] == item["timestamp"]
     assert item["created_by"] == "agent-user"
+    assert item["activity_kind"] == "automation_started"
     assert item["tags"] == ["ai-agent", "automation-started"]
 
 

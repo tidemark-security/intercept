@@ -16,8 +16,8 @@ from app.models.models import (
     AlertBulkActionRequest, AlertBulkActionResponse,
     AlertTimelineItem,
 )
-from app.models.enums import AlertStatus, Priority, TriageDisposition, RealtimeEventType
-from app.services.case_service import case_service
+from app.models.enums import AlertStatus, Priority, TriageDisposition, RealtimeEventType, TimelineActivityKind
+from app.services.case_service import ALERT_STATUS_DESCRIPTIONS, case_service
 from app.services.assignee_filter_utils import append_assignee_filter
 from app.services.alert_triage_apply_service import (
     apply_triage_state,
@@ -77,6 +77,16 @@ def _status_change_description(status: AlertStatus) -> str:
         status,
         f"Alert status changed to {status}",
     )
+
+
+def _previous_status_label(status: AlertStatus) -> str:
+    return ALERT_STATUS_DESCRIPTIONS.get(status, status.value.replace("_", " ").title())
+
+
+def _status_activity_kind(status: AlertStatus) -> TimelineActivityKind:
+    if status == AlertStatus.CLOSED_DUPLICATE:
+        return TimelineActivityKind.CLOSED_AS_DUPLICATE
+    return TimelineActivityKind.STATUS_CHANGED
 
 
 @dataclass(slots=True)
@@ -378,10 +388,11 @@ class AlertService:
                 # Create a note timeline item for the status change
                 now = datetime.now(timezone.utc)
                 status_change_item = timeline_service.build_note_item(
-                    description=description,
+                    description=f"{description} (from {_previous_status_label(old_status)})",
                     created_by=updated_by,
                     created_at=now.isoformat(),
                     timestamp=now.isoformat(),
+                    activity_kind=_status_activity_kind(db_alert.status),
                     tags=["status-change"],
                 )
                 
@@ -938,6 +949,7 @@ class AlertService:
             performed_by,
             f"Bulk assigned alert to {request.assignee}",
             ["bulk-action", "assignment"],
+            TimelineActivityKind.ASSIGNEE_CHANGED,
         )
 
     @staticmethod
@@ -954,6 +966,7 @@ class AlertService:
             performed_by,
             note,
             ["bulk-action", "case-link"],
+            TimelineActivityKind.LINKED_TO_CASE,
         )
 
     @staticmethod
@@ -1074,6 +1087,7 @@ class AlertService:
         performed_by: str,
         note: Optional[str] = None,
     ) -> None:
+        old_status = alert.status
         if is_triage_completion_status(status):
             apply_triage_state(
                 alert,
@@ -1085,8 +1099,14 @@ class AlertService:
         else:
             alert.status = status
         alert.updated_at = datetime.now(timezone.utc)
-        description = note or self._status_description(status)
-        self._add_bulk_note(alert, performed_by, description, ["bulk-action", "status-change"])
+        description = self._status_description(status)
+        if old_status != status:
+            description = f"{description} (from {_previous_status_label(old_status)})"
+        if note:
+            description = f"{description}\n\n{note}"
+        self._add_bulk_note(
+            alert, performed_by, description, ["bulk-action", "status-change"], _status_activity_kind(status),
+        )
 
     @staticmethod
     def _status_description(status: AlertStatus) -> str:
@@ -1122,6 +1142,7 @@ class AlertService:
         performed_by: str,
         description: str,
         tags: List[str],
+        activity_kind: TimelineActivityKind,
     ) -> None:
         now = datetime.now(timezone.utc)
         note_item = timeline_service.build_note_item(
@@ -1129,6 +1150,7 @@ class AlertService:
             created_by=performed_by,
             created_at=now.isoformat(),
             timestamp=now.isoformat(),
+            activity_kind=activity_kind,
             tags=tags,
         )
         timeline_service.add_timeline_item(alert, note_item, created_by=performed_by)

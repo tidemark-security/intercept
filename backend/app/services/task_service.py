@@ -10,7 +10,7 @@ from fastapi_pagination.ext.sqlalchemy import apaginate
 
 from app.core.entity_ids import TASK_PREFIX
 from app.models.models import Task, TaskBulkUpdate, TaskCreate, TaskUpdate, TaskTimelineItem
-from app.models.enums import TaskStatus, RealtimeEventType
+from app.models.enums import TaskStatus, RealtimeEventType, TimelineActivityKind
 from app.services.timeline_add_service import (
     add_timeline_item_and_commit,
     remove_timeline_item_and_commit,
@@ -38,15 +38,17 @@ class TaskValidationError(ValueError):
     """A task operation violates a client-facing domain rule."""
 
 
-_TASK_STATUS_DESCRIPTIONS = {
-    TaskStatus.TODO: "Task status changed to To Do",
-    TaskStatus.IN_PROGRESS: "Task status changed to In Progress",
-    TaskStatus.DONE: "Task marked as Done",
+_TASK_STATUS_LABELS = {
+    TaskStatus.TODO: "To Do",
+    TaskStatus.IN_PROGRESS: "In Progress",
+    TaskStatus.DONE: "Done",
 }
 
 
 def _task_status_description(status: TaskStatus) -> str:
-    return _TASK_STATUS_DESCRIPTIONS.get(status, f"Task status changed to {status}")
+    if status == TaskStatus.DONE:
+        return "Task marked as Done"
+    return f"Task status changed to {_TASK_STATUS_LABELS.get(status, status)}"
 
 
 class TaskService:
@@ -386,11 +388,13 @@ class TaskService:
         db_task.updated_at = now
         status_changed = db_task.status != old_status
         if status_changed and updated_by:
+            description = _task_status_description(db_task.status)
             status_change_item = timeline_service.build_note_item(
-                description=_task_status_description(db_task.status),
+                description=f"{description} (from {_TASK_STATUS_LABELS.get(old_status, old_status)})",
                 created_by=updated_by,
                 created_at=now.isoformat(),
                 timestamp=now.isoformat(),
+                activity_kind=TimelineActivityKind.STATUS_CHANGED,
                 tags=["status-change"],
             )
             timeline_service.add_timeline_item(db_task, status_change_item, created_by=updated_by)

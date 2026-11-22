@@ -20,6 +20,7 @@ from app.services.langflow_service import LangFlowService, LangFlowConfiguration
 from app.services.realtime_service import emit_event
 from app.services.settings_service import SettingsService
 from app.core.database import async_session_factory
+from app.models.enums import TimelineActivityKind
 from app.services.enrichment.service import enrichment_service
 from app.services.enrichment.bulk_sync_schedule_sync import (
     sync_bulk_sync_schedule_for_provider,
@@ -360,7 +361,9 @@ async def handle_triage_alert(payload: Dict[str, Any]):
             await langflow_service.close()
 
 
-def _add_task_agent_note(task, agent_username: str, description: str, tags: list[str]) -> None:
+def _add_task_agent_note(
+    task, agent_username: str, description: str, activity_kind: TimelineActivityKind,
+) -> None:
     from app.services.timeline_service import timeline_service
 
     now = datetime.now(timezone.utc)
@@ -371,7 +374,8 @@ def _add_task_agent_note(task, agent_username: str, description: str, tags: list
             created_by=agent_username,
             created_at=now.isoformat(),
             timestamp=now.isoformat(),
-            tags=tags,
+            activity_kind=activity_kind,
+            tags=["ai-agent", activity_kind.value.replace("_", "-")],
         ),
         created_by=agent_username,
     )
@@ -392,7 +396,7 @@ async def _record_autonomous_task_failure(task_id: int, agent_username: str, err
             task,
             agent_username,
             f"Autonomous task execution failed: {error_message}",
-            ["ai-agent", "automation-failed"],
+            TimelineActivityKind.AUTOMATION_FAILED,
         )
         await db.commit()
 
@@ -423,7 +427,7 @@ async def handle_autonomous_task(payload: Dict[str, Any]):
             task,
             agent_username,
             "Autonomous task execution started.",
-            ["ai-agent", "automation-started"],
+            TimelineActivityKind.AUTOMATION_STARTED,
         )
         await db.commit()
 
@@ -451,7 +455,7 @@ async def handle_autonomous_task(payload: Dict[str, Any]):
             task,
             agent_username,
             f"Autonomous task execution completed successfully.\n\n{str(response).strip()}",
-            ["ai-agent", "automation-completed"],
+            TimelineActivityKind.AUTOMATION_COMPLETED,
         )
         await db.commit()
 

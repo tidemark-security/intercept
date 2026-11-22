@@ -36,6 +36,7 @@ from app.models.enums import (
     AlertStatus,
     ObservableType,
     TaskStatus,
+    TimelineActivityKind,
     ActorType,
     SystemType,
     Protocol,
@@ -361,6 +362,21 @@ class NoteItem(ItemBase):
     """Timeline item for notes/comments."""
 
     type: Literal["note"] = "note"  # type: ignore
+    activity_kind: Optional[TimelineActivityKind] = Field(
+        default=None,
+        description="Server-assigned activity recorded by this timeline note",
+        schema_extra={"json_schema_extra": {"readOnly": True}},
+    )
+
+    @field_validator("activity_kind", mode="before")
+    @classmethod
+    def normalize_activity_kind(cls, value: Any) -> TimelineActivityKind | None:
+        if value is None:
+            return None
+        try:
+            return TimelineActivityKind(value)
+        except (TypeError, ValueError):
+            return None
 
 
 class AttachmentItem(ItemBase):

@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { TimelineActivityKind } from './TimelineActivityKind';
 import type { TimelineItemAudit } from './TimelineItemAudit';
 /**
  * Timeline item for notes/comments.
@@ -61,5 +62,9 @@ export type NoteItem = {
      * Response-only audit metadata dynamically coalesced from audit logs
      */
     audit?: (TimelineItemAudit | null);
+    /**
+     * Server-assigned activity recorded by this timeline note
+     */
+    readonly activity_kind?: (TimelineActivityKind | null);
 };
 

@@ -109,6 +109,7 @@ async def test_accept_manual_recommendation_creates_case(
         assert any(
             "accepted AI recommendation" in (item.get("description") or "")
             and "linked alert to case" in (item.get("description") or "")
+            and item.get("activity_kind") == "recommendation_applied"
             for item in note_items
         )
 

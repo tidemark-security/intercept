@@ -588,7 +588,11 @@ async def test_resolve_linked_alerts_bulk_updates_open_case_alerts(
         assert already_closed_alert.status == AlertStatus.CLOSED_TP
         assert other_alert.status == AlertStatus.ESCALATED
         assert any(
-            item.get("description") == "Case closure resolution"
+            item.get("activity_kind") == "alert_resolved"
+            and item.get("description") == (
+                f"Alert resolved as False Positive during case {payload['case_human_id']} closure"
+                "\n\nCase closure resolution"
+            )
             and item.get("tags") == ["bulk-action", "case-closure"]
             for item in _timeline_values(open_alert.timeline_items)
         )

@@ -235,7 +235,7 @@ describe('TimelineItemRenderer enrichments', () => {
     expect(screen.getAllByText('1. Identification').length).toBeGreaterThan(0);
   });
 
-  it('renders nested replies without duplicating descendant replies', () => {
+  it('attributes nested replies without duplicating them', () => {
     const item: RecursiveTimelineItem<NoteItem> = {
       id: 'note-parent',
       type: 'note',
@@ -250,7 +250,7 @@ describe('TimelineItemRenderer enrichments', () => {
         'note-reply-1': {
           id: 'note-reply-1',
           type: 'note',
-          created_by: 'analyst',
+          created_by: null,
           created_at: '2026-03-14T12:45:11.293811Z',
           timestamp: '2026-03-14T12:45:11.284000Z',
           tags: [],
@@ -261,10 +261,11 @@ describe('TimelineItemRenderer enrichments', () => {
             'note-reply-2': {
               id: 'note-reply-2',
               type: 'note',
-              created_by: 'analyst',
+              created_by: 'reply-author',
+              activity_kind: 'recommendation_applied',
               created_at: '2026-03-14T12:50:11.293811Z',
               timestamp: '2026-03-14T12:50:11.284000Z',
-              tags: [],
+              tags: ['enrichment'],
               flagged: false,
               highlighted: false,
               description: 'Nested reply',
@@ -280,10 +281,13 @@ describe('TimelineItemRenderer enrichments', () => {
     );
 
     expect(screen.getByText('First reply')).toBeInTheDocument();
+    expect(screen.getByText('System')).toBeInTheDocument();
     expect(screen.getAllByText('Nested reply')).toHaveLength(1);
+    expect(screen.getByText('reply-author')).toBeInTheDocument();
+    expect(screen.getByText('Recommendation applied')).toBeInTheDocument();
   });
 
-  it('renders human-authored notes as card-style analyst notes', () => {
+  it('renders human-authored notes as ordinary note cards', () => {
     const item: RecursiveTimelineItem<NoteItem> = {
       id: 'human-note',
       type: 'note',
@@ -301,59 +305,88 @@ describe('TimelineItemRenderer enrichments', () => {
       <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="alert" />
     );
 
-    expect(screen.getByText('Analyst note')).toBeInTheDocument();
+    expect(screen.getByText('Note')).toBeInTheDocument();
     expect(screen.getByText('analyst')).toBeInTheDocument();
     expect(screen.getByText('Human triage note', { selector: 'p' })).toBeInTheDocument();
   });
 
-  it('renders tagged automation notes with automation treatment', () => {
+  it.each([
+    { entityType: 'alert', kind: 'status_changed', title: 'Status changed', icon: 'arrow-right-left' },
+    { entityType: 'alert', kind: 'closed_as_duplicate', title: 'Closed as duplicate', icon: 'copy-x' },
+    { entityType: 'alert', kind: 'assignee_changed', title: 'Assignee changed', icon: 'user-round' },
+    { entityType: 'alert', kind: 'linked_to_case', title: 'Linked to case', icon: 'link-2' },
+    { entityType: 'alert', kind: 'alert_resolved', title: 'Alert resolved', icon: 'circle-check' },
+    { entityType: 'case', kind: 'runbook_applied', title: 'Runbook applied', icon: 'list-checks' },
+    { entityType: 'task', kind: 'status_changed', title: 'Status changed', icon: 'arrow-right-left' },
+    { entityType: 'task', kind: 'closed_with_case', title: 'Closed with case', icon: 'lock-keyhole' },
+  ] as const)('renders the $kind activity on the $entityType timeline', ({ entityType, kind, title, icon }) => {
     const item: RecursiveTimelineItem<NoteItem> = {
-      id: 'automation-note',
+      id: 'activity-note',
       type: 'note',
       created_by: 'analyst',
+      activity_kind: kind,
       created_at: '2026-03-14T12:40:11.293811Z',
       timestamp: '2026-03-14T12:40:11.284000Z',
-      tags: ['status-change'],
-      flagged: false,
-      highlighted: false,
-      description: 'Status changed from NEW to TRIAGED',
-      replies: null,
+      description: 'Details of the activity',
     };
 
-    renderWithProviders(
-      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="alert" />
+    const { container } = renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType={entityType} />
     );
 
-    expect(screen.getByText('Automation note')).toBeInTheDocument();
-    expect(screen.getByText('system')).toBeInTheDocument();
-    expect(screen.queryByText('analyst')).not.toBeInTheDocument();
-    expect(screen.getByText('status-change')).toBeInTheDocument();
-    expect(screen.getByText('Status changed from NEW to TRIAGED', { selector: 'p' })).toBeInTheDocument();
+    expect(screen.getByText('analyst')).toBeInTheDocument();
+    expect(screen.getByText(title).closest('div.border')).toHaveClass('border-neutral-border');
+    expect(screen.getByText('Details of the activity', { selector: 'p' })).toBeInTheDocument();
+    expect(container.querySelectorAll(`svg.lucide-${icon}`)).toHaveLength(2);
   });
 
-  it('renders generated automation task notes with automation treatment', () => {
+  it.each([
+    { kind: 'automation_started', title: 'Automation started' },
+    { kind: 'automation_completed', title: 'Automation completed' },
+    { kind: 'automation_failed', title: 'Automation failed' },
+  ] as const)('uses a bot icon and credits the agent for $kind', ({ kind, title }) => {
     const item: RecursiveTimelineItem<NoteItem> = {
       id: 'automation-task-note',
       type: 'note',
       created_by: 'custom-langflow-agent',
+      activity_kind: kind,
       created_at: '2026-03-14T12:40:11.293811Z',
       timestamp: '2026-03-14T12:40:11.284000Z',
-      tags: ['ai-agent', 'automation-completed'],
-      flagged: false,
-      highlighted: false,
-      description: 'Autonomous task completed',
-      replies: null,
+      description: 'Details of the run',
     };
 
-    renderWithProviders(
-      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="alert" />
+    const { container } = renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="task" />
     );
 
-    expect(screen.getByText('Automation note')).toBeInTheDocument();
-    expect(screen.getByText('system')).toBeInTheDocument();
-    expect(screen.queryByText('custom-langflow-agent')).not.toBeInTheDocument();
-    expect(screen.getByText('automation-completed')).toBeInTheDocument();
-    expect(screen.getByText('Autonomous task completed', { selector: 'p' })).toBeInTheDocument();
+    expect(screen.getByText('custom-langflow-agent')).toBeInTheDocument();
+    expect(screen.getByText(title)).toBeInTheDocument();
+    expect(container.querySelectorAll('svg.lucide-bot')).toHaveLength(2);
+  });
+
+  it.each([
+    { entityType: 'alert', creator: 'tidemark_ai', displayedAuthor: 'tidemark_ai', tags: ['status-change', 'enrichment'] },
+    { entityType: 'case', creator: 'system', displayedAuthor: 'system', tags: ['case-runbook', 'automation'] },
+    { entityType: 'task', creator: 'analyst', displayedAuthor: 'analyst', tags: ['bulk-action', 'automation-completed'] },
+    { entityType: 'task', creator: null, displayedAuthor: 'System', tags: ['system'] },
+  ] as const)('renders an ordinary note on $entityType with author $displayedAuthor', ({ entityType, creator, displayedAuthor, tags }) => {
+    const item: RecursiveTimelineItem<NoteItem> = {
+      id: 'unclassified-note',
+      type: 'note',
+      created_by: creator,
+      created_at: '2026-03-14T12:40:11.293811Z',
+      timestamp: '2026-03-14T12:40:11.284000Z',
+      tags: [...tags],
+      description: 'Note text',
+    };
+
+    const { container } = renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType={entityType} />
+    );
+
+    expect(screen.getByText(displayedAuthor)).toBeInTheDocument();
+    expect(screen.getByText('Note').closest('div.border')).toHaveClass('border-neutral-border');
+    expect(container.querySelector('svg.lucide-bot')).not.toBeInTheDocument();
   });
 
   it('renders deleted replies as read-only tombstones in original timeline order', () => {

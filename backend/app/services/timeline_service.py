@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlmodel import col
 
 from app.core.entity_ids import ALERT_PREFIX, CASE_PREFIX, TASK_PREFIX, format_entity_id
+from app.models.enums import TimelineActivityKind
 from app.models.models import Actor, ActorSnapshot, Alert, AuditLog, Case, Task, TimelineItemStorage
 from app.services.date_filter_utils import parse_optional_utc_datetime
 from app.services.normalization_service import (
@@ -319,6 +320,7 @@ class TimelineService:
         created_by: str,
         timestamp: datetime | str,
         tags: Iterable[str] = (),
+        activity_kind: TimelineActivityKind | None = None,
         created_at: datetime | str | None = None,
         flagged: bool = False,
         highlighted: bool = False,
@@ -336,6 +338,8 @@ class TimelineService:
         }
         if created_at is not None:
             item["created_at"] = created_at
+        if activity_kind is not None:
+            item["activity_kind"] = activity_kind.value
         return item
 
     def _validate_reply_depth(self, item: Dict[str, Any], current_depth: int = 0, max_depth: int = 5) -> None:

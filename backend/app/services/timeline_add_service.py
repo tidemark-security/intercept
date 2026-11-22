@@ -94,8 +94,16 @@ async def run_timeline_mutation(
     )
 
 
+def _discard_client_activity_kind(item: dict[str, Any]) -> None:
+    item.pop("activity_kind", None)
+    for field in ("replies", "source_timeline_items"):
+        for nested_item in timeline_service.iter_items(item.get(field)):
+            _discard_client_activity_kind(nested_item)
+
+
 def _dump_timeline_item(timeline_item: Any, *, exclude_unset: bool = False) -> dict[str, Any]:
     item_dict = timeline_item.model_dump(mode="json", exclude_unset=exclude_unset)
+    _discard_client_activity_kind(item_dict)
     if item_dict.get("created_at") is None:
         item_dict.pop("created_at", None)
     return item_dict
