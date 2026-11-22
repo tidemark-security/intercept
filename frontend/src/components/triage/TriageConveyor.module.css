@@ -5,13 +5,8 @@
   display: grid;
   place-items: center;
   inline-size: 13rem;
-  block-size: 4rem;
-}
-
-.conveyor[data-expanded] {
-  --head-size: 4rem;
-  inline-size: 16rem;
-  block-size: 7rem;
+  block-size: 3rem;
+  max-inline-size: 100%;
 }
 
 .robot {

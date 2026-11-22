@@ -142,6 +142,33 @@ describe("UnifiedTimeline", () => {
     expect(screen.queryByText(/viewing this alert/)).not.toBeInTheDocument();
   });
 
+  it("shows a truncatable title beneath the header ID and the full title in the metadata card", () => {
+    renderWithProviders(
+      <UnifiedTimeline
+        entityDetail={baseAlert}
+        entityType="alert"
+        selectedEntityId={baseAlert.id}
+        currentUser="admin"
+        isLoading={false}
+        error={null}
+        users={[]}
+        usersLoading={false}
+        onAssignToMe={vi.fn()}
+      />,
+    );
+
+    const content = screen.getByLabelText("alert timeline content");
+    const headerId = screen.getByRole("heading", { level: 1, name: baseAlert.human_id });
+    expect(headerId).toBeVisible();
+    expect(headerId.nextElementSibling).toHaveTextContent(baseAlert.title);
+    expect(headerId.nextElementSibling).toHaveClass("truncate");
+    expect(within(content).queryByText(baseAlert.human_id)).not.toBeInTheDocument();
+    expect(within(content).getByRole("heading", { name: baseAlert.title })).toBeVisible();
+    expect(within(content).getByText("Unassigned")).toBeVisible();
+    expect(within(content).queryByRole("button", { name: /assign/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /\bUnassigned$/ })).toBeVisible();
+  });
+
   it("resolves parent entity header links with the entity surface and core case context", async () => {
     resolveLinkTemplatesMock.mockResolvedValue([
       {
@@ -198,14 +225,23 @@ describe("UnifiedTimeline", () => {
   it("shows the AI triage request card for open alerts without a recommendation", () => {
     renderAlertTimeline("IN_PROGRESS");
 
-    expect(screen.getByRole("button", { name: /request ai triage/i })).toBeInTheDocument();
+    const triage = screen.getByRole("region", { name: "AI Triage Available" });
+    expect(within(triage).getByRole("button", { name: "Start" })).toBeInTheDocument();
   });
 
-  it("renders alert context above AI triage and metadata", () => {
+  it("embeds triage, analyst context, and the full description after the alert tags", () => {
+    const description = [
+      "## Evidence",
+      "",
+      "```text",
+      ...Array.from({ length: 20 }, (_, index) => `event-${index + 1}`),
+      "```",
+    ].join("\n");
     renderWithProviders(
       <UnifiedTimeline
         entityDetail={{
           ...baseAlert,
+          description,
           context: {
             total_count: 1,
             omitted_count: 0,
@@ -233,19 +269,23 @@ describe("UnifiedTimeline", () => {
       />,
     );
 
-    const triageCard = screen.getByText("AI Triage Available");
-    const contextCard = screen.getByText("Analyst Context");
-    const metadataSource = screen.getByText("Threat Intelligence");
+    const metadataCard = screen.getByRole("heading", { name: baseAlert.title, level: 2 }).parentElement!;
+    const tags = within(metadataCard).getByLabelText("Tags");
+    const triageCard = within(metadataCard).getByRole("region", { name: "AI Triage Available" });
+    const contextCard = within(metadataCard).getByRole("region", { name: "Analyst Context" });
+    const descriptionSection = within(metadataCard).getByRole("region", { name: "Description" });
 
-    expect(contextCard.compareDocumentPosition(triageCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(triageCard.compareDocumentPosition(metadataSource) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(tags.compareDocumentPosition(triageCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(triageCard.compareDocumentPosition(contextCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(contextCard.compareDocumentPosition(descriptionSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(descriptionSection).getByText("event-20")).toBeVisible();
+    expect(screen.getAllByRole("heading", { name: "Evidence" })).toHaveLength(1);
   });
 
   it("does not show the AI triage request card for closed alerts without a recommendation", () => {
     renderAlertTimeline("CLOSED_TP");
 
-    expect(screen.queryByRole("button", { name: /request ai triage/i })).not.toBeInTheDocument();
-    expect(screen.queryByText("AI Triage Available")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "AI Triage Available" })).not.toBeInTheDocument();
   });
 
   it("keeps normal center scrolling while bounding the swimlane section height", async () => {

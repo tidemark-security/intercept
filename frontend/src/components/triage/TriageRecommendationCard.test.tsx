@@ -57,7 +57,7 @@ describe('TriageRecommendationCard', () => {
     );
 
     const card = screen.getByRole('region', { name: 'AI Triage Failed' });
-    const retry = within(card).getByRole('button', { name: 'Retry AI Triage' });
+    const retry = within(card).getByRole('button', { name: 'Retry' });
     expect(within(card).getByText(error)).toBeVisible();
     expect(within(card).getByText(/look up the alert ID in the triage worker logs/)).toBeVisible();
     expect(retry).toHaveAttribute('aria-busy', String(isRetrying));
@@ -65,7 +65,7 @@ describe('TriageRecommendationCard', () => {
     expect(onRetry).toHaveBeenCalledTimes(isRetrying ? 0 : 1);
   });
 
-  it('shows an enqueue failure inline in expanded mode and points to the task queue', () => {
+  it('keeps an enqueue failure compact and points to the task queue', () => {
     const error = 'Task queue unavailable';
     renderWithProviders(
       <TriageRecommendationCard
@@ -76,10 +76,11 @@ describe('TriageRecommendationCard', () => {
       />,
     );
 
-    expect(screen.getByText('Ask an admin to check the task queue for this alert.')).toBeVisible();
-    expect(screen.queryByRole('button', { name: 'Retry AI Triage' })).not.toBeInTheDocument();
-    expect(screen.getByText(error)).toBeVisible();
-    expect(screen.queryByRole('button', { name: /^Failure Details/ })).not.toBeInTheDocument();
+    const card = screen.getByRole('region', { name: 'AI Triage Failed' });
+    expect(card).toHaveAttribute('data-layout', 'compact');
+    expect(within(card).getByText('Ask an admin to check the task queue for this alert.')).toBeVisible();
+    expect(within(card).getByText(error)).toBeVisible();
+    expect(within(card).queryByRole('button')).not.toBeInTheDocument();
   });
 
   it('offers all review actions for a pending recommendation without context', async () => {
@@ -96,12 +97,14 @@ describe('TriageRecommendationCard', () => {
 
     expect(screen.getByText('Reject').closest('button')).toBeInTheDocument();
     expect(screen.getByText('Accept Recommendation').closest('button')).toBeInTheDocument();
-    expect(screen.getByText('Needs Investigation')).toBeVisible();
+    expect(screen.queryByText('Needs Investigation')).not.toBeInTheDocument();
+    expect(screen.getByText('Investigate alert', { exact: true })).toBeVisible();
     expect(screen.queryByText('Pending Review')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Escalate to Case \(Reject AI\)/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Escalate to Case \(Accept AI\)/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/context entry supplied/)).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Rerun AI Triage' }));
+    expect(within(screen.getByRole('group', { name: 'Recommendation preview' })).getByText('1 reason')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Rerun' }));
     expect(onRerun).toHaveBeenCalledWith(pendingEscalationRecommendation().created_at);
   });
 
@@ -130,7 +133,37 @@ describe('TriageRecommendationCard', () => {
     expect(screen.getByRole('button', { name: 'Accept Recommendation' })).toBeVisible();
   });
 
-  it('previews reasoning, changes and tasks and expands each row independently', async () => {
+  it.each([
+    ['dark', 'enabled:border-warning-500'],
+    ['light', 'enabled:border-warning-800'],
+  ])('matches the page Reject button in the %s theme', async (theme, warningBorder) => {
+    localStorage.setItem('intercept.theme-preference', theme);
+    const user = userEvent.setup();
+    renderWithProviders(
+      <TriageRecommendationCard
+        recommendation={pendingEscalationRecommendation()}
+        onAccept={vi.fn()}
+        onReject={vi.fn()}
+      />,
+    );
+    localStorage.removeItem('intercept.theme-preference');
+
+    const pageReject = screen.getByRole('button', { name: 'Reject' });
+    await user.click(pageReject);
+
+    const dialog = within(screen.getByRole('dialog'));
+    const confirm = dialog.getByRole('button', { name: 'Reject' });
+    const cancel = dialog.getByRole('button', { name: /Cancel$/ });
+    expect(confirm.className).toBe(pageReject.className);
+    expect(confirm).toHaveClass('h-8', warningBorder);
+    expect(confirm.querySelector('svg.lucide-x')).toBeInTheDocument();
+    expect(confirm).toBeDisabled();
+    expect(cancel).toHaveClass('h-8');
+    await user.click(cancel);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('summarizes proposed changes in compact mode and keeps the expanded detail rows', async () => {
     const user = userEvent.setup();
     const onAccept = vi.fn();
     renderWithProviders(
@@ -143,12 +176,25 @@ describe('TriageRecommendationCard', () => {
           suggested_tags_add: ['dns', 'review'],
           suggested_tags_remove: ['unverified'],
         }}
-        defaultExpanded
         onAccept={onAccept}
         onReject={vi.fn()}
       />,
     );
 
+    const summary = screen.getByRole('group', { name: 'Recommendation preview' });
+    expect(within(summary).getByText('P3', { ignore: '[aria-hidden="true"]' })).toBeVisible();
+    expect(within(summary).getByText('2 reasons').closest('[tabindex="0"]')?.previousElementSibling).toHaveTextContent('P3');
+    expect(within(summary).getByText('+2 tags')).toBeVisible();
+    expect(within(summary).getByText('−1 tag')).toBeVisible();
+    const taskBadge = within(summary).getByText('2 recommended tasks');
+    expect(taskBadge).toBeVisible();
+    expect(taskBadge.closest('[tabindex="0"]')?.querySelector('svg')).toBeNull();
+    expect(screen.queryByText(/triage guide/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Pull DNS telemetry')).not.toBeInTheDocument();
+    expect(screen.queryByText('unverified')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Expand triage recommendation' }));
+    expect(summary).not.toBeInTheDocument();
     const reasoning = screen.getByRole('button', { name: /^Reasoning/ });
     const changes = screen.getByRole('button', { name: /^Recommended Changes/ });
     const tasks = screen.getByRole('button', { name: /^Recommended Tasks/ });
@@ -175,7 +221,9 @@ describe('TriageRecommendationCard', () => {
     expect(tasks).toHaveAttribute('aria-expanded', 'true');
     expect(changes).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText('Compare with the daily baseline')).toBeVisible();
-    expect(screen.getByText('unverified')).toBeVisible();
+    const removedTag = screen.getByText('unverified');
+    expect(removedTag).toBeVisible();
+    expect(removedTag.closest('div')?.querySelector('svg.lucide-tag')).toBeInTheDocument();
 
     await user.click(reasoning);
     expect(reasoning).toHaveAttribute('aria-expanded', 'false');
@@ -183,6 +231,73 @@ describe('TriageRecommendationCard', () => {
     expect(changes).toHaveAttribute('aria-expanded', 'true');
     await user.click(screen.getByRole('button', { name: 'Accept Recommendation' }));
     expect(onAccept).toHaveBeenCalledWith({ apply_status: true, apply_priority: true, apply_assignee: true, apply_tags: true });
+  });
+
+  it('reveals all reasons, task descriptions, and tag names from the compact badges', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <TriageRecommendationCard
+        recommendation={{
+          ...pendingEscalationRecommendation(),
+          reasoning_bullets: ['Review the **supporting evidence**.', 'The alert needs an owner.'],
+          recommended_actions: [{ title: 'Review DNS logs', description: 'Check the documented time window.' }, 'Record the outcome'],
+          suggested_tags_add: ['dns', 'review'],
+          suggested_tags_remove: ['unverified'],
+        }}
+        onAccept={vi.fn()}
+        onReject={vi.fn()}
+      />,
+    );
+
+    for (const [badge, details] of [
+      ['2 reasons', ['Review the supporting evidence.', 'The alert needs an owner.']],
+      ['2 recommended tasks', ['Review DNS logs', 'Check the documented time window.', 'Record the outcome']],
+      ['+2 tags', ['dns', 'review']],
+      ['−1 tag', ['unverified']],
+    ] as const) {
+      const trigger = screen.getByText(badge);
+      await user.hover(trigger);
+      const tooltip = await screen.findByRole('tooltip');
+      details.forEach(detail => expect(tooltip).toHaveTextContent(detail));
+      if (badge === '+2 tags' || badge === '−1 tag') {
+        expect(tooltip.querySelectorAll('svg.lucide-tag')).toHaveLength(details.length);
+      }
+      await user.keyboard('{Escape}');
+      await waitFor(() => expect(tooltip).not.toBeInTheDocument());
+    }
+  });
+
+  it.each([undefined, 'The alert needs a different disposition.'])('shows rejection details below the action in both layouts (note: %s)', async (note) => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <TriageRecommendationCard
+        recommendation={{
+          ...pendingEscalationRecommendation(),
+          status: 'REJECTED',
+          reviewed_by: 'reviewer@example.test',
+          reviewed_at: '2026-03-14T12:45:00Z',
+          rejection_category: 'INCORRECT_DISPOSITION',
+          rejection_reason: note,
+        }}
+        onAccept={vi.fn()}
+        onReject={vi.fn()}
+      />,
+    );
+
+    const card = screen.getByRole('region', { name: 'AI Triage Recommendation' });
+    const footer = within(card).getByRole('group', { name: 'Rejection details' });
+    const summary = within(card).getByRole('group', { name: 'Triage summary' });
+    expect(summary.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(footer).toHaveTextContent('Rejected by reviewer@example.test');
+    expect(footer).toHaveTextContent('Incorrect Disposition');
+    if (note) expect(footer).toHaveTextContent(note);
+    expect(screen.getAllByText('reviewer@example.test')).toHaveLength(1);
+    expect(within(card).queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument();
+
+    await user.click(within(card).getByRole('button', { name: 'Expand triage recommendation' }));
+    const details = within(card).getByRole('group', { name: 'Triage details' });
+    expect(details.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(footer).toBeVisible();
   });
 
   it.each(['PENDING', 'ACCEPTED', 'REJECTED'] as const)('shows supplied context and offers a rerun only while pending (%s)', async (status) => {
@@ -195,6 +310,10 @@ describe('TriageRecommendationCard', () => {
         recommendation={{
           ...pendingEscalationRecommendation(),
           status,
+          ...(status === 'ACCEPTED' && {
+            reviewed_by: 'reviewer@example.test',
+            reviewed_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+          }),
           context_snapshot_verified: true,
           applied_context_entries: [
             { id: 34, body: contextBody, author: 'analyst' },
@@ -204,21 +323,29 @@ describe('TriageRecommendationCard', () => {
         onAccept={vi.fn()}
         onReject={vi.fn()}
         onRerun={onRerun}
-        contextChanged
       />,
     );
 
     expect(screen.getByText('2 context entries supplied')).toBeVisible();
-    expect(screen.getByText('Context changed since triage')).toBeVisible();
-    if (status === 'ACCEPTED') expect(screen.getByText('Accepted', { exact: true })).toBeVisible();
+    if (status === 'ACCEPTED') {
+      expect(screen.getByText('Accepted', { exact: true })).toBeVisible();
+      const footer = screen.getByRole('group', { name: 'Acceptance details' });
+      const summary = screen.getByRole('group', { name: 'Triage summary' });
+      expect(summary.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(footer).toHaveTextContent('Accepted by reviewer@example.test · 5 minutes ago');
+      expect(screen.getAllByText('reviewer@example.test')).toHaveLength(1);
+    }
     expect(screen.queryByText(contextBody)).not.toBeInTheDocument();
     if (status === 'PENDING') {
-      await user.click(screen.getByRole('button', { name: 'Rerun AI Triage' }));
+      await user.click(screen.getByRole('button', { name: 'Rerun' }));
       expect(onRerun).toHaveBeenCalledWith(pendingEscalationRecommendation().created_at);
     } else {
-      expect(screen.queryByRole('button', { name: 'Rerun AI Triage' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Rerun' })).not.toBeInTheDocument();
     }
     await user.click(screen.getByRole('button', { name: 'Expand triage recommendation' }));
+    if (status === 'ACCEPTED') {
+      expect(screen.getByRole('group', { name: 'Acceptance details' })).toBeVisible();
+    }
     const contextAtTriage = screen.getByRole('button', { name: /^Context at Triage/ });
     expect(within(contextAtTriage).getByText(contextBody)).toBeVisible();
     expect(screen.queryByText(secondContextBody)).not.toBeInTheDocument();
@@ -246,7 +373,7 @@ describe('TriageRecommendationCard', () => {
     expect(within(savedContext).getByText('Context for this run is unverified')).toBeVisible();
     expect(within(savedContext).getByText('Unverified context', { exact: true })).toBeVisible();
     expect(savedContext).toHaveTextContent(/Context for this run is unverified.*View saved entries/);
-    expect(screen.getByRole('button', { name: 'Rerun AI Triage' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Rerun' })).toBeVisible();
     expect(screen.queryByText('1 context entry supplied')).not.toBeInTheDocument();
     await user.click(savedContext);
     const [notice, entry] = screen.getAllByRole('listitem');

@@ -203,7 +203,7 @@ export interface UnifiedTimelineProps {
   
   /**
    * Handler for requesting AI triage when no recommendation exists
-   * Called when user clicks Request AI Triage button
+   * Called when the user clicks Start on the AI Triage Available card
    */
   onRequestTriage?: () => void;
   

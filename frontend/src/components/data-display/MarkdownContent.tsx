@@ -126,6 +126,7 @@ interface MarkdownContentProps {
   content: string;
   className?: string;
   isStreamingFromAi?: boolean;
+  showFullCodeBlocks?: boolean;
   linkStyle?: 'badge' | 'inline';
 }
 
@@ -133,6 +134,7 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
   content,
   className,
   isStreamingFromAi = false,
+  showFullCodeBlocks = false,
   linkStyle = 'badge',
 }) => {
   const { resolvedTheme } = useTheme();
@@ -268,6 +270,10 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
               return <MermaidRenderer code={codeString} isStreaming={isStreamingFromAi} />;
             }
 
+            if (showFullCodeBlocks) {
+              return <CodeBlock language={language} code={codeString} resolvedTheme={resolvedTheme} />;
+            }
+
             return <ExpandableCodeBlock language={language} code={codeString} resolvedTheme={resolvedTheme} />;
           },
           a: ({ href, children }) => {
@@ -331,6 +337,7 @@ export default React.memo(MarkdownContent, (prevProps, nextProps) => {
   return (
     prevProps.content === nextProps.content &&
     prevProps.className === nextProps.className &&
-    prevProps.isStreamingFromAi === nextProps.isStreamingFromAi
+    prevProps.isStreamingFromAi === nextProps.isStreamingFromAi &&
+    prevProps.showFullCodeBlocks === nextProps.showFullCodeBlocks
   );
 });

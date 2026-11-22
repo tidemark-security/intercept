@@ -1,0 +1,37 @@
+.card {
+  container-type: inline-size;
+}
+
+.columns {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.columns .field {
+  @apply pl-0;
+}
+
+.columns .field:not(.dueField) {
+  @apply border-l-0;
+}
+
+.columns .fieldIcon {
+  @apply mt-1.5 w-3.5;
+}
+
+.columns .fieldContent {
+  @apply grid min-h-6 grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2;
+}
+
+.recordFields {
+  @apply border-t border-solid border-neutral-border pt-3;
+}
+
+@container (min-width: 34rem) {
+  .columns {
+    grid-template-columns: minmax(0, 0.88fr) minmax(0, 1.12fr);
+  }
+
+  .recordFields {
+    @apply border-l border-t-0 pl-4 pt-0;
+  }
+}

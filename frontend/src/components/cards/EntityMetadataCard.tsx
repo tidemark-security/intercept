@@ -25,7 +25,10 @@ import type { TaskStatus } from "@/types/generated/models/TaskStatus";
 import { cn } from "@/utils/cn";
 import { convertNumericToHumanId } from "@/utils/caseHelpers";
 
-import { ArrowRight, CalendarClock, ClockAlert, ClockPlus, RadioTower, User } from "lucide-react";
+import { Activity, ArrowRight, CalendarClock, ClockAlert, ClockPlus, Flag, RadioTower, Tags, User } from "lucide-react";
+
+import { EntityDescription } from "./EntityDescription";
+import styles from "./EntityMetadataCard.module.css";
 
 export type EntityMetadataCardVariant = "detail" | "timeline" | "compact";
 
@@ -34,8 +37,101 @@ interface EntityMetadataCardProps {
   entityType: "alert" | "case" | "task";
   isLoading?: boolean;
   onUpdateTags?: (tags: string[]) => void;
+  beforeDescription?: React.ReactNode;
   showTags?: boolean;
   variant?: EntityMetadataCardVariant;
+}
+
+function MetaField({
+  icon,
+  label,
+  children,
+  dueStatus,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  children: React.ReactNode;
+  dueStatus?: TaskDueStatus;
+}) {
+  const { resolvedTheme } = useTheme();
+  const isDarkTheme = resolvedTheme === "dark";
+  const hasDueStatus = dueStatus === "overdue" || dueStatus === "due_soon";
+
+  return (
+    <div
+      className={cn(
+        styles.field,
+        "group flex min-w-0 items-start gap-2 border-l border-solid border-neutral-border py-1 pl-3",
+        hasDueStatus && styles.dueField,
+        dueStatus === 'overdue'
+          ? cn(
+            "border-l border-l-error-600 py-1.5 pr-2",
+            isDarkTheme ? "bg-error-1000" : "bg-error-50/40",
+          )
+          : dueStatus === 'due_soon'
+            ? cn(
+              "border-l border-l-warning-600 py-1.5 pr-2",
+              isDarkTheme ? "bg-warning-1100" : "bg-warning-50/40",
+            )
+            : null,
+      )}
+    >
+      <span
+        aria-hidden="true"
+        className={cn(
+          "mt-0.5 flex-none text-subtext-color transition-colors group-hover:text-default-font",
+          styles.fieldIcon,
+          dueStatus === 'overdue' && (isDarkTheme ? "text-error-500" : "text-error-1000"),
+          dueStatus === 'due_soon' && (isDarkTheme ? "text-warning-400" : "text-warning-1000"),
+        )}
+      >
+        {icon}
+      </span>
+      <div className={cn("flex min-w-0 flex-1 flex-col gap-1", styles.fieldContent)}>
+        <span
+          className={cn(
+            "font-monospace-body text-[10px] font-medium uppercase leading-none tracking-normal text-subtext-color",
+            dueStatus === 'overdue' && (isDarkTheme ? "text-error-500" : "text-error-1000"),
+            dueStatus === 'due_soon' && (isDarkTheme ? "text-warning-400" : "text-warning-1000"),
+          )}
+        >
+          {label}
+        </span>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function TimestampField({ label, value, icon, dueStatus }: {
+  label: string;
+  value: string | null | undefined;
+  icon: React.ReactNode;
+  dueStatus?: TaskDueStatus;
+}) {
+  const { resolvedTheme } = useTheme();
+  const isDarkTheme = resolvedTheme === "dark";
+  if (!value) {
+    return null;
+  }
+
+  const timestampTextClassName = dueStatus === 'overdue'
+    ? isDarkTheme ? 'text-error-400' : 'text-error-1000'
+    : dueStatus === 'due_soon'
+      ? isDarkTheme ? 'text-warning-300' : 'text-warning-1000'
+      : undefined;
+
+  return (
+    <MetaField icon={icon} label={label} dueStatus={dueStatus}>
+      <CopyableTimestamp
+        value={value}
+        showFull
+        variant="default-right"
+        className="min-w-0 max-w-full flex-wrap font-monospace-body text-[11px] leading-4 [overflow-wrap:anywhere] [&>span]:min-w-0"
+        textClassName={cn("text-default-font", timestampTextClassName)}
+      />
+    </MetaField>
+  );
 }
 
 export function EntityMetadataCard({
@@ -43,6 +139,7 @@ export function EntityMetadataCard({
   entityType,
   isLoading,
   onUpdateTags,
+  beforeDescription,
   showTags = true,
   variant,
 }: EntityMetadataCardProps) {
@@ -50,14 +147,12 @@ export function EntityMetadataCard({
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === "dark";
   const resolvedVariant = variant ?? (showTags ? "detail" : "timeline");
-  const isTimelineVariant = resolvedVariant === "timeline";
   const isDetailVariant = resolvedVariant === "detail";
   const isCompactVariant = resolvedVariant === "compact";
-  const useTimelineDensity = isTimelineVariant || isDetailVariant;
   const rootClassName = cn(
     "flex w-full min-w-0 flex-col",
-    useTimelineDensity ? "gap-3" : "gap-4",
-    isCompactVariant && "gap-2",
+    isCompactVariant ? "gap-2" : "gap-3",
+    !isCompactVariant && styles.card,
     isDetailVariant && cn(
       "rounded-md border border-solid border-neutral-border px-4 py-3",
       isDarkTheme ? "bg-neutral-0" : "bg-neutral-50",
@@ -97,6 +192,7 @@ export function EntityMetadataCard({
 
   const isAlert = entityType === "alert";
   const isTask = entityType === "task";
+  const description = entity.description;
   const alertEntity = isAlert ? (entity as AlertRead) : null;
   const caseEntity = entityType === "case" ? (entity as CaseRead) : null;
   const taskEntity = isTask ? (entity as TaskRead) : null;
@@ -110,115 +206,10 @@ export function EntityMetadataCard({
     statusValue = caseStatusToUIState(entity.status as CaseStatus) as React.ComponentProps<typeof State>["state"];
   }
 
-  const MetaField = ({
-    icon,
-    label,
-    children,
-    className,
-    dueStatus,
-  }: {
-    icon: React.ReactNode;
-    label: string;
-    children: React.ReactNode;
-    className?: string;
-    dueStatus?: TaskDueStatus;
-  }) => (
-    <div
-      className={cn(
-        "group flex min-w-0 items-start gap-2 border-l border-solid border-neutral-border pl-3",
-        dueStatus === 'overdue'
-          ? cn(
-            "border-l-error-600 pr-2 py-1.5",
-            isDarkTheme ? "bg-error-1000" : "bg-error-50/40",
-          )
-          : dueStatus === 'due_soon'
-            ? cn(
-              "border-l-warning-600 pr-2 py-1.5",
-              isDarkTheme ? "bg-warning-1100" : "bg-warning-50/40",
-            )
-            : null,
-        isCompactVariant ? "gap-1.5 pl-2" : "py-1",
-        className,
-      )}
-    >
-      <span
-        className={cn(
-          "mt-0.5 flex-none text-subtext-color transition-colors group-hover:text-default-font",
-          dueStatus === 'overdue' && (isDarkTheme ? "text-error-500" : "text-error-1000"),
-          dueStatus === 'due_soon' && (isDarkTheme ? "text-warning-400" : "text-warning-1000"),
-        )}
-      >
-        {icon}
-      </span>
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <span
-          className={cn(
-            "font-monospace-body text-[10px] font-medium uppercase leading-none tracking-normal text-subtext-color",
-            dueStatus === 'overdue' && (isDarkTheme ? "text-error-500" : "text-error-1000"),
-            dueStatus === 'due_soon' && (isDarkTheme ? "text-warning-400" : "text-warning-1000"),
-          )}
-        >
-          {label}
-        </span>
-        {children}
-      </div>
-    </div>
-  );
-
-  const TimestampField = ({ label, value, icon, dueStatus }: { label: string; value: string | null | undefined; icon: React.ReactNode; dueStatus?: TaskDueStatus }) => {
-    if (!value) {
-      return null;
-    }
-
-    const timestampTextClassName = dueStatus === 'overdue'
-      ? isDarkTheme ? 'text-error-400' : 'text-error-1000'
-      : dueStatus === 'due_soon'
-        ? isDarkTheme ? 'text-warning-300' : 'text-warning-1000'
-        : undefined;
-
-    return (
-      <MetaField icon={icon} label={label} className={detailFieldClassName} dueStatus={dueStatus}>
-        <CopyableTimestamp
-          value={value}
-          showFull
-          variant="default-right"
-          className="min-w-0 max-w-full flex-wrap font-monospace-body text-[11px] leading-4"
-          textClassName={cn("text-default-font", timestampTextClassName)}
-        />
-      </MetaField>
-    );
-  };
-
-  const summaryGridClassName = cn(
-    "grid w-full min-w-0 gap-x-3 gap-y-4",
-    useTimelineDensity
-      ? "grid-cols-[repeat(auto-fit,minmax(min(100%,11rem),1fr))]"
-      : "grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))]",
-    isCompactVariant && "gap-y-2",
-  );
-  const detailGridClassName = cn(
-    "grid w-full min-w-0 border-t border-solid border-neutral-border/70 pt-3",
-    useTimelineDensity
-      ? "grid-cols-[repeat(auto-fit,minmax(min(100%,13rem),1fr))] gap-x-3 gap-y-3"
-      : "grid-cols-[repeat(auto-fit,minmax(min(100%,16rem),1fr))] gap-x-4 gap-y-3",
-    isCompactVariant && "pt-2",
-  );
-  const detailFieldClassName = "min-w-0";
-
-  const PersonField = ({ label, value }: { label: string; value: string | null | undefined }) => (
-    <MetaField icon={<User className="h-3.5 w-3.5" />} label={label}>
-      <div className="flex min-h-5 w-full min-w-0 items-center">
-        <span className="min-w-0 truncate text-caption-bold font-caption-bold text-default-font">
-          <QueueSearchText>{value || "Unassigned"}</QueueSearchText>
-        </span>
-      </div>
-    </MetaField>
-  );
-
-  const createdByValue = caseEntity?.created_by || taskEntity?.created_by || (alertEntity as (AlertRead & { created_by?: string | null }) | null)?.created_by;
+  const createdByValue = caseEntity?.created_by || taskEntity?.created_by;
   const sourceValue = alertEntity?.source;
   const taskDueStatus = getTaskDueStatus(taskEntity?.due_date, taskEntity?.status);
-  const taskPICERLStage = isTask ? (entity as TaskRead & { picerl_stage?: string | null }).picerl_stage : null;
+  const taskPICERLStage = taskEntity?.picerl_stage;
   const taskDueLabel = taskDueStatus === 'overdue'
     ? 'Overdue'
     : taskDueStatus === 'due_soon'
@@ -239,7 +230,6 @@ export function EntityMetadataCard({
       </Button>
     </div>
   ) : null;
-  const shouldRenderStandaloneFooter = !!entity.description || shouldRenderStandaloneTagRow || !!parentCaseAction;
 
   if (isCompactVariant) {
     return (
@@ -268,10 +258,10 @@ export function EntityMetadataCard({
           ) : null}
         </div>
 
-        {entity.description ? (
+        {description ? (
           <div className="w-full min-w-0 border-t border-solid border-neutral-border/70 pt-2">
             <MarkdownContent
-              content={entity.description}
+              content={description}
               className="line-clamp-2 text-caption font-caption leading-5 text-subtext-color [overflow-wrap:anywhere] [&_*]:text-inherit [&_p]:!my-0 [&_p]:inline"
             />
           </div>
@@ -280,78 +270,117 @@ export function EntityMetadataCard({
     );
   }
 
+  const assigneeField = (
+    <MetaField icon={<User className="h-3.5 w-3.5" />} label="Assignee">
+      <span className="min-w-0 break-words text-caption-bold font-caption-bold text-default-font">
+        <QueueSearchText>{entity.assignee || "Unassigned"}</QueueSearchText>
+      </span>
+    </MetaField>
+  );
+  const creatorField = !isAlert && (
+    <MetaField icon={<User className="h-3.5 w-3.5" />} label="Created By">
+      <span className="min-w-0 break-words text-caption-bold font-caption-bold text-default-font">
+        <QueueSearchText>{createdByValue || "Not recorded"}</QueueSearchText>
+      </span>
+    </MetaField>
+  );
+  const sourceField = sourceValue && (
+    <MetaField icon={<RadioTower className="h-3.5 w-3.5" />} label="Source">
+      <span className="min-w-0 break-words text-caption-bold font-caption-bold text-default-font">
+        <QueueSearchText>{sourceValue}</QueueSearchText>
+      </span>
+    </MetaField>
+  );
+  const tagContent = shouldRenderStandaloneTagRow ? (
+    <TagsManager
+      tags={currentTags}
+      onTagsChange={onUpdateTags || (() => { })}
+      label="Tags"
+      inline={true}
+      readonly={!onUpdateTags}
+      placeholder={onUpdateTags ? "+ Add tags" : (currentTags.length > 0 ? " " : "No tags")}
+      className={!onUpdateTags ? "opacity-60" : ""}
+    />
+  ) : null;
+  const descriptionSection = description?.trim() ? (
+    <EntityDescription
+      description={description}
+      className={isDetailVariant ? "-mx-4 -mb-3 border-t border-solid border-neutral-border bg-neutral-500/5 px-4 py-3" : undefined}
+      showFullCodeBlocks={isDetailVariant}
+    />
+  ) : null;
+
   return (
     <div className={rootClassName}>
-      <div className={summaryGridClassName}>
-        <MetaField label="Status" icon={null}>
-          <State
-            state={statusValue}
-            className={cn("w-full", useTimelineDensity && "min-h-6")}
-          />
-        </MetaField>
+      {isDetailVariant && (
+        <h2 className="break-words border-b border-solid border-neutral-border pb-3 text-heading-2 font-heading-2 text-default-font">
+          <QueueSearchText>{entity.title}</QueueSearchText>
+        </h2>
+      )}
 
-        <MetaField label="Priority" icon={null}>
-          {entity.priority ? (
-            <Priority priority={priorityToUIPriority(entity.priority)} className="w-full" />
-          ) : (
-            <span className="text-body font-body text-subtext-color">
-              Not set
-            </span>
+      <div className={cn("grid min-w-0 gap-3", styles.columns, !isDetailVariant && "border-t border-solid border-neutral-border pt-3")}>
+        <div className="flex min-w-0 flex-col">
+          {assigneeField}
+          <MetaField label="Status" icon={<Activity className="h-3.5 w-3.5" />}>
+            <State state={statusValue} className="min-h-6 w-full" />
+          </MetaField>
+
+          <MetaField label="Priority" icon={<Flag className="h-3.5 w-3.5" />}>
+            {entity.priority ? (
+              <Priority priority={priorityToUIPriority(entity.priority)} className="w-full" />
+            ) : (
+              <span className="text-body font-body text-subtext-color">Not set</span>
+            )}
+          </MetaField>
+
+          {taskPICERLStage && (
+            <MetaField label="PICERL Stage" icon={null}>
+              <PicerlStage stage={taskPICERLStage} className="w-full" />
+            </MetaField>
           )}
-        </MetaField>
+        </div>
 
-        {isTask && taskPICERLStage ? (
-          <MetaField label="PICERL Stage" icon={null}>
-            <PicerlStage stage={taskPICERLStage} className="w-full" />
-          </MetaField>
-        ) : null}
+        <div className={cn("flex min-w-0 flex-col", styles.recordFields)}>
+          {sourceField}
+          {taskEntity?.due_date && (
+            <TimestampField label={taskDueLabel} value={taskEntity.due_date} icon={<CalendarClock className="h-3.5 w-3.5" />} dueStatus={taskDueStatus} />
+          )}
 
-        <PersonField label="Assignee" value={entity.assignee} />
-        <PersonField label="Created By" value={createdByValue} />
+          <TimestampField label="Created" value={entity.created_at} icon={<ClockPlus className="h-3.5 w-3.5" />} />
+          <TimestampField label="Updated" value={entity.updated_at} icon={<ClockAlert className="h-3.5 w-3.5" />} />
+          {caseEntity?.closed_at && (
+            <TimestampField label="Closed" value={caseEntity.closed_at} icon={<ClockAlert className="h-3.5 w-3.5" />} />
+          )}
+
+          {creatorField}
+        </div>
       </div>
 
-      <div className={detailGridClassName}>
-        {isTask && taskEntity?.due_date ? (
-          <TimestampField label={taskDueLabel} value={taskEntity.due_date} icon={<CalendarClock className="h-3.5 w-3.5" />} dueStatus={taskDueStatus} />
-        ) : null}
-
-        <TimestampField label="Created" value={entity.created_at} icon={<ClockPlus className="h-3.5 w-3.5" />} />
-        <TimestampField label="Updated" value={entity.updated_at} icon={<ClockAlert className="h-3.5 w-3.5" />} />
-
-        {!isAlert && !isTask && caseEntity?.closed_at ? (
-          <TimestampField label="Closed" value={caseEntity.closed_at} icon={<ClockAlert className="h-3.5 w-3.5" />} />
-        ) : null}
-
-        {sourceValue ? (
-          <MetaField icon={<RadioTower className="h-3.5 w-3.5" />} label="Source" className={detailFieldClassName}>
-            <span className="min-w-0 truncate text-caption-bold font-caption-bold text-default-font">
-              <QueueSearchText>{sourceValue}</QueueSearchText>
-            </span>
-          </MetaField>
-        ) : null}
-
-      </div>
-
-      {shouldRenderStandaloneFooter ? (
+      {isDetailVariant ? (
+        <>
+          {(tagContent || parentCaseAction) && (
+            <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
+              {tagContent && (
+                <div className="flex min-w-0 flex-1 items-center gap-2" aria-label="Tags">
+                  <Tags className="h-3.5 w-3.5 flex-none text-subtext-color" aria-hidden="true" />
+                  <span className="font-monospace-body text-[10px] uppercase text-subtext-color">Tags</span>
+                  {tagContent}
+                </div>
+              )}
+              {parentCaseAction}
+            </div>
+          )}
+          {beforeDescription}
+          {descriptionSection}
+        </>
+      ) : (descriptionSection || tagContent || parentCaseAction) ? (
         <TimelineDescriptionBlock
           variant="timeline"
           className="border-t"
           actionButtons={parentCaseAction}
-          tagContent={shouldRenderStandaloneTagRow ? (
-            <TagsManager
-              tags={currentTags}
-              onTagsChange={onUpdateTags || (() => { })}
-              label="Tags"
-              inline={true}
-              readonly={!onUpdateTags}
-              placeholder={onUpdateTags ? "+ Add tags" : (currentTags.length > 0 ? " " : "No tags")}
-              className={!onUpdateTags ? "opacity-60" : ""}
-            />
-          ) : null}
+          tagContent={tagContent}
         >
-          {entity.description ? (
-            <MarkdownContent content={entity.description} />
-          ) : null}
+          {descriptionSection}
         </TimelineDescriptionBlock>
       ) : null}
     </div>

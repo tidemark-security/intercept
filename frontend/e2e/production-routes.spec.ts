@@ -536,15 +536,23 @@ for (const width of [1920, 1024, 390]) {
       return route.fulfill(jsonResponse({ recommendation: { ...recommendation, status } }));
     });
 
+    const preferredLayout = width === 1920 ? "compact" : "expanded";
+    await page.addInitScript((layout) => {
+      localStorage.setItem("intercept.alert-detail.triage-recommendation.expansion", layout);
+    }, preferredLayout === "compact" ? "collapsed" : "expanded");
     await page.setViewportSize({ width, height: 1000 });
     await page.goto(`/alerts/${sampleAlert.human_id}`);
     const timeline = page.getByLabel("alert timeline content");
     const card = timeline.locator("section[data-layout]");
-    const metadata = timeline.getByText("Source", { exact: true });
-    const request = card.getByRole("button", { name: "Request AI Triage" });
-    const retry = card.getByRole("button", { name: "Retry AI Triage" });
-    const measurements = new Map<string, { height: number; metadataOffset: number }>();
-    const preferredLayout = width === 1920 ? "compact" : "expanded";
+    const description = timeline.getByRole("region", { name: "Description", exact: true });
+    const header = card.locator("header");
+    const start = header.getByRole("button", { name: "Start", exact: true });
+    const retry = header.getByRole("button", { name: "Retry", exact: true });
+    let compactMeasurement: { height: number; descriptionOffset: number } | undefined;
+    let availableBox: { height: number; backgroundColor: string; borderColor: string; font: string } | undefined;
+
+    await expect(start).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
 
     const setLayout = async (layout: "compact" | "expanded") => {
       if (await card.getAttribute("data-layout") !== layout) {
@@ -553,9 +561,25 @@ for (const width of [1920, 1024, 390]) {
       }
       await expect(card).toHaveAttribute("data-layout", layout);
     };
+    const verifyStatusAction = async (button: Locator) => {
+      const offsets = await button.evaluate((element) => {
+        const header = element.closest("header")!;
+        const title = header.querySelector("h2")!.getBoundingClientRect();
+        const action = element.getBoundingClientRect();
+        return {
+          right: header.getBoundingClientRect().right - action.right,
+          center: (title.top + title.height / 2) - (action.top + action.height / 2),
+        };
+      });
+      expect(offsets.right).toBeCloseTo(0, 0);
+      expect(offsets.center).toBeCloseTo(0, 0);
+    };
     const verifyRobotMotion = async (state: "available" | "in-progress" | "failed") => {
       const illustration = card.locator(`[data-robot-state="${state}"]`);
-      await expect(illustration.locator("svg.lucide-bot")).toBeInViewport({ ratio: 1 });
+      const robot = illustration.locator("svg.lucide-bot");
+      await expect(illustration).toHaveClass(state === "failed" ? /\btext-error-(400|800)\b/ : /\btext-brand-(primary|1000)\b/);
+      if (state === "failed" && width === 390) await robot.scrollIntoViewIfNeeded();
+      await expect(robot).toBeInViewport({ ratio: 1 });
       await expect(illustration.locator("svg:not(.lucide-bot)")).toHaveCount(state === "in-progress" ? 6 : 0);
       const hasRunningAnimation = () => illustration.evaluate((element) =>
         element.getAnimations({ subtree: true }).some((animation) => animation.playState === "running"));
@@ -566,87 +590,109 @@ for (const width of [1920, 1024, 390]) {
         element.getAnimations({ subtree: true }).some((animation) =>
           animation.playState === "running" && animation.effect?.getTiming().iterations === Infinity))).toBe(true);
     };
-    const verifySize = async (title: string, borderStyle = "solid", mayGrow = false) => {
+    const verifySize = async (title: string) => {
+      const hasResult = title === "AI Triage Recommendation";
       await expect(card.getByRole("heading", { name: title, exact: true })).toBeVisible();
-      await expect(card).toHaveAttribute("data-layout", preferredLayout);
-      await expect(card).toHaveCSS("border-top-style", borderStyle);
-      for (const layout of ["compact", "expanded"] as const) {
-        await setLayout(layout);
-        const bounds = (await card.boundingBox())!;
-        const metadataBounds = (await metadata.boundingBox())!;
-        const measurement = { height: bounds.height, metadataOffset: metadataBounds.y - bounds.y };
-        const initial = measurements.get(layout);
-        if (initial) {
-          const growth = measurement.height - initial.height;
-          if (mayGrow) expect(growth).toBeGreaterThanOrEqual(0);
-          else expect(growth, `${title} (${layout}) should fit the shared minimum height`).toBeCloseTo(0, 0);
-          expect(measurement.metadataOffset - initial.metadataOffset).toBeCloseTo(growth, 0);
-        } else {
-          measurements.set(layout, measurement);
+      await expect(card).toHaveAttribute("data-layout", hasResult ? preferredLayout : "compact");
+      await expect(card).toHaveCSS("border-top-style", "solid");
+      if (!hasResult) {
+        await expect(card.getByRole("button", { name: /^(Expand|Collapse) triage recommendation$/ })).toHaveCount(0);
+      }
+      const layouts = hasResult ? ["compact", "expanded"] as const : ["compact"] as const;
+      for (const layout of layouts) {
+        if (hasResult) {
+          await setLayout(layout);
+          await expect(card).toHaveCSS("min-block-size", /^(auto|0px)$/);
+        }
+        const longFailure = title === "AI Triage Failed" && width === 390;
+        if (layout === "compact") {
+          const bounds = (await card.boundingBox())!;
+          const descriptionBounds = (await description.boundingBox())!;
+          const measurement = { height: bounds.height, descriptionOffset: descriptionBounds.y - bounds.y };
+          if (compactMeasurement) {
+            const growth = measurement.height - compactMeasurement.height;
+            if (longFailure) expect(growth).toBeGreaterThan(0);
+            else if (!hasResult) expect(growth, `${title} (${layout}) should fit the shared minimum height`).toBeCloseTo(0, 0);
+            expect(measurement.descriptionOffset - compactMeasurement.descriptionOffset).toBeCloseTo(growth, 0);
+          } else {
+            compactMeasurement = measurement;
+          }
         }
         expect(await card.evaluate((element) => element.scrollWidth - element.clientWidth)).toBe(0);
         const body = card.getByRole("group", { name: layout === "expanded" ? "Triage details" : "Triage summary", exact: true });
         await expect(body).toHaveCSS("overflow-y", "visible");
-        if (title === "AI Triage Available") {
-          const headerBounds = (await card.locator("header").boundingBox())!;
-          const bodyBounds = (await body.boundingBox())!;
-          const requestBounds = (await request.boundingBox())!;
-          const gapAboveBody = bodyBounds.y - (headerBounds.y + headerBounds.height);
-          const gapBelowBody = requestBounds.y - (bodyBounds.y + bodyBounds.height);
-          expect(gapBelowBody).toBeCloseTo(gapAboveBody, 0);
-          expect(bounds.y + bounds.height - (requestBounds.y + requestBounds.height))
-            .toBeCloseTo(headerBounds.y - bounds.y, 0);
+        if (!hasResult) {
+          const banner = body.locator(":scope > div");
+          await expect(banner).toHaveCSS("border-top-width", "1px");
+          await expect(banner.locator("p")).toHaveCount(2);
+          const geometry = await banner.evaluate((element: HTMLElement) => {
+            const [illustration, message] = element.children;
+            const { backgroundColor, borderTopColor } = getComputedStyle(element);
+            return {
+              height: element.offsetHeight,
+              backgroundColor,
+              borderColor: borderTopColor,
+              font: getComputedStyle(message.firstElementChild!).font,
+              illustrationRight: illustration.getBoundingClientRect().right,
+              messageLeft: message.getBoundingClientRect().left,
+            };
+          });
+          const { illustrationRight, messageLeft, height, ...appearance } = geometry;
+          expect(illustrationRight).toBeLessThan(messageLeft);
+          if (!availableBox) {
+            availableBox = { height, ...appearance };
+          } else {
+            const { height: availableHeight, ...availableAppearance } = availableBox;
+            expect(appearance).toEqual(availableAppearance);
+            if (longFailure) expect(height).toBeGreaterThan(availableHeight);
+            else expect(height).toBe(availableHeight);
+          }
         }
       }
-      await setLayout(preferredLayout);
+      if (hasResult) await setLayout(preferredLayout);
     };
 
-    await expect(request).toBeVisible();
-    await page.evaluate(() => document.fonts.ready);
-    await expect(card).toHaveAttribute("data-layout", "compact");
-    await setLayout(preferredLayout);
-    await verifySize("AI Triage Available", "dashed");
+    await verifySize("AI Triage Available");
+    await verifyStatusAction(start);
     await verifyRobotMotion("available");
-    await expect(request.locator("svg.lucide-sparkles")).toBeVisible();
-    await request.click();
+    await expect(start.locator("svg.lucide-sparkles")).toBeVisible();
+    await start.click();
     await verifySize("AI Triage In Progress");
     const progress = card.getByRole("status");
-    await expect(progress).toHaveText("The recommendation will appear automatically when ready.");
+    await expect(progress.locator("p")).toHaveText([
+      "Triage request submitted.",
+      "Results appear here automatically.",
+    ]);
     await verifyRobotMotion("in-progress");
     status = "FAILED";
-    await verifySize("AI Triage Failed", "solid", width === 390);
+    await verifySize("AI Triage Failed");
     await verifyRobotMotion("failed");
     const diagnosticHint = card.getByText(/look up the alert ID in the triage worker logs/);
     const failureMessage = card.getByText(failure, { exact: true });
-    for (const layout of ["compact", "expanded"] as const) {
-      await setLayout(layout);
-      await expect(failureMessage).toBeInViewport();
-      if (layout === "expanded" && width === 390) {
-        expect((await card.boundingBox())!.height).toBeGreaterThan(measurements.get(layout)!.height);
-        await diagnosticHint.scrollIntoViewIfNeeded();
-      }
-      await expect(diagnosticHint).toBeInViewport({ ratio: 1 });
-      const header = (await card.locator("header").boundingBox())!;
-      const cardBounds = (await card.boundingBox())!;
-      const retryBounds = (await retry.boundingBox())!;
-      const topInset = header.y - cardBounds.y;
-      const bottomInset = cardBounds.y + cardBounds.height - (retryBounds.y + retryBounds.height);
-      expect(retryBounds.x).toBeCloseTo(header.x, 0);
-      expect(bottomInset).toBeCloseTo(topInset, 0);
-    }
-    await setLayout(preferredLayout);
+    await expect(failureMessage).toHaveCSS("overflow-y", "visible");
+    await expect(failureMessage.locator("..")).toHaveCSS("overflow-y", "visible");
+    await expect(failureMessage).toBeInViewport();
+    if (width === 390) await diagnosticHint.scrollIntoViewIfNeeded();
+    await expect(diagnosticHint).toBeInViewport({ ratio: 1 });
+    await verifyStatusAction(retry);
     await expect(retry).toBeEnabled();
     await retry.click();
     await expect(card.getByRole("heading", { name: "AI Triage In Progress" })).toBeVisible();
     status = "PENDING";
-    await verifySize("AI Triage Recommendation", "solid", true);
+    await verifySize("AI Triage Recommendation");
     await setLayout("expanded");
-    const action = card.getByText("Escalate to case and investigate", { exact: true });
+    const action = card.getByText("Investigate alert", { exact: true });
     await expect(action).toBeInViewport({ ratio: 1 });
     await expect(action.locator("..").locator("..")).toHaveCSS("padding-bottom", "2px");
+    const detailRows = card.getByRole("group", { name: "Triage details", exact: true })
+      .locator(":scope > div").filter({ has: page.getByRole("button", { name: /^Context at Triage/ }) });
+    await expect(detailRows).toHaveCSS("margin-top", "4px");
+    await expect(detailRows).toHaveCSS("margin-bottom", "4px");
     for (const title of ["Context at Triage", "Reasoning", "Recommended Changes", "Recommended Tasks"]) {
       const accordion = card.getByRole("button", { name: new RegExp(`^${title}`) });
       const label = accordion.getByText(title, { exact: true });
+      await expect(label.locator("..")).toHaveCSS("padding-top", "12px");
+      await expect(label.locator("..")).toHaveCSS("padding-bottom", "12px");
       const titlePosition = async () => {
         const cardBounds = (await card.boundingBox())!;
         const labelBounds = (await label.boundingBox())!;
@@ -668,9 +714,10 @@ for (const width of [1920, 1024, 390]) {
     await verifySize("AI Triage Recommendation");
 
     await setLayout("expanded");
+    const heightBeforeOpeningReasoning = (await card.boundingBox())!.height;
     await card.getByRole("button", { name: /^Reasoning/ }).click();
     await expect(card.getByText("Evidence detail 14", { exact: true })).toBeVisible();
-    expect((await card.boundingBox())!.height).toBeGreaterThan(measurements.get("expanded")!.height);
+    expect((await card.boundingBox())!.height).toBeGreaterThan(heightBeforeOpeningReasoning);
     await expect(card.getByRole("group", { name: "Triage details", exact: true })).toHaveCSS("overflow-y", "visible");
 
     await setLayout(preferredLayout);
@@ -678,8 +725,116 @@ for (const width of [1920, 1024, 390]) {
       status = reviewedStatus;
       await page.reload();
       await expect(card.getByText(label, { exact: true })).toBeVisible();
-      await verifySize("AI Triage Recommendation", "solid", true);
+      await verifySize("AI Triage Recommendation");
     }
+  });
+}
+
+for (const width of [1520, 390]) {
+  test(`compact triage banner stays in place across review states at ${width}px`, async ({ page }) => {
+    await installProductionApiMocks(page);
+    await page.route("**/api/v1/features", (route) => route.fulfill(jsonResponse({ ai_triage_enabled: true })));
+    const acceptedAlert = { ...sampleAlert, id: 3, human_id: "ALT-0000003", title: "Accepted smoke alert" };
+    const fixtures = [
+      { alert: sampleAlert, status: "PENDING", contextCount: 1 },
+      { alert: acceptedAlert, status: "ACCEPTED", contextCount: 2, footer: "Acceptance details" },
+      { alert: secondAlert, status: "REJECTED", contextCount: 2, footer: "Rejection details" },
+    ] as const;
+    for (const { alert, status, contextCount } of fixtures) {
+      await page.route(new RegExp(`/api/v1/alerts/${alert.id}(?:\\?|$)`), (route) => route.fulfill(jsonResponse({
+        ...alert,
+        triage_recommendation: {
+          id: alert.id,
+          alert_id: alert.id,
+          created_at: now,
+          created_by: "tidemark_ai",
+          status,
+          disposition: "BENIGN",
+          confidence: 0.78,
+          reasoning_bullets: ["This alert records expected test activity."],
+          suggested_priority: "INFO",
+          suggested_tags_add: ["test"],
+          context_snapshot_verified: true,
+          applied_context_entries: Array.from({ length: contextCount }, (_, index) => ({
+            id: index + 1,
+            body: "Test context",
+          })),
+          ...(status !== "PENDING" && { reviewed_by: "analyst@example.test", reviewed_at: now }),
+          ...(status === "REJECTED" && { rejection_category: "OTHER", rejection_reason: "Test only" }),
+        },
+      })));
+    }
+
+    await page.setViewportSize({ width, height: 1253 });
+    await page.emulateMedia({ reducedMotion: "reduce", colorScheme: width === 390 ? "light" : "dark" });
+    const card = page.getByRole("region", { name: "AI Triage Recommendation" });
+    const banner = card.getByRole("group", { name: "Recommendation preview" }).locator("..");
+    const measure = () => banner.evaluate((element) => {
+      const card = element.closest("section")!;
+      const bounds = card.getBoundingClientRect();
+      const action = element.firstElementChild!;
+      const { borderTopColor, backgroundColor } = getComputedStyle(element);
+      return {
+        geometry: {
+          headerHeight: card.querySelector("header")!.getBoundingClientRect().height,
+          bannerOffset: element.getBoundingClientRect().y - bounds.y,
+          cardHeight: bounds.height,
+          footerHeight: element.parentElement!.nextElementSibling!.getBoundingClientRect().height,
+        },
+        borderTopColor,
+        backgroundColor,
+        actionColor: getComputedStyle(action).color,
+        iconColor: getComputedStyle(action.querySelector("svg")!).color,
+      };
+    });
+
+    await page.goto(`/alerts/${sampleAlert.human_id}`);
+    await expect(card.getByRole("button", { name: "Accept Recommendation" })).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+    const pending = await measure();
+
+    const reviewedColors = [];
+    for (const { alert, footer, status } of [fixtures[1], fixtures[2]]) {
+      await page.goto(`/alerts/${alert.human_id}`);
+      const reviewDetails = card.getByRole("group", { name: footer });
+      await expect(reviewDetails).toBeVisible();
+      await expect(reviewDetails.locator("..")).toHaveCSS("padding-top", "2px");
+      await expect(card.getByRole("button", { name: "Accept Recommendation" })).toHaveCount(0);
+      await page.evaluate(() => document.fonts.ready);
+      const { geometry, ...colors } = await measure();
+      expect(geometry).toEqual(pending.geometry);
+      expect(colors.borderTopColor).not.toBe(pending.borderTopColor);
+      expect(colors.backgroundColor).not.toBe(pending.backgroundColor);
+      expect(colors.actionColor).not.toBe(pending.actionColor);
+      expect(colors.iconColor).not.toBe(pending.iconColor);
+      expect(colors.iconColor).toBe(colors.actionColor);
+      reviewedColors.push(colors);
+
+      const statusLabel = status === "ACCEPTED" ? "Accepted" : "Rejected";
+      const glyph = status === "ACCEPTED" ? "check" : "x";
+      const statusLabelElement = card.locator("header").getByText(statusLabel, { exact: true });
+      const statusIcon = statusLabelElement.locator("..").locator(`svg.lucide-${glyph}`);
+      const measureChip = () => statusLabelElement.evaluate((label) => {
+        const badge = label.parentElement!;
+        const icon = badge.querySelector("svg")!;
+        const text = document.createRange();
+        text.selectNodeContents(label);
+        return {
+          width: badge.getBoundingClientRect().width,
+          iconGap: text.getBoundingClientRect().left - icon.getBoundingClientRect().right,
+        };
+      });
+      await expect(statusIcon).toBeVisible();
+      const compactChip = await measureChip();
+      await card.getByRole("button", { name: "Expand triage recommendation" }).click();
+      await expect(statusIcon).toBeVisible();
+      await expect(reviewDetails.locator("..")).toHaveCSS("padding-top", "2px");
+      const expandedChip = await measureChip();
+      expect(expandedChip.width).toBeCloseTo(compactChip.width, 0);
+      expect(expandedChip.iconGap).toBeCloseTo(compactChip.iconGap, 0);
+      await card.getByRole("button", { name: "Collapse triage recommendation" }).click();
+    }
+    expect(reviewedColors[0]).toEqual(reviewedColors[1]);
   });
 }
 
@@ -1174,10 +1329,14 @@ for (const { viewport, width, useAi } of [
       });
     } else {
       await manual.click();
-      const confirm = page.getByRole("dialog").getByRole("button", { name: "Reject Recommendation" });
+      const dialog = page.getByRole("dialog");
+      const confirm = dialog.getByRole("button", { name: "Reject", exact: true });
       await expect(confirm).toBeDisabled();
+      await expect(confirm).toHaveCSS("height", "32px");
+      await expect(confirm.locator("svg.lucide-x")).toBeVisible();
+      await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toHaveCSS("height", "32px");
       expect(mutations).toEqual({});
-      await page.getByRole("dialog").getByRole("combobox").click();
+      await dialog.getByRole("combobox").click();
       await page.getByRole("option", { name: "Prefer Manual Review" }).click();
       await confirm.click();
       await expect.poll(() => mutations).toEqual({
@@ -1211,11 +1370,12 @@ test("wide chat history divider saves to its existing width preference", async (
   expect(await page.evaluate(() => localStorage.getItem("intercept-ai-pane-width"))).toBe("512");
 });
 
-test("alert detail shows Analyst Context before the context preview at triage", async ({ page }) => {
+test("alert detail embeds triage, Analyst Context, and Description and exposes saved context", async ({ page }) => {
   await installProductionApiMocks(page);
   await page.addInitScript(() => {
     localStorage.setItem("intercept.theme-preference", "system");
     localStorage.setItem("intercept.alert-detail.triage-recommendation.expansion", "expanded");
+    localStorage.setItem("intercept.alert-detail.analyst-context.expansion", "expanded");
   });
   const contextBody = "Scheduled maintenance is in progress.";
   const entry = {
@@ -1249,8 +1409,11 @@ test("alert detail shows Analyst Context before the context preview at triage", 
   await page.setViewportSize({ width: 1696, height: 1000 });
   await page.goto("/alerts/ALT-0000001");
   const timeline = page.getByLabel("alert timeline content");
-  const context = timeline.getByRole("region", { name: "Analyst Context" });
-  const triage = timeline.getByText("AI Triage Recommendation", { exact: true });
+  const metadataCard = timeline.getByRole("heading", { name: sampleAlert.title, exact: true }).locator("..");
+  const context = metadataCard.getByRole("region", { name: "Analyst Context" });
+  const description = metadataCard.getByRole("region", { name: "Description" });
+  const triageCard = metadataCard.getByRole("region", { name: "AI Triage Recommendation" });
+  const triage = triageCard.getByRole("heading", { name: "AI Triage Recommendation" });
   const top = (locator: Locator) => locator.evaluate((element) => element.getBoundingClientRect().top);
 
   for (const width of [1696, 1000, 390, 1920]) {
@@ -1260,29 +1423,28 @@ test("alert detail shows Analyst Context before the context preview at triage", 
     await expect(page.locator("html")).toHaveAttribute("data-theme", colorScheme);
     await expect(context).toBeVisible();
     await expect(triage).toBeVisible();
-    expect(await top(context)).toBeLessThan(await top(triage));
+    await expect(description).toContainText(sampleAlert.description);
+    expect(await top(triage)).toBeLessThan(await top(context));
+    expect(await top(context)).toBeLessThan(await top(description));
     await expect(context.getByRole("link", { name: "View all context" })).toHaveCount(0);
     await expect(context.getByText(contextBody, { exact: true })).toHaveCount(1);
     await expect(context.getByText("Matched Context", { exact: true })).toHaveCount(0);
     await expect(context.getByRole("button", { name: /Expires in 7 days/ })).toBeVisible();
-    const triageCard = timeline.getByRole("region", { name: "AI Triage Recommendation" });
     const savedContextRow = triageCard.getByRole("button", { name: /^Context at Triage/ });
     await expect(savedContextRow).toContainText(contextBody);
     await expect(triageCard.getByText("1 context entry supplied", { exact: true })).toBeVisible();
     await expect(triageCard.getByRole("progressbar")).toHaveCount(0);
     const triageHeader = triageCard.locator("header");
     const confidence = triageHeader.getByText("80%", { exact: true });
-    const disposition = triageHeader.getByText("Needs Investigation", { exact: true });
-    const action = triageCard.getByText("Escalate to case and investigate", { exact: true }).locator("..");
+    const action = triageCard.getByText("Investigate alert", { exact: true }).locator("..");
     await expect(confidence).toBeVisible();
-    await expect(disposition).toBeVisible();
+    await expect(triageHeader.getByText("Needs Investigation", { exact: true })).toHaveCount(0);
     await expect(context.getByText("1 active", { exact: true }).locator("..")).toHaveCSS("height", "20px");
-    await expect(disposition.locator("..")).toHaveCSS("height", "20px");
     await expect(triageHeader.getByText("Pending Review", { exact: true })).toHaveCount(0);
     await expect(action).toBeVisible();
     await expect(action).toHaveCSS("border-top-width", "1px");
     await expect(action).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-    expect(await top(action)).toBeGreaterThan(await top(disposition));
+    expect(await top(action)).toBeGreaterThan(await top(triage));
     // Measure both in the same frame because the narrow detail pane animates as a unit.
     const widthDelta = await action.evaluate((element) => {
       const header = element.closest("section")?.querySelector("header");
@@ -1292,7 +1454,6 @@ test("alert detail shows Analyst Context before the context preview at triage", 
     expect(widthDelta).toBeCloseTo(0, 0);
     if (width === 1920) {
       expect(Math.abs(await top(confidence) - await top(triage))).toBeLessThan(8);
-      expect(Math.abs(await top(disposition) - await top(triage))).toBeLessThan(8);
       const contextToChevron = await triageHeader.getByText("1 context entry supplied", { exact: true }).evaluate((element) => {
         const chevron = element.closest("header")?.querySelector("button[aria-expanded]");
         if (!chevron) throw new Error("Expected the triage collapse button");
@@ -1316,15 +1477,25 @@ test("alert detail shows Analyst Context before the context preview at triage", 
     await expect(reject.getByText("Reject", { exact: true })).toHaveCSS("color", warningColor);
     if (width === 390) expect(await top(firstTask)).toBeGreaterThan(await top(taskLabel));
     if (width === 1000 || width === 390) {
-      const expandedTextColor = await action.evaluate((element) => getComputedStyle(element).color);
+      const expandedStyle = await action.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return { color: style.color, background: style.backgroundColor, border: style.borderTopColor };
+      });
+      const actionIcon = action.locator("svg.lucide-triangle-alert");
+      const expandedIconColor = await actionIcon.evaluate((element) => getComputedStyle(element).color);
       await triageHeader.getByRole("button", { name: "Collapse triage recommendation" }).click();
       await expect(action).toBeVisible();
-      await expect(triageCard.getByText("The evidence is incomplete.", { exact: true }).filter({ visible: true })).toHaveCount(1);
+      await expect(triageCard.getByText("2 reasons", { exact: true })).toBeVisible();
+      await expect(triageCard.getByText("The evidence is incomplete.", { exact: true })).toHaveCount(0);
       await expect(accept).toHaveCSS("height", "32px");
       await expect(action).toHaveCSS("height", "32px");
-      await expect(action).toHaveCSS("border-top-width", "0px");
-      await expect(action).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-      await expect(action).not.toHaveCSS("color", expandedTextColor);
+      const compactBanner = action.locator("..");
+      await expect(compactBanner.getByRole("group", { name: "Recommendation preview" })).toBeVisible();
+      await expect(compactBanner).toHaveCSS("border-top-width", "1px");
+      await expect(compactBanner).toHaveCSS("border-top-color", expandedStyle.border);
+      await expect(compactBanner).toHaveCSS("background-color", expandedStyle.background);
+      await expect(action).toHaveCSS("color", expandedStyle.color);
+      await expect(actionIcon).toHaveCSS("color", expandedIconColor);
       await expect(reject).toHaveCSS("border-top-color", warningColor);
       await expect(reasonRow).toHaveCount(0);
       await triageHeader.getByRole("button", { name: "Expand triage recommendation" }).click();
@@ -1342,10 +1513,8 @@ test("alert detail shows Analyst Context before the context preview at triage", 
       await rejection.getByRole("button", { name: "Cancel" }).click();
       await expect(rejection).toHaveCount(0);
     }
-    const title = context.getByRole("heading", { name: "Test context" });
     const scope = context.getByText("Global", { exact: true });
-    if (width === 1920) expect(Math.abs(await top(title) - await top(scope))).toBeLessThan(10);
-    if (width === 390) expect(await top(scope)).toBeGreaterThan(await top(context.getByText(contextBody)));
+    expect(await top(scope)).toBeGreaterThan(await top(context.getByText(contextBody)));
   }
 });
 
@@ -1393,7 +1562,7 @@ test("alert card expansion preferences are independent and follow the analyst ac
   const expandTriage = triage.getByRole("button", { name: "Expand triage recommendation" });
   const accept = triage.getByRole("button", { name: "Accept Recommendation" });
   const reject = triage.getByRole("button", { name: "Reject", exact: true });
-  const rerun = triage.getByRole("button", { name: "Rerun AI Triage" });
+  const rerun = triage.getByRole("button", { name: "Rerun", exact: true });
   const expectSeparatedReviewActions = async () => {
     await expect(rerun).toHaveCSS("height", "32px");
     const triageBounds = (await triage.boundingBox())!;
@@ -1406,12 +1575,11 @@ test("alert card expansion preferences are independent and follow the analyst ac
     expect(rejectBounds.x - (rerunBounds.x + rerunBounds.width)).toBeGreaterThan(8);
     expect(acceptBounds.x - (rejectBounds.x + rejectBounds.width)).toBeCloseTo(8, 0);
     for (const button of [rerunBounds, rejectBounds, acceptBounds]) {
-      expect(triageBounds.y + triageBounds.height - (button.y + button.height))
-        .toBeCloseTo(header.y - triageBounds.y, 0);
+      expect(triageBounds.y + triageBounds.height - (button.y + button.height)).toBeCloseTo(0, 0);
     }
   };
   const escalate = page.getByRole("button", { name: /^Escalate to Case$/i });
-  const action = triage.getByText("Escalate to case and investigate", { exact: true }).locator("..");
+  const action = triage.getByText("Investigate alert", { exact: true }).locator("..");
   const openAlert = async (alert: typeof sampleAlert) => {
     await page.getByRole("link", { name: new RegExp(alert.title) }).click();
     await expect(page).toHaveURL(new RegExp(`/alerts/${alert.human_id}$`));
@@ -1419,46 +1587,50 @@ test("alert card expansion preferences are independent and follow the analyst ac
   };
 
   await expect(expandTriage).toHaveAttribute("aria-expanded", "false");
+  await expect(expandContext).toHaveAttribute("aria-expanded", "false");
   await expandTriage.click();
   await expect(collapseTriage).toHaveAttribute("aria-expanded", "true");
+  await expect(expandContext).toHaveAttribute("aria-expanded", "false");
   await expect(escalate).toHaveAttribute("aria-haspopup", "menu");
   await expect(triage.getByText("Context changed since triage")).toHaveCount(0);
   await expectSeparatedReviewActions();
   const changes = triage.getByRole("button", { name: /^Recommended Changes/ });
   await expect(changes).toBeInViewport({ ratio: 1 });
-  await collapseContext.click();
+  await expandContext.click();
   await openAlert(secondAlert);
-  await expect(expandContext).toHaveAttribute("aria-expanded", "false");
+  await expect(collapseContext).toHaveAttribute("aria-expanded", "true");
+  await collapseContext.click();
   await expect(triage.getByText("Dismiss alert", { exact: true })).toBeVisible();
   await expect(escalate).not.toHaveAttribute("aria-haspopup");
-  await expect(triage.getByText("Context changed since triage")).toBeVisible();
+  await expect(triage.getByText("Context changed since triage")).toHaveCount(0);
   await expect(accept).toBeVisible();
   await collapseTriage.press("Space");
   await expect(expandTriage).toBeFocused();
   await expect(triage.getByText("Dismiss alert", { exact: true })).toBeVisible();
-  await expect(triage.getByText("Context changed since triage")).toBeVisible();
+  await expect(triage.getByText("Context changed since triage")).toHaveCount(0);
   await expectSeparatedReviewActions();
   await openAlert(sampleAlert);
   await page.reload();
   await expect(expandContext).toHaveAttribute("aria-expanded", "false");
   await expect(expandTriage).toHaveAttribute("aria-expanded", "false");
   await expect(action).toBeVisible();
-  const reasonPreview = triage.getByText("More evidence is needed. See the triage guide.", { exact: true }).filter({ visible: true });
-  await expect(reasonPreview).toBeVisible();
-  await expect(reasonPreview.locator("strong, a")).toHaveCount(0);
-  const previewBounds = (await reasonPreview.boundingBox())!;
+  const reasonsBadge = triage.getByText("2 reasons", { exact: true });
+  await reasonsBadge.hover();
+  const reasonPreview = page.getByRole("tooltip");
+  await expect(reasonPreview).toContainText("More evidence is needed. See the triage guide.");
+  await expect(reasonPreview.getByRole("link")).toHaveCount(0);
+  await page.keyboard.press("Escape");
   await expect(accept).toHaveCSS("height", "32px");
   await expect(reject).toHaveCSS("height", "32px");
   await expect(action).toHaveCSS("height", "32px");
-  const buttonLabelSize = await accept.getByText("Accept Recommendation", { exact: true })
-    .evaluate((label) => getComputedStyle(label).fontSize);
-  await expect(action).toHaveCSS("font-size", buttonLabelSize);
+  await expect(action).toHaveCSS("font-size", "20px");
+  await expect(action.locator("svg.lucide-triangle-alert")).toHaveCSS("width", "20px");
+  await expect(action.locator("svg.lucide-triangle-alert")).toHaveCSS("height", "20px");
   await expect(triage.getByRole("button", { name: /^Reasoning/ })).toHaveCount(0);
-  const bannerBounds = (await action.boundingBox())!;
+  const bannerBounds = (await action.locator("..").boundingBox())!;
   const acceptBounds = (await accept.boundingBox())!;
   const headerBounds = (await triage.locator("header").boundingBox())!;
-  expect(previewBounds.y).toBeGreaterThanOrEqual(headerBounds.y + headerBounds.height);
-  expect(bannerBounds.y).toBeGreaterThanOrEqual(previewBounds.y + previewBounds.height);
+  expect(bannerBounds.y).toBeGreaterThanOrEqual(headerBounds.y + headerBounds.height);
   expect(acceptBounds.y).toBeGreaterThanOrEqual(bannerBounds.y + bannerBounds.height);
   await expectSeparatedReviewActions();
 

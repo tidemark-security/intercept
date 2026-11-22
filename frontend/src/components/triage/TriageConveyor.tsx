@@ -7,9 +7,9 @@ import styles from "./TriageConveyor.module.css";
 
 const conveyorIcons = [ShieldCheck, Terminal, Fingerprint, Cpu, Network, Zap];
 
-export function TriageConveyor({ expanded, className }: { expanded: boolean; className: string }) {
+export function TriageConveyor({ className }: { className: string }) {
   return (
-    <span aria-hidden="true" data-robot-state="in-progress" data-expanded={expanded || undefined} className={cn(styles.conveyor, className)}>
+    <span aria-hidden="true" data-robot-state="in-progress" className={cn(styles.conveyor, className)}>
       <span className={styles.track}>
         {conveyorIcons.map((Icon, index) => (
           <span key={index} className={styles.item} style={{ "--item-index": index } as CSSProperties}>

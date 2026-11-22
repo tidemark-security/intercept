@@ -999,6 +999,8 @@ function UnifiedTimelineInner({
         'forensic_artifact',
       ];
 
+  const isGraphView = supportsGraphView && timelineViewMode === 'graph';
+
   return (
     <div className="flex h-full w-full flex-col items-start">
       {/* Entity Header */}
@@ -1094,7 +1096,7 @@ function UnifiedTimelineInner({
             <span className="text-body font-body text-error-color">Error loading {entityType} details</span>
           </div>
         ) : entityDetail ? (
-          supportsGraphView && timelineViewMode === 'graph' ? (
+          isGraphView ? (
             <TimelineGraphView
               items={sortedTimelineItems}
               selectedType={selectedType}
@@ -1115,39 +1117,32 @@ function UnifiedTimelineInner({
                 const hasTimelineItems = timelineItems.length > 0;
                 const alert = entityType === 'alert' ? entityDetail as AlertReadWithCase : null;
                 const requestTriage = isTriageEnabled && !isEntityClosed && canRequestTriage ? onRequestTriage : undefined;
+                const triage = alert && (alert.triage_recommendation || requestTriage) ? (
+                  <TriageRecommendationCard
+                    recommendation={alert.triage_recommendation}
+                    onRequest={requestTriage}
+                    onAccept={onAcceptTriageRecommendation || (() => { })}
+                    onReject={onRejectTriageRecommendation || (() => { })}
+                    onRetry={canReviewTriage ? onRetryTriage : undefined}
+                    onRerun={canReviewTriage && isTriageEnabled ? onRerunTriage : undefined}
+                    hasCurrentContext={Boolean(alert.context?.total_count)}
+                    onNavigateToCase={onNavigateToCase}
+                    isAccepting={isAcceptingRecommendation}
+                    isRejecting={isRejectingRecommendation}
+                    acceptError={acceptRecommendationError}
+                    isRetrying={isEnqueuingTriage}
+                    canReview={canReviewTriage}
+                  />
+                ) : null;
+                const context = alert?.context?.items?.length ? (
+                  <ContextCard context={alert.context} />
+                ) : null;
 
                 return (
                   <div className={cn(
                     "flex w-full flex-col items-start",
                     timelineViewMode === 'swimlane' && "h-full min-h-0",
                   )}>
-                    {alert?.context?.items?.length ? (
-                      <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
-                        <ContextCard context={alert.context} />
-                      </div>
-                    ) : null}
-
-                    {alert && (alert.triage_recommendation || requestTriage) && (
-                      <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
-                        <TriageRecommendationCard
-                          recommendation={alert.triage_recommendation}
-                          onRequest={requestTriage}
-                          onAccept={onAcceptTriageRecommendation || (() => { })}
-                          onReject={onRejectTriageRecommendation || (() => { })}
-                          onRetry={canReviewTriage ? onRetryTriage : undefined}
-                          onRerun={canReviewTriage && isTriageEnabled ? onRerunTriage : undefined}
-                          contextChanged={alert.triage_context_changed}
-                          hasCurrentContext={Boolean(alert.context?.total_count)}
-                          onNavigateToCase={onNavigateToCase}
-                          isAccepting={isAcceptingRecommendation}
-                          isRejecting={isRejectingRecommendation}
-                          acceptError={acceptRecommendationError}
-                          isRetrying={isEnqueuingTriage}
-                          canReview={canReviewTriage}
-                        />
-                      </div>
-                    )}
-
                     {/* Entity Metadata Card */}
                     <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
                       <EntityMetadataCard
@@ -1155,6 +1150,7 @@ function UnifiedTimelineInner({
                         entityType={entityType}
                         isLoading={isLoading}
                         onUpdateTags={onUpdateTags}
+                        beforeDescription={<>{triage}{context}</>}
                       />
                     </div>
 

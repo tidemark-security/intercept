@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
+import { X } from 'lucide-react';
 
-import { Button } from '@/components/buttons/Button';
+import { Button, type ButtonProps } from '@/components/buttons/Button';
 import { Dialog } from '@/components/overlays/Dialog';
 import { Select } from '@/components/forms/Select';
 import { TextArea } from '@/components/forms/TextArea';
+import { useTheme } from '@/contexts/ThemeContext';
 import type { RejectionCategory } from '@/types/generated/models/RejectionCategory';
 
 const REJECTION_CATEGORY_OPTIONS: { value: RejectionCategory; label: string }[] = [
@@ -16,6 +18,25 @@ const REJECTION_CATEGORY_OPTIONS: { value: RejectionCategory; label: string }[] 
   { value: 'FALSE_REASONING', label: 'False Reasoning' },
   { value: 'OTHER', label: 'Other' },
 ];
+
+export function TriageRejectButton(props: Pick<ButtonProps, 'onClick' | 'disabled' | 'loading' | 'aria-busy'>) {
+  const { resolvedTheme } = useTheme();
+
+  return (
+    <Button
+      {...props}
+      variant="neutral-secondary"
+      size="medium"
+      icon={<X aria-hidden="true" />}
+      className={resolvedTheme === 'dark'
+        ? 'enabled:border-warning-500 enabled:hover:bg-warning-500/10 enabled:active:bg-warning-500/20 [&:enabled>span]:text-warning-500'
+        : 'enabled:border-warning-800 enabled:hover:bg-warning-800/10 enabled:active:bg-warning-800/20 [&:enabled>span]:text-warning-800'}
+      aria-label="Reject"
+    >
+      Reject
+    </Button>
+  );
+}
 
 interface TriageRejectionDialogProps {
   open: boolean;
@@ -91,19 +112,15 @@ export function TriageRejectionDialog({
           <div className="flex items-center justify-end gap-3">
             <Button
               variant="neutral-secondary"
-              size="small"
+              size="medium"
               onClick={() => handleOpenChange(false)}
             >
               Cancel
             </Button>
-            <Button
-              variant="destructive-primary"
-              size="small"
+            <TriageRejectButton
               onClick={handleRejectConfirm}
               disabled={!rejectionCategory || (rejectionCategory === 'OTHER' && !rejectionReason.trim())}
-            >
-              Reject Recommendation
-            </Button>
+            />
           </div>
         </div>
       </Dialog.Content>
