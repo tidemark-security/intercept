@@ -23,7 +23,7 @@ from fastmcp.server.auth.auth import (
     TokenHandler,
 )
 from fastmcp.server.auth.oidc_proxy import OIDCProxy
-from fastmcp.server.auth.oauth_proxy.models import ProxyDCRClient
+from fastmcp.server.auth.oauth_proxy.models import ProxyDCRClient, _hash_token
 from key_value.aio.protocols import AsyncKeyValue
 from mcp.server.auth.handlers.metadata import MetadataHandler
 from mcp.server.auth.handlers.revoke import RevocationHandler
@@ -293,7 +293,8 @@ class InterceptOIDCProxy(OIDCProxy):
             return response
 
         transaction_id = request.query_params.get("txn_id")
-        if not transaction_id:
+        csrf_token = getattr(response, "_intercept_consent_csrf_token", None)
+        if not transaction_id or not csrf_token:
             return response
 
         public_base = urlsplit(str(self.base_url))
@@ -303,7 +304,7 @@ class InterceptOIDCProxy(OIDCProxy):
         redirect = RedirectResponse(
             url=(
                 f"{frontend_origin}/oauth/mcp/consent#"
-                f"{urlencode({'txn_id': transaction_id})}"
+                f"{urlencode({'txn_id': transaction_id, 'csrf_token': csrf_token})}"
             ),
             status_code=302,
             headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
@@ -313,15 +314,42 @@ class InterceptOIDCProxy(OIDCProxy):
                 redirect.raw_headers.append((header_name, header_value))
         return redirect
 
+    def _set_consent_state_cookie(
+        self,
+        response: HTMLResponse | RedirectResponse,
+        csrf_token: str,
+        txn_id: str,
+        issued_at: float,
+    ) -> None:
+        super()._set_consent_state_cookie(response, csrf_token, txn_id, issued_at)
+        # Carry the per-render form token to the redirect without parsing native HTML.
+        setattr(response, "_intercept_consent_csrf_token", csrf_token)
+
     async def get_consent_context(
         self,
         transaction_id: str,
+        *,
+        csrf_token: str | None = None,
     ) -> dict[str, object] | None:
         """Return the authoritative display model for a prepared consent page."""
 
         transaction = await self._transaction_store.get(key=transaction_id)
-        if transaction is None or not transaction.csrf_token:
+        if transaction is None:
             return None
+
+        if csrf_token is None:
+            # Consent screens opened before the upgrade stored the token on the transaction.
+            csrf_token = transaction.csrf_token
+            if not csrf_token or time.time() > (transaction.csrf_expires_at or 0):
+                return None
+        else:
+            record = await self._consent_csrf_store.get(key=_hash_token(csrf_token))
+            if (
+                record is None
+                or record.txn_id != transaction_id
+                or time.time() > record.expires_at
+            ):
+                return None
 
         client = await self.get_client(transaction.client_id)
         client_name = str(
@@ -337,7 +365,7 @@ class InterceptOIDCProxy(OIDCProxy):
         )
         return {
             "transaction_id": transaction_id,
-            "csrf_token": transaction.csrf_token,
+            "csrf_token": csrf_token,
             "client_name": client_name,
             "client_id": transaction.client_id,
             "client_uri": client_uri,

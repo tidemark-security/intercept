@@ -32,6 +32,7 @@ import {
   type NodeProps,
   type NodeTypes,
   type OnConnect,
+  type OnNodeDrag,
   type OnReconnect,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -2206,7 +2207,7 @@ function TimelineGraphViewInner({
     };
   }, [getInternalNode, store, timelineNodeIds]);
 
-  const handleNodeDrag = useCallback((_: React.MouseEvent, node: TimelineFlowNode) => {
+  const handleNodeDrag = useCallback<OnNodeDrag<TimelineFlowNode>>((_, node) => {
     if (!proximityConnectEnabled) {
       setEdges((currentEdges) => withoutProximityPreviewEdges(currentEdges));
       return;
@@ -2536,7 +2537,7 @@ function TimelineGraphViewInner({
     void sendGraphPatch([{ type: 'update_edge_metadata', edge_id: edgeId, marker }]);
   }, [sendGraphPatch, setEdges]);
 
-  const handleNodeDragStop = useCallback((_: React.MouseEvent, node: TimelineFlowNode) => {
+  const handleNodeDragStop = useCallback<OnNodeDrag<TimelineFlowNode>>((_, node) => {
     setIsDraggingGraphNode(false);
     const nodeById = new Map(nodes.map((currentNode) => [
       currentNode.id,

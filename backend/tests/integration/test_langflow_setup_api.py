@@ -85,6 +85,36 @@ def test_langflow_bundled_assets_live_under_backend_static() -> None:
     assert (asset_dir / "tmi_rag_confluence.json").is_file()
 
 
+def test_bundled_intercept_mcp_headers_reference_the_provisioned_variable() -> None:
+    reference = "{{" + langflow_routes.LANGFLOW_SETUP_VARIABLE_NAME + "}}"
+    expected_headerless_nodes = {
+        "tmi_alert_triage.json": {"MCP-lyX23"},
+        "tmi_case_agent.json": {"MCP-mjhKQ"},
+        "tmi_general_purpose.json": set(),
+        "tmi_task_agent.json": {"MCP-qFJvC"},
+    }
+    for flow in langflow_routes.LANGFLOW_BUNDLED_FLOW_ASSETS:
+        if flow["setting_key"] is None:
+            continue
+        payload = langflow_routes._read_langflow_asset(
+            langflow_routes._get_langflow_asset_dir() / flow["asset_name"]
+        )
+        headerless_nodes = set()
+        credential_headers = []
+        for node in payload["data"]["nodes"]:
+            template = node["data"]["node"]["template"]
+            server = template.get("mcp_server", {}).get("value")
+            if not isinstance(server, dict) or server.get("name") != langflow_routes.LANGFLOW_SETUP_SERVER_NAME:
+                continue
+            headers = server["config"]["headers"]
+            if not headers:
+                headerless_nodes.add(node["id"])
+            else:
+                credential_headers.append(headers.get("x-api-key"))
+        assert headerless_nodes == expected_headerless_nodes[flow["asset_name"]]
+        assert credential_headers == [reference], flow["asset_name"]
+
+
 def _find_string_values(payload: Any, needle: str) -> list[str]:
     matches: list[str] = []
 

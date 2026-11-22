@@ -939,6 +939,13 @@ _register(
         default=None,
     ),
     _def(
+        "langflow.intercept_mcp_url",
+        local_only=True,
+        category="langflow",
+        description="Default Intercept MCP streamable HTTP URL reachable from Langflow",
+        default=None,
+    ),
+    _def(
         "langflow.api_key",
         is_secret=True,
         category="langflow",

@@ -52,6 +52,7 @@ class OIDCConsentContextRequest(BaseModel):
     """Capability-bearing lookup kept out of URLs and access logs."""
 
     transaction_id: str = Field(min_length=1, max_length=256)
+    csrf_token: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class OIDCConsentContext(BaseModel):
@@ -258,7 +259,7 @@ async def oidc_consent_context(
             headers=OIDC_CONSENT_CACHE_HEADERS,
         )
     try:
-        context = await get_context(payload.transaction_id)
+        context = await get_context(payload.transaction_id, csrf_token=payload.csrf_token)
     except Exception:
         logger.exception("Failed to load MCP OIDC consent context")
         return JSONResponse(

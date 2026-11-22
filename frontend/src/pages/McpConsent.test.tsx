@@ -31,17 +31,15 @@ describe("McpConsent", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { container } = render(
-      <MemoryRouter initialEntries={["/oauth/mcp/consent#txn_id=transaction-123"]}>
+      <MemoryRouter initialEntries={["/oauth/mcp/consent#txn_id=transaction-123&csrf_token=csrf-456"]}>
         <ThemeProvider>
           <McpConsent />
         </ThemeProvider>
       </MemoryRouter>,
     );
 
-    expect(
-      await screen.findByRole("heading", { name: "Authorize MCP access" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Claude Desktop wants to connect")).toBeInTheDocument();
+    expect(await screen.findByText("Claude Desktop wants to connect")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Authorize MCP access" })).toBeInTheDocument();
     expect(screen.getByText("Verified domain: claude.ai")).toBeInTheDocument();
     expect(screen.getAllByText(consentContext.redirect_uri)).toHaveLength(2);
     expect(screen.getByAltText("Tidemark Intercept")).toBeInTheDocument();
@@ -57,7 +55,7 @@ describe("McpConsent", () => {
             Accept: "application/json",
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ transaction_id: "transaction-123" }),
+          body: JSON.stringify({ transaction_id: "transaction-123", csrf_token: "csrf-456" }),
         },
       );
     });

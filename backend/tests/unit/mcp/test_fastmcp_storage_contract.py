@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 
 from packaging.requirements import Requirement
+from packaging.version import Version
 
 
 BACKEND_ROOT = Path(__file__).resolve().parents[3]
@@ -32,8 +33,11 @@ def test_fastmcp_auth_storage_dependencies_are_pinned() -> None:
     fastmcp = _requirement_named("fastmcp")
     key_value = _requirement_named("py-key-value-aio")
 
-    assert str(fastmcp.specifier) == "==3.4.10"
-    assert str(key_value.specifier) == "==0.4.4"
+    for requirement in (fastmcp, key_value):
+        specifier, = requirement.specifier
+        assert specifier.operator == "=="
+        assert "*" not in specifier.version
+    assert Version(next(iter(fastmcp.specifier)).version) >= Version("4.2.4")
     assert key_value.extras == {"postgresql", "wrappers-encryption"}
 
 

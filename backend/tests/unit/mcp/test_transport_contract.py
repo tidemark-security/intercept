@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from fastapi.routing import iter_route_contexts
 from starlette.applications import Starlette
 from starlette.responses import PlainTextResponse
 from starlette.routing import Mount, Route
@@ -16,7 +17,7 @@ def _ok(_request):
 
 
 def test_existing_api_app_does_not_own_mcp_or_oauth_protocol_routes() -> None:
-    route_paths = [route.path for route in api_app.routes]
+    route_paths = [route.path for route in iter_route_contexts(api_app.routes) if route.path]
 
     assert not any(path.startswith("/.well-known/") for path in route_paths)
     assert not any(path.startswith("/oauth/") for path in route_paths)

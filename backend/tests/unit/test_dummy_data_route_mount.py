@@ -26,9 +26,10 @@ def test_dummy_data_routes_are_mounted_only_when_explicitly_enabled(
             sys.executable,
             "-c",
             (
+                "from fastapi.routing import iter_route_contexts; "
                 "from app.main import api_app; "
-                "print(any(getattr(route, 'path', '').startswith('/api/v1/dummy-data') "
-                "for route in api_app.routes))"
+                "print(any((route.path or '').startswith('/api/v1/dummy-data') "
+                "for route in iter_route_contexts(api_app.routes)))"
             ),
         ],
         cwd=BACKEND_ROOT,

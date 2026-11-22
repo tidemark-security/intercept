@@ -1568,7 +1568,7 @@ class Task(TaskBase, table=True):
     status: TaskStatus = Field(
         default=TaskStatus.TODO,
         sa_column=Column(
-            SAEnum(TaskStatus, name="taskstatus", create_type=False)
+            SAEnum(TaskStatus, name="taskstatus")
         )
     )
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from mcp import McpError
+from mcp.shared.exceptions import MCPError
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -133,7 +133,7 @@ async def test_get_item_preserves_legacy_body_and_content_fallbacks(
 
 @pytest.mark.asyncio
 async def test_get_item_tool_explains_old_hint_contract() -> None:
-    with pytest.raises(McpError) as exc_info:
+    with pytest.raises(MCPError) as exc_info:
         await mcp.call_tool(
             "get_item",
             {
@@ -148,7 +148,7 @@ async def test_get_item_tool_explains_old_hint_contract() -> None:
 
 @pytest.mark.asyncio
 async def test_get_item_tool_explains_missing_parent_scope() -> None:
-    with pytest.raises(McpError) as exc_info:
+    with pytest.raises(MCPError) as exc_info:
         await mcp.call_tool("get_item", {"item_id": "note-1"})
 
     assert str(exc_info.value) == _GET_ITEM_MISSING_SCOPE_MESSAGE
@@ -156,7 +156,7 @@ async def test_get_item_tool_explains_missing_parent_scope() -> None:
 
 @pytest.mark.asyncio
 async def test_get_item_tool_explains_mixed_old_and_new_contracts() -> None:
-    with pytest.raises(McpError) as exc_info:
+    with pytest.raises(MCPError) as exc_info:
         await mcp.call_tool(
             "get_item",
             {

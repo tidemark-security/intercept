@@ -1239,7 +1239,7 @@ export function TimelineItemRenderer({
 
   // Build contents for the activity item
   // All items render description as markdown, with cards shown below for non-note types
-  let contents: React.ReactNode = null;
+  let contents: React.ReactNode;
 
   if (isNoteItem(item) && !isGrouped) {
     // Single notes use the same card framing as other timeline item types.

@@ -198,14 +198,14 @@ async def test_oidc_consent_context_is_validated_and_never_cached() -> None:
     ) as client:
         response = await client.post(
             "/api/v1/mcp/oauth/consent/oidc",
-            json={"transaction_id": "transaction-id"},
+            json={"transaction_id": "transaction-id", "csrf_token": "csrf-token"},
         )
 
     assert response.status_code == 200
     assert response.json() == context
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["pragma"] == "no-cache"
-    provider.get_consent_context.assert_awaited_once_with("transaction-id")
+    provider.get_consent_context.assert_awaited_once_with("transaction-id", csrf_token="csrf-token")
 
 
 @pytest.mark.asyncio

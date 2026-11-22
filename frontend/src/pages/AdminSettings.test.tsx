@@ -1,4 +1,4 @@
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SessionContextValue } from "@/contexts/sessionContext";
@@ -11,6 +11,8 @@ const adminServiceMock = vi.hoisted(() => ({
   getProviderStatuses: vi.fn(),
 }));
 
+const setupLangflow = vi.hoisted(() => vi.fn());
+
 vi.mock("@/types/generated/services/AdminService", () => ({
   AdminService: {
     getAllSettingsApiV1AdminSettingsGet: adminServiceMock.getSettings,
@@ -18,6 +20,12 @@ vi.mock("@/types/generated/services/AdminService", () => ({
       adminServiceMock.getMaxMindDatabases,
     getProviderStatusesApiV1AdminEnrichmentsProvidersGet:
       adminServiceMock.getProviderStatuses,
+  },
+}));
+
+vi.mock("@/types/generated/services/LangflowService", () => ({
+  LangflowService: {
+    setupInterceptMcpServerApiV1LangflowAdminSetupInterceptMcpPost: setupLangflow,
   },
 }));
 
@@ -46,7 +54,7 @@ const adminSession: SessionContextValue = {
   isAuditor: false,
 };
 
-describe("AdminSettings MCP authentication guidance", () => {
+describe("AdminSettings MCP guidance", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     adminServiceMock.getSettings.mockResolvedValue([
@@ -87,5 +95,37 @@ describe("AdminSettings MCP authentication guidance", () => {
       screen.getByRole("button", { name: /Mcp.*1 settings/i }),
     );
     expect(screen.getAllByText("Backend restart required")).toHaveLength(2);
+  });
+
+  it.each([
+    { label: "deployment default", override: null, expectedBase: "http://backend:8000" },
+    {
+      label: "custom URL",
+      override: "https://intercept.example/prefix/mcp/streamable/",
+      expectedBase: "https://intercept.example/prefix",
+    },
+  ])("submits the Langflow MCP $label", async ({ override, expectedBase }) => {
+    const defaultUrl = "http://backend:8000/mcp/streamable/";
+    adminServiceMock.getSettings.mockResolvedValue([
+      {
+        key: "langflow.intercept_mcp_url",
+        value: defaultUrl,
+        local_only: true,
+        source: "env",
+      },
+    ]);
+    setupLangflow.mockResolvedValue({ success: true, steps: [] });
+    renderWithProviders(<AdminSettings />, { sessionValue: adminSession });
+
+    fireEvent.click(await screen.findByText("Open Wizard"));
+    fireEvent.click(screen.getByText("Continue"));
+    const input = screen.getByPlaceholderText(defaultUrl);
+    expect(input).toHaveValue(defaultUrl);
+    if (override) fireEvent.change(input, { target: { value: override } });
+    fireEvent.click(screen.getByText("Run Setup"));
+
+    await waitFor(() => expect(setupLangflow).toHaveBeenCalledWith({
+      requestBody: { backend_api_base_url: expectedBase, nhi_username: "tidemark_ai" },
+    }));
   });
 });

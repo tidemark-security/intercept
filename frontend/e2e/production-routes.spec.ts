@@ -2032,7 +2032,7 @@ for (const queue of floatingQueues) {
     const previewPath = resource === "alerts" ? `/alerts/${second.human_id}` : `/${resource}`;
     await expect(page).toHaveURL((url) => url.pathname === previewPath && url.searchParams.get("sort_by") === "updated_at");
     await expect(detail).toBeFocused();
-    await expect(detail.getByText(second.title, { exact: true })).toBeVisible();
+    await expect(detail.getByRole("heading", { name: second.title, exact: true })).toBeVisible();
 
     await page.setViewportSize({ width: 800, height: 900 });
     await expect(list).toBeVisible();
@@ -2298,7 +2298,7 @@ test("MCP consent keeps its capability out of request URLs and posts FastMCP fie
   });
 
   const response = await page.goto(
-    "/oauth/mcp/consent#txn_id=transaction-123",
+    "/oauth/mcp/consent#txn_id=transaction-123&csrf_token=csrf-456",
     { waitUntil: "domcontentloaded" },
   );
 
@@ -2311,7 +2311,7 @@ test("MCP consent keeps its capability out of request URLs and posts FastMCP fie
 
   expect(contextRequest).toEqual({
     url: expect.stringMatching(/\/api\/v1\/mcp\/oauth\/consent\/oidc$/),
-    body: { transaction_id: "transaction-123" },
+    body: { transaction_id: "transaction-123", csrf_token: "csrf-456" },
     cookieHeader: null,
   });
 

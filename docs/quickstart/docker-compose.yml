@@ -21,8 +21,8 @@
 #   9001  — Silo Console (object storage admin)
 #   7860  — Langflow AI Designer
 #
-# Override the image version:
-#   TAG=0.1.0 docker compose up -d
+# Set TAG in .env to use a specific Intercept release. Use the Compose file
+# from that release so its service images and database settings match.
 #
 # ⚠️  This configuration is for evaluation and local testing.
 # For production, use a proper secrets manager and enable HTTPS.
@@ -106,7 +106,7 @@ services:
   # Silo — S3-compatible object storage for file attachments
   # ---------------------------------------------------------------------------
   minio:
-    image: &silo-image docker.io/pgsty/silo:RELEASE.2026-11-12T00-00-00Z
+    image: &silo-image ghcr.io/tidemark-security/intercept-silo:${TAG:-latest}
     environment: &silo-credentials
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
@@ -157,6 +157,7 @@ services:
       STORAGE_BUCKET: intercept-attachments
       STORAGE_USE_SSL: "false"
       LANGFLOW__BASE_URL: http://langflow:7860/api/v1
+      LANGFLOW__INTERCEPT_MCP_URL: ${LANGFLOW_INTERCEPT_MCP_URL:-http://backend:8000/mcp/streamable/}
       LANGFLOW__API_KEY: ${LANGFLOW_API_KEY}
       MCP_OAUTH_ENABLED: "true"
       MCP_OAUTH_PUBLIC_BASE_URL: ${INTERCEPT_PUBLIC_ORIGIN:-http://localhost}
@@ -167,7 +168,7 @@ services:
       AUTO_SEED: "true"                            # Creates the admin user on first boot
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD}
       OIDC_REDIRECT_URI: ${INTERCEPT_PUBLIC_ORIGIN:-http://localhost}/api/v1/auth/oidc/callback
-      HTTP_TRUSTED_HOSTS: '${INTERCEPT_TRUSTED_HOSTS:-["localhost","127.0.0.1"]}'
+      HTTP_TRUSTED_HOSTS: '${INTERCEPT_TRUSTED_HOSTS:-["localhost","127.0.0.1","backend"]}'
       HTTP_TRUSTED_PROXY_CIDRS: '["${INTERCEPT_INGRESS_SUBNET:-172.31.251.0/24}"]'
       CORS_ORIGINS: '["${INTERCEPT_PUBLIC_ORIGIN:-http://localhost}"]' # Adjust for production (e.g. "https://example.com")
       OIDC_ALLOWED_REDIRECT_ORIGINS: '["${INTERCEPT_PUBLIC_ORIGIN:-http://localhost}"]'
@@ -236,12 +237,13 @@ services:
   # Langflow — AI/LLM orchestration platform (optional — AI features)
   # ---------------------------------------------------------------------------
   langflow:
-    image: langflowai/langflow:1.10.1
+    image: ghcr.io/tidemark-security/intercept-langflow:${TAG:-latest}
     user: root
     environment:
       LANGFLOW_DATABASE_URL: postgresql://langflow_user:${LANGFLOW_DB_PASSWORD}@postgres:5432/langflow
       LANGFLOW_PGVECTOR_DATABASE_URL: postgresql://langflow_user:${LANGFLOW_DB_PASSWORD}@postgres:5432/langflow_rag
       LANGFLOW_VARIABLES_TO_GET_FROM_ENVIRONMENT: "LANGFLOW_PGVECTOR_DATABASE_URL"
+      LANGFLOW_SSRF_ALLOWED_HOSTS: ${LANGFLOW_SSRF_ALLOWED_HOSTS:-backend,postgres}
       LANGFLOW_CONFIG_DIR: /app/langflow
       LANGFLOW_AUTO_LOGIN: "false"
       LANGFLOW_SUPERUSER: ${LANGFLOW_SUPERUSER:-admin}

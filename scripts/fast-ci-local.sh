@@ -405,7 +405,7 @@ run_backend_pytest() {
 run_backend_pytest
 
 if [[ "${FAST_CI_LOCAL_INSTALL:-0}" == "1" || ! -d frontend/node_modules ]]; then
-  run_step npm --prefix frontend install --no-audit --no-fund
+  run_step npm --prefix frontend ci --no-audit --no-fund
 fi
 
 run_in_dir frontend npx tsc --noEmit
@@ -417,13 +417,19 @@ if [[ "$skip_images" == "1" ]]; then
   exit 0
 fi
 
-if has_changed_build_input '^(backend/Dockerfile|backend/Dockerfile\.worker|backend/requirements[^/]*\.txt|backend/\.dockerignore)$'; then
+if has_changed_build_input '^backend/(Dockerfile(\.worker)?|requirements[^/]*\.txt|\.dockerignore|scripts/mermaid-validator/.*)$'; then
   run_step docker build -f backend/Dockerfile backend
   run_step docker build -f backend/Dockerfile.worker backend
 else
   echo
   echo "fast-ci-local: backend image inputs unchanged; skipping backend image builds"
 fi
+
+for service in postgres langflow silo; do
+  if has_changed_build_input "^backend/Dockerfile\\.${service}$"; then
+    run_step docker build -f "backend/Dockerfile.${service}" backend
+  fi
+done
 
 if has_changed_build_input '^(frontend/Dockerfile|frontend/package\.json|frontend/package-lock\.json|frontend/\.dockerignore)$'; then
   run_step docker build -f frontend/Dockerfile frontend

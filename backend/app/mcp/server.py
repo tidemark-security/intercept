@@ -8,8 +8,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AuthProvider
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
-from mcp import McpError
-from mcp.types import ErrorData
+from mcp.shared.exceptions import MCPError
 
 from app.mcp.tools import (
     get_summary_tool,
@@ -70,17 +69,11 @@ class GetItemContractGuidanceMiddleware(Middleware):
         )
 
         if old_fields and has_parent_scope:
-            raise McpError(
-                ErrorData(code=-32602, message=_GET_ITEM_MIXED_CONTRACT_MESSAGE)
-            )
+            raise MCPError(code=-32602, message=_GET_ITEM_MIXED_CONTRACT_MESSAGE)
         if old_fields:
-            raise McpError(
-                ErrorData(code=-32602, message=_GET_ITEM_OLD_CONTRACT_MESSAGE)
-            )
+            raise MCPError(code=-32602, message=_GET_ITEM_OLD_CONTRACT_MESSAGE)
         if not has_parent_scope:
-            raise McpError(
-                ErrorData(code=-32602, message=_GET_ITEM_MISSING_SCOPE_MESSAGE)
-            )
+            raise MCPError(code=-32602, message=_GET_ITEM_MISSING_SCOPE_MESSAGE)
 
         return await call_next(context)
 

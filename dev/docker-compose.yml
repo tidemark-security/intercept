@@ -63,6 +63,7 @@ services:
       STORAGE_BUCKET: intercept-attachments
       STORAGE_USE_SSL: "false"
       LANGFLOW__BASE_URL: http://langflow:7860/api/v1
+      LANGFLOW__INTERCEPT_MCP_URL: ${LANGFLOW_INTERCEPT_MCP_URL:-http://backend:8000/mcp/streamable/}
       LANGFLOW__API_KEY: ${LANGFLOW_API_KEY:-dev-langflow-api-key}
       MCP_OAUTH_ENABLED: "true"
       MCP_OAUTH_PUBLIC_BASE_URL: ${INTERCEPT_PUBLIC_ORIGIN:-http://localhost:8080}
@@ -82,7 +83,7 @@ services:
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-Dev-initial-admin-password1!}
       OIDC_REDIRECT_URI: ${INTERCEPT_PUBLIC_ORIGIN:-http://localhost:8080}/api/v1/auth/oidc/callback
-      HTTP_TRUSTED_HOSTS: '${INTERCEPT_TRUSTED_HOSTS:-["localhost","127.0.0.1"]}'
+      HTTP_TRUSTED_HOSTS: '${INTERCEPT_TRUSTED_HOSTS:-["localhost","127.0.0.1","backend"]}'
       HTTP_TRUSTED_PROXY_CIDRS: '["${INTERCEPT_INGRESS_SUBNET:-172.31.250.0/24}"]'
       CORS_ORIGINS: '["${INTERCEPT_PUBLIC_ORIGIN:-http://localhost:8080}", "http://localhost:8080", "http://127.0.0.1:8080", "http://localhost:5173"]'
       OIDC_ALLOWED_REDIRECT_ORIGINS: '["${INTERCEPT_PUBLIC_ORIGIN:-http://localhost:8080}", "http://localhost:8080", "http://127.0.0.1:8080", "http://localhost:5173"]'
@@ -122,8 +123,8 @@ services:
       - ../frontend/postcss.config.js:/app/postcss.config.js
       - ../frontend/tsconfig.json:/app/tsconfig.json
       - ../frontend/tsconfig.node.json:/app/tsconfig.node.json
-      # Mount the sibling UX checkout live. The frontend dev image installs
-      # @tidemark-security/ux as file:/ux, so this keeps UX rebuilds visible
+      # Mount the sibling UX checkout live. The frontend dev image links
+      # @tidemark-security/ux to /ux, so this keeps UX rebuilds visible
       # without rebuilding the frontend image. Set UX_CONTEXT if your UX repo
       # is not at ../../ux as resolved from the Intercept project root.
       - ${UX_CONTEXT:-../../ux}:/ux
@@ -131,7 +132,10 @@ services:
       - backend
 
   minio:
-    image: &silo-image docker.io/pgsty/silo:RELEASE.2026-11-12T00-00-00Z
+    image: &silo-image intercept-silo:dev
+    build: &silo-build
+      context: ../backend
+      dockerfile: Dockerfile.silo
     environment: &silo-credentials
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
@@ -149,6 +153,7 @@ services:
 
   minio-init:
     image: *silo-image
+    build: *silo-build
     environment:
       <<: *silo-credentials
       # Bucket initialization talks only to the storage service on this network.
@@ -165,12 +170,15 @@ services:
         mcli anonymous set none minio/intercept-attachments
 
   langflow:
-    image: docker.io/langflowai/langflow:1.10.1
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.langflow
     user: root
     environment:
       LANGFLOW_DATABASE_URL: postgresql://langflow_user:${LANGFLOW_DB_PASSWORD:-langflow_password}@postgres:5432/langflow
       LANGFLOW_PGVECTOR_DATABASE_URL: postgresql://langflow_user:${LANGFLOW_DB_PASSWORD:-langflow_password}@postgres:5432/langflow_rag
       LANGFLOW_VARIABLES_TO_GET_FROM_ENVIRONMENT: "LANGFLOW_PGVECTOR_DATABASE_URL"
+      LANGFLOW_SSRF_ALLOWED_HOSTS: ${LANGFLOW_SSRF_ALLOWED_HOSTS:-backend,postgres}
       LANGFLOW_CONFIG_DIR: /app/langflow
       LANGFLOW_AUTO_LOGIN: "false"
       LANGFLOW_SUPERUSER: ${LANGFLOW_SUPERUSER:-admin}
@@ -235,7 +243,10 @@ services:
     restart: unless-stopped
 
   nginx:
-    image: docker.io/nginx:1.29-alpine
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      target: nginx-base
     ports:
       - "127.0.0.1:${INTERCEPT_PORT:-8080}:8080"
     volumes:

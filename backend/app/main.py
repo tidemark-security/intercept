@@ -12,7 +12,7 @@ import asyncpg
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi_pagination import add_pagination
 from starlette.applications import Starlette
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -224,8 +224,10 @@ def custom_openapi() -> dict[str, Any]:
             "Enter a Tidemark API key. Swagger sends it as Authorization: Bearer <key>."
         ),
     }
-    for route in api_app.routes:
-        if not isinstance(route, APIRoute) or not _has_auth_dependency(route.dependant):
+    for route in iter_route_contexts(api_app.routes):
+        if not isinstance(route.original_route, APIRoute) or not _has_auth_dependency(
+            route.dependant
+        ):
             continue
         path_item = schema.get("paths", {}).get(route.path_format)
         if not path_item:

@@ -1,16 +1,18 @@
-FROM node:24-slim AS build
+FROM nginx:1.31.9-alpine-slim AS nginx-base
 
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+RUN apk upgrade --no-cache
+
+FROM node:24.22.3-trixie-slim AS build
+
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install --global npm@11.21.3 --no-audit --no-fund
 
 WORKDIR /app
 
-# Copy package.json only — lockfile references local ../ux path from
-# dev/docker-compose.yml dev setup which isn't available in CI.
-# package.json has the correct git+https URL for @tidemark-security/ux.
-COPY package.json ./
-
-# Install all dependencies (including devDependencies for build)
-RUN npm install --no-audit --no-fund
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
 # Copy source code and config files
 COPY index.html tsconfig.json tsconfig.node.json vite.config.ts tailwind.config.js postcss.config.js ./
@@ -21,7 +23,7 @@ COPY public/ public/
 RUN npx vite build
 
 # --- Production stage ---
-FROM nginx:alpine
+FROM nginx-base
 
 # Copy built assets from build stage
 COPY --from=build /app/dist /usr/share/nginx/html

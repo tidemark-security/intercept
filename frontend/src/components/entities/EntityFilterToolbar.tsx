@@ -290,7 +290,9 @@ export function EntityFilterToolbar({
   const [tagMode, setTagMode] = React.useState<TagMode>("include");
   const [tagSearch, setTagSearch] = React.useState("");
   const [customTag, setCustomTag] = React.useState("");
+  const [tagMenuOpen, setTagMenuOpen] = React.useState(false);
   const filtersTrigger = React.useRef<HTMLButtonElement>(null);
+  const tagMenu = React.useRef<HTMLDivElement>(null);
 
   const sessionContext = React.useContext(SessionContext);
   const currentUsername = sessionContext?.user?.username ?? null;
@@ -505,7 +507,7 @@ export function EntityFilterToolbar({
         />
 
         {showTagFilters ? (
-          <DropdownMenu.Root modal={false}>
+          <DropdownMenu.Root modal={false} open={tagMenuOpen} onOpenChange={setTagMenuOpen}>
           <DropdownMenu.Trigger asChild>
             <ToolbarButton
               className={styles.filterRow}
@@ -517,6 +519,7 @@ export function EntityFilterToolbar({
             />
           </DropdownMenu.Trigger>
           <DropdownMenu.Content
+            ref={tagMenu}
             side="bottom"
             align="end"
             sideOffset={8}
@@ -719,6 +722,13 @@ export function EntityFilterToolbar({
             align="start"
             sideOffset={6}
             collisionPadding={8}
+            onEscapeKeyDown={(event) => {
+              // Handle the portaled tag menu before the parent popover dismisses.
+              if (event.target instanceof Node && tagMenu.current?.contains(event.target)) {
+                event.preventDefault();
+                setTagMenuOpen(false);
+              }
+            }}
             className="z-[var(--z-popover)] w-[var(--radix-popover-trigger-width)] max-w-[22rem] max-h-[var(--radix-popover-content-available-height)] overflow-y-auto rounded-md border border-neutral-border bg-neutral-50 p-1 shadow-neutral-200-shadow-medium"
           >
             {filterFields}

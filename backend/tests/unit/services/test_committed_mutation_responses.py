@@ -69,7 +69,7 @@ async def test_context_create_serializes_before_commit(
         state.refresh_called = True
         raise AssertionError("post-commit refresh")
 
-    db = SimpleNamespace(add=add, flush=flush, commit=commit, refresh=refresh)
+    db = SimpleNamespace(add=add, flush=flush, commit=commit, refresh=refresh, execute=AsyncMock())
     monkeypatch.setattr(context_module, "get_audit_service", lambda _db: _AuditService())
 
     result = await ContextService(cast(AsyncSession, db)).create_entry(

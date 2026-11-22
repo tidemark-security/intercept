@@ -46,14 +46,7 @@ export function renderWithProviders(
             <QueryClientProvider client={queryClient}>
               <BreakpointProvider>
                 <ToastProvider>
-                  <BrowserRouter
-                    future={{
-                      v7_startTransition: true,
-                      v7_relativeSplatPath: true,
-                    }}
-                  >
-                    {content}
-                  </BrowserRouter>
+                  <BrowserRouter>{content}</BrowserRouter>
                 </ToastProvider>
               </BreakpointProvider>
             </QueryClientProvider>

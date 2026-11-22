@@ -9,11 +9,23 @@ Modern cybersecurity case management for security teams. Track incidents, manage
 ### Try It (no clone needed)
 
 ```bash
-curl -O https://raw.githubusercontent.com/tidemark-security/intercept/main/docs/quickstart/docker-compose.yml
-docker compose up -d
+curl -fsSLo intercept-install.sh https://raw.githubusercontent.com/tidemark-security/intercept/main/docs/quickstart/install.sh
+bash intercept-install.sh
 ```
 
-Open [http://localhost](http://localhost) and log in with `admin` / `admin`.
+Open [http://localhost](http://localhost) and sign in as `admin` using
+`INITIAL_ADMIN_PASSWORD` from the generated `tidemark-intercept/.env` file.
+
+### Upgrading an existing PostgreSQL 18 volume
+
+After the updated PostgreSQL container is healthy, update pgvector in each
+database that uses it. Run these commands from the Compose directory. Existing
+volumes only ran the extension initialization scripts when they were created.
+
+```bash
+docker compose exec -T postgres psql -U intercept_user -d intercept_case_db -v ON_ERROR_STOP=1 -c 'ALTER EXTENSION vector UPDATE'
+docker compose exec -T postgres psql -U intercept_user -d langflow_rag -v ON_ERROR_STOP=1 -c 'ALTER EXTENSION vector UPDATE'
+```
 
 ### Development Setup
 
@@ -21,7 +33,7 @@ Open [http://localhost](http://localhost) and log in with `admin` / `admin`.
 
 - [Conda](https://docs.conda.io/en/latest/miniconda.html) (Python environment)
 - [Docker](https://www.docker.com/) (PostgreSQL database)
-- [Node.js](https://nodejs.org/) 18+
+- [Node.js](https://nodejs.org/) 24, provided by the Conda environment
 
 #### Setup
 
@@ -32,8 +44,11 @@ cd intercept
 conda env create -f environment.yml
 conda activate intercept
 
+# Install backend dependencies
+python -m pip install --upgrade --upgrade-strategy eager -r backend/requirements-test.txt
+
 # Install frontend dependencies
-cd frontend && npm install && cd ..
+cd frontend && npm ci && cd ..
 
 # Configure environment
 cp backend/.env.example backend/.env

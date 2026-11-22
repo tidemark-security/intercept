@@ -116,6 +116,7 @@ const CUSTOM_KEYS = new Set([
   "storage.max_image_preview_size_mb",
   "storage.max_text_preview_size_mb",
   "langflow.base_url",
+  "langflow.intercept_mcp_url",
   "langflow.api_key",
   "langflow.default_flow_id",
   "langflow.alert_triage_flow_id",
@@ -357,7 +358,8 @@ function AdminSettings() {
   const [langflowSetupUsername, setLangflowSetupUsername] = useState(
     LANGFLOW_SETUP_DEFAULT_USERNAME,
   );
-  const [langflowSetupMcpUrl, setLangflowSetupMcpUrl] = useState("");
+  const [langflowSetupMcpUrlOverride, setLangflowSetupMcpUrlOverride] =
+    useState<string | null>(null);
   const [langflowSetupPage, setLangflowSetupPage] = useState<
     "overview" | "configure" | "results"
   >("overview");
@@ -421,16 +423,10 @@ function AdminSettings() {
     (typeof window !== "undefined"
       ? window.location.origin
       : "http://localhost:8000");
-  const defaultLangflowMcpUrl = useMemo(
-    () => deriveLangflowMcpStreamableUrl(backendApiBaseUrl),
-    [backendApiBaseUrl],
-  );
-
-  useEffect(() => {
-    setLangflowSetupMcpUrl((currentValue) =>
-      currentValue.trim() ? currentValue : defaultLangflowMcpUrl,
-    );
-  }, [defaultLangflowMcpUrl]);
+  const defaultLangflowMcpUrl =
+    getSetting("langflow.intercept_mcp_url") ||
+    deriveLangflowMcpStreamableUrl(backendApiBaseUrl);
+  const langflowSetupMcpUrl = langflowSetupMcpUrlOverride ?? defaultLangflowMcpUrl;
 
   const { data: maxMindDatabases = [], isLoading: maxMindDatabasesLoading } =
     useQuery({
@@ -779,7 +775,7 @@ function AdminSettings() {
   const openLangflowSetupModal = () => {
     setLangflowSetupStatus(null);
     setLangflowSetupPage("overview");
-    setLangflowSetupMcpUrl(defaultLangflowMcpUrl);
+    setLangflowSetupMcpUrlOverride(null);
     setShowLangflowSetupModal(true);
   };
 
@@ -3871,13 +3867,13 @@ function AdminSettings() {
                 <TextField
                   className="h-auto w-full flex-none"
                   label="Intercept MCP Streamable HTTP URL"
-                  helpText="This is automatically detected from the backend URL and defaults to /mcp/streamable/. Override it in advanced use cases, but leave it as is if you're not sure."
+                  helpText="Use the /mcp/streamable/ URL that Langflow can reach. Your deployment can provide a default."
                 >
                   <TextField.Input
                     placeholder={defaultLangflowMcpUrl}
                     value={langflowSetupMcpUrl}
                     onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-                      setLangflowSetupMcpUrl(event.target.value)
+                      setLangflowSetupMcpUrlOverride(event.target.value)
                     }
                   />
                 </TextField>

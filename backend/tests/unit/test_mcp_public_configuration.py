@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from packaging.version import Version
+
 from app.core.settings_registry import SETTINGS_REGISTRY
 
 
@@ -369,4 +371,5 @@ def test_mcp_sdk_has_principal_binding_security_floor() -> None:
         PROJECT_ROOT / "backend/requirements.txt"
     ).read_text(encoding="utf-8").splitlines()
 
-    assert "mcp==1.30.0" in requirements
+    sdk_pin = next(line.removeprefix("mcp==") for line in requirements if line.startswith("mcp=="))
+    assert Version(sdk_pin) >= Version("1.30.0")

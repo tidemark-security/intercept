@@ -122,8 +122,14 @@ function McpConsent() {
   const { resolvedTheme } = useTheme();
   const [context, setContext] = useState<McpConsentContext | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const transactionId = useMemo(
-    () => new URLSearchParams(location.hash.replace(/^#/, "")).get("txn_id"),
+  const { transactionId, csrfToken } = useMemo(
+    () => {
+      const params = new URLSearchParams(location.hash.replace(/^#/, ""));
+      return {
+        transactionId: params.get("txn_id"),
+        csrfToken: params.get("csrf_token"),
+      };
+    },
     [location.hash],
   );
   const loginLogo = resolvedTheme === "dark" ? interceptLogo : interceptLogoDark;
@@ -148,7 +154,10 @@ function McpConsent() {
               Accept: "application/json",
               "Content-Type": "application/json",
             },
-            body: JSON.stringify({ transaction_id: transactionId }),
+            body: JSON.stringify({
+              transaction_id: transactionId,
+              csrf_token: csrfToken,
+            }),
           },
         );
         const payload: unknown = await response.json();
@@ -175,7 +184,7 @@ function McpConsent() {
     return () => {
       cancelled = true;
     };
-  }, [transactionId]);
+  }, [transactionId, csrfToken]);
 
   return (
     <AuthSplitLayout>
