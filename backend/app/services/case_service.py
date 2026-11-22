@@ -18,12 +18,12 @@ from app.models.models import (
 from app.models.enums import CaseStatus, AlertStatus, TaskStatus, RealtimeEventType
 from app.services.alert_triage_apply_service import CLOSED_ALERT_STATUSES, apply_triage_state
 from app.services.timeline_add_service import (
-    TimelineItemConflict,
     add_timeline_item_and_commit,
     remove_timeline_item_and_commit,
+    run_timeline_mutation,
     update_timeline_item_and_commit,
 )
-from app.services.timeline_service import TimelineValidationError, timeline_service
+from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
 from app.services import triage_recommendation_service
@@ -883,11 +883,14 @@ class CaseService:
         idempotent: bool = False,
     ) -> Optional[Case]:
         """Add a timeline item to a case."""
-        try:
-            committed_case = await self._get_case_model(db, case_id)
-            if committed_case is None:
-                return None
-            added_item = await add_timeline_item_and_commit(
+        return await run_timeline_mutation(
+            db,
+            entity_type="case",
+            entity_id=case_id,
+            operation="addition",
+            performed_by=created_by,
+            load_model=self._get_case_model,
+            mutate=lambda: add_timeline_item_and_commit(
                 db,
                 entity_id=case_id,
                 entity_type="case",
@@ -896,26 +899,10 @@ class CaseService:
                 created_at_override=created_at_override,
                 preserve_item_id=preserve_item_id,
                 idempotent=idempotent,
-            )
-            if added_item is None:
-                return None
-        except TimelineValidationError as exc:
-            await db.rollback()
-            raise CaseValidationError(str(exc)) from exc
-        except Exception as e:
-            await db.rollback()
-            logger.error(f"Error adding timeline item to case {case_id}: {e}")
-            raise
-
-        logger.info(f"Timeline item added to case by {created_by}")
-        return await load_committed_response(
-            db,
-            lambda: self._load_timeline_mutation_response(db, case_id),
-            committed_case,
+            ),
+            load_response=self._load_timeline_mutation_response,
+            validation_error=CaseValidationError,
             logger=logger,
-            entity_type="case",
-            entity_id=case_id,
-            operation="timeline item addition",
         )
     
     async def update_timeline_item(
@@ -929,11 +916,15 @@ class CaseService:
         expected_item_fields: dict[str, Any] | None = None,
     ) -> Optional[Case]:
         """Update a timeline item in a case."""
-        try:
-            committed_case = await self._get_case_model(db, case_id)
-            if committed_case is None:
-                return None
-            updated_item = await update_timeline_item_and_commit(
+        return await run_timeline_mutation(
+            db,
+            entity_type="case",
+            entity_id=case_id,
+            operation="update",
+            performed_by=updated_by,
+            item_id=item_id,
+            load_model=self._get_case_model,
+            mutate=lambda: update_timeline_item_and_commit(
                 db,
                 entity_id=case_id,
                 entity_type="case",
@@ -942,30 +933,10 @@ class CaseService:
                 performed_by=updated_by,
                 companion_timeline_item=companion_timeline_item,
                 expected_item_fields=expected_item_fields,
-            )
-
-            if updated_item is None:
-                return None
-        except TimelineValidationError as exc:
-            await db.rollback()
-            raise CaseValidationError(str(exc)) from exc
-        except TimelineItemConflict:
-            await db.rollback()
-            raise
-        except Exception as e:
-            await db.rollback()
-            logger.error(f"Error updating timeline item {item_id} in case {case_id}: {e}")
-            raise
-
-        logger.info(f"Timeline item {item_id} updated in case by {updated_by}")
-        return await load_committed_response(
-            db,
-            lambda: self._load_timeline_mutation_response(db, case_id),
-            committed_case,
+            ),
+            load_response=self._load_timeline_mutation_response,
+            validation_error=CaseValidationError,
             logger=logger,
-            entity_type="case",
-            entity_id=case_id,
-            operation="timeline item update",
         )
     
     async def remove_timeline_item(
@@ -976,36 +947,24 @@ class CaseService:
         deleted_by: str
     ) -> Optional[Case]:
         """Remove a timeline item from a case and clean up associated resources."""
-        try:
-            committed_case = await self._get_case_model(db, case_id)
-            if committed_case is None:
-                return None
-            removed_item = await remove_timeline_item_and_commit(
+        return await run_timeline_mutation(
+            db,
+            entity_type="case",
+            entity_id=case_id,
+            operation="removal",
+            performed_by=deleted_by,
+            item_id=item_id,
+            load_model=self._get_case_model,
+            mutate=lambda: remove_timeline_item_and_commit(
                 db,
                 entity_id=case_id,
                 entity_type="case",
                 item_id=item_id,
                 performed_by=deleted_by,
-            )
-            if removed_item is None:
-                return None
-        except TimelineValidationError as exc:
-            await db.rollback()
-            raise CaseValidationError(str(exc)) from exc
-        except Exception as e:
-            await db.rollback()
-            logger.error(f"Error deleting timeline item {item_id} from case {case_id}: {e}")
-            raise
-
-        logger.info(f"Timeline item {item_id} deleted from case by {deleted_by}")
-        return await load_committed_response(
-            db,
-            lambda: self._load_timeline_mutation_response(db, case_id),
-            committed_case,
+            ),
+            load_response=self._load_timeline_mutation_response,
+            validation_error=CaseValidationError,
             logger=logger,
-            entity_type="case",
-            entity_id=case_id,
-            operation="timeline item removal",
         )
     
     async def _create_audit_log(

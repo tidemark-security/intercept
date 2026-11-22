@@ -26,12 +26,12 @@ from app.services.alert_triage_apply_service import (
     mark_alert_escalated,
 )
 from app.services.timeline_add_service import (
-    TimelineItemConflict,
     add_timeline_item_and_commit,
     remove_timeline_item_and_commit,
+    run_timeline_mutation,
     update_timeline_item_and_commit,
 )
-from app.services.timeline_service import TimelineValidationError, timeline_service
+from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.entity_bulk_update import add_bulk_analyst_note
 from app.services.realtime_service import emit_event
@@ -1202,11 +1202,14 @@ class AlertService:
         idempotent: bool = False,
     ) -> Optional[Alert]:
         """Add a single timeline item to an alert's timeline."""
-        try:
-            committed_alert = await self._get_alert_model(db, alert_id)
-            if committed_alert is None:
-                return None
-            added_item = await add_timeline_item_and_commit(
+        return await run_timeline_mutation(
+            db,
+            entity_type="alert",
+            entity_id=alert_id,
+            operation="addition",
+            performed_by=added_by,
+            load_model=self._get_alert_model,
+            mutate=lambda: add_timeline_item_and_commit(
                 db,
                 entity_id=alert_id,
                 entity_type="alert",
@@ -1215,26 +1218,10 @@ class AlertService:
                 created_at_override=created_at_override,
                 preserve_item_id=preserve_item_id,
                 idempotent=idempotent,
-            )
-            if added_item is None:
-                return None
-        except TimelineValidationError as exc:
-            await db.rollback()
-            raise AlertValidationError(str(exc)) from exc
-        except Exception as e:
-            await db.rollback()
-            logger.error(f"Error adding timeline item to alert {alert_id}: {e}")
-            raise
-
-        logger.info(f"Timeline item added to alert by {added_by}")
-        return await load_committed_response(
-            db,
-            lambda: self.get_alert(db, alert_id),
-            committed_alert,
+            ),
+            load_response=self.get_alert,
+            validation_error=AlertValidationError,
             logger=logger,
-            entity_type="alert",
-            entity_id=alert_id,
-            operation="timeline item addition",
         )
 
     async def update_timeline_item(
@@ -1247,11 +1234,15 @@ class AlertService:
         expected_item_fields: dict[str, Any] | None = None,
     ) -> Optional[Alert]:
         """Update a specific timeline item in an alert with permission checks and audit logging."""
-        try:
-            committed_alert = await self._get_alert_model(db, alert_id)
-            if committed_alert is None:
-                return None
-            updated_dict = await update_timeline_item_and_commit(
+        return await run_timeline_mutation(
+            db,
+            entity_type="alert",
+            entity_id=alert_id,
+            operation="update",
+            performed_by=updated_by,
+            item_id=item_id,
+            load_model=self._get_alert_model,
+            mutate=lambda: update_timeline_item_and_commit(
                 db,
                 entity_id=alert_id,
                 entity_type="alert",
@@ -1259,32 +1250,10 @@ class AlertService:
                 timeline_item=updated_item,
                 performed_by=updated_by,
                 expected_item_fields=expected_item_fields,
-            )
-
-            if updated_dict is None:
-                return None
-        except TimelineValidationError as exc:
-            await db.rollback()
-            raise AlertValidationError(str(exc)) from exc
-        except TimelineItemConflict:
-            await db.rollback()
-            raise
-        except Exception as e:
-            await db.rollback()
-            logger.error(f"Error updating timeline item {item_id} in alert {alert_id}: {e}")
-            raise
-
-        logger.info(
-            f"Timeline item {item_id} (type: {updated_dict.get('type')}) updated in alert {alert_id} by {updated_by}"
-        )
-        return await load_committed_response(
-            db,
-            lambda: self.get_alert(db, alert_id),
-            committed_alert,
+            ),
+            load_response=self.get_alert,
+            validation_error=AlertValidationError,
             logger=logger,
-            entity_type="alert",
-            entity_id=alert_id,
-            operation="timeline item update",
         )
 
     async def remove_timeline_item(
@@ -1295,36 +1264,24 @@ class AlertService:
         removed_by: str
     ) -> Optional[Alert]:
         """Remove a specific timeline item from an alert and clean up associated resources."""
-        try:
-            committed_alert = await self._get_alert_model(db, alert_id)
-            if committed_alert is None:
-                return None
-            removed_item = await remove_timeline_item_and_commit(
+        return await run_timeline_mutation(
+            db,
+            entity_type="alert",
+            entity_id=alert_id,
+            operation="removal",
+            performed_by=removed_by,
+            item_id=item_id,
+            load_model=self._get_alert_model,
+            mutate=lambda: remove_timeline_item_and_commit(
                 db,
                 entity_id=alert_id,
                 entity_type="alert",
                 item_id=item_id,
                 performed_by=removed_by,
-            )
-            if removed_item is None:
-                return None
-        except TimelineValidationError as exc:
-            await db.rollback()
-            raise AlertValidationError(str(exc)) from exc
-        except Exception as e:
-            await db.rollback()
-            logger.error(f"Error removing timeline item {item_id} from alert {alert_id}: {e}")
-            raise
-
-        logger.info(f"Timeline item {item_id} removed from alert by {removed_by}")
-        return await load_committed_response(
-            db,
-            lambda: self.get_alert(db, alert_id),
-            committed_alert,
+            ),
+            load_response=self.get_alert,
+            validation_error=AlertValidationError,
             logger=logger,
-            entity_type="alert",
-            entity_id=alert_id,
-            operation="timeline item removal",
         )
 
 alert_service = AlertService()

@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlmodel import col
 
 from app.core.entity_ids import ALERT_PREFIX, CASE_PREFIX, TASK_PREFIX, format_entity_id
-from app.models.models import Actor, ActorSnapshot, Alert, AuditLog, Case, Task
+from app.models.models import Actor, ActorSnapshot, Alert, AuditLog, Case, Task, TimelineItemStorage
 from app.services.date_filter_utils import parse_optional_utc_datetime
 from app.services.normalization_service import (
     NormalizationValidationError,
@@ -785,6 +785,29 @@ class TimelineService:
         
         return denormalized
 
+    async def _embed_source_timeline_items(
+        self,
+        db: AsyncSession,
+        item: Dict[str, Any],
+        source_timeline_items: TimelineItemStorage | List[Dict[str, Any]] | None,
+        *,
+        references: TimelineReferenceIndex | None,
+    ) -> None:
+        """Attach a linked entity's timeline without expanding its own links."""
+        if not source_timeline_items:
+            return
+
+        source_items: TimelineItemStorage = {}
+        for source_item in self.iter_items(source_timeline_items):
+            denormalized = await self._denormalize_item_recursive(
+                db,
+                source_item,
+                include_linked_timelines=False,
+                references=references,
+            )
+            source_items[str(denormalized["id"])] = denormalized
+        item["source_timeline_items"] = source_items
+
     async def _embed_task_timeline_items(
         self,
         db: AsyncSession,
@@ -801,18 +824,7 @@ class TimelineService:
         if not task:
             return item
 
-        if task.timeline_items:
-            source_items: Dict[str, Dict[str, Any]] = {}
-            for task_item in self.iter_items(task.timeline_items):
-                denormalized = await self._denormalize_item_recursive(
-                    db,
-                    task_item,
-                    include_linked_timelines=False,
-                    references=references,
-                )
-                source_items[str(denormalized["id"])] = denormalized
-            item["source_timeline_items"] = source_items
-
+        await self._embed_source_timeline_items(db, item, task.timeline_items, references=references)
         return item
 
     async def _embed_alert_timeline_items(
@@ -854,19 +866,7 @@ class TimelineService:
         item["priority"] = alert.priority.value if alert.priority else None
         item["assignee"] = alert.assignee
 
-        # Embed the alert's timeline items
-        if alert.timeline_items:
-            source_items: Dict[str, Dict[str, Any]] = {}
-            for alert_item in self.iter_items(alert.timeline_items):
-                denormalized = await self._denormalize_item_recursive(
-                    db,
-                    alert_item,
-                    include_linked_timelines=False,
-                    references=references,
-                )
-                source_items[str(denormalized["id"])] = denormalized
-            item["source_timeline_items"] = source_items
-        
+        await self._embed_source_timeline_items(db, item, alert.timeline_items, references=references)
         return item
 
     async def _embed_case_timeline_items(
@@ -909,19 +909,7 @@ class TimelineService:
         item["assignee"] = case.assignee
         item["created_by"] = case.created_by or item.get("created_by")
 
-        # Embed the case's timeline items
-        if case.timeline_items:
-            source_items: Dict[str, Dict[str, Any]] = {}
-            for case_item in self.iter_items(case.timeline_items):
-                denormalized = await self._denormalize_item_recursive(
-                    db,
-                    case_item,
-                    include_linked_timelines=False,
-                    references=references,
-                )
-                source_items[str(denormalized["id"])] = denormalized
-            item["source_timeline_items"] = source_items
-        
+        await self._embed_source_timeline_items(db, item, case.timeline_items, references=references)
         return item
 
     def _strip_task_snapshot_fields(self, item: Dict[str, Any]) -> Dict[str, Any]:

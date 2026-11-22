@@ -151,6 +151,7 @@ add_api_key_backend_tests() {
 }
 
 add_alert_backend_tests() {
+  add_backend_pytest_path "tests/integration/test_timeline_item_variants.py"
   add_backend_pytest_path "tests/integration/test_alert_create_api.py"
   add_backend_pytest_path "tests/integration/test_alert_bulk_actions_api.py"
   add_backend_pytest_path "tests/integration/test_alert_triage_api.py"
@@ -158,6 +159,7 @@ add_alert_backend_tests() {
 }
 
 add_case_backend_tests() {
+  add_backend_pytest_path "tests/integration/test_timeline_item_variants.py"
   add_backend_pytest_path "tests/integration/test_case_serialization_api.py"
   add_backend_pytest_path "tests/integration/test_case_timeline_items.py"
   add_backend_pytest_path "tests/integration/test_case_runbooks_api.py"
@@ -165,12 +167,14 @@ add_case_backend_tests() {
 }
 
 add_task_backend_tests() {
+  add_backend_pytest_path "tests/integration/test_timeline_item_variants.py"
   add_backend_pytest_path "tests/integration/test_task_serialization_api.py"
   add_backend_pytest_path "tests/integration/test_task_timeline_items.py"
   add_backend_pytest_path "tests/integration/test_task_attachments_api.py"
 }
 
 add_timeline_backend_tests() {
+  add_backend_pytest_path "tests/integration/test_timeline_item_variants.py"
   add_backend_pytest_path "tests/integration/test_alert_timeline_items.py"
   add_backend_pytest_path "tests/integration/test_case_timeline_items.py"
   add_backend_pytest_path "tests/integration/test_task_timeline_items.py"

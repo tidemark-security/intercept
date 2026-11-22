@@ -489,7 +489,11 @@ async def test_denormalize_linked_entities_uses_batched_reference_index() -> Non
             source_runbook=None,
             created_at=datetime(2026, 7, 19, tzinfo=timezone.utc),
             created_by="analyst",
-            timeline_items={"actor-2": source_actor_2},
+            timeline_items=[{
+                "id": "parent-note",
+                "type": "note",
+                "replies": [source_actor_2, {"id": "nested-link", "type": "alert", "alert_id": 21}],
+            }],
         ),
         SimpleNamespace(
             id=32,
@@ -566,7 +570,12 @@ async def test_denormalize_linked_entities_uses_batched_reference_index() -> Non
     assert result.timeline_items["task-31"]["description"] == "Investigate this relationship"
     assert result.timeline_items["task-31"]["entity_description"] == "First task details"
     assert result.timeline_items["alert-21"]["source_timeline_items"]["actor-1"]["name"] == "Alice"
-    assert result.timeline_items["task-31"]["source_timeline_items"]["actor-2"]["name"] == "Bob"
+    replies = result.timeline_items["task-31"]["source_timeline_items"]["parent-note"]["replies"]
+    assert replies["actor-2"]["name"] == "Bob"
+    assert replies["nested-link"]["title"] == "First linked alert"
+    assert "source_timeline_items" not in replies["nested-link"]
+    assert "source_timeline_items" not in result.timeline_items["alert-22"]
+    assert "source_timeline_items" not in result.timeline_items["task-32"]
 
 
 @pytest.mark.asyncio

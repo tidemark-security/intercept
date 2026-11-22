@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Optional
+from typing import Any, Literal, Optional, TypeVar
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -12,8 +13,9 @@ from sqlmodel import select
 from app.models.enums import RealtimeEventType
 from app.models.models import Alert, Case, Task
 from app.services.audit_service import get_audit_service
+from app.services.committed_response import load_committed_response
 from app.services.realtime_service import emit_event
-from app.services.timeline_service import timeline_service
+from app.services.timeline_service import TimelineValidationError, timeline_service
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,7 @@ _TIMELINE_ENTITY_MODELS = {
     "case": Case,
     "task": Task,
 }
+_EntityT = TypeVar("_EntityT", Alert, Case, Task)
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,63 @@ class TimelineItemAddResult:
 
 class TimelineItemConflict(ValueError):
     """The locked timeline item no longer matches the caller's snapshot."""
+
+
+async def run_timeline_mutation(
+    db: AsyncSession,
+    *,
+    entity_type: str,
+    entity_id: int,
+    operation: Literal["addition", "update", "removal"],
+    performed_by: str,
+    load_model: Callable[[AsyncSession, int], Awaitable[_EntityT | None]],
+    mutate: Callable[[], Awaitable[TimelineItemAddResult | dict[str, Any] | None]],
+    load_response: Callable[[AsyncSession, int], Awaitable[_EntityT | None]],
+    validation_error: type[ValueError],
+    logger: logging.Logger,
+    item_id: str | None = None,
+) -> _EntityT | None:
+    """Keep a fallback and recover around a timeline operation that owns its commit."""
+    try:
+        fallback = await load_model(db, entity_id)
+        if fallback is None:
+            return None
+        result = await mutate()
+        if result is None:
+            return None
+    except (TimelineItemConflict, validation_error):
+        await db.rollback()
+        raise
+    except TimelineValidationError as exc:
+        await db.rollback()
+        raise validation_error(str(exc)) from exc
+    except Exception as exc:
+        await db.rollback()
+        logger.error(
+            "Error during timeline item %s on %s %s (item_id=%s): %s",
+            operation, entity_type, entity_id, item_id, exc,
+        )
+        raise
+
+    item = result.item if isinstance(result, TimelineItemAddResult) else result
+    logger.info(
+        "Timeline item %s on %s %s by %s (item_id=%s, item_type=%s)",
+        operation,
+        entity_type,
+        entity_id,
+        performed_by,
+        item.get("id", item_id),
+        item.get("type"),
+    )
+    return await load_committed_response(
+        db,
+        lambda: load_response(db, entity_id),
+        fallback,
+        logger=logger,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        operation=f"timeline item {operation}",
+    )
 
 
 def _dump_timeline_item(timeline_item: Any, *, exclude_unset: bool = False) -> dict[str, Any]:

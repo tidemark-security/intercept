@@ -12,12 +12,12 @@ from app.core.entity_ids import TASK_PREFIX
 from app.models.models import Task, TaskBulkUpdate, TaskCreate, TaskUpdate, TaskTimelineItem
 from app.models.enums import TaskStatus, RealtimeEventType
 from app.services.timeline_add_service import (
-    TimelineItemConflict,
     add_timeline_item_and_commit,
     remove_timeline_item_and_commit,
+    run_timeline_mutation,
     update_timeline_item_and_commit,
 )
-from app.services.timeline_service import TimelineValidationError, timeline_service
+from app.services.timeline_service import timeline_service
 from app.services.audit_service import get_audit_service
 from app.services.realtime_service import emit_event
 from app.services.assignee_filter_utils import append_assignee_filter
@@ -550,11 +550,14 @@ class TaskService:
         Note: Task items (type='task') are not allowed on task timelines.
         Tasks cannot be nested within other tasks.
         """
-        try:
-            committed_task = await self._get_task_model(db, task_id)
-            if committed_task is None:
-                return None
-            added_item = await add_timeline_item_and_commit(
+        return await run_timeline_mutation(
+            db,
+            entity_type="task",
+            entity_id=task_id,
+            operation="addition",
+            performed_by=added_by,
+            load_model=self._get_task_model,
+            mutate=lambda: add_timeline_item_and_commit(
                 db,
                 entity_id=task_id,
                 entity_type="task",
@@ -564,29 +567,10 @@ class TaskService:
                 created_at_override=created_at_override,
                 preserve_item_id=preserve_item_id,
                 idempotent=idempotent,
-            )
-            if added_item is None:
-                return None
-        except TaskValidationError:
-            await db.rollback()
-            raise
-        except TimelineValidationError as exc:
-            await db.rollback()
-            raise TaskValidationError(str(exc)) from exc
-        except Exception as e:
-            await db.rollback()
-            logger.error(f"Error adding timeline item to task {task_id}: {e}")
-            raise
-
-        logger.info(f"Timeline item added to task by {added_by}")
-        return await load_committed_response(
-            db,
-            lambda: self.get_task(db, task_id),
-            committed_task,
+            ),
+            load_response=self.get_task,
+            validation_error=TaskValidationError,
             logger=logger,
-            entity_type="task",
-            entity_id=task_id,
-            operation="timeline item addition",
         )
 
     async def update_timeline_item(
@@ -599,11 +583,15 @@ class TaskService:
         expected_item_fields: dict[str, Any] | None = None,
     ) -> Optional[Task]:
         """Update a specific timeline item in a task with permission checks and audit logging."""
-        try:
-            committed_task = await self._get_task_model(db, task_id)
-            if committed_task is None:
-                return None
-            updated_dict = await update_timeline_item_and_commit(
+        return await run_timeline_mutation(
+            db,
+            entity_type="task",
+            entity_id=task_id,
+            operation="update",
+            performed_by=updated_by,
+            item_id=item_id,
+            load_model=self._get_task_model,
+            mutate=lambda: update_timeline_item_and_commit(
                 db,
                 entity_id=task_id,
                 entity_type="task",
@@ -611,35 +599,10 @@ class TaskService:
                 timeline_item=updated_item,
                 performed_by=updated_by,
                 expected_item_fields=expected_item_fields,
-            )
-
-            if updated_dict is None:
-                return None
-        except TaskValidationError:
-            await db.rollback()
-            raise
-        except TimelineValidationError as exc:
-            await db.rollback()
-            raise TaskValidationError(str(exc)) from exc
-        except TimelineItemConflict:
-            await db.rollback()
-            raise
-        except Exception as e:
-            await db.rollback()
-            logger.error(f"Error updating timeline item {item_id} in task {task_id}: {e}")
-            raise
-
-        logger.info(
-            f"Timeline item {item_id} (type: {updated_dict.get('type')}) updated in task {task_id} by {updated_by}"
-        )
-        return await load_committed_response(
-            db,
-            lambda: self.get_task(db, task_id),
-            committed_task,
+            ),
+            load_response=self.get_task,
+            validation_error=TaskValidationError,
             logger=logger,
-            entity_type="task",
-            entity_id=task_id,
-            operation="timeline item update",
         )
 
     async def remove_timeline_item(
@@ -650,39 +613,24 @@ class TaskService:
         removed_by: str
     ) -> Optional[Task]:
         """Remove a specific timeline item from a task and clean up associated resources."""
-        try:
-            committed_task = await self._get_task_model(db, task_id)
-            if committed_task is None:
-                return None
-            removed_item = await remove_timeline_item_and_commit(
+        return await run_timeline_mutation(
+            db,
+            entity_type="task",
+            entity_id=task_id,
+            operation="removal",
+            performed_by=removed_by,
+            item_id=item_id,
+            load_model=self._get_task_model,
+            mutate=lambda: remove_timeline_item_and_commit(
                 db,
                 entity_id=task_id,
                 entity_type="task",
                 item_id=item_id,
                 performed_by=removed_by,
-            )
-            if removed_item is None:
-                return None
-        except TaskValidationError:
-            await db.rollback()
-            raise
-        except TimelineValidationError as exc:
-            await db.rollback()
-            raise TaskValidationError(str(exc)) from exc
-        except Exception as e:
-            await db.rollback()
-            logger.error(f"Error removing timeline item {item_id} from task {task_id}: {e}")
-            raise
-
-        logger.info(f"Timeline item {item_id} removed from task by {removed_by}")
-        return await load_committed_response(
-            db,
-            lambda: self.get_task(db, task_id),
-            committed_task,
+            ),
+            load_response=self.get_task,
+            validation_error=TaskValidationError,
             logger=logger,
-            entity_type="task",
-            entity_id=task_id,
-            operation="timeline item removal",
         )
 
 # Singleton instance
