@@ -51,6 +51,7 @@ describe("ContextCard", () => {
     renderWithProviders(<ContextCard context={contextFixture()} />);
 
     expect(screen.getByText("Analyst Context")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /view all context/i })).not.toBeInTheDocument();
     expect(screen.queryByText("Matched Context", { exact: true })).not.toBeInTheDocument();
     expect(screen.getByText("5 active")).toBeInTheDocument();
     expect(screen.getByText("2 omitted")).toBeInTheDocument();
@@ -86,16 +87,6 @@ describe("ContextCard", () => {
     expiry.focus();
     await user.keyboard("{Enter}");
     await expect(navigator.clipboard.readText()).resolves.toBe(exactTimestamp);
-  });
-
-  it("links to the context page with matched ids in a new tab", () => {
-    renderWithProviders(<ContextCard context={contextFixture()} />);
-
-    const link = screen.getByRole("link", { name: /view all context/i });
-
-    expect(link).toHaveAttribute("href", "/context-entries?include_expired=true&ids=11%2C12%2C13%2C14");
-    expect(link).toHaveAttribute("target", "_blank");
-    expect(link).toHaveAttribute("rel", "noreferrer");
   });
 
   it("collapses and expands analyst context", async () => {

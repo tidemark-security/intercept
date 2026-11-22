@@ -488,6 +488,52 @@ test("admin route access stays gated inside the signed-in shell", async ({ page 
   expect(requestedAdminModules).toEqual([]);
 });
 
+test("AI triage uses compact status cards with the original borders on wide and narrow screens", async ({ page }) => {
+  await installProductionApiMocks(page);
+  await page.route("**/api/v1/features", (route) => route.fulfill(jsonResponse({ ai_triage_enabled: true })));
+  const error = "Retries exhausted: All connection attempts failed";
+  await page.route(/\/api\/v1\/alerts\/2(?:\?|$)/, (route) => route.fulfill(jsonResponse({
+    ...secondAlert,
+    triage_recommendation: { id: 2, alert_id: 2, status: "FAILED", error_message: error },
+  })));
+  const queuedAlert = { ...sampleAlert, id: 3, human_id: "ALT-0000003" };
+  await page.route(/\/api\/v1\/alerts\/3(?:\?|$)/, (route) => route.fulfill(jsonResponse({
+    ...queuedAlert,
+    triage_recommendation: { id: 3, alert_id: 3, status: "QUEUED" },
+  })));
+
+  for (const { alert, title, description, action, borderStyle } of [
+    { alert: sampleAlert, title: "AI Triage Available", action: "Request AI Triage", borderStyle: "dashed" },
+    { alert: secondAlert, title: "AI Triage Failed", description: error, action: "Retry AI Triage", borderStyle: "solid" },
+    { alert: queuedAlert, title: "AI Triage In Progress", description: "The recommendation will appear automatically when ready.", borderStyle: "solid" },
+  ]) {
+    await page.setViewportSize({ width: 1920, height: 900 });
+    await page.goto(`/alerts/${alert.human_id}`);
+    const card = page.getByRole("region", { name: title });
+    await expect(card).toBeVisible();
+    if (action) {
+      const button = card.getByRole("button", { name: action });
+      await expect(button).toBeEnabled();
+      await expect(button).toHaveCSS("height", "32px");
+      if (action === "Request AI Triage") {
+        await expect(button.locator("svg.lucide-sparkles")).toBeVisible();
+      }
+    } else {
+      await expect(card.getByRole("button")).toHaveCount(0);
+    }
+    expect((await card.boundingBox())?.height).toBeLessThan(80);
+    await expect(card.locator("[aria-expanded]")).toHaveCount(0);
+    await expect(card).toHaveCSS("border-top-style", borderStyle);
+    await expect(card).toHaveCSS("border-left-width", "1px");
+    if (description) await expect(card.getByText(description, { exact: true })).toBeVisible();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(card).toBeVisible();
+    if (action) await expect(card.getByRole("button", { name: action })).toBeVisible();
+    await expect.poll(() => card.evaluate((element) => element.scrollWidth - element.clientWidth)).toBe(0);
+  }
+});
+
 const assigneeFilterRoutes = [
   { resource: "alerts", sample: sampleAlert, prefix: "ALT" },
   { resource: "cases", sample: sampleCase, prefix: "CAS" },
@@ -847,6 +893,7 @@ test("alert detail shows Analyst Context before AI Triage without repeating cont
     await expect(context).toBeVisible();
     await expect(triage).toBeVisible();
     expect(await top(context)).toBeLessThan(await top(triage));
+    await expect(context.getByRole("link", { name: "View all context" })).toHaveCount(0);
     await expect(timeline.getByText(contextBody, { exact: true })).toHaveCount(1);
     await expect(context.getByText("Matched Context", { exact: true })).toHaveCount(0);
     await expect(context.getByRole("button", { name: /Expires in 7 days/ })).toBeVisible();
@@ -894,8 +941,8 @@ test("alert detail shows Analyst Context before AI Triage without repeating cont
       await triageHeader.getByRole("button", { name: "Collapse triage recommendation" }).click();
       await expect(action).toBeVisible();
       await expect(triageCard.getByText("The evidence is incomplete.", { exact: true }).filter({ visible: true })).toHaveCount(1);
-      await expect(accept).toHaveCSS("height", "24px");
-      await expect(action).toHaveCSS("height", "24px");
+      await expect(accept).toHaveCSS("height", "32px");
+      await expect(action).toHaveCSS("height", "32px");
       await expect(reasonRow).toHaveCount(0);
       await triageHeader.getByRole("button", { name: "Expand triage recommendation" }).click();
     }
@@ -976,9 +1023,9 @@ test("alert card expansion preferences are independent and follow the analyst ac
   await expect(reasonPreview).toBeVisible();
   await expect(reasonPreview.locator("strong, a")).toHaveCount(0);
   const previewBounds = (await reasonPreview.boundingBox())!;
-  await expect(accept).toHaveCSS("height", "24px");
-  await expect(reject).toHaveCSS("height", "24px");
-  await expect(action).toHaveCSS("height", "24px");
+  await expect(accept).toHaveCSS("height", "32px");
+  await expect(reject).toHaveCSS("height", "32px");
+  await expect(action).toHaveCSS("height", "32px");
   const buttonLabelSize = await accept.getByText("Accept Recommendation", { exact: true })
     .evaluate((label) => getComputedStyle(label).fontSize);
   await expect(action).toHaveCSS("font-size", buttonLabelSize);

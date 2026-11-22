@@ -41,6 +41,27 @@ function pendingEscalationRecommendation(): TriageRecommendationRead {
 }
 
 describe('TriageRecommendationCard', () => {
+  it.each([false, true])('keeps the failure detail visible and guards retry while busy (%s)', (isRetrying) => {
+    const onRetry = vi.fn();
+    const error = 'Retries exhausted: All connection attempts failed';
+    renderWithProviders(
+      <TriageRecommendationCard
+        recommendation={{ ...pendingEscalationRecommendation(), status: 'FAILED', error_message: error }}
+        onAccept={vi.fn()}
+        onReject={vi.fn()}
+        onRetry={onRetry}
+        isRetrying={isRetrying}
+      />,
+    );
+
+    const card = screen.getByRole('region', { name: 'AI Triage Failed' });
+    const retry = within(card).getByRole('button', { name: 'Retry AI Triage' });
+    expect(within(card).getByText(error)).toBeVisible();
+    expect(retry).toHaveAttribute('aria-busy', String(isRetrying));
+    fireEvent.click(retry);
+    expect(onRetry).toHaveBeenCalledTimes(isRetrying ? 0 : 1);
+  });
+
   it('keeps pending escalation recommendation actions as card-level accept and reject buttons', () => {
     renderWithProviders(
       <TriageRecommendationCard

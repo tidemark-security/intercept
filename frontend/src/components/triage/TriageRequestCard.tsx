@@ -1,10 +1,5 @@
-import React from 'react';
-
-import { Badge } from '@/components/data-display/Badge';
-import { Button } from '@/components/buttons/Button';
-import { IconWithBackground } from '@/components/misc/IconWithBackground';
-
 import { Sparkles } from 'lucide-react';
+import { TriageStatusCard } from './TriageStatusCard';
 
 interface TriageRequestCardProps {
   /** Callback to trigger AI triage */
@@ -26,35 +21,11 @@ export function TriageRequestCard({
   isEnqueuing = false,
 }: TriageRequestCardProps) {
   return (
-    <div className="flex w-full flex-col items-start gap-4 rounded-md border border-dashed border-neutral-border bg-neutral-50 px-6 py-6">
-      <div className="flex w-full items-center gap-3">
-        <IconWithBackground
-          variant="neutral"
-          size="medium"
-          icon={<Sparkles />}
-        />
-        <div className="flex flex-1 flex-col gap-1">
-          <div className="flex items-center gap-2">
-            <span className="text-body-bold font-body-bold text-default-font">
-              AI Triage Available
-            </span>
-            <Badge variant="neutral">Not Requested</Badge>
-          </div>
-          <span className="text-caption font-caption text-subtext-color">
-            Request AI-powered analysis to get disposition recommendations and suggested actions.
-          </span>
-        </div>
-      </div>
-      
-      <Button
-        variant="brand-primary"
-        onClick={onRequestTriage}
-        disabled={isEnqueuing}
-        loading={isEnqueuing}
-        icon={<Sparkles className="h-4 w-4" />}
-      >
-        Request AI Triage
-      </Button>
-    </div>
+    <TriageStatusCard
+      title="AI Triage Available"
+      description="Get a suggested disposition and next steps."
+      icon={<Sparkles />}
+      action={{ label: 'Request AI Triage', onClick: onRequestTriage, busy: isEnqueuing, icon: <Sparkles /> }}
+    />
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useId } from "react";
-import { BrainCircuit, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
+import { BrainCircuit, ChevronDown, ChevronUp } from "lucide-react";
 
 import { IconButton } from "@/components/buttons/IconButton";
 import { Badge } from "@/components/data-display/Badge";
@@ -40,37 +40,6 @@ function formatContextScope(criteria: ContextCriterion[] | null | undefined) {
   });
 }
 
-function buildContextEntriesHref(contextItems: MatchedContextSection["items"]) {
-  const items = contextItems ?? [];
-  const ids = items
-    .map((item) => item.id)
-    .filter((id): id is number => id !== null && id !== undefined)
-    .map((id) => String(id).trim())
-    .filter(Boolean);
-  const params = new URLSearchParams();
-  params.set("include_expired", "true");
-
-  if (ids.length > 0) {
-    params.set("ids", ids.join(","));
-  } else {
-    const fallbackTerms = items.flatMap((item) => {
-      const criteria = item.criteria ?? [];
-      const criteriaTerms = criteria.flatMap((criterion) => [
-        criterion.type ?? "",
-        criterion.value ?? "",
-      ]);
-      return [...criteriaTerms, item.body ?? ""];
-    }).map((term) => term.trim()).filter(Boolean);
-
-    if (fallbackTerms.length > 0) {
-      params.set("q", fallbackTerms[0]);
-    }
-  }
-
-  const query = params.toString();
-  return query ? `/context-entries?${query}` : "/context-entries";
-}
-
 export function ContextCard({ context }: ContextCardProps) {
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === "dark";
@@ -104,28 +73,15 @@ export function ContextCard({ context }: ContextCardProps) {
             <Badge variant="neutral" className="h-5">{contextOmittedCount} omitted</Badge>
           )}
         </div>
-        <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
-          <a
-            href={buildContextEntriesHref(contextItems)}
-            target="_blank"
-            rel="noreferrer"
-            className={cn(
-              "inline-flex min-h-7 items-center gap-1 rounded-md border border-solid border-neutral-border px-2 text-caption-bold font-caption-bold text-default-font transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus-border",
-              isDarkTheme ? "hover:border-brand-primary hover:text-brand-primary" : "hover:border-brand-800 hover:text-brand-800",
-            )}
-          >
-            View all context
-            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-          </a>
-          <IconButton
-            variant="neutral-tertiary"
-            icon={isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-            aria-label={isExpanded ? "Collapse analyst context" : "Expand analyst context"}
-            aria-expanded={isExpanded}
-            aria-controls={contentId}
-            onClick={() => setIsExpanded(!isExpanded)}
-          />
-        </div>
+        <IconButton
+          className="ml-auto shrink-0"
+          variant="neutral-tertiary"
+          icon={isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          aria-label={isExpanded ? "Collapse analyst context" : "Expand analyst context"}
+          aria-expanded={isExpanded}
+          aria-controls={contentId}
+          onClick={() => setIsExpanded(!isExpanded)}
+        />
       </div>
 
       {!isExpanded && (

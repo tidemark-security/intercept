@@ -21,6 +21,7 @@ import { alertStatusToUIState, priorityToUIPriority } from '@/utils/statusHelper
 import type { AlertStatus } from '@/types/generated/models/AlertStatus';
 import { ReasoningText } from './ReasoningText';
 import { TriageRejectionDialog } from './TriageRejectionDialog';
+import { TriageStatusCard } from './TriageStatusCard';
 import styles from './TriageRecommendationCard.module.css';
 
 import { AlertCircle, ArrowRight, Check, ChevronDown, ChevronUp, Loader2, RefreshCw, Sparkles, Tag, TriangleAlert, X } from 'lucide-react';
@@ -273,82 +274,25 @@ export function TriageRecommendationCard({
   // QUEUED state - show processing indicator
   if (isQueued) {
     return (
-      <div
-        className={`flex w-full flex-col items-start gap-4 rounded-md border border-solid ${
-          isDarkTheme ? 'border-brand-primary bg-brand-900' : 'border-brand-800 bg-brand-primary'
-        } px-6 py-6`}
-      >
-        <div className="flex w-full items-center gap-3">
-          <div
-            className={cn(
-              "flex h-10 w-10 items-center justify-center",
-              isDarkTheme ? "bg-brand-800" : "bg-brand-100"
-            )}
-          >
-            <Loader2 className={cn("h-5 w-5 animate-spin", brandTextClass)} />
-          </div>
-          <div className="flex flex-1 flex-col gap-1">
-            <div className="flex items-center gap-2">
-              <span className={cn("text-body-bold font-body-bold", brandTextClass)}>
-                AI Triage In Progress
-              </span>
-              <Badge variant="brand">Processing</Badge>
-            </div>
-            <span className={cn("text-caption font-caption", brandTextClass)}>
-              Analyzing alert details and generating recommendations...
-            </span>
-          </div>
-        </div>
-        <div className={cn("flex w-full items-center gap-2 text-caption", brandTextClass)}>
-          <Sparkles className="h-4 w-4" />
-          <span>This may take a few moments. The recommendation will appear automatically when ready.</span>
-        </div>
-      </div>
+      <TriageStatusCard
+        title="AI Triage In Progress"
+        description="The recommendation will appear automatically when ready."
+        icon={<Loader2 className="motion-safe:animate-spin" />}
+        appearance="processing"
+      />
     );
   }
 
   // FAILED state - show error with retry option
   if (isFailed) {
     return (
-      <div className="flex w-full flex-col items-start gap-4 rounded-md border border-solid border-error-200 bg-error-50 px-6 py-6">
-        <div className="flex w-full items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-error-100">
-            <TriangleAlert className="h-5 w-5 text-error-600" />
-          </div>
-          <div className="flex flex-1 flex-col gap-1">
-            <div className="flex items-center gap-2">
-              <span className="text-body-bold font-body-bold text-error-700">
-                AI Triage Failed
-              </span>
-              <Badge variant="error">Failed</Badge>
-            </div>
-            <span className="text-caption font-caption text-error-600">
-              Unable to generate triage recommendation
-            </span>
-          </div>
-        </div>
-        
-        {recommendation.error_message && (
-          <div className="flex w-full flex-col gap-1 rounded-md bg-error-100 p-3">
-            <span className="text-caption-bold font-caption-bold text-error-700">Error Details</span>
-            <span className="text-caption font-caption text-error-700">
-              {recommendation.error_message}
-            </span>
-          </div>
-        )}
-        
-        {onRetry && (
-          <Button
-            variant="neutral-secondary"
-            onClick={onRetry}
-            disabled={isRetrying}
-            loading={isRetrying}
-            icon={<RefreshCw className="h-4 w-4" />}
-          >
-            Retry AI Triage
-          </Button>
-        )}
-      </div>
+      <TriageStatusCard
+        title="AI Triage Failed"
+        description={recommendation.error_message?.trim() || 'Unable to generate triage recommendation.'}
+        icon={<TriangleAlert />}
+        appearance="failed"
+        action={onRetry ? { label: 'Retry AI Triage', onClick: onRetry, busy: isRetrying, icon: <RefreshCw /> } : undefined}
+      />
     );
   }
 
@@ -356,7 +300,7 @@ export function TriageRecommendationCard({
     <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-2">
       <Button
         variant="neutral-secondary"
-        size={isExpanded ? "medium" : "small"}
+        size="medium"
         aria-label="Reject"
         aria-busy={isRejecting}
         onClick={() => setShowRejectDialog(true)}
@@ -367,7 +311,7 @@ export function TriageRecommendationCard({
       </Button>
       <Button
         variant="brand-primary"
-        size={isExpanded ? "medium" : "small"}
+        size="medium"
         aria-label="Accept Recommendation"
         aria-busy={isAccepting}
         onClick={handleAccept}
@@ -445,7 +389,7 @@ export function TriageRecommendationCard({
       <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
         <div className={cn(
           'flex min-w-0 flex-[1_1_15rem] items-center gap-2 border border-solid px-2.5 text-default-font',
-          isExpanded ? 'py-1.5 text-heading-3 font-heading-3' : 'h-6 text-caption-bold font-caption-bold',
+          isExpanded ? 'py-1.5 text-heading-3 font-heading-3' : 'h-8 text-body-bold font-body-bold',
           recommendedAction.variant === 'escalate' && (isDarkTheme ? 'border-error-500 bg-error-1000' : 'border-error-500 bg-error-100'),
           recommendedAction.variant === 'dismiss' && (isDarkTheme ? 'border-success-500 bg-success-1000' : 'border-success-500 bg-success-100'),
           recommendedAction.variant === 'manual' && (isDarkTheme ? 'border-warning-500 bg-warning-1000' : 'border-warning-500 bg-warning-100'),
