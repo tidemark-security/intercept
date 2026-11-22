@@ -1011,9 +1011,6 @@ class TimelineService:
                 title = title[:200]
             update_data["title"] = title
         
-        if "description" in item:
-            update_data["description"] = item["description"]
-        
         if "priority" in item and item["priority"]:
             if priority := _coerce_enum(item["priority"], Priority):
                 update_data["priority"] = priority
@@ -1157,7 +1154,7 @@ class TimelineService:
         
         For task items:
         - Routes the update to the Task entity
-        - Timeline JSON remains unchanged (just holds reference)
+        - Updates timeline-specific metadata in the stored reference
         
         For other items:
         - Updates normally via update_timeline_item
@@ -1188,12 +1185,12 @@ class TimelineService:
             else:
                 autonomous_task_enqueue = None
             
-            # For tasks, update timeline-specific reference fields in the JSON
-            # while leaving task entity fields on the Task row itself.
+            # The reference description belongs to the link. The Task API
+            # owns the description returned here as entity_description.
             timeline_specific_update: Dict[str, Any] = {}
             
             # Include any timeline-specific reference fields that were provided
-            for field in ("flagged", "highlighted", "tags", "timestamp"):
+            for field in ("description", "flagged", "highlighted", "tags", "timestamp"):
                 if field in item:
                     timeline_specific_update[field] = item[field]
             

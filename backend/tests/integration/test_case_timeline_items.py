@@ -411,3 +411,54 @@ async def test_add_task_to_case_creates_task_entity(
         task_entity = await session.get(Task, task_id)
         assert task_entity is not None
         assert task_entity.title == "Follow-up investigation task"
+
+
+@pytest.mark.parametrize("link_description", [None, "Why this task was linked"])
+async def test_update_stored_task_reference_preserves_task_description(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    link_description: str | None,
+) -> None:
+    session_cookie = await login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+    case_id = await _create_case(client, session_cookie)
+    task_description = "Collect the relevant firewall logs."
+    task_response = await client.post(
+        "/api/v1/tasks",
+        json={"title": "Collect firewall logs", "description": task_description},
+        cookies={"intercept_session": session_cookie},
+    )
+    assert task_response.status_code == 200, task_response.text
+    task_id = task_response.json()["id"]
+    item_id = "stored-task-reference"
+    item = make_task_ref(item_id)
+    item.update(task_id=task_id, description=link_description)
+    async with session_maker() as session:
+        case = await session.get(Case, case_id)
+        assert case is not None
+        case.timeline_items = {item_id: item}
+        await session.commit()
+
+    case_response = await client.get(
+        f"/api/v1/cases/{case_id}", cookies={"intercept_session": session_cookie}
+    )
+    assert case_response.status_code == 200, case_response.text
+    stored_item = case_response.json()["timeline_items"][item_id]
+    assert stored_item["entity_description"] == task_description
+    assert stored_item.get("description") == link_description
+
+    body = await _update_timeline_item(
+        client, case_id, item_id, {"type": "task", "flagged": True}, session_cookie
+    )
+    updated_item = body["timeline_items"][0]
+    assert updated_item["flagged"] is True
+    assert updated_item["entity_description"] == task_description
+    assert updated_item.get("description") == link_description
+
+    updated_item.pop("created_at", None)
+    updated_item.update(highlighted=True, description="Updated link notes")
+    body = await _update_timeline_item(client, case_id, item_id, updated_item, session_cookie)
+    updated_item = body["timeline_items"][0]
+    assert updated_item["highlighted"] is True
+    assert updated_item["description"] == "Updated link notes"
+    assert updated_item["entity_description"] == task_description

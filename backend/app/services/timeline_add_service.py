@@ -371,10 +371,8 @@ async def update_timeline_item_and_commit(
     previous_item = deepcopy(existing_item)
     item_dict = _dump_timeline_item(
         timeline_item,
-        # Attachment API conversion strips server-owned storage metadata. Dumping
-        # model defaults here would add those fields back as null/default values
-        # and overwrite the existing attachment during a metadata-only edit.
-        exclude_unset=existing_item.get("type") == "attachment",
+        # Metadata edits must preserve omitted attachment storage and task fields.
+        exclude_unset=existing_item.get("type") in {"attachment", "task"},
     )
 
     sync_result = await timeline_service.update_timeline_item_with_sync(

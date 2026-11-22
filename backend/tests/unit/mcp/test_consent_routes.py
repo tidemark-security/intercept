@@ -514,9 +514,10 @@ async def test_oidc_client_revoke_keeps_writer_gate_and_resumes_partial_progress
         assert retain_lookup
         attempts.append(provider_reference_hash)
         async with session_maker() as observer:
-            assert not await acquire_mcp_grant_lock(
+            lock_acquired = await acquire_mcp_grant_lock(
                 observer, user_id=user_id, shared=True, wait=False
             )
+            assert not lock_acquired
             if len(attempts) == 2:
                 # The first family is still in the original writer transaction.
                 first_grant = await observer.get(MCPOAuthProviderGrantReference, first.id)
@@ -546,7 +547,8 @@ async def test_oidc_client_revoke_keeps_writer_gate_and_resumes_partial_progress
         transport=ASGITransport(app=app), base_url="http://localhost:8080"
     ) as client:
         path = f"/api/v1/mcp/oauth/clients/{consent.id}"
-        assert (await client.delete(path)).status_code == 503
+        failed_response = await client.delete(path)
+        assert failed_response.status_code == 503
         async with session_maker() as observer:
             first_grant = await observer.get(MCPOAuthProviderGrantReference, first.id)
             second_grant = await observer.get(MCPOAuthProviderGrantReference, second.id)
@@ -554,10 +556,12 @@ async def test_oidc_client_revoke_keeps_writer_gate_and_resumes_partial_progress
             assert first_grant is not None and first_grant.revoked_at is not None
             assert second_grant is not None and second_grant.revoked_at is None
             assert persisted_consent is not None and persisted_consent.revoked_at is None
-        assert (await client.delete(path)).status_code == 204
+        retry_response = await client.delete(path)
+        assert retry_response.status_code == 204
         async with session_maker() as observer:
             persisted_consent = await observer.get(MCPOAuthConsent, consent.id)
             assert persisted_consent is not None and persisted_consent.revoked_at is not None
-        assert (await client.delete(path)).status_code == 204
+        repeated_response = await client.delete(path)
+        assert repeated_response.status_code == 204
 
     assert attempts == ["family-one", "family-two", "family-two"]

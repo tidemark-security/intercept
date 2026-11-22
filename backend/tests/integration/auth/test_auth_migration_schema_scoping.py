@@ -80,7 +80,7 @@ async def test_upgrade_backfills_legacy_key_scopes_to_owner_role_ceiling(
             )
 
 
-async def test_upgrade_is_noop_for_fresh_table(
+async def test_api_key_scope_upgrade_is_noop_for_fresh_table(
     async_engine: AsyncEngine,
 ) -> None:
     schema = f"test_scoped_api_keys_fresh_{uuid4().hex}"
@@ -415,7 +415,7 @@ async def test_upgrade_creates_each_index_independently(
             )
 
 
-async def test_upgrade_is_noop_for_fresh_table(
+async def test_oidc_login_controls_upgrade_is_noop_for_fresh_table(
     async_engine: AsyncEngine,
 ) -> None:
     schema = f"test_oidc_abuse_controls_fresh_{uuid4().hex}"
