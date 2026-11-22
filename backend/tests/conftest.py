@@ -1,4 +1,5 @@
 import os
+from importlib import import_module
 import re
 import shutil
 import subprocess
@@ -142,9 +143,12 @@ def _create_migration_managed_test_objects(sync_connection) -> None:
     # construct the current table schema directly from SQLModel metadata, so
     # they must provision the migration-owned sequence explicitly.
     MCP_OAUTH_GRANT_EPOCH_SEQUENCE.create(sync_connection, checkfirst=True)
+    timeline_indexes = import_module("db_migrations.versions.031_timeline_search_indexes")
+    sync_connection.exec_driver_sql(timeline_indexes.CREATE_IOC_FUNCTION)
 
 
 def _drop_migration_managed_test_objects(sync_connection) -> None:
+    sync_connection.exec_driver_sql("DROP FUNCTION IF EXISTS timeline_ioc_keys(jsonb)")
     MCP_OAUTH_GRANT_EPOCH_SEQUENCE.drop(sync_connection, checkfirst=True)
 
 

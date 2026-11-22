@@ -8,7 +8,7 @@ import logging
 from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import apaginate
 
-from app.core.entity_ids import CASE_PREFIX, format_entity_id
+from app.core.entity_ids import ALERT_PREFIX, CASE_PREFIX, TASK_PREFIX, format_entity_id
 from app.models.models import (
     Case, Alert, Task,
     CaseCreate, CaseUpdate, CaseBulkUpdate,
@@ -411,6 +411,29 @@ class CaseService:
             prepare=lock_closure_batch if request.status == CaseStatus.CLOSED else None,
         )
     
+    async def preview_closure_impact(
+        self, db: AsyncSession, case_id: int, case_status: CaseStatus,
+    ) -> dict[str, dict]:
+        """Count open linked items and sample the first 20 IDs of each kind."""
+        impact = {}
+        for kind, prefix, model, open_status in (
+            ("alerts", ALERT_PREFIX, Alert, Alert.status.not_in(CLOSED_ALERT_STATUSES)),
+            ("tasks", TASK_PREFIX, Task, Task.status != TaskStatus.DONE),
+        ):
+            rows = []
+            if case_status != CaseStatus.CLOSED:
+                rows = (await db.execute(
+                    select(model.id, func.count().over())
+                    .where(model.case_id == case_id, open_status)
+                    .order_by(model.id)
+                    .limit(20)
+                )).all()
+            impact[kind] = {
+                "count": rows[0][1] if rows else 0,
+                "human_ids": [format_entity_id(item_id, prefix) for item_id, _ in rows],
+            }
+        return impact
+
     def _close_linked_task(
         self,
         task: Task,

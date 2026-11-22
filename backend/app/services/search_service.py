@@ -65,23 +65,35 @@ FUZZY_SIMILARITY_THRESHOLD = 0.3
 _SUBSTRING_TRIGRAM_PATTERN = re.compile(r"[^\W_]{3}")
 
 
-TIMELINE_ITEMS_SQL = """
+def timeline_values_sql(container: str) -> str:
+    """Expand a trusted SQL expression containing object- or array-backed timeline items."""
+    return f"""
     SELECT value AS item
     FROM jsonb_each(
         CASE
-            WHEN jsonb_typeof(timeline_items) = 'object' THEN timeline_items
-            ELSE '{}'::jsonb
+            WHEN jsonb_typeof({container}) = 'object' THEN {container}
+            ELSE '{{}}'::jsonb
         END
     )
     UNION ALL
     SELECT value AS item
     FROM jsonb_array_elements(
         CASE
-            WHEN jsonb_typeof(timeline_items) = 'array' THEN timeline_items
+            WHEN jsonb_typeof({container}) = 'array' THEN {container}
             ELSE '[]'::jsonb
         END
     )
 """
+
+
+TIMELINE_ITEMS_SQL = timeline_values_sql("timeline_items")
+
+# Superset of parents across all mapped fields and reply depths. The caller
+# supplies the exact type, field and depth check after the index lookup.
+IOC_CANDIDATE_SQL = (
+    "timeline_ioc_keys(timeline_items) @> "
+    "ARRAY[hashtextextended(lower(CAST(:ioc_candidate AS text)), 0)]"
+)
 
 
 # =============================================================================
@@ -203,6 +215,20 @@ def _is_ipv6_address(value: str) -> bool:
         return False
 
 
+class SearchQueryValidationError(ValueError):
+    """Search text cannot be evaluated by the selected search mode."""
+
+
+def normalize_search_query(query: str, *, allow_filter_only: bool = True) -> str:
+    query = " ".join(query.split())
+    if len(query) < 2 and not (allow_filter_only and query == "*"):
+        suffix = ", or '*' for filter-only search" if allow_filter_only else ""
+        raise SearchQueryValidationError("Query must be at least 2 characters" + suffix)
+    if len(query) > 200:
+        raise SearchQueryValidationError("Query cannot exceed 200 characters")
+    return query
+
+
 class SearchDateRangeValidationError(ValueError):
     """Raised when resolved search date bounds are inconsistent."""
 
@@ -235,7 +261,7 @@ def resolve_search_date_range(
     return resolved_start, resolved_end
 
 
-def _created_at_search_clause(
+def created_at_search_clause(
     start_date: datetime | None,
     end_date: datetime | None,
 ) -> tuple[str, dict[str, datetime]]:
@@ -634,7 +660,7 @@ class SearchService:
     ) -> Optional[SearchResultItem]:
         """Return an exact ID match that satisfies the active search filters."""
         table_name = self.TABLE_NAMES[entity_type]
-        date_clause, date_params = _created_at_search_clause(start_date, end_date)
+        date_clause, date_params = created_at_search_clause(start_date, end_date)
         tag_filter_sql, tag_filter_params = self._build_tag_filter_sql(normalized_tags)
         tag_filter_clause = f" AND {tag_filter_sql}" if tag_filter_sql else ""
 
@@ -681,8 +707,8 @@ class SearchService:
         """Build timeline-item match conditions for a classified query.
 
         Structured values use exact field comparisons. Wildcard and generic
-        queries use a safely escaped text search. Domain queries first restrict
-        the scan to timeline item types that can contain domain strings.
+        queries use a safely escaped text search. Domain queries combine indexed
+        timeline text with a check for a domain-bearing item type.
         This catches domains within email addresses (e.g., evil.com in user@evil.com).
         """
         query_type = classification.query_type
@@ -707,60 +733,37 @@ class SearchService:
         if query_type == QueryType.DOMAIN:
             return self._build_domain_match_sql(value)
         
-        # Build containment conditions for specific field mappings
+        # The value index narrows parents, including candidates with a matching
+        # reply or a different field. Check the queue's exact top-level semantics
+        # once per candidate using trusted field names from FIELD_MAPPINGS.
+        params = {"ioc_candidate": value}
         conditions = []
-        params = {}
-        param_idx = 0
-        
-        # Get field mappings for this query type
-        field_mappings = FIELD_MAPPINGS.get(query_type, [])
-        for item_type, field_name in field_mappings:
-            type_param = f"containment_type_{param_idx}"
-            value_param = f"containment_value_{param_idx}"
+        for i, (item_type, field_name) in enumerate(FIELD_MAPPINGS.get(query_type, [])):
+            params[f"item_type_{i}"] = item_type
             conditions.append(
-                f"""EXISTS (
-                    SELECT 1
-                    FROM ({TIMELINE_ITEMS_SQL}) AS timeline_match
-                    WHERE timeline_match.item->>'type' = :{type_param}
-                      AND timeline_match.item->>'{field_name}' = :{value_param}
-                )"""
+                f"(item->>'type' = :item_type_{i} AND item->>'{field_name}' = :ioc_candidate)"
             )
-            params[type_param] = item_type
-            params[value_param] = value
-            param_idx += 1
-        
-        # Add observable type mappings
-        observable_types = OBSERVABLE_TYPE_MAPPINGS.get(query_type, [])
-        for obs_type in observable_types:
-            observable_type_param = f"containment_observable_type_{param_idx}"
-            observable_value_param = f"containment_observable_value_{param_idx}"
+        for i, obs_type in enumerate(OBSERVABLE_TYPE_MAPPINGS.get(query_type, [])):
+            params[f"obs_type_{i}"] = obs_type
             conditions.append(
-                f"""EXISTS (
-                    SELECT 1
-                    FROM ({TIMELINE_ITEMS_SQL}) AS timeline_match
-                    WHERE timeline_match.item->>'type' = 'observable'
-                      AND timeline_match.item->>'observable_type' = :{observable_type_param}
-                      AND timeline_match.item->>'observable_value' = :{observable_value_param}
-                )"""
+                f"(item->>'type' = 'observable' AND item->>'observable_type' = :obs_type_{i} "
+                "AND item->>'observable_value' = :ioc_candidate)"
             )
-            params[observable_type_param] = obs_type
-            params[observable_value_param] = value
-            param_idx += 1
-        
         if not conditions:
             return (
                 "CAST(timeline_items AS text) ILIKE :timeline_pattern ESCAPE '\\'",
                 {"timeline_pattern": _contains_like_pattern(value)},
             )
-        
-        # Join conditions with OR - any of them matching is a hit
         return (
-            "(" + " OR ".join(conditions) + ")",
-            params
+            f"""({IOC_CANDIDATE_SQL} AND EXISTS (
+                SELECT 1 FROM ({TIMELINE_ITEMS_SQL}) AS entries
+                WHERE {" OR ".join(conditions)}
+            ))""",
+            params,
         )
-    
+
     # Timeline item types that could contain domain strings
-    # Used to narrow domain text searches before ILIKE refinement.
+    # A matching parent must contain at least one of these top-level items.
     DOMAIN_CONTAINING_TYPES: list[dict] = [
         {"type": "email"},                                    # sender, recipient contain domains
         {"type": "observable", "observable_type": "DOMAIN"},  # direct domain observable
@@ -789,17 +792,16 @@ class SearchService:
                 params[observable_type_param] = str(observable_type)
 
             type_conditions.append(
-                f"""EXISTS (
-                    SELECT 1
-                    FROM ({TIMELINE_ITEMS_SQL}) AS timeline_domain
-                    WHERE timeline_domain.item->>'type' = :{type_param}{observable_clause}
-                )"""
+                f"(timeline_domain.item->>'type' = :{type_param}{observable_clause})"
             )
             params[type_param] = str(type_filter["type"])
         
         params["domain_pattern"] = _contains_like_pattern(domain)
         sql = f"""(
-            ({" OR ".join(type_conditions)})
+            EXISTS (
+                SELECT 1 FROM ({TIMELINE_ITEMS_SQL}) AS timeline_domain
+                WHERE {" OR ".join(type_conditions)}
+            )
             AND CAST(timeline_items AS text) ILIKE :domain_pattern ESCAPE '\\'
         )"""
         
@@ -877,6 +879,67 @@ class SearchService:
 
         return sql, params
 
+    async def queue_match_predicates(
+        self, db: AsyncSession, query: str, entity_type: EntityType, filters: list[Any],
+    ) -> tuple[list[Any], int]:
+        """Match within the full filtered queue before applying the caller's pagination."""
+        model, _ = QUEUE_MODELS[entity_type]
+        count = select(func.count()).select_from(model).where(*filters)
+        classification = classify_query(query)
+
+        async def lookup_exact(entity_id: int) -> ColumnElement[bool] | None:
+            predicate = model.id == entity_id
+            return predicate if await db.scalar(count.where(predicate)) else None
+
+        async def lookup_content(
+            excluded_id: int | None, *, fuzzy: bool = False,
+        ) -> tuple[ColumnElement[bool] | TextClause, int]:
+            predicate: ColumnElement[bool] | TextClause
+            substring: ColumnElement[bool] | TextClause | None = None
+            if fuzzy:
+                # pg_trgm's indexable % operator uses a session setting and an
+                # inclusive threshold. Pin it for this search transaction and
+                # retain the existing strict comparison on the candidates.
+                await db.execute(
+                    text("SELECT set_config('pg_trgm.similarity_threshold', :threshold, true)"),
+                    {"threshold": str(FUZZY_SIMILARITY_THRESHOLD)},
+                )
+                predicate = text(f"(title % :query OR description % :query) AND {FUZZY_MATCH_SQL}").bindparams(
+                    query=query, threshold=FUZZY_SIMILARITY_THRESHOLD,
+                )
+            else:
+                timeline_sql, timeline_params = self._build_timeline_match_sql(classification)
+                substring_params = _substring_match_params(classification)
+                predicate = or_(
+                    text(FULL_TEXT_MATCH_SQL).bindparams(query=classification.normalized_value),
+                    text(timeline_sql).bindparams(**timeline_params),
+                )
+                if substring_params:
+                    substring = text(SUBSTRING_MATCH_SQL).bindparams(**substring_params)
+            if excluded_id is not None:
+                exclusion = model.id != excluded_id
+                predicate = and_(exclusion, predicate)
+                if substring is not None:
+                    substring = and_(exclusion, substring)
+            if substring is not None:
+                # Give the count query an indexable substring branch. The
+                # ordered page can still use the existing single-row predicate.
+                scoped_ids = select(model.id).where(*filters)
+                matched_ids = scoped_ids.where(predicate).union(scoped_ids.where(substring))
+                total = await db.scalar(select(func.count()).select_from(matched_ids.subquery()))
+                return or_(predicate, substring), total or 0
+            return predicate, await db.scalar(count.where(predicate)) or 0
+
+        matches = await _match_entity(
+            classification,
+            entity_type,
+            lookup_exact=lookup_exact,
+            lookup_content=lookup_content,
+            lookup_fuzzy=lambda excluded_id: lookup_content(excluded_id, fuzzy=True),
+        )
+
+        return [p for p in (matches.exact, matches.content) if p is not None], matches.total
+
     async def search_queue(
         self,
         db: AsyncSession,
@@ -913,56 +976,9 @@ class SearchService:
         if end_date is not None:
             filters.append(model.created_at <= end_date)
 
-        count = select(func.count()).select_from(model).where(*filters)
-        classification = classify_query(query)
-
-        async def lookup_exact(entity_id: int) -> ColumnElement[bool] | None:
-            predicate = model.id == entity_id
-            return predicate if await db.scalar(count.where(predicate)) else None
-
-        async def lookup_content(
-            excluded_id: int | None, *, fuzzy: bool = False,
-        ) -> tuple[ColumnElement[bool] | TextClause, int]:
-            predicate: ColumnElement[bool] | TextClause
-            substring: ColumnElement[bool] | TextClause | None = None
-            if fuzzy:
-                predicate = text(FUZZY_MATCH_SQL).bindparams(
-                    query=query, threshold=FUZZY_SIMILARITY_THRESHOLD,
-                )
-            else:
-                timeline_sql, timeline_params = self._build_timeline_match_sql(classification)
-                substring_params = _substring_match_params(classification)
-                predicate = or_(
-                    text(FULL_TEXT_MATCH_SQL).bindparams(query=classification.normalized_value),
-                    text(timeline_sql).bindparams(**timeline_params),
-                )
-                if substring_params:
-                    substring = text(SUBSTRING_MATCH_SQL).bindparams(**substring_params)
-            if excluded_id is not None:
-                exclusion = model.id != excluded_id
-                predicate = and_(exclusion, predicate)
-                if substring is not None:
-                    substring = and_(exclusion, substring)
-            if substring is not None:
-                # Give the count query an indexable substring branch. The
-                # ordered page can still use the existing single-row predicate.
-                scoped_ids = select(model.id).where(*filters)
-                matched_ids = scoped_ids.where(predicate).union(scoped_ids.where(substring))
-                total = await db.scalar(select(func.count()).select_from(matched_ids.subquery()))
-                return or_(predicate, substring), total or 0
-            return predicate, await db.scalar(count.where(predicate)) or 0
-
-        matches = await _match_entity(
-            classification,
-            entity_type,
-            lookup_exact=lookup_exact,
-            lookup_content=lookup_content,
-            lookup_fuzzy=lambda excluded_id: lookup_content(excluded_id, fuzzy=True),
-        )
-
+        predicates, total = await self.queue_match_predicates(db, query, entity_type, filters)
         rows = []
-        if skip < matches.total:
-            predicates = [p for p in (matches.exact, matches.content) if p is not None]
+        if skip < total:
             sort_column = getattr(model, sort_by)
             ordering = sort_column.asc() if sort_order == "asc" else sort_column.desc()
             statement = (
@@ -994,7 +1010,7 @@ class SearchService:
                 )
                 for row in rows
             ],
-            total=matches.total,
+            total=total,
             skip=skip,
             limit=limit,
         )
@@ -1159,7 +1175,7 @@ class SearchService:
     ) -> Tuple[List[SearchResultItem], int]:
         """Return one entity type's top candidates and unpaginated count."""
         normalized_tags = normalized_tags or []
-        date_clause, date_params = _created_at_search_clause(start_date, end_date)
+        date_clause, date_params = created_at_search_clause(start_date, end_date)
         tag_filter_sql, tag_filter_params = self._build_tag_filter_sql(normalized_tags)
         tag_filter_clause = f" AND {tag_filter_sql}" if tag_filter_sql else ""
         id_exclusion_clause = (
@@ -1375,7 +1391,7 @@ class SearchService:
     ) -> Tuple[List[SearchResultItem], int]:
         """Return fuzzy candidates for one entity type and its full count."""
         normalized_tags = normalized_tags or []
-        date_clause, date_params = _created_at_search_clause(start_date, end_date)
+        date_clause, date_params = created_at_search_clause(start_date, end_date)
         tag_filter_sql, tag_filter_params = self._build_tag_filter_sql(normalized_tags)
         tag_filter_clause = f" AND {tag_filter_sql}" if tag_filter_sql else ""
         id_exclusion_clause = (

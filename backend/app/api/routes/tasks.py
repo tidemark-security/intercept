@@ -9,6 +9,7 @@ from app.core.entity_ids import TASK_PREFIX
 from app.services.task_service import TaskValidationError, task_service
 from app.services.entity_bulk_update import BulkEntityNotFoundError
 from app.services.timeline_add_service import TimelineItemConflict
+from app.services.timeline_attachment_service import finish_attachment_upload
 from app.models.models import (
     BulkUpdateResult,
     TaskBulkUpdate,
@@ -30,7 +31,6 @@ from app.api.route_utils import (
     create_timeline_converter,
     create_human_id_decorator,
     handle_generate_upload_url,
-    handle_update_attachment_status,
     handle_generate_download_url,
 )
 from app.api.timestamp_overrides import (
@@ -358,11 +358,8 @@ async def update_attachment_status(
     current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Update attachment upload status."""
-    task = await task_service.get_task(db, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-    return await handle_update_attachment_status(
-        entity=task, entity_type="task", parent_id=task_id,
+    return await finish_attachment_upload(
+        entity_type="task", parent_id=task_id,
         item_id=item_id, update_data=update_data,
         current_user=current_user, db=db, service=task_service,
     )

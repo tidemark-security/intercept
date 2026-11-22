@@ -4,7 +4,6 @@ This module provides the global search endpoint that searches across
 alerts, cases, and tasks with full-text search, entity type filtering,
 date range filtering, and fuzzy matching fallback.
 """
-import re
 from datetime import datetime
 from typing import Annotated, List, Literal, Optional
 
@@ -27,6 +26,8 @@ from app.services.date_filter_utils import (
 from app.services.search_service import (
     SearchDateRangeValidationError,
     SearchQueueValidationError,
+    SearchQueryValidationError,
+    normalize_search_query,
     resolve_search_date_range,
     search_service,
 )
@@ -39,11 +40,6 @@ router = APIRouter(
 )
 
 
-def _sanitize_query(query: str) -> str:
-    """Sanitize search query by normalizing whitespace."""
-    return re.sub(r"\s+", " ", query.strip())
-
-
 def _invalid_search_request(error: str, code: str) -> HTTPException:
     """Build the stable client-error shape used by the search endpoint."""
     return HTTPException(
@@ -54,19 +50,10 @@ def _invalid_search_request(error: str, code: str) -> HTTPException:
 
 def _validate_query(query: str, *, allow_wildcard: bool = True) -> str:
     """Normalize and validate search text while preserving wildcard mode."""
-    sanitized_query = _sanitize_query(query)
-    if len(sanitized_query) < 2 and not (allow_wildcard and sanitized_query == "*"):
-        raise _invalid_search_request(
-            "Query must be at least 2 characters"
-            + (", or '*' for filter-only search" if allow_wildcard else ""),
-            "INVALID_QUERY",
-        )
-    if len(sanitized_query) > 200:
-        raise _invalid_search_request(
-            "Query cannot exceed 200 characters",
-            "INVALID_QUERY",
-        )
-    return sanitized_query
+    try:
+        return normalize_search_query(query, allow_filter_only=allow_wildcard)
+    except SearchQueryValidationError as exc:
+        raise _invalid_search_request(str(exc), "INVALID_QUERY") from exc
 
 
 def _parse_iso_date(date_str: str, param_name: str) -> datetime:

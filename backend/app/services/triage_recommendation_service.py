@@ -747,21 +747,54 @@ async def _resolve_acceptance_runbook(
     return None
 
 
+@dataclass(frozen=True)
+class AcceptanceStatusDecision:
+    """Status patch and case outcome for one acceptance path."""
+
+    dismissal_status: AlertStatus | None
+    status_patch: AlertStatus | None
+    alert_status: AlertStatus
+    requests_escalation: bool
+    should_escalate: bool
+    existing_case_id: int | None
+
+
+def acceptance_status_decision(
+    recommendation: TriageRecommendation,
+    case_id: int | None,
+    *,
+    apply_status: bool,
+) -> AcceptanceStatusDecision:
+    """Resolve the acceptance outcome, including legacy dismissal recommendations."""
+    dismissal_status = DISPOSITION_TO_CLOSED_STATUS.get(recommendation.disposition)
+    requests_escalation = dismissal_status is None and recommendation.request_escalate_to_case
+    status_patch = (dismissal_status or recommendation.suggested_status) if apply_status else None
+    should_escalate = requests_escalation or status_patch is None or status_patch not in CLOSED_ALERT_STATUSES
+    return AcceptanceStatusDecision(
+        dismissal_status=dismissal_status,
+        status_patch=status_patch,
+        alert_status=AlertStatus.ESCALATED if should_escalate else status_patch,
+        requests_escalation=requests_escalation,
+        should_escalate=should_escalate,
+        existing_case_id=case_id if should_escalate else None,
+    )
+
+
 def _apply_recommendation_to_alert(
     alert: Alert,
     recommendation: TriageRecommendation,
     options: AcceptRecommendationOptions,
+    decision: AcceptanceStatusDecision,
     *,
     reviewed_by: str,
     accepted_at: datetime,
     before: _AlertState,
     applied_changes: List[Dict[str, Any]],
-) -> bool:
-    """Apply selected alert patches and return whether a case is required."""
-    effective_status = recommendation.suggested_status
-    apply_status = options.apply_status
+) -> None:
+    """Apply the selected alert patches."""
+    effective_status = decision.status_patch
 
-    if apply_status and effective_status and alert.status != effective_status:
+    if effective_status and alert.status != effective_status:
         alert.status = effective_status
         applied_changes.append({"field": "status", "value": effective_status.value})
 
@@ -811,21 +844,12 @@ def _apply_recommendation_to_alert(
     if alert.assignee != before.assignee:
         applied_changes.append({"field": "assignee", "value": alert.assignee})
 
-    accepted_with_closed_status = bool(
-        apply_status
-        and effective_status
-        and effective_status in CLOSED_ALERT_STATUSES
-    )
-    should_escalate = (
-        recommendation.request_escalate_to_case or not accepted_with_closed_status
-    )
-    if should_escalate and not recommendation.request_escalate_to_case:
+    if decision.should_escalate and not decision.requests_escalation:
         applied_changes.append({
             "field": "escalation",
             "action": "forced_case_escalation",
             "reason": "Accepted recommendation requires case-based investigation",
         })
-    return should_escalate
 
 
 def _create_recommended_action_tasks(
@@ -876,6 +900,7 @@ async def _apply_case_escalation(
     recommendation: TriageRecommendation,
     runbook: Optional[CaseRunbook],
     *,
+    existing_case_id: int | None,
     alert_id: int,
     reviewed_by: str,
     accepted_at: datetime,
@@ -884,11 +909,11 @@ async def _apply_case_escalation(
     """Stage the complete case-based investigation outcome."""
     new_case = None
     case_priority = recommendation.suggested_priority or alert.priority or Priority.MEDIUM
-    if alert.case_id:
-        result_case_id = alert.case_id
+    if existing_case_id is not None:
+        result_case_id = existing_case_id
         mark_alert_escalated(
             alert,
-            case_id=alert.case_id,
+            case_id=existing_case_id,
             now=accepted_at,
             preserve_existing_linked_at=True,
         )
@@ -896,7 +921,7 @@ async def _apply_case_escalation(
             "field": "escalation",
             "action": "skipped",
             "reason": "Alert already linked to case",
-            "case_id": alert.case_id,
+            "case_id": existing_case_id,
         })
     else:
         new_case = await create_case_from_alert(
@@ -958,11 +983,24 @@ async def _apply_case_escalation(
     return result_case_id, tasks_created
 
 
+def _check_review_revision(
+    recommendation: TriageRecommendation, expected_created_at: datetime | None,
+) -> None:
+    if expected_created_at is not None and recommendation.created_at != expected_created_at:
+        raise TriageRecommendationConflictError("Recommendation changed. Read the current recommendation before reviewing.")
+    if recommendation.status != RecommendationStatus.PENDING:
+        raise TriageRecommendationConflictError(
+            f"Recommendation already {recommendation.status.value}"
+        )
+
+
 async def accept_recommendation(
     db: AsyncSession,
     alert_id: int,
     options: AcceptRecommendationOptions,
     reviewed_by: str,
+    *,
+    expected_created_at: datetime | None = None,
 ) -> AcceptRecommendationResult:
     """Accept triage recommendation and apply changes to alert.
 
@@ -983,15 +1021,14 @@ async def accept_recommendation(
         TriageRecommendationValidationError: Acceptance options are invalid
     """
     alert, recommendation = await _lock_acceptance_state(db, alert_id)
-    if recommendation.status != RecommendationStatus.PENDING:
-        raise TriageRecommendationConflictError(
-            f"Recommendation already {recommendation.status.value}"
-        )
+    _check_review_revision(recommendation, expected_created_at)
 
+    decision = acceptance_status_decision(
+        recommendation, alert.case_id, apply_status=options.apply_status,
+    )
     # Recommendations saved before disposition normalization can carry case work for a dismissal.
-    dismissal_status = DISPOSITION_TO_CLOSED_STATUS.get(recommendation.disposition)
-    if dismissal_status is not None:
-        recommendation.suggested_status = dismissal_status
+    if decision.dismissal_status is not None:
+        recommendation.suggested_status = decision.dismissal_status
         recommendation.request_escalate_to_case = False
         recommendation.recommended_actions = []
         recommendation.recommended_case_runbook_id = None
@@ -1005,10 +1042,11 @@ async def accept_recommendation(
         applied_changes,
     )
     accepted_at = datetime.now(timezone.utc)
-    should_escalate_to_case = _apply_recommendation_to_alert(
+    _apply_recommendation_to_alert(
         alert,
         recommendation,
         options,
+        decision,
         reviewed_by=reviewed_by,
         accepted_at=accepted_at,
         before=before,
@@ -1017,12 +1055,13 @@ async def accept_recommendation(
 
     result_case_id = None
     tasks_created = 0
-    if should_escalate_to_case:
+    if decision.should_escalate:
         result_case_id, tasks_created = await _apply_case_escalation(
             db,
             alert,
             recommendation,
             recommended_runbook,
+            existing_case_id=decision.existing_case_id,
             alert_id=alert_id,
             reviewed_by=reviewed_by,
             accepted_at=accepted_at,
@@ -1073,7 +1112,9 @@ async def reject_recommendation(
     alert_id: int,
     category: RejectionCategory,
     reason: Optional[str],
-    reviewed_by: str
+    reviewed_by: str,
+    *,
+    expected_created_at: datetime | None = None,
 ) -> TriageRecommendationRead:
     """Reject triage recommendation with category and optional reason.
 
@@ -1103,10 +1144,7 @@ async def reject_recommendation(
             f"No triage recommendation found for alert {alert_id}"
         )
 
-    if recommendation.status != RecommendationStatus.PENDING:
-        raise TriageRecommendationConflictError(
-            f"Recommendation already {recommendation.status.value}"
-        )
+    _check_review_revision(recommendation, expected_created_at)
 
     recommendation.status = RecommendationStatus.REJECTED
     recommendation.reviewed_by = reviewed_by

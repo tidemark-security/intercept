@@ -6,12 +6,13 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Optional, TypeVar
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from app.models.enums import RealtimeEventType
-from app.models.models import Alert, Case, Task
+from app.models.models import Alert, Case, Task, TimelineAuthoringReceipt
 from app.services.audit_service import get_audit_service
 from app.services.committed_response import load_committed_response
 from app.services.realtime_service import emit_event
@@ -124,7 +125,7 @@ async def _delete_storage_object_after_commit(
         logger.exception("Could not delete storage object %s after %s", storage_key, action)
 
 
-async def _load_entity_for_timeline_update(
+async def load_entity_for_timeline_update(
     db: AsyncSession,
     *,
     entity_type: str,
@@ -155,7 +156,7 @@ async def _load_timeline_item_for_update(
     entity_id: int,
     item_id: str,
 ) -> Optional[tuple[Any, dict[str, Any]]]:
-    entity = await _load_entity_for_timeline_update(
+    entity = await load_entity_for_timeline_update(
         db,
         entity_type=entity_type,
         entity_id=entity_id,
@@ -172,6 +173,44 @@ async def _load_timeline_item_for_update(
     return entity, existing_item
 
 
+async def find_timeline_authoring_retry(
+    db: AsyncSession,
+    *,
+    timeline_items: Any,
+    entity_type: str,
+    entity_id: int,
+    client_item_id: str,
+    item_type: str,
+    owner_id: UUID | None,
+) -> dict[str, Any] | None:
+    """Resolve a receipt, under the parent row lock for mutations."""
+    receipt = await db.get(
+        TimelineAuthoringReceipt, (entity_type, entity_id, client_item_id),
+    )
+    if receipt is None:
+        return None
+    if receipt.item_type != item_type or (owner_id is not None and receipt.owner_id != owner_id):
+        raise TimelineItemConflict("Client item ID belongs to another timeline operation")
+
+    if receipt.item_type == "task":
+        task_id = int(receipt.item_id.removeprefix("linked-task-"))
+        task = await db.get(Task, task_id)
+        if task is None or task.case_id != entity_id:
+            raise TimelineItemConflict("The task created for this client item ID was removed")
+        return {
+            "id": receipt.item_id,
+            "type": "task",
+            "task_id": task.id,
+            "created_by": task.created_by,
+            "created_at": task.created_at,
+        }
+
+    item = timeline_service.find_item_by_id(timeline_items or {}, receipt.item_id)
+    if item is None:
+        raise TimelineItemConflict("The item created for this client item ID was removed")
+    return item
+
+
 async def add_timeline_item_and_commit(
     db: AsyncSession,
     *,
@@ -183,8 +222,11 @@ async def add_timeline_item_and_commit(
     created_at_override: Optional[datetime] = None,
     preserve_item_id: bool = False,
     idempotent: bool = False,
+    retry_client_item_id: str | None = None,
+    retry_user_id: UUID | None = None,
+    require_parent: bool = False,
 ) -> Optional[TimelineItemAddResult]:
-    entity = await _load_entity_for_timeline_update(
+    entity = await load_entity_for_timeline_update(
         db,
         entity_type=entity_type,
         entity_id=entity_id,
@@ -199,6 +241,26 @@ async def add_timeline_item_and_commit(
     if validate_item is not None:
         validate_item(item_dict)
 
+    if idempotent and retry_client_item_id is None:
+        retry_client_item_id = item_dict.get("id")
+    if retry_client_item_id is not None:
+        existing_item = await find_timeline_authoring_retry(
+            db,
+            timeline_items=entity.timeline_items,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            client_item_id=retry_client_item_id,
+            item_type=item_dict["type"],
+            owner_id=retry_user_id,
+        )
+        if existing_item is not None:
+            await db.commit()
+            return TimelineItemAddResult(item=deepcopy(existing_item), created=False)
+        if not idempotent and timeline_service.find_item_by_id(
+            entity.timeline_items or {}, retry_client_item_id,
+        ) is not None:
+            raise TimelineItemConflict("Client item ID belongs to an existing timeline item")
+
     if idempotent:
         if not preserve_item_id:
             raise ValueError("Idempotent timeline additions must preserve the item ID")
@@ -211,10 +273,15 @@ async def add_timeline_item_and_commit(
             item_id,
         )
         if existing_item is not None:
+            if existing_item.get("type") != item_dict["type"]:
+                raise TimelineItemConflict("Client item ID belongs to an existing timeline item")
             # This read-only commit releases the entity row lock while preserving
             # the same transaction ownership contract as a successful addition.
             await db.commit()
             return TimelineItemAddResult(item=deepcopy(existing_item), created=False)
+
+    if require_parent and item_dict.get("parent_id"):
+        timeline_service.validate_reply_parent(entity.timeline_items or {}, item_dict["parent_id"])
 
     item_dict, enrichment_priority = await timeline_service.add_timeline_item_with_sync(
         db,
@@ -224,7 +291,18 @@ async def add_timeline_item_and_commit(
         entity_id=entity_id,
         entity_type=entity_type,
         preserve_item_id=preserve_item_id,
+        created_at_override=created_at_override,
     )
+
+    if retry_client_item_id is not None and retry_user_id is not None:
+        db.add(TimelineAuthoringReceipt(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            client_item_id=retry_client_item_id,
+            item_id=item_dict["id"],
+            item_type=item_dict["type"],
+            owner_id=retry_user_id,
+        ))
 
     await emit_event(
         db,

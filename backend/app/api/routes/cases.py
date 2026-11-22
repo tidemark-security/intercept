@@ -10,6 +10,7 @@ from app.api.id_parsing import parse_entity_id_or_400
 from app.services.case_service import CaseValidationError, case_service
 from app.services.entity_bulk_update import BulkEntityNotFoundError
 from app.services.timeline_add_service import TimelineItemConflict
+from app.services.timeline_attachment_service import finish_attachment_upload
 from app.models.models import (
     BulkUpdateResult,
     CaseBulkUpdate,
@@ -34,7 +35,6 @@ from app.api.route_utils import (
     create_timeline_converter,
     create_human_id_decorator,
     handle_generate_upload_url,
-    handle_update_attachment_status,
     handle_generate_download_url,
 )
 from app.api.timestamp_overrides import (
@@ -406,11 +406,7 @@ async def update_attachment_status(
     current_user: UserAccount = Depends(require_non_auditor_user),
 ):
     """Update attachment upload status."""
-    case = await case_service.get_case(db, case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail=f"Case {case_id} not found")
-    return await handle_update_attachment_status(
-        entity=case,
+    return await finish_attachment_upload(
         entity_type="case",
         parent_id=case_id,
         item_id=item_id,

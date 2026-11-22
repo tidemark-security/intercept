@@ -32,13 +32,17 @@ async def test_server_factory_binds_auth_lifespan_and_explicit_tools() -> None:
     # request middleware here rather than manufacturing an authenticated user.
     tools = await server.list_tools(run_middleware=False)
     assert {tool.name for tool in tools} == {
+        "search", "search_queue", "get_triage_recommendation", "find_observable_occurrences",
+        "set_status", "escalate_alert_to_case", "accept_triage_recommendation", "reject_triage_recommendation",
         "get_summary",
         "list_work",
         "find_related",
         "search_case_runbooks",
         "get_case_runbook",
         "record_triage_decision",
+        "describe_timeline_item",
         "add_timeline_item",
+        "finish_timeline_attachment",
         "get_item",
         "validate_mermaid",
     }

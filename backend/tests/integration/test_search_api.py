@@ -697,3 +697,19 @@ class TestFuzzySearch:
         for result in data["results"]:
             assert "score" in result
             assert 0 <= result["score"] <= 1
+
+
+async def test_queue_fuzzy_index_preserves_threshold_under_custom_database_setting(session_maker):
+    from app.models.search_schemas import EntityType
+    from app.services.search_service import search_service
+
+    async with session_maker() as db:
+        db.add(Alert(title="phishing", source="search-test"))
+        await db.flush()
+        await db.execute(text("SET LOCAL pg_trgm.similarity_threshold = 0.95"))
+        result = await search_service.search_queue(
+            db, query="phising", entity_type=EntityType.ALERT, status=None, assignee=None,
+            include_tags=None, exclude_tags=None, start_date=None, end_date=None,
+            sort_by="created_at", sort_order="desc", skip=0, limit=10,
+        )
+        assert result.total == 1 and [row.title for row in result.results] == ["phishing"]

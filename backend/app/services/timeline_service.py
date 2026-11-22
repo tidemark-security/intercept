@@ -637,7 +637,7 @@ class TimelineService:
             "entity_description": alert.description,
         }
 
-    def _build_linked_task_item(self, task: Any) -> Dict[str, Any]:
+    def build_linked_task_item(self, task: Task) -> Dict[str, Any]:
         return {
             **self._linked_item_fields(
                 item_id=f"linked-task-{task.id}",
@@ -706,7 +706,7 @@ class TimelineService:
 
             for task in getattr(entity, "tasks", None) or []:
                 if task.linked_at:
-                    task_item = self._build_linked_task_item(task)
+                    task_item = self.build_linked_task_item(task)
                     items[str(task_item["id"])] = task_item
 
         elif human_prefix in {ALERT_PREFIX, TASK_PREFIX}:
@@ -933,11 +933,12 @@ class TimelineService:
         item: Dict[str, Any],
         case_id: int,
         created_by: str,
-    ) -> int:
+        created_at_override: datetime | None = None,
+    ) -> Task:
         """
         Create a Task entity for a new task timeline item.
         
-        Returns the task_id of the created task.
+        Returns the created task.
         """
         from app.services.task_service import task_service
         from app.models.models import TaskCreate
@@ -978,10 +979,12 @@ class TimelineService:
             tags=item.get("tags") or [],
         )
         
-        task = await task_service.create_task_in_transaction(db, task_create, created_by)
+        task = await task_service.create_task_in_transaction(
+            db, task_create, created_by, created_at_override=created_at_override,
+        )
         if task.id is None:
             raise RuntimeError("Task creation did not return an ID")
-        return task.id
+        return task
 
     async def _update_task_for_timeline_item(
         self,
@@ -1062,13 +1065,14 @@ class TimelineService:
         entity_id: Optional[int] = None,
         entity_type: str = "case",
         preserve_item_id: bool = False,
+        created_at_override: datetime | None = None,
     ) -> tuple[Dict[str, Any], Optional[int]]:
         """
         Add a timeline item with external resource synchronization.
         
         For task items:
         - Creates the backing Task record
-        - Stores only the reference (task_id) in timeline JSON
+        - Returns a reference that the case timeline renders from the Task relationship
         
         For other items:
         - Adds normally via add_timeline_item
@@ -1106,12 +1110,18 @@ class TimelineService:
             
             # Create the Task entity using the ORIGINAL item (before normalization stripped fields)
             # This sets linked_at which triggers dynamic injection
-            task_id = await self._create_task_for_timeline_item(db, item, entity_id, created_by)
+            task = await self._create_task_for_timeline_item(
+                db, item, entity_id, created_by, created_at_override,
+            )
             
             # Don't add to timeline JSON - tasks are dynamically injected based on FK relationship
             # Return the reference for the caller
             normalized = self._strip_task_snapshot_fields(normalized)
-            normalized["task_id"] = task_id
+            normalized["task_id"] = task.id
+            if preserve_item_id:
+                normalized["id"] = f"linked-task-{task.id}"
+                normalized["created_at"] = task.created_at.isoformat()
+                normalized["created_by"] = task.created_by
             return normalized, None
         
         # Add to timeline (for non-task items)
@@ -1264,6 +1274,19 @@ class TimelineService:
             if found:
                 return found
         return None
+
+    def validate_reply_parent(self, items: Any, parent_id: str) -> None:
+        """Require a stored parent with space for another level of replies."""
+        pending = [(item, 0) for item in self.iter_items(items)]
+        while pending:
+            item, depth = pending.pop()
+            if item.get("id") == parent_id:
+                if item.get("type") == "_deleted":
+                    break
+                self._validate_reply_depth({}, current_depth=depth + 1)
+                return
+            pending.extend((reply, depth + 1) for reply in self.iter_items(item.get("replies")))
+        raise TimelineValidationError(f"Parent timeline item {parent_id!r} not found")
 
     def _add_item_metadata(self, item: Dict[str, Any], created_by: str) -> None:
         if not item.get("created_at"):

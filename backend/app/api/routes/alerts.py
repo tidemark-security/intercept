@@ -19,6 +19,7 @@ from app.services.alert_service import (
     alert_service,
 )
 from app.services.timeline_add_service import TimelineItemConflict
+from app.services.timeline_attachment_service import finish_attachment_upload
 from app.models.models import (
     AlertCreate, AlertUpdate, AlertTriageRequest,
     AlertBulkActionRequest, AlertBulkActionResponse,
@@ -32,7 +33,6 @@ from app.api.route_utils import (
     create_timeline_converter,
     create_human_id_decorator,
     handle_generate_upload_url,
-    handle_update_attachment_status,
     handle_generate_download_url,
 )
 from app.api.timestamp_overrides import (
@@ -348,11 +348,8 @@ async def update_attachment_status(
     current_user: UserAccount = Depends(require_non_auditor_user)
 ):
     """Update attachment upload status."""
-    alert = await alert_service.get_alert(db, alert_id)
-    if not alert:
-        raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
-    return await handle_update_attachment_status(
-        entity=alert, entity_type="alert", parent_id=alert_id,
+    return await finish_attachment_upload(
+        entity_type="alert", parent_id=alert_id,
         item_id=item_id, update_data=update_data,
         current_user=current_user, db=db, service=alert_service,
     )

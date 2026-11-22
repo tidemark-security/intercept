@@ -81,7 +81,7 @@ async def create_case_from_alert(
 ) -> Case:
     timestamp = now or datetime.now(timezone.utc)
     case = Case(
-        title=title or f"Case from Alert: {alert.title}",
+        title=title or f"Case from Alert: {alert.title}"[:200],
         description=description if description is not None else alert.description,
         priority=priority or alert.priority or Priority.MEDIUM,
         tags=normalize_derived_entity_tags(

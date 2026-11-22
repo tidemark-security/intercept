@@ -117,7 +117,10 @@ def compute_entity_overlap(entities_a: Set[str], entities_b: Set[str]) -> float:
 async def find_related_alerts(
     db: AsyncSession,
     alert: Alert,
-    max_matches: int = 10
+    max_matches: int = 10,
+    *,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
 ) -> List[Dict[str, Any]]:
     """Find related alerts with explainable reasons.
     
@@ -145,8 +148,11 @@ async def find_related_alerts(
     
     query = _apply_similarity_filters(query, alert, source, title)
     
-    # Limit results
-    query = query.limit(max_matches)
+    if start_date is not None:
+        query = query.where(Alert.created_at >= start_date)
+    if end_date is not None:
+        query = query.where(Alert.created_at <= end_date)
+    query = query.order_by(Alert.created_at.desc(), Alert.id.desc()).limit(max_matches)
     
     result = await db.execute(query)
     similar_alerts = result.scalars().all()

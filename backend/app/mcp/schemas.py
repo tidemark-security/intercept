@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.models.search_schemas import DateRangeApplied
+
 
 # ============================================================================
 # get_summary
@@ -16,6 +18,7 @@ from pydantic import BaseModel, Field
 class ObjectHeader(BaseModel):
     """Object metadata (title, status, priority, etc.)."""
     title: str
+    description: Optional[str] = None
     status: str
     priority: Optional[str] = None
     assignee: Optional[str] = None
@@ -30,7 +33,7 @@ class TimelinePreview(BaseModel):
     type: str  # e.g., "note", "observable", "network_traffic", etc.
     timestamp: datetime
     author: Optional[str] = None
-    preview: str  # Truncated content (max ~200 chars)
+    preview: str
     is_truncated: bool = False
     full_length_chars: Optional[int] = None
     entity_id: Optional[str] = None  # Human-readable ID for linked alerts/tasks/cases (e.g., ALT-0000123)
@@ -45,6 +48,7 @@ class TimelineSection(BaseModel):
     items: List[TimelinePreview]
     total_count: int  # Total items (before bounding)
     omitted_count: int  # How many were omitted
+    next_offset: Optional[int] = None
     bounded_by: str = "max_timeline_items"  # or "since"
 
 
@@ -178,6 +182,7 @@ class WorkItemPreview(BaseModel):
 
 class ListWorkOutput(BaseModel):
     """Output schema for list_work tool."""
+    date_range: DateRangeApplied
     items: List[WorkItemPreview]
     next_cursor: Optional[str] = None
     total_count: int
@@ -201,8 +206,11 @@ class RelatedMatch(BaseModel):
 
 class FindRelatedOutput(BaseModel):
     """Output schema for find_related tool."""
+    date_range: DateRangeApplied
     seed: WorkItemPreview
     matches: List[RelatedMatch]
+    reason: Literal["unsupported_seed_kind"] | None = None
+    next_tool: Literal["find_observable_occurrences"] | None = None
 
 
 # ============================================================================
@@ -237,6 +245,7 @@ class GetItemOutput(BaseModel):
     item_id: str
     content: str
     metadata: ItemMetadata
+    full_length_chars: int
     next_cursor: Optional[str] = None
     is_truncated: bool = False
 

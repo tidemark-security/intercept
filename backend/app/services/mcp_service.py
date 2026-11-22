@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, NoReturn, Optional, Union, cast
 from uuid import UUID
 
-from sqlalchemy import String, cast as sql_cast, func, or_, select, text
+from sqlalchemy import Row, String, cast as sql_cast, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.entity_ids import (
@@ -57,6 +57,8 @@ from app.models.enums import (
     TaskStatus,
 )
 from app.models.models import Alert, Case, CaseRunbook, Task
+from app.models.search_schemas import DateRangeApplied, EntityType
+from app.services.search_service import SearchQueryValidationError, normalize_search_query, search_service
 from app.services import triage_recommendation_service
 from app.services.case_runbook_service import parse_case_runbook_id
 from app.services.case_runbook_validation import coerce_runbook_tasks
@@ -240,6 +242,7 @@ def _enum_value(value: Any) -> Optional[str]:
 def _work_item_header(entity: Union[Alert, Case, Task]) -> ObjectHeader:
     return ObjectHeader(
         title=entity.title,
+        description=entity.description,
         status=_enum_value(entity.status) or "",
         priority=_enum_value(entity.priority),
         assignee=entity.assignee,
@@ -252,6 +255,9 @@ def _work_item_header(entity: Union[Alert, Case, Task]) -> ObjectHeader:
 def _timeline_preview(
     item: Dict[str, Any],
     default_timestamp: datetime,
+    preview_chars: int,
+    *,
+    include_enrichments: bool = True,
 ) -> TimelinePreview:
     item_type = _timeline_item_type(item)
     timestamp = _parse_iso_datetime(item.get("timestamp")) or default_timestamp
@@ -271,13 +277,13 @@ def _timeline_preview(
         observable_type = str(raw_type) if raw_type else None
         observable_value = str(raw_value) if raw_value else None
 
-    is_truncated = len(body) > 200
+    is_truncated = len(body) > preview_chars
     return TimelinePreview(
         timeline_id=str(item.get("id", "unknown")),
         type=item_type,
         timestamp=timestamp,
         author=_timeline_item_author(item),
-        preview=body[:200],
+        preview=body[:preview_chars],
         is_truncated=is_truncated,
         full_length_chars=len(body) if is_truncated else None,
         entity_id=entity_id,
@@ -290,7 +296,7 @@ def _timeline_preview(
         ),
         enrichments=(
             item.get("enrichments")
-            if isinstance(item.get("enrichments"), dict)
+            if include_enrichments and isinstance(item.get("enrichments"), dict)
             else None
         ),
     )
@@ -302,6 +308,9 @@ def _summarize_timeline(
     since: Optional[datetime],
     limit: int,
     default_timestamp: datetime,
+    preview_chars: int = 1024,
+    offset: int = 0,
+    include_enrichments: bool = True,
 ) -> tuple[TimelineSection, List[Dict[str, Any]]]:
     """Filter, order, and bound timeline items for a summary response."""
     if since is not None:
@@ -312,14 +321,23 @@ def _summarize_timeline(
             and timestamp >= since
         ]
     timeline_items.sort(
-        key=lambda item: str(item.get("timestamp") or ""),
+        key=lambda item: (
+            _parse_iso_datetime(item.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc),
+            str(item.get("id") or ""),
+        ),
         reverse=True,
     )
-    bounded_items = timeline_items[:limit]
+    bounded_items = timeline_items[offset:offset + limit]
     return TimelineSection(
-        items=[_timeline_preview(item, default_timestamp) for item in bounded_items],
+        items=[
+            _timeline_preview(
+                item, default_timestamp, preview_chars, include_enrichments=include_enrichments
+            )
+            for item in bounded_items
+        ],
         total_count=len(timeline_items),
         omitted_count=max(0, len(timeline_items) - len(bounded_items)),
+        next_offset=offset + limit if offset + limit < len(timeline_items) else None,
         bounded_by="since" if since is not None else "max_timeline_items",
     ), timeline_items
 
@@ -482,54 +500,27 @@ def _normalize_work_statuses(kind: str, statuses: List[str]) -> List[Any]:
         raise McpValidationError(f"Invalid status value: {exc}") from exc
 
 
-def _apply_list_work_filters(
-    query: Any,
-    model: Any,
-    *,
-    kind: str,
-    statuses: Optional[List[str]],
-    priorities: Optional[List[str]],
-    assignees: Optional[List[str]],
-    contains: Optional[str],
-    time_range_start: Optional[str],
-    time_range_end: Optional[str],
-) -> Any:
-    """Apply the complete filter contract for list_work."""
-    start = (
-        _parse_work_time_filter(time_range_start, "time_range_start")
-        if time_range_start
-        else datetime.now(timezone.utc) - timedelta(days=7)
-    )
-    query = query.where(model.created_at >= start)
-    if time_range_end:
-        query = query.where(
-            model.created_at
-            <= _parse_work_time_filter(time_range_end, "time_range_end")
-        )
+def _list_work_filters(
+    model: Any, kind: str, statuses: list[str] | None, priorities: list[str] | None,
+    assignees: list[str] | None, start: datetime, end: datetime | None,
+) -> list[Any]:
+    filters = [model.created_at >= start]
+    if end is not None:
+        filters.append(model.created_at <= end)
     if statuses:
-        query = query.where(model.status.in_(_normalize_work_statuses(kind, statuses)))
+        filters.append(model.status.in_(_normalize_work_statuses(kind, statuses)))
     if priorities and hasattr(model, "priority"):
         try:
             enum_priorities = [Priority(priority) for priority in priorities]
         except ValueError as exc:
             raise McpValidationError(f"Invalid priority value: {exc}") from exc
-        query = query.where(model.priority.in_(enum_priorities))
+        filters.append(model.priority.in_(enum_priorities))
     if assignees:
-        query = query.where(model.assignee.in_(assignees))
-    if contains:
-        search_term = f"%{contains}%"
-        query = query.where(or_(
-            model.title.ilike(search_term),
-            (
-                model.description.ilike(search_term)
-                if hasattr(model, "description")
-                else False
-            ),
-        ))
-    return query
+        filters.append(model.assignee.in_(assignees))
+    return filters
 
 
-def _work_item_preview(item: Union[Alert, Case, Task], kind: str) -> WorkItemPreview:
+def _work_item_preview(item: Union[Alert, Case, Task, Row], kind: str) -> WorkItemPreview:
     return WorkItemPreview(
         id=item.id,  # type: ignore[arg-type]
         human_id=format_entity_id(item.id, get_prefix_for_kind(kind)),  # type: ignore[arg-type]
@@ -733,6 +724,9 @@ async def get_summary(
     max_observables: int = 20,
     since: Optional[str] = None,
     *,
+    preview_chars: int = 1024,
+    timeline_offset: int = 0,
+    include_enrichments: bool = True,
     triage_run_id: UUID | None = None,
     principal_id: UUID | None = None,
 ) -> GetSummaryOutput:
@@ -756,9 +750,9 @@ async def get_summary(
     max_timeline_items = _clamp_int(
         max_timeline_items,
         minimum=1,
-        maximum=50,
+        maximum=200,
     )
-    max_observables = _clamp_int(max_observables, minimum=1, maximum=50)
+    max_observables = _clamp_int(max_observables, minimum=1, maximum=200)
     numeric_id, canonical_prefix = _parse_work_item_id(id_str, kind)
     human_id = format_entity_id(numeric_id, canonical_prefix)
 
@@ -781,6 +775,9 @@ async def get_summary(
         since=since_dt,
         limit=max_timeline_items,
         default_timestamp=entity.created_at,
+        preview_chars=_clamp_int(preview_chars, minimum=100, maximum=4096),
+        offset=max(0, timeline_offset),
+        include_enrichments=include_enrichments,
     )
 
     # Extract observables from ALL timeline items (not just bounded)
@@ -1046,7 +1043,7 @@ async def list_work(
         statuses: Filter by status
         priorities: Filter by priority
         assignees: Filter by assignee usernames
-        contains: Search in title + description only (NOT timeline notes)
+        contains: Queue search across entity and timeline content (2–200 characters)
         time_range_start: Filter by created_at >= (ISO-8601, default: 7 days ago)
         time_range_end: Filter by created_at <= (ISO-8601)
         limit: Max items to return (1-50, enforced)
@@ -1061,20 +1058,35 @@ async def list_work(
     # Enforce limit
     limit = _clamp_int(limit, minimum=1, maximum=50)
     model = _work_item_model(kind)
-    query = _apply_list_work_filters(
-        select(model),
-        model,
-        kind=kind,
-        statuses=statuses,
-        priorities=priorities,
-        assignees=assignees,
-        contains=contains,
-        time_range_start=time_range_start,
-        time_range_end=time_range_end,
+    end = _parse_work_time_filter(time_range_end, "time_range_end") if time_range_end is not None else None
+    start = (
+        _parse_work_time_filter(time_range_start, "time_range_start") if time_range_start is not None
+        else (end or datetime.now(timezone.utc)) - timedelta(days=7)
     )
-
-    count_query = select(func.count()).select_from(query.order_by(None).subquery())
-    total_count = int((await db.execute(count_query)).scalar_one())
+    if end is not None and start > end:
+        raise McpValidationError("Start date must be before end date")
+    filters = _list_work_filters(model, kind, statuses, priorities, assignees, start, end)
+    preview_columns = (
+        model.id, model.title, model.status, model.priority, model.assignee,
+        model.created_at, model.updated_at,
+    )
+    if model is Alert:
+        preview_columns += (Alert.source,)
+    query = select(*preview_columns).where(*filters)
+    if contains:
+        try:
+            term = normalize_search_query(contains, allow_filter_only=False)
+        except SearchQueryValidationError as exc:
+            raise McpValidationError(str(exc)) from exc
+        predicates, total_count = await search_service.queue_match_predicates(
+            db, term, EntityType(kind), filters,
+        )
+        if predicates:
+            query = query.where(or_(*predicates))
+        else:
+            query = query.where(False)
+    else:
+        total_count = int(await db.scalar(select(func.count()).select_from(model).where(*filters)) or 0)
 
     # Handle pagination cursor
     if cursor:
@@ -1093,7 +1105,7 @@ async def list_work(
     query = query.limit(limit + 1)
 
     result = await db.execute(query)
-    items = result.scalars().all()
+    items = result.all()
 
     # Check if there are more results
     has_more = len(items) > limit
@@ -1109,6 +1121,7 @@ async def list_work(
         items=[_work_item_preview(item, kind) for item in items],
         next_cursor=next_cursor,
         total_count=total_count,
+        date_range=DateRangeApplied(start=start.isoformat(), end=end.isoformat() if end else None),
     )
 
 
@@ -1117,6 +1130,8 @@ async def find_related(
     seed_kind: str,
     seed_id_str: str,
     max_matches: int = 10,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
 ) -> FindRelatedOutput:
     """Find similar/related alerts, cases, or tasks.
 
@@ -1154,16 +1169,21 @@ async def find_related(
             db,
             alert_seed,
             _clamp_int(max_matches, minimum=1, maximum=20),
+            start_date=start_date,
+            end_date=end_date,
         )
 
         matches_list = [_related_alert_preview(match) for match in raw_matches]
 
-    # Related-item discovery is defined only for alert seeds; cases and tasks
-    # return an empty match list.
-
     return FindRelatedOutput(
+        date_range=DateRangeApplied(
+            start=start_date.isoformat() if start_date else None,
+            end=end_date.isoformat() if end_date else None,
+        ),
         seed=_work_item_preview(seed_entity, seed_kind),
         matches=matches_list,
+        reason="unsupported_seed_kind" if seed_kind != "alert" else None,
+        next_tool="find_observable_occurrences" if seed_kind != "alert" else None,
     )
 
 
@@ -1202,7 +1222,11 @@ async def add_timeline_item(
         McpNotFoundError: The target entity does not exist.
     """
     from app.models.models import NoteItem
-    from app.services.timeline_add_service import add_timeline_item_and_commit
+    from app.services.timeline_add_service import (
+        TimelineItemConflict,
+        add_timeline_item_and_commit,
+        find_timeline_authoring_retry,
+    )
     from app.services.timeline_service import timeline_service
 
     # Validate body length
@@ -1234,8 +1258,22 @@ async def add_timeline_item(
 
     # Check for existing item with same item_id (idempotency)
     timeline_items = row[0] or []
+    try:
+        await find_timeline_authoring_retry(
+            db,
+            timeline_items=timeline_items,
+            entity_type=target_kind,
+            entity_id=numeric_id,
+            client_item_id=item_id,
+            item_type="note",
+            owner_id=None,
+        )
+    except TimelineItemConflict as exc:
+        raise McpConflictError(str(exc)) from exc
     existing_item = timeline_service.find_item_by_id(timeline_items, item_id)
     if existing_item:
+        if existing_item.get("type") != "note":
+            raise McpConflictError("Client item ID belongs to another timeline item type")
         return _existing_timeline_item_output(item_id, existing_item)
 
     # Dry-run mode
@@ -1259,16 +1297,19 @@ async def add_timeline_item(
         created_by=created_by,
     )
 
-    result = await add_timeline_item_and_commit(
-        db,
-        entity_id=numeric_id,
-        entity_type=target_kind,
-        timeline_item=note_item,
-        performed_by=created_by,
-        created_at_override=created_at,
-        preserve_item_id=True,
-        idempotent=True,
-    )
+    try:
+        result = await add_timeline_item_and_commit(
+            db,
+            entity_id=numeric_id,
+            entity_type=target_kind,
+            timeline_item=note_item,
+            performed_by=created_by,
+            created_at_override=created_at,
+            preserve_item_id=True,
+            idempotent=True,
+        )
+    except TimelineItemConflict as exc:
+        raise McpConflictError(str(exc)) from exc
     if result is None:
         raise McpNotFoundError(target_not_found_message)
 
@@ -1292,8 +1333,9 @@ async def get_item(
     parent_entity_id: str,
     item_id: str,
     mode: str = "full",
-    max_chars: int = 4000,
+    max_chars: int = 16000,
     cursor: Optional[str] = None,
+    content_format: str = "text",
 ) -> GetItemOutput:
     """Get full content of truncated timeline item.
 
@@ -1305,7 +1347,7 @@ async def get_item(
         parent_entity_id: Parent entity ID in forgiving format
         item_id: Timeline item ID
         mode: Retrieval mode ("full", "head", "tail")
-        max_chars: Max characters to return (100-10000, default: 4000)
+        max_chars: Max characters to return (100-64000, default: 16000)
         cursor: Pagination cursor from previous response
 
     Returns:
@@ -1316,7 +1358,7 @@ async def get_item(
         McpNotFoundError: The parent or timeline item does not exist.
     """
     # Validate max_chars
-    max_chars = _clamp_int(max_chars, minimum=100, maximum=10_000)
+    max_chars = _clamp_int(max_chars, minimum=100, maximum=64_000)
 
     # Validate mode
     if mode not in ("full", "head", "tail"):
@@ -1371,6 +1413,20 @@ async def get_item(
         )
 
     found_item = row["item"]
+    if parent_kind == "case" and item_id.startswith("linked-task-"):
+        from app.services.timeline_service import timeline_service
+
+        task_id = item_id.removeprefix("linked-task-")
+        if task_id.isascii() and task_id.isdecimal() and len(task_id) <= 10:
+            linked_id = int(task_id)
+            if linked_id < 2**31 and task_id == str(linked_id):  # PostgreSQL INTEGER task IDs.
+                linked_task = await db.scalar(
+                    select(Task).where(
+                        Task.id == linked_id, Task.case_id == numeric_id, Task.linked_at.is_not(None),
+                    )
+                )
+                if linked_task is not None:
+                    found_item = timeline_service.build_linked_task_item(linked_task)
 
     if not isinstance(found_item, dict):
         raise McpNotFoundError(
@@ -1380,7 +1436,13 @@ async def get_item(
             "parent_entity_id."
         )
 
-    full_content = _timeline_item_content(found_item)
+    full_content = (
+        json.dumps(found_item, ensure_ascii=False)
+        if content_format == "json"
+        else _timeline_item_content(found_item)
+    )
+    if not full_content and found_item.get("type") == "task":
+        full_content = found_item.get("entity_description") or found_item.get("title") or ""
     content, new_offset = _slice_timeline_content(
         full_content,
         mode=mode,
@@ -1388,13 +1450,9 @@ async def get_item(
         offset=_cursor_offset(cursor),
     )
 
-    # Check if truncated
-    is_truncated = new_offset < len(full_content)
-
-    # Build next cursor
-    next_cursor = None
-    if is_truncated:
-        next_cursor = _encode_cursor({"offset": new_offset})
+    has_more = new_offset < len(full_content)
+    is_truncated = has_more or (mode == "tail" and len(content) < len(full_content))
+    next_cursor = _encode_cursor({"offset": new_offset}) if has_more else None
 
     # Build metadata
     timestamp_dt = (
@@ -1415,6 +1473,7 @@ async def get_item(
         item_id=item_id,
         content=content,
         metadata=metadata,
+        full_length_chars=len(full_content),
         next_cursor=next_cursor,
         is_truncated=is_truncated,
     )

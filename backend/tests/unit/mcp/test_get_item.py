@@ -1,6 +1,7 @@
 """Unit tests for MCP get_item timeline content retrieval."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 from mcp.shared.exceptions import MCPError
@@ -351,3 +352,51 @@ async def test_get_item_rejects_parent_type_prefix_mismatch(
             )
 
     assert "has alert prefix but expected 'case'" in str(exc_info.value)
+
+@pytest.mark.asyncio
+async def test_get_item_resolves_dynamic_task_only_on_its_linked_case(
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_maker() as session:
+        owner = Case(title="Owning case", created_by="analyst", timeline_items={})
+        other = Case(title="Other case", created_by="analyst", timeline_items={})
+        session.add_all([owner, other])
+        await session.flush()
+        task = Task(
+            title="Collect evidence",
+            description="Collect the gateway logs.",
+            created_by="analyst",
+            case_id=owner.id,
+            linked_at=datetime(2026, 3, 9, 11, 38, tzinfo=timezone.utc),
+        )
+        session.add(task)
+        await session.commit()
+        item_id = f"linked-task-{task.id}"
+
+        result = await mcp_service.get_item(
+            session, "case", str(owner.id), item_id, content_format="json",
+        )
+        payload = json.loads(result.content)
+        assert result.metadata.parent_id == owner.id
+        assert result.metadata.type == "task"
+        assert payload["task_id"] == task.id
+        assert payload["entity_description"] == task.description
+
+        plain = await mcp_service.get_item(session, "case", str(owner.id), item_id)
+        assert plain.content == task.description
+
+        for kind, parent_id, requested_id in (
+            ("case", other.id, item_id),
+            ("task", task.id, item_id),
+            ("case", owner.id, f"linked-task-0{task.id}"),
+            ("case", owner.id, "linked-task-9999999999"),
+        ):
+            with pytest.raises(McpNotFoundError):
+                await mcp_service.get_item(session, kind, str(parent_id), requested_id)
+
+        task.case_id = other.id
+        await session.commit()
+        with pytest.raises(McpNotFoundError):
+            await mcp_service.get_item(session, "case", str(owner.id), item_id)
+        moved = await mcp_service.get_item(session, "case", str(other.id), item_id)
+        assert moved.metadata.parent_id == other.id

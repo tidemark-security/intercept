@@ -1,16 +1,4 @@
-"""Adapters for the nine intentionally exposed MCP tools.
-
-This module contains:
-1. get_summary - Bounded context retrieval
-2. list_work - Global work discovery
-3. find_related - Similarity search
-4. search_case_runbooks - Published runbook discovery
-5. get_case_runbook - Published runbook detail
-6. record_triage_decision - Triage recommendations
-7. add_timeline_item - Timeline note appending
-8. get_item - Full content retrieval
-9. validate_mermaid - Mermaid syntax validation
-"""
+"""MCP adapters for entity context, discovery and recommendation authoring."""
 
 from collections.abc import Awaitable
 from typing import Any, Dict, TypeVar
@@ -22,6 +10,7 @@ from fastmcp.server.dependencies import get_http_request
 from app.api.timestamp_overrides import normalize_created_at_override
 from app.core.database import async_session_factory
 from app.mcp.principal import get_current_mcp_principal
+from app.mcp.search_tools import search_bounds
 from app.models.enums import UserRole
 from app.services import mcp_service
 from app.services.date_filter_utils import parse_utc_datetime
@@ -157,6 +146,10 @@ async def get_summary_tool(
     max_timeline_items: int = 25,
     max_observables: int = 20,
     since: str | None = None,
+    preview_chars: int = 1024,
+    timeline_offset: int = 0,
+    compact: bool = False,
+    include_enrichments: bool = True,
 ) -> Dict[str, Any]:
     """Get a bounded context summary for an alert, case, or task."""
     run_id = _get_triage_run_id() if kind == "alert" else None
@@ -170,13 +163,18 @@ async def get_summary_tool(
                 max_timeline_items=max_timeline_items,
                 max_observables=max_observables,
                 since=since,
+                preview_chars=preview_chars,
+                timeline_offset=timeline_offset,
+                include_enrichments=include_enrichments,
                 triage_run_id=run_id,
                 principal_id=principal_id,
             )
         )
-        payload = result.model_dump(mode="json")
-        pruned_payload = _prune_llm_payload(payload, preserve_empty=True)
-        response = pruned_payload if isinstance(pruned_payload, dict) else payload
+        payload = result.model_dump(
+            mode="json",
+            exclude=None if include_enrichments else {"timeline": {"items": {"__all__": {"enrichments"}}}},
+        )
+        response = _prune_llm_payload(payload, preserve_empty=True) if compact else payload
         if run_id is not None:
             # Send the same serialized context we keep in the run snapshot.
             response["context"] = payload["context"]
@@ -218,8 +216,11 @@ async def find_related_tool(
     seed_kind: str,
     seed_id: str,
     max_matches: int = 10,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> Dict[str, Any]:
-    """Find related alerts, cases, or tasks."""
+    """Find similar alerts in the requested candidate creation window."""
+    start, end = search_bounds(start_date, end_date)
     async with async_session_factory() as db:
         result = await _run_service_call(
             mcp_service.find_related(
@@ -227,9 +228,13 @@ async def find_related_tool(
                 seed_kind=seed_kind,
                 seed_id_str=seed_id,
                 max_matches=max_matches,
+                start_date=start,
+                end_date=end,
             )
         )
-        return result.model_dump()
+        return result.model_dump(
+            exclude={"reason", "next_tool"} if result.reason is None else None,
+        )
 
 
 async def record_triage_decision_tool(
@@ -354,8 +359,9 @@ async def get_item_tool(
     parent_entity_id: str,
     item_id: str,
     mode: str = "full",
-    max_chars: int = 4000,
+    max_chars: int = 16000,
     cursor: str | None = None,
+    content_format: str = "text",
 ) -> Dict[str, Any]:
     """Get the full content of a truncated timeline item."""
     async with async_session_factory() as db:
@@ -367,6 +373,7 @@ async def get_item_tool(
                 item_id=item_id,
                 mode=mode,
                 max_chars=max_chars,
+                content_format=content_format,
                 cursor=cursor,
             )
         )

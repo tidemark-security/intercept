@@ -393,6 +393,10 @@ async def test_get_summary_tool_omits_none_values_recursively(
         max_observables=10,
     )
 
+    full_item = next(item for item in payload["timeline"]["items"] if item["type"] == "observable")
+    assert full_item["enrichments"]["maxmind"]["office"] == ""
+    assert full_item["author"] is None
+    payload = await mcp_tools.get_summary_tool(kind="case", id=str(case.id), compact=True)
     _assert_no_none_values(payload)
     note_item = next(item for item in payload["timeline"]["items"] if item["type"] == "note")
     observable_item = next(item for item in payload["timeline"]["items"] if item["type"] == "observable")
