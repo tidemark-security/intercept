@@ -19,3 +19,12 @@
 .inlineActions .assigneeAction[data-icon-only] > span:last-child:has(svg) {
   display: none;
 }
+
+.escalationIcon,
+.inlineActions .collapsibleAction[data-icon-only] .escalationChevron {
+  display: none;
+}
+
+.inlineActions .collapsibleAction[data-icon-only] .escalationIcon {
+  display: block;
+}

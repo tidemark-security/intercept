@@ -103,9 +103,6 @@ export interface TimelineFilterProps {
   /** Additional className for the container */
   className?: string;
 
-  /** Optional content pinned to the right side of the filter row */
-  rightContent?: React.ReactNode;
-
   /** Optional content shown before the filter/sort controls */
   leadingContent?: React.ReactNode;
 
@@ -207,7 +204,6 @@ export function TimelineFilter({
   onCollapseLinkedEntityCards,
   onExpandLinkedEntityCards,
   className,
-  rightContent,
   leadingContent,
   disabled = false,
 }: TimelineFilterProps) {
@@ -538,11 +534,6 @@ export function TimelineFilter({
           </TimelineFilterControlGroup>
         ) : null}
       </div>
-      {rightContent ? (
-        <div className="ml-auto flex min-w-0 items-center justify-end pt-5 mobile:ml-0 mobile:w-full mobile:justify-center mobile:pt-0">
-          {rightContent}
-        </div>
-      ) : null}
     </div>
   );
 }

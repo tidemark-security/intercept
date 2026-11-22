@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { renderWithProviders } from "../../../tests/test-utils";
@@ -8,9 +8,10 @@ import type { AlertStatus } from "@/types/generated/models/AlertStatus";
 import type { CaseReadWithAlerts } from "@/types/generated/models/CaseReadWithAlerts";
 
 const resolveLinkTemplatesMock = vi.hoisted(() => vi.fn());
+const usePresenceMock = vi.hoisted(() => vi.fn<() => string[]>());
 
 vi.mock("@/contexts/WebSocketContext", () => ({
-  usePresence: () => [],
+  usePresence: usePresenceMock,
 }));
 
 vi.mock("@/types/generated/services/LinkTemplatesService", () => ({
@@ -21,6 +22,7 @@ vi.mock("@/types/generated/services/LinkTemplatesService", () => ({
 
 beforeEach(() => {
   resolveLinkTemplatesMock.mockResolvedValue([]);
+  usePresenceMock.mockReturnValue([]);
 });
 
 afterEach(() => {
@@ -111,6 +113,35 @@ function renderAlertTimeline(status: AlertStatus) {
 }
 
 describe("UnifiedTimeline", () => {
+  it("shows other viewers as named initials before the assignment button", () => {
+    usePresenceMock.mockReturnValue([
+      "observer", "Admin", "Analyst", "Analyst", "glenn.bolton@tidemarksecurity.com",
+    ]);
+    renderWithProviders(
+      <UnifiedTimeline
+        entityDetail={baseAlert}
+        entityType="alert"
+        selectedEntityId={baseAlert.id}
+        currentUser="Observer"
+        isLoading={false}
+        error={null}
+        users={[]}
+        usersLoading={false}
+        onAssignToMe={vi.fn()}
+      />,
+    );
+
+    const viewers = screen.getByRole("group", { name: "Other viewers" });
+    const avatars = within(viewers).getAllByRole("img");
+    expect(avatars.map((avatar) => avatar.textContent)).toEqual(["A", "A", "GB"]);
+    expect(avatars.map((avatar) => avatar.getAttribute("aria-label"))).toEqual([
+      "Admin", "Analyst", "glenn.bolton@tidemarksecurity.com",
+    ]);
+    const assignment = within(screen.getByTitle("Assignee: Unassigned")).getByRole("button");
+    expect(viewers.compareDocumentPosition(assignment) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText(/viewing this alert/)).not.toBeInTheDocument();
+  });
+
   it("resolves parent entity header links with the entity surface and core case context", async () => {
     resolveLinkTemplatesMock.mockResolvedValue([
       {

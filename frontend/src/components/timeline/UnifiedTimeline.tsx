@@ -39,7 +39,6 @@ import { findTimelineItem } from "@/utils/timelineUtils";
 import { compareTimelineItems, getTimelineItems } from "@/utils/timelineHelpers";
 import { useTheme } from '@/contexts/ThemeContext';
 import { cn } from '@/utils/cn';
-import { formatPresenceText } from '@/utils/presenceText';
 import { PICERL_STAGES, type PICERLStage } from '@/types/caseRunbooks';
 import { Badge } from '@/components/data-display/Badge';
 import type { TaskRead } from '@/types/generated/models/TaskRead';
@@ -429,7 +428,6 @@ function UnifiedTimelineInner({
   users,
   usersLoading,
   isUpdating,
-  presenceText,
   isOverlayOpen = false,
   mode = 'editable',
   onFlagItem,
@@ -478,10 +476,6 @@ function UnifiedTimelineInner({
   const isDarkTheme = resolvedTheme === 'dark';
   const isCompactHeader = isMobile || isTablet;
   const presenceViewers = usePresence(entityType, selectedEntityId);
-  const resolvedPresenceText = useMemo(
-    () => presenceText ?? formatPresenceText(presenceViewers, entityType, currentUser),
-    [currentUser, entityType, presenceText, presenceViewers],
-  );
 
   // Access reply context
   const { activeReplyParentId, activeReplyDepth, enterReplyMode, exitReplyMode, isInReplyMode } = useReplyMode();
@@ -1031,7 +1025,7 @@ function UnifiedTimelineInner({
           users={users}
           isLoadingUsers={usersLoading}
           isUpdating={isUpdating}
-          presenceText={resolvedPresenceText}
+          presenceViewers={presenceViewers}
           onAssignToMe={onAssignToMe}
           onAssignToUser={onAssignToUser}
           onUnassign={onUnassign}
