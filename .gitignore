@@ -125,6 +125,8 @@ keys/
 !/docs/quickstart/
 !/docs/quickstart/**
 
+/reports/
+
 # GitHub Speckit files
 .specify
 
