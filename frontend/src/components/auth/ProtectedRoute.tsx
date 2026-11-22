@@ -1,6 +1,7 @@
-import { ReactNode, useEffect } from "react";
+import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useSession } from "@/contexts/sessionContext";
+import { SessionCheckStatus } from "./SessionCheckStatus";
 
 interface ProtectedRouteProps {
   children: ReactNode;
@@ -19,11 +20,10 @@ export function ProtectedRoute({ children, requiredRole }: ProtectedRouteProps) 
   const { status, user, mustChangePassword } = useSession();
   const location = useLocation();
 
-  // If still checking authentication (initial load or manual login), show loading spinner
-  if (status === "initializing" || status === "authenticating") {
+  if (status === "initializing" || status === "unavailable" || status === "authenticating") {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-default-background">
-        <div className="text-lg text-brand-primary">Loading...</div>
+        <SessionCheckStatus />
       </div>
     );
   }

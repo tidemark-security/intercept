@@ -13,7 +13,13 @@ export interface LockoutResponse {
 
 export type PasskeyLoginResult = "authenticated" | "password_required" | "cancelled" | "failed";
 
-export type SessionStatus = "initializing" | "unauthenticated" | "authenticating" | "authenticated" | "locked";
+export type SessionStatus =
+  | "initializing"
+  | "unavailable"
+  | "unauthenticated"
+  | "authenticating"
+  | "authenticated"
+  | "locked";
 
 export interface SessionState {
   status: SessionStatus;
@@ -42,6 +48,8 @@ export const sessionInitialState: SessionState = {
 };
 
 export type SessionAction =
+  | { type: "START_SESSION_CHECK" }
+  | { type: "SESSION_CHECK_FAILED" }
   | { type: "START_AUTH" }
   | {
       type: "SET_AUTHENTICATED";

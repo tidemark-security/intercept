@@ -348,7 +348,7 @@ test("production bundle loads all major lazy routes", async ({ page }) => {
         .not.toBe("");
 
       const rootText = await page.locator("#root").innerText();
-      expect(rootText, `${routePath} should not be stuck on auth loading`).not.toBe("Loading...");
+      expect(rootText, `${routePath} should not be stuck on auth loading`).not.toBe("Checking your session…");
 
       const routeFailures = failures.splice(0);
       expect(routeFailures, `${routePath} production runtime errors`).toEqual([]);

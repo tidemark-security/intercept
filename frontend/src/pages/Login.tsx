@@ -5,7 +5,7 @@ import { useLocation } from "react-router-dom";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { Button } from "@/components/buttons/Button";
-import { AuthSplitLayout } from "@/components/auth";
+import { AuthSplitLayout, SessionCheckStatus } from "@/components/auth";
 import { OAuthSocialButton } from "@/components/auth/OAuthSocialButton";
 import { SignIn } from "@/components/auth/SignIn";
 import { TextField } from "@/components/forms/TextField";
@@ -185,6 +185,18 @@ function Login() {
       await handleSubmit();
     }
   };
+
+  if (
+    status === "initializing" ||
+    status === "unavailable" ||
+    (status === "authenticated" && !mustChangePassword)
+  ) {
+    return (
+      <AuthSplitLayout>
+        <SessionCheckStatus />
+      </AuthSplitLayout>
+    );
+  }
 
   return (
     <AuthSplitLayout>

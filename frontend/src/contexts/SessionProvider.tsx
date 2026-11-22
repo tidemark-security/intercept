@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useReducer } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { ApiError } from "@/types/generated/core/ApiError";
 import { AuthenticationService } from "@/types/generated/services/AuthenticationService";
 import {
@@ -17,8 +17,36 @@ import {
   sessionInitialState,
 } from "./sessionContext";
 
+// The server asks clients to wait one second when authentication state is busy.
+const sessionCheckRetryDelays = [1000, 2000];
+
+async function checkSession(): Promise<SessionAction> {
+  for (const retryDelay of [...sessionCheckRetryDelays, null]) {
+    try {
+      const response = await AuthenticationService.getSessionApiV1AuthSessionGet();
+      return { type: "SET_AUTHENTICATED", payload: response };
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        return { type: "SET_UNAUTHENTICATED" };
+      }
+      if (
+        retryDelay === null ||
+        (error instanceof ApiError && error.status < 500 && error.status !== 429)
+      ) {
+        break;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, retryDelay));
+    }
+  }
+  return { type: "SESSION_CHECK_FAILED" };
+}
+
 const sessionReducer = (state: SessionState, action: SessionAction): SessionState => {
   switch (action.type) {
+    case "START_SESSION_CHECK":
+      return { ...sessionInitialState };
+    case "SESSION_CHECK_FAILED":
+      return { ...sessionInitialState, status: "unavailable" };
     case "START_AUTH":
       return {
         ...state,
@@ -86,31 +114,27 @@ const sessionReducer = (state: SessionState, action: SessionAction): SessionStat
 
 export const SessionProvider = ({ children }: SessionProviderProps) => {
   const [state, dispatch] = useReducer(sessionReducer, sessionInitialState);
+  const pendingSessionCheck = useRef<Promise<void> | null>(null);
+
+  const refreshSession = useCallback(() => {
+    if (pendingSessionCheck.current) {
+      return pendingSessionCheck.current;
+    }
+
+    dispatch({ type: "START_SESSION_CHECK" });
+    const request = checkSession().then((action) => {
+      if (pendingSessionCheck.current === request) {
+        pendingSessionCheck.current = null;
+        dispatch(action);
+      }
+    });
+    pendingSessionCheck.current = request;
+    return request;
+  }, []);
 
   useEffect(() => {
-    const validateSession = async () => {
-      try {
-        const response = await AuthenticationService.getSessionApiV1AuthSessionGet();
-
-        dispatch({
-          type: "SET_AUTHENTICATED",
-          payload: {
-            user: response.user,
-            session: response.session,
-            mustChangePassword: response.mustChangePassword || false,
-            localCredentialManagementAllowed: response.localCredentialManagementAllowed ?? true,
-            passwordLoginAllowed: response.passwordLoginAllowed,
-            passkeyAllowed: response.passkeyAllowed,
-            apiKeyAllowed: response.apiKeyAllowed,
-          },
-        });
-      } catch (error) {
-        dispatch({ type: "SET_UNAUTHENTICATED" });
-      }
-    };
-
-    validateSession();
-  }, []);
+    void refreshSession();
+  }, [refreshSession]);
 
   const actions = useMemo(() => {
     return {
@@ -258,12 +282,11 @@ export const SessionProvider = ({ children }: SessionProviderProps) => {
         } catch (error) {
           console.error("Logout error:", error);
         } finally {
+          pendingSessionCheck.current = null;
           dispatch({ type: "SET_UNAUTHENTICATED" });
         }
       },
-      async refreshSession() {
-        console.warn("SessionProvider.refreshSession not yet implemented");
-      },
+      refreshSession,
       resolveError() {
         dispatch({ type: "CLEAR_ERROR" });
       },
@@ -274,7 +297,7 @@ export const SessionProvider = ({ children }: SessionProviderProps) => {
         dispatch({ type: "SET_MUST_CHANGE_PASSWORD", payload: value });
       },
     } satisfies Omit<SessionContextValue, keyof SessionState | "isAdmin" | "isAnalyst" | "isAuditor">;
-  }, [dispatch]);
+  }, [refreshSession]);
 
   const value = useMemo<SessionContextValue>(() => ({
     ...state,
