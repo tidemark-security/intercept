@@ -1,4 +1,5 @@
 import { expect, test, type BrowserContext, type Locator, type Page, type Route } from "@playwright/test";
+import type { RecommendationStatus } from "../src/types/generated/models/RecommendationStatus";
 
 const now = "2026-01-01T00:00:00.000Z";
 
@@ -488,51 +489,199 @@ test("admin route access stays gated inside the signed-in shell", async ({ page 
   expect(requestedAdminModules).toEqual([]);
 });
 
-test("AI triage uses compact status cards with the original borders on wide and narrow screens", async ({ page }) => {
-  await installProductionApiMocks(page);
-  await page.route("**/api/v1/features", (route) => route.fulfill(jsonResponse({ ai_triage_enabled: true })));
-  const error = "Retries exhausted: All connection attempts failed";
-  await page.route(/\/api\/v1\/alerts\/2(?:\?|$)/, (route) => route.fulfill(jsonResponse({
-    ...secondAlert,
-    triage_recommendation: { id: 2, alert_id: 2, status: "FAILED", error_message: error },
-  })));
-  const queuedAlert = { ...sampleAlert, id: 3, human_id: "ALT-0000003" };
-  await page.route(/\/api\/v1\/alerts\/3(?:\?|$)/, (route) => route.fulfill(jsonResponse({
-    ...queuedAlert,
-    triage_recommendation: { id: 3, alert_id: 3, status: "QUEUED" },
-  })));
+for (const width of [1920, 1024, 390]) {
+  test(`AI triage state changes preserve alert layout at ${width}px`, async ({ page }) => {
+    await installProductionApiMocks(page);
+    await page.route("**/api/v1/features", (route) => route.fulfill(jsonResponse({ ai_triage_enabled: true })));
 
-  for (const { alert, title, description, action, borderStyle } of [
-    { alert: sampleAlert, title: "AI Triage Available", action: "Request AI Triage", borderStyle: "dashed" },
-    { alert: secondAlert, title: "AI Triage Failed", description: error, action: "Retry AI Triage", borderStyle: "solid" },
-    { alert: queuedAlert, title: "AI Triage In Progress", description: "The recommendation will appear automatically when ready.", borderStyle: "solid" },
-  ]) {
-    await page.setViewportSize({ width: 1920, height: 900 });
-    await page.goto(`/alerts/${alert.human_id}`);
-    const card = page.getByRole("region", { name: title });
-    await expect(card).toBeVisible();
-    if (action) {
-      const button = card.getByRole("button", { name: action });
-      await expect(button).toBeEnabled();
-      await expect(button).toHaveCSS("height", "32px");
-      if (action === "Request AI Triage") {
-        await expect(button.locator("svg.lucide-sparkles")).toBeVisible();
+    let status: RecommendationStatus | null = null;
+    const failure = width === 390
+      ? "Retries exhausted: All connection attempts failed. ".repeat(18).trim()
+      : "Retries exhausted";
+    const contextEntry = { id: 17, body: "Previously supplied context", author: "admin", criteria: [] };
+    const recommendation = {
+      id: 1,
+      alert_id: 1,
+      created_at: now,
+      created_by: "tidemark_ai",
+      disposition: "NEEDS_INVESTIGATION",
+      confidence: 0.8,
+      request_escalate_to_case: true,
+      suggested_status: "ESCALATED",
+      suggested_priority: "MEDIUM",
+      suggested_assignee: "analyst",
+      suggested_tags_add: ["network", "endpoint"],
+      suggested_tags_remove: ["unverified"],
+      reasoning_bullets: [
+        "The evidence is incomplete.",
+        ...Array.from({ length: 14 }, (_, index) => `Evidence detail ${index + 1}`),
+      ],
+      recommended_actions: [{ title: "Pull DNS telemetry" }],
+      applied_context_entries: [contextEntry],
+      context_snapshot_verified: true,
+      error_message: failure,
+      rejection_reason: "The alert needs a different disposition.",
+    };
+    await page.route(/\/api\/v1\/alerts\/1(?:\?|$)/, (route) => route.fulfill(jsonResponse({
+      ...sampleAlert,
+      triage_context_changed: true,
+      triage_recommendation: status ? { ...recommendation, status } : null,
+    })));
+    await page.route("**/api/v1/alerts/1/triage-recommendation/enqueue", (route) => {
+      status = "QUEUED";
+      return route.fulfill(jsonResponse({ ...recommendation, status }));
+    });
+    await page.route("**/api/v1/alerts/1/triage-recommendation/accept", (route) => {
+      status = "ACCEPTED";
+      return route.fulfill(jsonResponse({ recommendation: { ...recommendation, status } }));
+    });
+
+    await page.setViewportSize({ width, height: 1000 });
+    await page.goto(`/alerts/${sampleAlert.human_id}`);
+    const timeline = page.getByLabel("alert timeline content");
+    const card = timeline.locator("section[data-layout]");
+    const metadata = timeline.getByText("Source", { exact: true });
+    const request = card.getByRole("button", { name: "Request AI Triage" });
+    const retry = card.getByRole("button", { name: "Retry AI Triage" });
+    const measurements = new Map<string, { height: number; metadataOffset: number }>();
+    const preferredLayout = width === 1920 ? "compact" : "expanded";
+
+    const setLayout = async (layout: "compact" | "expanded") => {
+      if (await card.getAttribute("data-layout") !== layout) {
+        await card.getByRole("button", { name: layout === "compact"
+          ? "Collapse triage recommendation" : "Expand triage recommendation" }).click();
       }
-    } else {
-      await expect(card.getByRole("button")).toHaveCount(0);
-    }
-    expect((await card.boundingBox())?.height).toBeLessThan(80);
-    await expect(card.locator("[aria-expanded]")).toHaveCount(0);
-    await expect(card).toHaveCSS("border-top-style", borderStyle);
-    await expect(card).toHaveCSS("border-left-width", "1px");
-    if (description) await expect(card.getByText(description, { exact: true })).toBeVisible();
+      await expect(card).toHaveAttribute("data-layout", layout);
+    };
+    const verifyRobotMotion = async (state: "available" | "in-progress" | "failed") => {
+      const illustration = card.locator(`[data-robot-state="${state}"]`);
+      await expect(illustration.locator("svg.lucide-bot")).toBeInViewport({ ratio: 1 });
+      await expect(illustration.locator("svg:not(.lucide-bot)")).toHaveCount(state === "in-progress" ? 6 : 0);
+      const hasRunningAnimation = () => illustration.evaluate((element) =>
+        element.getAnimations({ subtree: true }).some((animation) => animation.playState === "running"));
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await expect.poll(hasRunningAnimation).toBe(false);
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      await expect.poll(() => illustration.evaluate((element) =>
+        element.getAnimations({ subtree: true }).some((animation) =>
+          animation.playState === "running" && animation.effect?.getTiming().iterations === Infinity))).toBe(true);
+    };
+    const verifySize = async (title: string, borderStyle = "solid", mayGrow = false) => {
+      await expect(card.getByRole("heading", { name: title, exact: true })).toBeVisible();
+      await expect(card).toHaveAttribute("data-layout", preferredLayout);
+      await expect(card).toHaveCSS("border-top-style", borderStyle);
+      for (const layout of ["compact", "expanded"] as const) {
+        await setLayout(layout);
+        const bounds = (await card.boundingBox())!;
+        const metadataBounds = (await metadata.boundingBox())!;
+        const measurement = { height: bounds.height, metadataOffset: metadataBounds.y - bounds.y };
+        const initial = measurements.get(layout);
+        if (initial) {
+          const growth = measurement.height - initial.height;
+          if (mayGrow) expect(growth).toBeGreaterThanOrEqual(0);
+          else expect(growth, `${title} (${layout}) should fit the shared minimum height`).toBeCloseTo(0, 0);
+          expect(measurement.metadataOffset - initial.metadataOffset).toBeCloseTo(growth, 0);
+        } else {
+          measurements.set(layout, measurement);
+        }
+        expect(await card.evaluate((element) => element.scrollWidth - element.clientWidth)).toBe(0);
+        const body = card.getByRole("group", { name: layout === "expanded" ? "Triage details" : "Triage summary", exact: true });
+        await expect(body).toHaveCSS("overflow-y", "visible");
+        if (title === "AI Triage Available") {
+          const headerBounds = (await card.locator("header").boundingBox())!;
+          const bodyBounds = (await body.boundingBox())!;
+          const requestBounds = (await request.boundingBox())!;
+          const gapAboveBody = bodyBounds.y - (headerBounds.y + headerBounds.height);
+          const gapBelowBody = requestBounds.y - (bodyBounds.y + bodyBounds.height);
+          expect(gapBelowBody).toBeCloseTo(gapAboveBody, 0);
+          expect(bounds.y + bounds.height - (requestBounds.y + requestBounds.height))
+            .toBeCloseTo(headerBounds.y - bounds.y, 0);
+        }
+      }
+      await setLayout(preferredLayout);
+    };
 
-    await page.setViewportSize({ width: 390, height: 844 });
-    await expect(card).toBeVisible();
-    if (action) await expect(card.getByRole("button", { name: action })).toBeVisible();
-    await expect.poll(() => card.evaluate((element) => element.scrollWidth - element.clientWidth)).toBe(0);
-  }
-});
+    await expect(request).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+    await expect(card).toHaveAttribute("data-layout", "compact");
+    await setLayout(preferredLayout);
+    await verifySize("AI Triage Available", "dashed");
+    await verifyRobotMotion("available");
+    await expect(request.locator("svg.lucide-sparkles")).toBeVisible();
+    await request.click();
+    await verifySize("AI Triage In Progress");
+    const progress = card.getByRole("status");
+    await expect(progress).toHaveText("The recommendation will appear automatically when ready.");
+    await verifyRobotMotion("in-progress");
+    status = "FAILED";
+    await verifySize("AI Triage Failed", "solid", width === 390);
+    await verifyRobotMotion("failed");
+    const diagnosticHint = card.getByText(/look up the alert ID in the triage worker logs/);
+    const failureMessage = card.getByText(failure, { exact: true });
+    for (const layout of ["compact", "expanded"] as const) {
+      await setLayout(layout);
+      await expect(failureMessage).toBeInViewport();
+      if (layout === "expanded" && width === 390) {
+        expect((await card.boundingBox())!.height).toBeGreaterThan(measurements.get(layout)!.height);
+        await diagnosticHint.scrollIntoViewIfNeeded();
+      }
+      await expect(diagnosticHint).toBeInViewport({ ratio: 1 });
+      const header = (await card.locator("header").boundingBox())!;
+      const cardBounds = (await card.boundingBox())!;
+      const retryBounds = (await retry.boundingBox())!;
+      const topInset = header.y - cardBounds.y;
+      const bottomInset = cardBounds.y + cardBounds.height - (retryBounds.y + retryBounds.height);
+      expect(retryBounds.x).toBeCloseTo(header.x, 0);
+      expect(bottomInset).toBeCloseTo(topInset, 0);
+    }
+    await setLayout(preferredLayout);
+    await expect(retry).toBeEnabled();
+    await retry.click();
+    await expect(card.getByRole("heading", { name: "AI Triage In Progress" })).toBeVisible();
+    status = "PENDING";
+    await verifySize("AI Triage Recommendation", "solid", true);
+    await setLayout("expanded");
+    const action = card.getByText("Escalate to case and investigate", { exact: true });
+    await expect(action).toBeInViewport({ ratio: 1 });
+    await expect(action.locator("..").locator("..")).toHaveCSS("padding-bottom", "2px");
+    for (const title of ["Context at Triage", "Reasoning", "Recommended Changes", "Recommended Tasks"]) {
+      const accordion = card.getByRole("button", { name: new RegExp(`^${title}`) });
+      const label = accordion.getByText(title, { exact: true });
+      const titlePosition = async () => {
+        const cardBounds = (await card.boundingBox())!;
+        const labelBounds = (await label.boundingBox())!;
+        return { x: labelBounds.x - cardBounds.x, y: labelBounds.y - cardBounds.y };
+      };
+      await expect(accordion).toHaveAttribute("aria-expanded", "false");
+      await expect(accordion).toBeInViewport({ ratio: 1 });
+      const closedPosition = await titlePosition();
+      await accordion.click();
+      await expect(accordion).toHaveAttribute("aria-expanded", "true");
+      const openPosition = await titlePosition();
+      expect(openPosition.x).toBeCloseTo(closedPosition.x, 0);
+      expect(openPosition.y).toBeCloseTo(closedPosition.y, 0);
+      await accordion.click();
+    }
+    await setLayout(preferredLayout);
+    await card.getByRole("button", { name: "Accept Recommendation" }).click();
+    await expect(card.getByText("Accepted", { exact: true })).toBeVisible();
+    await verifySize("AI Triage Recommendation");
+
+    await setLayout("expanded");
+    await card.getByRole("button", { name: /^Reasoning/ }).click();
+    await expect(card.getByText("Evidence detail 14", { exact: true })).toBeVisible();
+    expect((await card.boundingBox())!.height).toBeGreaterThan(measurements.get("expanded")!.height);
+    await expect(card.getByRole("group", { name: "Triage details", exact: true })).toHaveCSS("overflow-y", "visible");
+
+    await setLayout(preferredLayout);
+    for (const [reviewedStatus, label] of [["REJECTED", "Rejected"], ["SUPERSEDED", "Superseded"]] as const) {
+      status = reviewedStatus;
+      await page.reload();
+      await expect(card.getByText(label, { exact: true })).toBeVisible();
+      await verifySize("AI Triage Recommendation", "solid", true);
+    }
+  });
+}
 
 const assigneeFilterRoutes = [
   { resource: "alerts", sample: sampleAlert, prefix: "ALT" },
@@ -1038,9 +1187,12 @@ test("wide chat history divider saves to its existing width preference", async (
   expect(await page.evaluate(() => localStorage.getItem("intercept-ai-pane-width"))).toBe("512");
 });
 
-test("alert detail shows Analyst Context before AI Triage without repeating context", async ({ page }) => {
+test("alert detail shows Analyst Context before the context preview at triage", async ({ page }) => {
   await installProductionApiMocks(page);
-  await page.addInitScript(() => localStorage.setItem("intercept.theme-preference", "system"));
+  await page.addInitScript(() => {
+    localStorage.setItem("intercept.theme-preference", "system");
+    localStorage.setItem("intercept.alert-detail.triage-recommendation.expansion", "expanded");
+  });
   const contextBody = "Scheduled maintenance is in progress.";
   const entry = {
     id: 17,
@@ -1067,6 +1219,7 @@ test("alert detail shows Analyst Context before AI Triage without repeating cont
       reasoning_bullets: ["The evidence is incomplete.", "Check the daily baseline."],
       recommended_actions: [{ title: "Pull DNS telemetry" }, { title: "Compare with the daily baseline" }],
       applied_context_entries: [entry],
+      context_snapshot_verified: true,
     },
   })));
   await page.setViewportSize({ width: 1696, height: 1000 });
@@ -1085,11 +1238,13 @@ test("alert detail shows Analyst Context before AI Triage without repeating cont
     await expect(triage).toBeVisible();
     expect(await top(context)).toBeLessThan(await top(triage));
     await expect(context.getByRole("link", { name: "View all context" })).toHaveCount(0);
-    await expect(timeline.getByText(contextBody, { exact: true })).toHaveCount(1);
+    await expect(context.getByText(contextBody, { exact: true })).toHaveCount(1);
     await expect(context.getByText("Matched Context", { exact: true })).toHaveCount(0);
     await expect(context.getByRole("button", { name: /Expires in 7 days/ })).toBeVisible();
     const triageCard = timeline.getByRole("region", { name: "AI Triage Recommendation" });
-    await expect(triageCard.getByText("Context included", { exact: true })).toBeVisible();
+    const savedContextRow = triageCard.getByRole("button", { name: /^Context at Triage/ });
+    await expect(savedContextRow).toContainText(contextBody);
+    await expect(triageCard.getByText("1 context entry supplied", { exact: true })).toBeVisible();
     await expect(triageCard.getByRole("progressbar")).toHaveCount(0);
     const triageHeader = triageCard.locator("header");
     const confidence = triageHeader.getByText("80%", { exact: true });
@@ -1097,8 +1252,12 @@ test("alert detail shows Analyst Context before AI Triage without repeating cont
     const action = triageCard.getByText("Escalate to case and investigate", { exact: true }).locator("..");
     await expect(confidence).toBeVisible();
     await expect(disposition).toBeVisible();
+    await expect(context.getByText("1 active", { exact: true }).locator("..")).toHaveCSS("height", "20px");
+    await expect(disposition.locator("..")).toHaveCSS("height", "20px");
     await expect(triageHeader.getByText("Pending Review", { exact: true })).toHaveCount(0);
     await expect(action).toBeVisible();
+    await expect(action).toHaveCSS("border-top-width", "1px");
+    await expect(action).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     expect(await top(action)).toBeGreaterThan(await top(disposition));
     // Measure both in the same frame because the narrow detail pane animates as a unit.
     const widthDelta = await action.evaluate((element) => {
@@ -1110,7 +1269,7 @@ test("alert detail shows Analyst Context before AI Triage without repeating cont
     if (width === 1920) {
       expect(Math.abs(await top(confidence) - await top(triage))).toBeLessThan(8);
       expect(Math.abs(await top(disposition) - await top(triage))).toBeLessThan(8);
-      const contextToChevron = await triageHeader.getByText("Context included", { exact: true }).evaluate((element) => {
+      const contextToChevron = await triageHeader.getByText("1 context entry supplied", { exact: true }).evaluate((element) => {
         const chevron = element.closest("header")?.querySelector("button[aria-expanded]");
         if (!chevron) throw new Error("Expected the triage collapse button");
         return chevron.getBoundingClientRect().left - element.getBoundingClientRect().right;
@@ -1126,14 +1285,23 @@ test("alert detail shows Analyst Context before AI Triage without repeating cont
     const taskLabel = taskRow.getByText("Recommended Tasks", { exact: true });
     await expect(firstTask).toBeVisible();
     const accept = triageCard.getByRole("button", { name: "Accept Recommendation" });
+    const reject = triageCard.getByRole("button", { name: "Reject", exact: true });
+    const warningColor = colorScheme === "dark" ? "rgb(255, 118, 13)" : "rgb(160, 52, 12)";
     await expect(accept).toHaveCSS("height", "32px");
-    if (width === 390) {
-      expect(await top(firstTask)).toBeGreaterThan(await top(taskLabel));
+    await expect(reject).toHaveCSS("border-top-color", warningColor);
+    await expect(reject.getByText("Reject", { exact: true })).toHaveCSS("color", warningColor);
+    if (width === 390) expect(await top(firstTask)).toBeGreaterThan(await top(taskLabel));
+    if (width === 1000 || width === 390) {
+      const expandedTextColor = await action.evaluate((element) => getComputedStyle(element).color);
       await triageHeader.getByRole("button", { name: "Collapse triage recommendation" }).click();
       await expect(action).toBeVisible();
       await expect(triageCard.getByText("The evidence is incomplete.", { exact: true }).filter({ visible: true })).toHaveCount(1);
       await expect(accept).toHaveCSS("height", "32px");
       await expect(action).toHaveCSS("height", "32px");
+      await expect(action).toHaveCSS("border-top-width", "0px");
+      await expect(action).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+      await expect(action).not.toHaveCSS("color", expandedTextColor);
+      await expect(reject).toHaveCSS("border-top-color", warningColor);
       await expect(reasonRow).toHaveCount(0);
       await triageHeader.getByRole("button", { name: "Expand triage recommendation" }).click();
     }
@@ -1159,22 +1327,32 @@ test("alert detail shows Analyst Context before AI Triage without repeating cont
 
 test("alert card expansion preferences are independent and follow the analyst across alerts and reloads", async ({ page }) => {
   await installProductionApiMocks(page);
+  await page.route("**/api/v1/features", (route) => route.fulfill(jsonResponse({ ai_triage_enabled: true })));
+  let rerunQueued = false;
+  await page.route("**/api/v1/alerts/2/triage-recommendation/enqueue", (route) => {
+    expect(route.request().postDataJSON()).toEqual({ expected_recommendation_created_at: now });
+    rerunQueued = true;
+    return route.fulfill(jsonResponse({ status: "QUEUED" }));
+  });
   await page.route(/\/api\/v1\/alerts\/[12](?:\?|$)/, (route) => {
     const alert = new URL(route.request().url()).pathname.endsWith("/1") ? sampleAlert : secondAlert;
     const entry = { id: 17, body: `# Test context\n\nContext for ${alert.human_id}.`, author: "admin", criteria: [] };
     return route.fulfill(jsonResponse({
       ...alert,
       context: { items: [entry], total_count: 1 },
+      triage_context_changed: alert.id === secondAlert.id,
       triage_recommendation: {
         id: alert.id,
         alert_id: alert.id,
         created_at: now,
         created_by: "tidemark_ai",
-        status: "PENDING",
-        disposition: "NEEDS_INVESTIGATION",
+        status: alert.id === secondAlert.id && rerunQueued ? "QUEUED" : "PENDING",
+        disposition: alert.id === secondAlert.id ? "BENIGN" : "NEEDS_INVESTIGATION",
         confidence: 0.8,
         request_escalate_to_case: true,
         suggested_status: "ESCALATED",
+        context_snapshot_verified: true,
+        applied_context_entries: [{ ...entry, body: "Saved context from triage" }],
         reasoning_bullets: ["**More evidence** is needed. See the [triage guide](https://example.com).", "Check the daily baseline."],
       },
     }));
@@ -1191,6 +1369,24 @@ test("alert card expansion preferences are independent and follow the analyst ac
   const expandTriage = triage.getByRole("button", { name: "Expand triage recommendation" });
   const accept = triage.getByRole("button", { name: "Accept Recommendation" });
   const reject = triage.getByRole("button", { name: "Reject", exact: true });
+  const rerun = triage.getByRole("button", { name: "Rerun AI Triage" });
+  const expectSeparatedReviewActions = async () => {
+    await expect(rerun).toHaveCSS("height", "32px");
+    const triageBounds = (await triage.boundingBox())!;
+    const header = (await triage.locator("header").boundingBox())!;
+    const rerunBounds = (await rerun.boundingBox())!;
+    const rejectBounds = (await reject.boundingBox())!;
+    const acceptBounds = (await accept.boundingBox())!;
+    expect(rerunBounds.x).toBeCloseTo(header.x, 0);
+    expect(acceptBounds.x + acceptBounds.width).toBeCloseTo(header.x + header.width, 0);
+    expect(rejectBounds.x - (rerunBounds.x + rerunBounds.width)).toBeGreaterThan(8);
+    expect(acceptBounds.x - (rejectBounds.x + rejectBounds.width)).toBeCloseTo(8, 0);
+    for (const button of [rerunBounds, rejectBounds, acceptBounds]) {
+      expect(triageBounds.y + triageBounds.height - (button.y + button.height))
+        .toBeCloseTo(header.y - triageBounds.y, 0);
+    }
+  };
+  const escalate = page.getByRole("button", { name: /^Escalate to Case$/i });
   const action = triage.getByText("Escalate to case and investigate", { exact: true }).locator("..");
   const openAlert = async (alert: typeof sampleAlert) => {
     await page.getByRole("link", { name: new RegExp(alert.title) }).click();
@@ -1198,13 +1394,26 @@ test("alert card expansion preferences are independent and follow the analyst ac
     await expect(context.getByText(new RegExp(`Context for ${alert.human_id}`))).toBeVisible();
   };
 
+  await expect(expandTriage).toHaveAttribute("aria-expanded", "false");
+  await expandTriage.click();
   await expect(collapseTriage).toHaveAttribute("aria-expanded", "true");
+  await expect(escalate).toHaveAttribute("aria-haspopup", "menu");
+  await expect(triage.getByText("Context changed since triage")).toHaveCount(0);
+  await expectSeparatedReviewActions();
+  const changes = triage.getByRole("button", { name: /^Recommended Changes/ });
+  await expect(changes).toBeInViewport({ ratio: 1 });
   await collapseContext.click();
   await openAlert(secondAlert);
   await expect(expandContext).toHaveAttribute("aria-expanded", "false");
+  await expect(triage.getByText("Dismiss alert", { exact: true })).toBeVisible();
+  await expect(escalate).not.toHaveAttribute("aria-haspopup");
+  await expect(triage.getByText("Context changed since triage")).toBeVisible();
   await expect(accept).toBeVisible();
   await collapseTriage.press("Space");
   await expect(expandTriage).toBeFocused();
+  await expect(triage.getByText("Dismiss alert", { exact: true })).toBeVisible();
+  await expect(triage.getByText("Context changed since triage")).toBeVisible();
+  await expectSeparatedReviewActions();
   await openAlert(sampleAlert);
   await page.reload();
   await expect(expandContext).toHaveAttribute("aria-expanded", "false");
@@ -1226,8 +1435,8 @@ test("alert card expansion preferences are independent and follow the analyst ac
   const headerBounds = (await triage.locator("header").boundingBox())!;
   expect(previewBounds.y).toBeGreaterThanOrEqual(headerBounds.y + headerBounds.height);
   expect(bannerBounds.y).toBeGreaterThanOrEqual(previewBounds.y + previewBounds.height);
-  expect(acceptBounds.x).toBeGreaterThan(bannerBounds.x + bannerBounds.width);
-  expect(acceptBounds.y + acceptBounds.height / 2).toBeCloseTo(bannerBounds.y + bannerBounds.height / 2, 0);
+  expect(acceptBounds.y).toBeGreaterThanOrEqual(bannerBounds.y + bannerBounds.height);
+  await expectSeparatedReviewActions();
 
   await expandTriage.click();
   await openAlert(secondAlert);
@@ -1237,6 +1446,19 @@ test("alert card expansion preferences are independent and follow the analyst ac
   await page.reload();
   await expect(collapseContext).toHaveAttribute("aria-expanded", "true");
   await expect(collapseTriage).toHaveAttribute("aria-expanded", "true");
+  const savedContext = triage.getByRole("button", { name: /^Context at Triage/ });
+  const reasoning = triage.getByRole("button", { name: /^Reasoning/ });
+  expect((await savedContext.boundingBox())!.y).toBeLessThan((await reasoning.boundingBox())!.y);
+  await savedContext.click();
+  const savedEntry = triage.getByRole("listitem").filter({ hasText: "Saved context from triage" });
+  const savedBody = savedEntry.getByText("Saved context from triage", { exact: true });
+  const savedAuthor = savedEntry.getByText("admin", { exact: true });
+  await expect(savedBody).toBeVisible();
+  const bodyBounds = (await savedBody.boundingBox())!;
+  expect((await savedAuthor.boundingBox())!.x).toBeGreaterThanOrEqual(bodyBounds.x + bodyBounds.width + 8);
+  await expectSeparatedReviewActions();
+  await rerun.click();
+  await expect(timeline.getByText("AI Triage In Progress")).toBeVisible();
 });
 
 const floatingQueues = [

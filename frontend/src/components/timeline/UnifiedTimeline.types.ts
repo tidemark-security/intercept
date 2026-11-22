@@ -202,6 +202,7 @@ export interface UnifiedTimelineProps {
    * Called when user clicks Retry on a failed recommendation card
    */
   onRetryTriage?: () => void;
+  onRerunTriage?: (expectedCreatedAt: string) => void;
   
   /**
    * Handler for requesting AI triage when no recommendation exists

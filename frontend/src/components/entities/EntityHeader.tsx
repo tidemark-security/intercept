@@ -15,6 +15,7 @@ import { AdaptiveToggleLabel } from "@/components/timeline/AdaptiveToggleLabel";
 import { CaseClosureModal } from "@/components/entities/CaseClosureModal";
 import { AlertStatusIcon } from "@/components/entities/AlertStatusIcon";
 import { TriageRejectionDialog } from "@/components/triage/TriageRejectionDialog";
+import { getDispositionDismissalStatus } from "@/components/triage/dismissalStatus";
 import { IconWrapper, ToggleGroup } from "@tidemark-security/ux";
 import styles from "./EntityHeader.module.css";
 
@@ -346,6 +347,7 @@ const EntityHeaderRoot = React.forwardRef<
     !isClosed &&
     triageRecommendation?.status === 'PENDING' &&
     triageRecommendation.request_escalate_to_case &&
+    !getDispositionDismissalStatus(triageRecommendation.disposition) &&
     onAcceptTriageRecommendation &&
     onRejectTriageRecommendation
   );

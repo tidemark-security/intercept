@@ -44,6 +44,7 @@ export type AlertReadWithCase = {
     triage_recommendation?: (TriageRecommendationRead | null);
     context?: (MatchedContextSection | null);
     case?: (CaseRead | null);
+    triage_context_changed?: (boolean | null);
     readonly human_id: string;
 };
 

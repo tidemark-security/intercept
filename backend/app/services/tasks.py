@@ -8,7 +8,6 @@ Defines task handlers for:
 - Alert triage via LangFlow
 - Terminal failure hooks for retried worker tasks
 """
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Any
@@ -27,6 +26,7 @@ from app.services.enrichment.bulk_sync_schedule_sync import (
     sync_bulk_sync_schedules,
 )
 from app.services.maxmind_service import maxmind_service
+from app.services.triage_recommendation_service import TRIAGE_RUN_HEADER
 from app.services.task_names import (
     TASK_AUTONOMOUS_TASK,
     TASK_DIRECTORY_SYNC,
@@ -92,7 +92,8 @@ def _log_terminal_failure(
 async def _handle_triage_terminal_failure(payload: Dict[str, Any], exc: Exception) -> None:
     """Mark triage as failed only after retry exhaustion."""
     _log_terminal_failure("Alert triage", exc, alert_id=int(payload["alert_id"]))
-    await _mark_triage_failed(int(payload["alert_id"]), _format_terminal_failure_message(exc))
+    run_id = UUID(payload["run_id"]) if payload.get("run_id") else None
+    await _mark_triage_failed(int(payload["alert_id"]), _format_terminal_failure_message(exc), run_id)
 
 
 async def _handle_enrich_item_terminal_failure(
@@ -267,49 +268,45 @@ async def handle_triage_alert(payload: Dict[str, Any]):
 
     Sends the alert ID to the configured LangFlow alert triage flow.
     LangFlow is expected to fetch alert details via MCP tools and create
-    a triage recommendation via the MCP create_triage_recommendation tool.
+    a triage recommendation via the MCP record_triage_decision tool.
 
     This handler updates the QUEUED placeholder recommendation:
-    - On success: The LangFlow agent will call create_triage_recommendation
+    - On success: The LangFlow agent will call record_triage_decision
       which supersedes the QUEUED record with a PENDING one
     - On retryable failure: Leaves the recommendation QUEUED so the worker can retry
     - On terminal failure: A queue-level failure hook updates the record to FAILED
 
     Payload:
         alert_id: ID of the alert to triage (int or str)
+        run_id: ID of the managed triage run
     """
     from sqlmodel import select
     from app.models.models import TriageRecommendation
     from app.models.enums import RecommendationStatus
-    from app.services.context_service import ContextService
 
-    alert_id = payload["alert_id"]
+    alert_id = int(payload["alert_id"])
+    if not payload.get("run_id"):
+        await _mark_triage_failed(alert_id, "This triage job predates run tracking. Retry AI triage.")
+        return
+    run_id = UUID(payload["run_id"])
     session_id = uuid4()  # Generate a new session ID for each triage
 
     logger.info(
         "Processing alert triage task",
         extra={
             "alert_id": alert_id,
+            "triage_run_id": str(run_id),
             "session_id": str(session_id),
         }
     )
 
     async with async_session_factory() as db:
-        # Idempotency guard: if LangFlow already created a recommendation on a
-        # prior attempt (timeout fired after LangFlow completed), skip re-running.
-        result = await db.execute(
-            select(TriageRecommendation).where(
-                TriageRecommendation.alert_id == int(alert_id),
-                TriageRecommendation.status != RecommendationStatus.QUEUED,
-            )
+        queued_run = select(TriageRecommendation.id).where(
+            TriageRecommendation.alert_id == alert_id,
+            TriageRecommendation.triage_run_id == run_id,
+            TriageRecommendation.status == RecommendationStatus.QUEUED,
         )
-        existing = result.scalar_one_or_none()
-        if existing is not None:
-            logger.info(
-                "Skipping triage — recommendation already exists with status %s",
-                existing.status,
-                extra={"alert_id": alert_id},
-            )
+        if await db.scalar(queued_run) is None:
             return
 
         settings_service = SettingsService(db)
@@ -322,20 +319,8 @@ async def handle_triage_alert(payload: Dict[str, Any]):
                 "Alert triage flow not configured. Please set 'langflow.alert_triage_flow_id' in settings."
             )
 
-        applied_context_entries = await ContextService(db).get_matching_context_for_alert(int(alert_id))
-        queued_result = await db.execute(
-            select(TriageRecommendation).where(
-                TriageRecommendation.alert_id == int(alert_id),
-                TriageRecommendation.status == RecommendationStatus.QUEUED,
-            )
-        )
-        queued_recommendation = queued_result.scalar_one_or_none()
-        if queued_recommendation is not None:
-            queued_recommendation.applied_context_entries = applied_context_entries
-            db.add(queued_recommendation)
-            await db.commit()
-
         langflow_service = await LangFlowService.from_settings(settings_service)
+        await db.commit()
 
         try:
             # Use SSE streaming so the per-read timeout (300s of silence)
@@ -349,13 +334,18 @@ async def handle_triage_alert(payload: Dict[str, Any]):
                 session_id=session_id,
                 context={
                     "entity_id": {"input_value": str(alert_id)},
-                    "triage_context_entries": {
-                        "input_value": json.dumps(applied_context_entries, default=str)
-                    },
+                    # These display names identify the summary and agent tool nodes
+                    # in the configured triage flow. Both must forward the run ID.
+                    "triage_summary_mcp": {"headers": {TRIAGE_RUN_HEADER: str(run_id)}, "use_cache": False},
+                    "triage_agent_mcp": {"headers": {TRIAGE_RUN_HEADER: str(run_id)}, "use_cache": False},
                 },
                 per_read_timeout=300.0,
             )
 
+            if await db.scalar(queued_run) is not None:
+                raise LangFlowConfigurationError(
+                    "Langflow finished without committing the managed AI triage recommendation"
+                )
             logger.info(
                 "Alert triage task completed",
                 extra={
@@ -365,10 +355,6 @@ async def handle_triage_alert(payload: Dict[str, Any]):
                     "response_length": len(str(response)),
                 }
             )
-
-            # Note: The LangFlow agent should call create_triage_recommendation MCP tool
-            # which supersedes the QUEUED placeholder. If it didn't, the record stays QUEUED
-            # and will be picked up on retry or marked failed after retries are exhausted.
 
         finally:
             await langflow_service.close()
@@ -470,7 +456,7 @@ async def handle_autonomous_task(payload: Dict[str, Any]):
         await db.commit()
 
 
-async def _mark_triage_failed(alert_id: int, error_message: str):
+async def _mark_triage_failed(alert_id: int, error_message: str, run_id: UUID | None = None):
     """
     Mark a QUEUED triage recommendation as FAILED.
     
@@ -478,15 +464,17 @@ async def _mark_triage_failed(alert_id: int, error_message: str):
     even if the calling context's session is in a bad state (e.g., after rollback).
     """
     from sqlmodel import select
-    from app.models.models import TriageRecommendation
+    from app.models.models import Alert, TriageRecommendation
     from app.models.enums import RecommendationStatus, RealtimeEventType
     
     try:
         # Use a fresh session to avoid issues with rolled-back transactions
         async with async_session_factory() as db:
+            await db.execute(select(Alert.id).where(Alert.id == alert_id).with_for_update())
             query = select(TriageRecommendation).where(
                 TriageRecommendation.alert_id == alert_id,
-                TriageRecommendation.status == RecommendationStatus.QUEUED
+                TriageRecommendation.status == RecommendationStatus.QUEUED,
+                TriageRecommendation.triage_run_id == run_id,
             )
             result = await db.execute(query)
             recommendation = result.scalar_one_or_none()

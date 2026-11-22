@@ -1127,6 +1127,23 @@ class AlertRead(AlertBase):
         return format_entity_id(self.id, ALERT_PREFIX)
 
 
+class AlertTriageRun(SQLModel, table=True):
+    """The context delivered to Langflow for one managed triage run."""
+
+    __tablename__ = "alert_triage_runs"  # type: ignore
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    alert_id: int = Field(foreign_key="alerts.id", ondelete="CASCADE", index=True)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    summary_principal_id: Optional[UUID] = None
+    context_snapshot: Optional[Dict[str, Any]] = Field(
+        default=None, sa_column=Column(JSONB(none_as_null=True))
+    )
+
+
 # Triage Recommendation model
 class TriageRecommendation(SQLModel, table=True):
     """AI-generated triage recommendation for an alert (one per alert)."""
@@ -1139,6 +1156,7 @@ class TriageRecommendation(SQLModel, table=True):
     # Foreign key to alert (1:1 relationship)
     alert_id: int = Field(foreign_key="alerts.id", unique=True, index=True)
     alert: Optional[Alert] = Relationship(back_populates="triage_recommendation")
+    triage_run_id: Optional[UUID] = None
     
     # Recommendation details
     disposition: TriageDisposition = Field(sa_column=Column(SAEnum(TriageDisposition)))
@@ -1182,8 +1200,17 @@ class TriageRecommendation(SQLModel, table=True):
     applied_context_entries: List[Dict[str, Any]] = Field(
         default_factory=list,
         sa_column=Column(JSONB),
-        description="Analyst-authored context entries matched and supplied to AI triage",
+        description="Analyst context snapshot entries for this recommendation",
     )
+
+    @property
+    def context_snapshot_verified(self) -> bool:
+        return self.triage_run_id is not None and self.status in {
+            RecommendationStatus.PENDING,
+            RecommendationStatus.ACCEPTED,
+            RecommendationStatus.REJECTED,
+            RecommendationStatus.SUPERSEDED,
+        }
 
 
 class TriageRecommendationRead(SQLModel):
@@ -1214,6 +1241,7 @@ class TriageRecommendationRead(SQLModel):
     applied_changes: List[Dict[str, Any]] = Field(default_factory=list)
     error_message: Optional[str] = None
     applied_context_entries: List[Dict[str, Any]] = Field(default_factory=list)
+    context_snapshot_verified: bool = False
 
 
 class RunbookTaskDefinition(SQLModel):
@@ -1490,6 +1518,7 @@ class AlertReadWithCase(AlertRead):
     """Alert with case information."""
 
     case: Optional[CaseRead] = None
+    triage_context_changed: Optional[bool] = None
 
 
 # Task models

@@ -26,6 +26,7 @@ import {
   updateContextEntry,
 } from '@/services/contextEntriesApi';
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { queryKeys } from '@/hooks/queryKeys';
 
 const QUERY_KEY = ['context-entries'] as const;
 
@@ -128,7 +129,10 @@ export default function ContextEntries() {
     setDrawerMode(null);
   };
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: QUERY_KEY });
+  const invalidate = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: QUERY_KEY }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.alert.detailsBase() }),
+  ]);
 
   const saveMutation = useMutation({
     mutationFn: (payload: ContextEntryPayload) =>

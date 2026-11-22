@@ -21,10 +21,11 @@ export const caseRunbookKeys = {
     ['case-runbooks', { statuses, search }] as const,
 };
 
-export function useCaseRunbooks(statuses?: CaseRunbookStatus[], search?: string | null) {
+export function useCaseRunbooks(statuses?: CaseRunbookStatus[], search?: string | null, enabled = true) {
   return useQuery({
     queryKey: caseRunbookKeys.list(statuses, search),
     queryFn: () => listCaseRunbooks(statuses, search),
+    enabled,
     staleTime: 60_000,
   });
 }

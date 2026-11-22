@@ -18,7 +18,6 @@ import { useBreakpointContext } from '@/contexts/BreakpointContext';
 import { useAutoScrollToTimelineItem, groupTimelineItems } from '@/components/timeline/timelineUtils';
 import { useResolvedLinkTemplates } from '@/hooks/useUserLinkTemplates';
 import { TriageRecommendationCard } from '@/components/triage/TriageRecommendationCard';
-import { TriageRequestCard } from '@/components/triage/TriageRequestCard';
 import { PicerlStage } from '@/components/misc/PicerlStage';
 // Import handlers to ensure they're registered
 import '@/components/timeline/eventHandlers';
@@ -26,6 +25,7 @@ import type { UnifiedTimelineProps, UnifiedEntity } from './UnifiedTimeline.type
 import type { TimelineItem } from '@/types/timeline';
 import type { TimelineItemType } from '@/types/drafts';
 import type { AlertRead } from '@/types/generated/models/AlertRead';
+import type { AlertReadWithCase } from '@/types/generated/models/AlertReadWithCase';
 import type { AlertStatus } from '@/types/generated/models/AlertStatus';
 import InterceptLogo from '@/assets/Intercept-Green.svg';
 import { QueueSearchHighlightScope } from '@/components/search/QueueSearchHighlight';
@@ -468,6 +468,7 @@ function UnifiedTimelineInner({
   isRejectingRecommendation,
   acceptRecommendationError,
   onRetryTriage,
+  onRerunTriage,
   onRequestTriage,
   isEnqueuingTriage,
   isTriageEnabled,
@@ -1118,7 +1119,8 @@ function UnifiedTimelineInner({
               {(() => {
                 const timelineItems = getTimelineItems(entityDetail);
                 const hasTimelineItems = timelineItems.length > 0;
-                const alert = entityType === 'alert' ? entityDetail as AlertRead : null;
+                const alert = entityType === 'alert' ? entityDetail as AlertReadWithCase : null;
+                const requestTriage = isTriageEnabled && !isEntityClosed && canRequestTriage ? onRequestTriage : undefined;
 
                 return (
                   <div className={cn(
@@ -1131,14 +1133,17 @@ function UnifiedTimelineInner({
                       </div>
                     ) : null}
 
-                    {/* Triage Recommendation Card (Alerts only) */}
-                    {alert?.triage_recommendation && (
+                    {alert && (alert.triage_recommendation || requestTriage) && (
                       <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
                         <TriageRecommendationCard
                           recommendation={alert.triage_recommendation}
+                          onRequest={requestTriage}
                           onAccept={onAcceptTriageRecommendation || (() => { })}
                           onReject={onRejectTriageRecommendation || (() => { })}
                           onRetry={canReviewTriage ? onRetryTriage : undefined}
+                          onRerun={canReviewTriage && isTriageEnabled ? onRerunTriage : undefined}
+                          contextChanged={alert.triage_context_changed}
+                          hasCurrentContext={Boolean(alert.context?.total_count)}
                           onNavigateToCase={onNavigateToCase}
                           isAccepting={isAcceptingRecommendation}
                           isRejecting={isRejectingRecommendation}
@@ -1148,20 +1153,6 @@ function UnifiedTimelineInner({
                         />
                       </div>
                     )}
-
-                    {/* Triage Request Card (Alerts only - when no recommendation exists and triage is enabled) */}
-                    {alert &&
-                      !alert.triage_recommendation &&
-                      isTriageEnabled &&
-                      !isEntityClosed &&
-                      canRequestTriage && (
-                        <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
-                          <TriageRequestCard
-                            onRequestTriage={onRequestTriage}
-                            isEnqueuing={isEnqueuingTriage}
-                          />
-                        </div>
-                      )}
 
                     {/* Entity Metadata Card */}
                     <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">

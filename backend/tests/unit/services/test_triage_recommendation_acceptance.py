@@ -211,6 +211,44 @@ async def test_acceptance_applies_runbook_once_and_uses_one_acceptance_timestamp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("runbook_id", [None, 5])
+async def test_acceptance_closes_benign_recommendation_with_legacy_escalation(
+    monkeypatch: pytest.MonkeyPatch,
+    runbook_id: int | None,
+) -> None:
+    alert = _alert()
+    recommendation = _recommendation(
+        runbook_id=runbook_id,
+        recommended_actions=[{"title": "Investigate the activity"}] if runbook_id is None else None,
+    )
+    recommendation.disposition = TriageDisposition.BENIGN
+    arranged = _arrange_acceptance(
+        monkeypatch,
+        alert=alert,
+        recommendation=recommendation,
+        runbook=None,
+        runbook_task_ids=[],
+    )
+
+    result = await triage_recommendation_service.accept_recommendation(
+        arranged.db,
+        alert_id=7,
+        options=triage_recommendation_service.AcceptRecommendationOptions(),
+        reviewed_by="analyst",
+    )
+
+    assert alert.status == AlertStatus.CLOSED_BP
+    assert result.case_id is None
+    assert result.tasks_created == 0
+    assert result.recommendation.suggested_status == AlertStatus.CLOSED_BP
+    assert result.recommendation.request_escalate_to_case is False
+    assert not result.recommendation.recommended_actions
+    assert result.recommendation.recommended_case_runbook_id is None
+    arranged.create_case.assert_not_awaited()
+    arranged.db.get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_recommended_action_task_uses_acceptance_timestamp(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

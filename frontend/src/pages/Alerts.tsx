@@ -37,6 +37,7 @@ import { useQuickTerminalSubmit } from "@/hooks/useQuickTerminalSubmit";
 import { useAcceptTriageRecommendation } from "@/hooks/useAcceptTriageRecommendation";
 import { useRejectTriageRecommendation } from "@/hooks/useRejectTriageRecommendation";
 import { useEnqueueTriage } from "@/hooks/useEnqueueTriage";
+import { useToast } from "@/contexts/ToastContext";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useSession } from "@/contexts/sessionContext";
 import { useURLFilters } from "@/hooks/useURLFilters";
@@ -103,6 +104,7 @@ const ALERT_SORT_OPTIONS = [
  * @returns The Alerts page component
  */
 function Alerts() {
+  const { showToast } = useToast();
   // Get URL parameters and navigation
   const { humanId } = useParams<{ humanId?: string }>();
   const location = useLocation();
@@ -328,7 +330,7 @@ function Alerts() {
   // Enqueue triage mutation (for retry and manual request)
   const enqueueTriageMutation = useEnqueueTriage(selectedAlertId, {
     onError: (error) => {
-      console.error("Failed to enqueue triage:", error);
+      showToast("Could not start AI triage", getApiErrorMessage(error, "Failed to enqueue triage"), "error");
     },
   });
 
@@ -776,6 +778,9 @@ function Alerts() {
             isRejectingRecommendation={rejectTriageRecommendationMutation.isPending}
             acceptRecommendationError={acceptRecommendationError}
             onRetryTriage={isAuditor ? undefined : handleRetryTriage}
+            onRerunTriage={isAuditor ? undefined : (expectedCreatedAt) => {
+              enqueueTriageMutation.mutate({ expected_recommendation_created_at: expectedCreatedAt });
+            }}
             onRequestTriage={isAuditor ? undefined : handleRequestTriage}
             isEnqueuingTriage={enqueueTriageMutation.isPending}
             isTriageEnabled={isTriageEnabled}

@@ -3,6 +3,7 @@ Triage Recommendation API Routes
 
 API endpoints for managing AI-generated triage recommendations on alerts.
 """
+from datetime import datetime
 from typing import NoReturn, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -73,6 +74,12 @@ class AcceptRecommendationRequest(BaseModel):
     )
 
 
+class EnqueueTriageRequest(BaseModel):
+    """Optional recommendation revision for analyst-initiated reruns."""
+
+    expected_recommendation_created_at: Optional[datetime] = None
+
+
 class RejectRecommendationRequest(BaseModel):
     """Request body for rejecting a triage recommendation."""
 
@@ -127,6 +134,7 @@ async def enqueue_triage_recommendation(
     http_request: Request,  # pylint: disable=unused-argument
     db: AsyncSession = Depends(get_db),
     current_user: UserAccount = Depends(require_non_auditor_user),
+    payload: Optional[EnqueueTriageRequest] = None,
 ) -> TriageRecommendationRead:
     """Enqueue AI triage for an alert.
 
@@ -140,6 +148,7 @@ async def enqueue_triage_recommendation(
             db=db,
             alert_id=alert_id,
             enqueued_by=current_user.username,
+            expected_recommendation_created_at=payload.expected_recommendation_created_at if payload else None,
         )
     except TriageRecommendationError as error:
         _raise_triage_recommendation_http_error(error)

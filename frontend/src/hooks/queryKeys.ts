@@ -46,6 +46,8 @@ export type EntityType = 'alert' | 'case' | 'task';
  */
 export const queryKeys = {
   alert: {
+    /** Prefix for invalidating alert details across all alerts. */
+    detailsBase: () => ['alert-detail'] as const,
     /**
      * Query key for a single alert detail
      * @param id - Alert ID

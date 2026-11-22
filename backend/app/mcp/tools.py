@@ -14,8 +14,10 @@ This module contains:
 
 from collections.abc import Awaitable
 from typing import Any, Dict, TypeVar
+from uuid import UUID
 
 from fastapi import HTTPException
+from fastmcp.server.dependencies import get_http_request
 
 from app.api.timestamp_overrides import normalize_created_at_override
 from app.core.database import async_session_factory
@@ -31,6 +33,7 @@ from app.services.mcp_errors import (
     McpUnavailableError,
     McpValidationError,
 )
+from app.services.triage_recommendation_service import TRIAGE_RUN_HEADER
 
 _PRUNED = object()
 _PRESERVE_EMPTY_CONTAINER_KEYS = {"items", "resources", "errors"}
@@ -134,6 +137,20 @@ def _require_mcp_non_auditor_user() -> str:
     return _require_mcp_non_auditor_user_object().username
 
 
+def _get_triage_run_id() -> UUID | None:
+    try:
+        request = get_http_request()
+    except RuntimeError:
+        return None
+    raw_id = request.headers.get(TRIAGE_RUN_HEADER) if request is not None else None
+    if raw_id is None:
+        return None
+    try:
+        return UUID(raw_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="Invalid AI triage run ID") from error
+
+
 async def get_summary_tool(
     kind: str,
     id: str,
@@ -142,6 +159,8 @@ async def get_summary_tool(
     since: str | None = None,
 ) -> Dict[str, Any]:
     """Get a bounded context summary for an alert, case, or task."""
+    run_id = _get_triage_run_id() if kind == "alert" else None
+    principal_id = _require_mcp_non_auditor_user_object().id if run_id is not None else None
     async with async_session_factory() as db:
         result = await _run_service_call(
             mcp_service.get_summary(
@@ -151,11 +170,18 @@ async def get_summary_tool(
                 max_timeline_items=max_timeline_items,
                 max_observables=max_observables,
                 since=since,
+                triage_run_id=run_id,
+                principal_id=principal_id,
             )
         )
         payload = result.model_dump(mode="json")
         pruned_payload = _prune_llm_payload(payload, preserve_empty=True)
-        return pruned_payload if isinstance(pruned_payload, dict) else payload
+        response = pruned_payload if isinstance(pruned_payload, dict) else payload
+        if run_id is not None:
+            # Send the same serialized context we keep in the run snapshot.
+            response["context"] = payload["context"]
+            await db.commit()
+        return response
 
 
 async def list_work_tool(
@@ -222,6 +248,7 @@ async def record_triage_decision_tool(
     commit: bool = False,
 ) -> Dict[str, Any]:
     """Record an AI triage recommendation for an alert."""
+    run_id = _get_triage_run_id() if commit else None
     username = (
         _require_mcp_non_auditor_user() if commit else _get_authenticated_username()
     )
@@ -244,6 +271,8 @@ async def record_triage_decision_tool(
                 request_escalate_to_case=request_escalate_to_case,
                 commit=commit,
                 created_by=username,
+                triage_run_id=run_id,
+                principal_id=_require_mcp_non_auditor_user_object().id if run_id is not None else None,
             )
         )
         return result.model_dump()

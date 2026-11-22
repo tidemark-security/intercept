@@ -77,6 +77,7 @@ async def test_api_key_verifier_returns_native_principal_claims() -> None:
     assert service.validate_api_key.await_args.kwargs["required_scopes"] == {
         MCP_ACCESS_SCOPE
     }
+    assert service.validate_api_key.await_args.kwargs["shared_lock"] is True
 
 
 @pytest.mark.asyncio

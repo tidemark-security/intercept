@@ -12,6 +12,7 @@ import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, NoReturn, Optional, Union, cast
+from uuid import UUID
 
 from sqlalchemy import String, cast as sql_cast, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -731,6 +732,9 @@ async def get_summary(
     max_timeline_items: int = 25,
     max_observables: int = 20,
     since: Optional[str] = None,
+    *,
+    triage_run_id: UUID | None = None,
+    principal_id: UUID | None = None,
 ) -> GetSummaryOutput:
     """Get bounded context summary for an alert, case, or task.
 
@@ -788,13 +792,20 @@ async def get_summary(
         omitted_count=len(all_observables) - len(observables),
     )
 
-    context_section = await _summary_context(
-        db,
-        kind=kind,
-        entity_id=numeric_id,
-        limit=max_timeline_items,
-    )
     related_counts = await _summary_related_counts(db, kind, entity)
+    if triage_run_id is not None and kind == "alert":
+        if principal_id is None:
+            raise McpValidationError("A managed AI triage summary requires an MCP identity")
+        try:
+            context_section = await triage_recommendation_service.get_run_context(
+                db, triage_run_id, numeric_id, principal_id
+            )
+        except triage_recommendation_service.TriageRecommendationError as error:
+            _raise_triage_recommendation_mcp_error(error)
+    else:
+        context_section = await _summary_context(
+            db, kind=kind, entity_id=numeric_id, limit=max_timeline_items
+        )
 
     resources = [
         Resource(
@@ -832,6 +843,8 @@ async def record_triage_decision(
     request_escalate_to_case: bool = False,
     commit: bool = False,
     created_by: str = "api_user",
+    triage_run_id: UUID | None = None,
+    principal_id: UUID | None = None,
 ) -> RecordTriageDecisionOutput:
     """Record AI triage recommendation for an alert.
 
@@ -918,6 +931,8 @@ async def record_triage_decision(
                 alert_id=numeric_id,
                 data=data,
                 created_by=created_by,
+                run_id=triage_run_id,
+                principal_id=principal_id,
             )
         )
     except triage_recommendation_service.TriageRecommendationError as error:

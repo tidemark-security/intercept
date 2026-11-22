@@ -358,6 +358,9 @@ class InterceptApiKeyVerifier(TokenVerifier):
                     required_scopes={MCP_ACCESS_SCOPE},
                     context=None,
                     skip_locked=True,
+                    # Streamable HTTP can authenticate its SSE reader and POST
+                    # concurrently. Tool execution revalidates the credential.
+                    shared_lock=True,
                 )
                 await db.commit()
             except (

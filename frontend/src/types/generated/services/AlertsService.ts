@@ -13,6 +13,7 @@ import type { AlertStatus } from '../models/AlertStatus';
 import type { AlertTriageRequest } from '../models/AlertTriageRequest';
 import type { AlertUpdate } from '../models/AlertUpdate';
 import type { AttachmentStatusUpdate } from '../models/AttachmentStatusUpdate';
+import type { EnqueueTriageRequest } from '../models/EnqueueTriageRequest';
 import type { Page_AlertRead_ } from '../models/Page_AlertRead_';
 import type { PresignedDownloadResponse } from '../models/PresignedDownloadResponse';
 import type { PresignedUploadRequest } from '../models/PresignedUploadRequest';
@@ -525,8 +526,10 @@ export class AlertsService {
      */
     public static enqueueTriageRecommendationApiV1AlertsAlertIdTriageRecommendationEnqueuePost({
         alertId,
+        requestBody,
     }: {
         alertId: (number | string),
+        requestBody?: (EnqueueTriageRequest | null),
     }): CancelablePromise<TriageRecommendationRead> {
         return __request(OpenAPI, {
             method: 'POST',
@@ -534,6 +537,8 @@ export class AlertsService {
             path: {
                 'alert_id': alertId,
             },
+            body: requestBody,
+            mediaType: 'application/json',
             errors: {
                 422: `Validation Error`,
             },

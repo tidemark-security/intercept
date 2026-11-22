@@ -90,6 +90,7 @@ export type { DashboardStatsResponse } from './models/DashboardStatsResponse';
 export type { DateRangeApplied } from './models/DateRangeApplied';
 export type { DeletedItem } from './models/DeletedItem';
 export type { EmailItem } from './models/EmailItem';
+export type { EnqueueTriageRequest } from './models/EnqueueTriageRequest';
 export type { EnrichmentAliasCreate } from './models/EnrichmentAliasCreate';
 export type { EnrichmentAliasRead } from './models/EnrichmentAliasRead';
 export type { EnrichmentAliasUpdate } from './models/EnrichmentAliasUpdate';

@@ -229,6 +229,10 @@ class AlertService:
         from app.services.context_service import ContextService
 
         context_items = await ContextService(db).get_matching_context_for_alert(alert_id)
+        context_changed = await triage_recommendation_service.context_changed_since_triage(
+            db, prepared_alert.triage_recommendation, context_items
+        )
+        object.__setattr__(prepared_alert, "triage_context_changed", context_changed)
         object.__setattr__(
             prepared_alert,
             "context",

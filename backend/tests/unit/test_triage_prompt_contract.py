@@ -66,3 +66,16 @@ def test_triage_prompt_explains_case_runbook_discovery_tools() -> None:
     assert "get_case_runbook" in prompt
     assert "recommended_case_runbook_id" in prompt
     assert "recommended_case_runbook_id and recommended_actions are mutually exclusive" in prompt
+
+
+def test_bundled_triage_flow_exposes_both_run_scoped_mcp_nodes() -> None:
+    asset = Path(__file__).resolve().parents[2] / "app/static/langflow/tmi_alert_triage.json"
+    flow = json.loads(asset.read_text(encoding="utf-8"))
+    nodes = {vertex["data"]["node"]["display_name"]: vertex["data"]["node"]
+             for vertex in flow["data"]["nodes"]}
+    summary = nodes["triage_summary_mcp"]["template"]
+    agent = nodes["triage_agent_mcp"]["template"]
+    assert summary["tool"]["value"] == "get_summary"
+    assert summary["use_cache"]["value"] is False
+    assert agent["use_cache"]["value"] is False
+    assert summary["headers"]["type"] == agent["headers"]["type"] == "dict"

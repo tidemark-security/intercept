@@ -1,0 +1,75 @@
+.conveyor {
+  --head-size: 3rem;
+  --head-mask: calc(var(--head-size) * 0.46);
+  position: relative;
+  display: grid;
+  place-items: center;
+  inline-size: 13rem;
+  block-size: 4rem;
+}
+
+.conveyor[data-expanded] {
+  --head-size: 4rem;
+  inline-size: 16rem;
+  block-size: 7rem;
+}
+
+.robot {
+  position: relative;
+  font-size: var(--head-size);
+}
+
+.track {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 10px,
+    black calc(50% - var(--head-mask)),
+    transparent calc(50% - var(--head-mask)),
+    transparent calc(50% + var(--head-mask)),
+    black calc(50% + var(--head-mask)),
+    black calc(100% - 10px),
+    transparent
+  );
+}
+
+.track::before {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  inset-block-start: calc(50% + 9px);
+  block-size: 7px;
+  border-block: 1px solid currentColor;
+  background: repeating-linear-gradient(115deg, transparent 0 6px, currentColor 6px 7px, transparent 7px 10px);
+  opacity: 0.35;
+}
+
+.item {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  transform: translateX(calc(4% + var(--item-index) * 16%));
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .track::before {
+    animation: belt-travel 240ms linear infinite;
+  }
+
+  .item {
+    animation: conveyor-travel 5.4s linear calc(var(--item-index) * -900ms) infinite;
+  }
+}
+
+@keyframes belt-travel {
+  to { background-position-x: 10px; }
+}
+
+@keyframes conveyor-travel {
+  from { transform: translateX(-1rem); }
+  to { transform: translateX(100%); }
+}

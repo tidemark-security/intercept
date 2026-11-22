@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient, UseMutationResult } from '@tanstack/react-query';
 import { AlertsService } from '@/types/generated/services/AlertsService';
 import type { TriageRecommendationRead } from '@/types/generated/models/TriageRecommendationRead';
+import type { EnqueueTriageRequest } from '@/types/generated/models/EnqueueTriageRequest';
 import { queryKeys } from './queryKeys';
 
 interface UseEnqueueTriageOptions {
@@ -21,7 +22,7 @@ interface UseEnqueueTriageOptions {
 export function useEnqueueTriage(
   alertId: number | string | null,
   options?: UseEnqueueTriageOptions
-): UseMutationResult<TriageRecommendationRead, Error, void> {
+): UseMutationResult<TriageRecommendationRead, Error, EnqueueTriageRequest | void> {
   const queryClient = useQueryClient();
   
   // Parse alertId if it's a human ID string like "ALT-0000123"
@@ -29,13 +30,14 @@ export function useEnqueueTriage(
     ? parseInt(alertId.replace('ALT-', ''), 10)
     : alertId;
 
-  return useMutation<TriageRecommendationRead, Error, void>({
-    mutationFn: async () => {
+  return useMutation<TriageRecommendationRead, Error, EnqueueTriageRequest | void>({
+    mutationFn: async (payload) => {
       if (numericAlertId === null || isNaN(numericAlertId)) {
         throw new Error('Alert ID is required');
       }
       return AlertsService.enqueueTriageRecommendationApiV1AlertsAlertIdTriageRecommendationEnqueuePost({
         alertId: numericAlertId,
+        requestBody: payload ?? undefined,
       });
     },
 
@@ -55,6 +57,9 @@ export function useEnqueueTriage(
     },
     
     onError: (error) => {
+      if (numericAlertId !== null && 'status' in error && error.status === 409) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.alert.detailBase(numericAlertId) });
+      }
       options?.onError?.(error);
     },
   });

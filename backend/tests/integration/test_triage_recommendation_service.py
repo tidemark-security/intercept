@@ -204,10 +204,11 @@ async def test_enqueue_triage_resets_existing_recommendation_in_place(
     assert queued.rejection_reason is None
     assert queued.applied_changes == []
     assert queued.error_message is None
+    assert rows[0].triage_run_id is not None
     enqueue.assert_awaited_once_with(
         task_name="triage_alert",
-        payload={"alert_id": alert.id},
-        dedupe_key=f"triage_alert:{alert.id}",
+        payload={"alert_id": alert.id, "run_id": str(rows[0].triage_run_id)},
+        dedupe_key=f"triage_alert:{alert.id}:{rows[0].triage_run_id}",
     )
 
 
@@ -258,9 +259,12 @@ async def test_concurrent_enqueue_serializes_and_keeps_one_recommendation(
     assert rows[0].status == RecommendationStatus.QUEUED
     assert rows[0].created_by in {"analyst-one", "analyst-two"}
     assert enqueue.await_count == 2
-    assert {
-        call.kwargs["dedupe_key"] for call in enqueue.await_args_list
-    } == {f"triage_alert:{alert_id}"}
+    queued_run_ids = {call.kwargs["payload"]["run_id"] for call in enqueue.await_args_list}
+    assert len(queued_run_ids) == 2
+    assert str(rows[0].triage_run_id) in queued_run_ids
+    assert {call.kwargs["dedupe_key"] for call in enqueue.await_args_list} == {
+        f"triage_alert:{alert_id}:{run_id}" for run_id in queued_run_ids
+    }
 
 
 @pytest.mark.asyncio
