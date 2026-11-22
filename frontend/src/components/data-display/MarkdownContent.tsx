@@ -210,6 +210,9 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
               {children}
             </blockquote>
           ),
+          pre: ({ children, className: preClassName }) => (
+            <pre className={cn("whitespace-pre-wrap [overflow-wrap:anywhere]", preClassName)}>{children}</pre>
+          ),
           code: (props: any) => {
             const { node, inline, className, children, ...rest } = props;
             const match = /language-(\w+)/.exec(className || '');

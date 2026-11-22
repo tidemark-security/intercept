@@ -1166,6 +1166,45 @@ test("alert card expansion preferences are independent and follow the analyst ac
   await expect(collapseTriage).toHaveAttribute("aria-expanded", "true");
 });
 
+test("the case timeline fits narrow screens with wide emails and attachments", async ({ page }) => {
+  const longLine = "mailbody".repeat(25);
+  const attachmentName = `${"attachment".repeat(16)}.pdf`;
+  await installProductionApiMocks(page);
+  await page.route("**/api/v1/cases/1?*", (route) => route.fulfill(jsonResponse({
+    ...sampleCase,
+    timeline_items: {
+      email: {
+        id: "email", type: "email", timestamp: now, created_at: now,
+        subject: "Example email", sender: "sender@example.com", recipient: "recipient@example.com",
+        message_id: `<${"messageid".repeat(15)}@example.com>`,
+        description: `    ${longLine}\n      Indented second line`,
+      },
+      attachment: {
+        id: "attachment", type: "attachment", timestamp: now, created_at: now,
+        file_name: attachmentName, mime_type: "application/pdf", file_size: 1024,
+      },
+    },
+  })));
+  await page.setViewportSize({ width: 468, height: 900 });
+  await page.goto("/cases/CAS-0000001");
+
+  const timeline = page.getByLabel("case timeline content");
+  const preformatted = timeline.locator("pre").filter({ hasText: longLine });
+  await expect(timeline.getByText("Example email", { exact: true })).toBeVisible();
+  await expect(timeline.getByText(attachmentName, { exact: true }).first()).toBeVisible();
+  await expect(preformatted).toBeVisible();
+  expect(await preformatted.textContent()).toContain(`${longLine}\n  Indented second line`);
+  await page.evaluate(() => document.fonts.ready);
+
+  for (const width of [468, 360, 1000, 1600, 2400]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect.poll(() => timeline.evaluate((node) => node.scrollWidth - node.clientWidth), {
+      message: `Timeline should not scroll horizontally at ${width}px`,
+    }).toBeLessThanOrEqual(1);
+    expect(await preformatted.evaluate((node) => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
+  }
+});
+
 test("narrow alerts view keeps the queue and detail reachable", async ({ page }) => {
   await installProductionApiMocks(page);
   await page.setViewportSize({ width: 1000, height: 900 });

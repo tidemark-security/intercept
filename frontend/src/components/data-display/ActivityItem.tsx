@@ -277,7 +277,7 @@ const ActivityItemRoot = React.forwardRef<
       ) : null}
       <div
         className={cn(
-          "flex grow shrink-0 basis-0 flex-col items-start self-stretch",
+          "flex min-w-0 grow shrink-0 basis-0 flex-col items-start self-stretch",
           hideRail && "min-h-full",
           { "bg-transparent": flagged }
         )}
