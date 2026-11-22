@@ -51,7 +51,7 @@ export function ContextCard({ context }: ContextCardProps) {
   return (
     <section
       aria-label="Analyst Context"
-      className="mt-2 flex w-full min-w-0 flex-col gap-2 border-t border-solid border-neutral-900 pt-4"
+      className="mt-2 flex w-full min-w-0 flex-col gap-2 border-t border-solid border-neutral-border pt-4"
     >
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <div className="flex min-w-0 flex-wrap items-center gap-2">

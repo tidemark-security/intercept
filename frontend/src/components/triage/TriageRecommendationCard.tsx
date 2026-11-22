@@ -460,7 +460,7 @@ export function TriageRecommendationCard({
         data-layout={isExpanded ? 'expanded' : 'compact'}
         className={cn(
           result && styles.card,
-          'mt-2 flex w-full min-w-0 flex-col gap-2 border-t border-solid border-neutral-900 pt-4',
+          'mt-2 flex w-full min-w-0 flex-col gap-2 border-t border-solid border-neutral-border pt-4',
         )}
       >
         <header className={cn('flex w-full shrink-0 items-center gap-3', !result && 'min-h-8')}>
