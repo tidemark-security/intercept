@@ -344,7 +344,7 @@ export function EntityMetadataCard({
               inline={true}
               readonly={!onUpdateTags}
               placeholder={onUpdateTags ? "+ Add tags" : (currentTags.length > 0 ? " " : "No tags")}
-              className={!onUpdateTags ? "pointer-events-none opacity-60" : ""}
+              className={!onUpdateTags ? "opacity-60" : ""}
             />
           ) : null}
         >

@@ -74,11 +74,9 @@ const TagRoot = React.forwardRef<HTMLSpanElement, TagProps>(function TagRoot(
   },
   ref,
 ) {
-  const tagSearchHref =
-    searchable && typeof tagText === 'string' && tagText.trim()
-      ? searchHref ?? getTagSearchHref(tagText.trim())
-      : undefined;
-  const searchableTagText = searchable && typeof tagText === 'string' ? tagText.trim() : '';
+  const isRemovable = showAction && action === 'cross';
+  const searchableTagText = !isRemovable && searchable && typeof tagText === 'string' ? tagText.trim() : '';
+  const tagSearchHref = searchableTagText ? searchHref ?? getTagSearchHref(searchableTagText) : undefined;
   const textClassName = cn(
       'line-clamp-1 flex h-full grow shrink-0 basis-0 items-center justify-center overflow-hidden text-ellipsis text-center text-caption font-caption',
       {
@@ -109,7 +107,7 @@ const TagRoot = React.forwardRef<HTMLSpanElement, TagProps>(function TagRoot(
     <span
       className={cn(
         'group/02c10a66 flex h-6 items-center justify-center gap-1 border bevel-br-md border-solid border-neutral-border bg-brand-100 px-2',
-        'hover:border-brand-primary',
+        !isRemovable && 'hover:border-brand-primary',
         {
           'bg-p5': p === '5',
           'bg-p4': p === '4',
@@ -123,11 +121,11 @@ const TagRoot = React.forwardRef<HTMLSpanElement, TagProps>(function TagRoot(
       ref={ref}
       onClick={(event) => {
         event.stopPropagation();
-        onClick?.(event);
+        if (!isRemovable) onClick?.(event);
       }}
       onAuxClick={(event) => {
         event.stopPropagation();
-        onAuxClick?.(event);
+        if (!isRemovable) onAuxClick?.(event);
       }}
       {...otherProps}
     >

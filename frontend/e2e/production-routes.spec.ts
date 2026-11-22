@@ -1244,6 +1244,10 @@ test("alert Bulk Action sends one update with status, assignee, suggested tag an
   await page.getByRole("option", { name: "Assign to me" }).click({ timeout: 5000 });
   await dialog.getByRole("button", { name: "Reviewed", exact: true }).click({ timeout: 5000 });
   await expect(dialog.getByRole("button", { name: "Reviewed", exact: true })).toHaveCount(0);
+  await expect(dialog.getByRole("link", { name: "Reviewed" })).toHaveCount(0);
+  await dialog.getByText("Reviewed", { exact: true }).filter({ visible: true }).click();
+  await expect(dialog.getByRole("button", { name: "Remove Reviewed" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Search", exact: true })).toHaveCount(0);
   await dialog.getByRole("textbox", { name: "Analyst note" }).fill("  Reviewed both alerts.  ");
   await apply.click();
 
@@ -1256,6 +1260,28 @@ test("alert Bulk Action sends one update with status, assignee, suggested tag an
     tags: ["Reviewed"],
     note: "Reviewed both alerts.",
   }]);
+});
+
+test("read-only alert tags can open universal search", async ({ page }) => {
+  await installProductionApiMocks(page);
+  const session = apiResponse("/api/v1/auth/session") as { user: typeof adminUser };
+  await page.route("**/api/v1/auth/session", (route) => route.fulfill(jsonResponse({
+    ...session,
+    user: { ...adminUser, role: "AUDITOR" },
+  })));
+  await page.route(/\/api\/v1\/alerts\/1(?:\?|$)/, (route) => route.fulfill(jsonResponse({
+    ...sampleAlert,
+    tags: ["phishing"],
+  })));
+
+  await page.setViewportSize({ width: 1920, height: 1000 });
+  await page.goto("/alerts/ALT-0000001");
+  const detail = page.getByLabel("alert timeline content");
+  await expect(detail.getByRole("button", { name: "Remove phishing" })).toHaveCount(0);
+  await detail.getByRole("link", { name: "phishing", exact: true }).click({ timeout: 5000 });
+
+  await expect(page.getByRole("textbox", { name: "Search", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove phishing" })).toBeVisible();
 });
 
 for (const { resource, singular, sample, buttonLabel, status, forbiddenStatus } of [
