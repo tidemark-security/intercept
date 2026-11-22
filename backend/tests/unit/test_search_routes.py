@@ -115,6 +115,7 @@ async def test_route_passes_normalization_and_range_defaults_to_service(
         "limit": 20,
         "start_date": end - timedelta(days=30),
         "end_date": end,
+        "all_time": False,
         "tags": ["  VIP  ", "vip"],
         "user_id": "user-1",
     }

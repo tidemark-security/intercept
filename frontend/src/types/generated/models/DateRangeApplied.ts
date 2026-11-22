@@ -7,12 +7,12 @@
  */
 export type DateRangeApplied = {
     /**
-     * Start of date range (ISO8601)
+     * Start of date range (ISO8601), or null for all time
      */
-    start: string;
+    start: (string | null);
     /**
-     * End of date range (ISO8601)
+     * End of date range (ISO8601), or null for all time
      */
-    end: string;
+    end: (string | null);
 };
 

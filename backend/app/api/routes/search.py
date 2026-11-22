@@ -6,7 +6,7 @@ date range filtering, and fuzzy matching fallback.
 """
 import re
 from datetime import datetime
-from typing import List, Optional
+from typing import Annotated, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,7 @@ from app.models.models import UserAccount
 from app.models.search_schemas import (
     EntityType,
     PaginatedSearchResponse,
+    QueueSearchResponse,
     SearchErrorResponse,
 )
 from app.services.date_filter_utils import (
@@ -25,6 +26,7 @@ from app.services.date_filter_utils import (
 )
 from app.services.search_service import (
     SearchDateRangeValidationError,
+    SearchQueueValidationError,
     resolve_search_date_range,
     search_service,
 )
@@ -50,12 +52,13 @@ def _invalid_search_request(error: str, code: str) -> HTTPException:
     )
 
 
-def _validate_query(query: str) -> str:
+def _validate_query(query: str, *, allow_wildcard: bool = True) -> str:
     """Normalize and validate search text while preserving wildcard mode."""
     sanitized_query = _sanitize_query(query)
-    if len(sanitized_query) < 2 and sanitized_query != "*":
+    if len(sanitized_query) < 2 and not (allow_wildcard and sanitized_query == "*"):
         raise _invalid_search_request(
-            "Query must be at least 2 characters, or '*' for filter-only search",
+            "Query must be at least 2 characters"
+            + (", or '*' for filter-only search" if allow_wildcard else ""),
             "INVALID_QUERY",
         )
     if len(sanitized_query) > 200:
@@ -83,12 +86,14 @@ def _parse_iso_date(date_str: str, param_name: str) -> datetime:
 def _parse_date_range(
     start_date: Optional[str],
     end_date: Optional[str],
-) -> tuple[datetime, datetime]:
+    *,
+    all_time: bool = False,
+) -> tuple[datetime | None, datetime | None]:
     """Parse optional bounds, apply defaults, and validate the resolved range."""
     parsed_start = _parse_iso_date(start_date, "start_date") if start_date else None
     parsed_end = _parse_iso_date(end_date, "end_date") if end_date else None
     try:
-        return resolve_search_date_range(parsed_start, parsed_end)
+        return resolve_search_date_range(parsed_start, parsed_end, all_time=all_time)
     except SearchDateRangeValidationError as exc:
         raise _invalid_search_request(str(exc), "INVALID_DATE_RANGE") from exc
 
@@ -144,6 +149,9 @@ async def unified_search(
         description="End of date range (ISO8601 with Z suffix). Default: now",
         examples=["2024-12-29T23:59:59Z"],
     ),
+    all_time: Annotated[bool, Query(
+        description="Search all dates without the default 30-day window. Cannot be combined with date bounds.",
+    )] = False,
     tags: Optional[List[str]] = Query(
         default=None,
         description="Tag filter values. Can be specified multiple times. Matches top-level and timeline item tags (OR semantics).",
@@ -154,7 +162,7 @@ async def unified_search(
 ) -> PaginatedSearchResponse:
     """Unified search across all entity types with pagination."""
     sanitized_query = _validate_query(q)
-    parsed_start_date, parsed_end_date = _parse_date_range(start_date, end_date)
+    parsed_start_date, parsed_end_date = _parse_date_range(start_date, end_date, all_time=all_time)
 
     # Default to all entity types if none specified
     search_entity_types = entity_types if entity_types else list(EntityType)
@@ -167,6 +175,46 @@ async def unified_search(
         limit=limit,
         start_date=parsed_start_date,
         end_date=parsed_end_date,
+        all_time=all_time,
         tags=tags,
         user_id=str(current_user.id) if current_user else None,
     )
+
+
+@router.get(
+    "/queue",
+    response_model=QueueSearchResponse,
+    summary="Search within an entity queue",
+    responses={400: {"model": SearchErrorResponse}, 401: {"description": "Not authenticated"}},
+)
+async def queue_search(
+    q: str = Query(..., description="Search text (2–200 characters)"),
+    entity_type: EntityType = Query(...),
+    status: list[str] | None = Query(None),
+    assignee: list[str] | None = Query(None),
+    include_tags: list[str] | None = Query(None),
+    exclude_tags: list[str] | None = Query(None),
+    start_date: str | None = Query(None),
+    end_date: str | None = Query(None),
+    sort_by: Literal["created_at", "updated_at", "priority", "status"] = Query("created_at"),
+    sort_order: Literal["asc", "desc"] = Query("desc"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> QueueSearchResponse:
+    """Return matching rows with queue filters and ordering, without global defaults."""
+    query = _validate_query(q, allow_wildcard=False)
+    start = _parse_iso_date(start_date, "start_date") if start_date is not None else None
+    end = _parse_iso_date(end_date, "end_date") if end_date is not None else None
+    if start is not None and end is not None and start > end:
+        raise _invalid_search_request("Start date must be before end date", "INVALID_DATE_RANGE")
+    try:
+        return await search_service.search_queue(
+            db,
+            query=query, entity_type=entity_type, status=status, assignee=assignee,
+            include_tags=include_tags, exclude_tags=exclude_tags,
+            start_date=start, end_date=end, sort_by=sort_by, sort_order=sort_order,
+            skip=skip, limit=limit,
+        )
+    except SearchQueueValidationError as exc:
+        raise _invalid_search_request(str(exc), "INVALID_QUEUE_FILTER") from exc

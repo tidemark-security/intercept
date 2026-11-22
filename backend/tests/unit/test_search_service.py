@@ -436,22 +436,20 @@ class TestSearchServiceResultMetadata:
         ]
         mock_db.execute.return_value = result
 
-        items, total = await service._search_entity_candidates(
+        response = await service.paginated_search(
             db=mock_db,
-            table_name="alerts",
-            entity_type=EntityType.ALERT,
+            entity_types=[EntityType.ALERT],
             query="*",
             start_date=created_at - timedelta(days=1),
             end_date=updated_at + timedelta(days=1),
-            candidate_limit=20,
         )
 
-        assert total == 1
-        assert len(items) == 1
-        assert items[0].assignee == "analyst1"
-        assert items[0].status == "IN_PROGRESS"
-        assert items[0].priority == "HIGH"
-        assert items[0].updated_at == updated_at
+        assert response.total == 1
+        assert len(response.results) == 1
+        assert response.results[0].assignee == "analyst1"
+        assert response.results[0].status == "IN_PROGRESS"
+        assert response.results[0].priority == "HIGH"
+        assert response.results[0].updated_at == updated_at
 
 
 class TestSearchServiceTagFilters:

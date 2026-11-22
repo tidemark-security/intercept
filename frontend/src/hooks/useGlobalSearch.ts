@@ -10,9 +10,9 @@ const DEFAULT_LIMIT = 10;
 interface UseGlobalSearchOptions {
   /** Filter by entity types. Default: all types */
   entityTypes?: EntityType[] | null;
-  /** Start of date range (ISO8601). Default: 30 days ago */
+  /** Explicit start of date range (ISO8601); omit both dates for All time. */
   startDate?: string | null;
-  /** End of date range (ISO8601). Default: now */
+  /** Explicit end of date range (ISO8601); omit both dates for All time. */
   endDate?: string | null;
   /** Maximum results to return (1-100). Default: 10 */
   limit?: number;
@@ -101,6 +101,7 @@ export function useGlobalSearch(
         limit,
         startDate,
         endDate,
+        allTime: !startDate && !endDate,
         tags,
       }),
     enabled: enabled && canSearch,

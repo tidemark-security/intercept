@@ -10,13 +10,15 @@ This service implements PostgreSQL full-text search with:
 import ipaddress
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, List, Optional, Tuple
+from typing import Any, Generic, List, Optional, Tuple, TypeVar
 
-from sqlalchemy import text
+from sqlalchemy import and_, func, literal, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement, TextClause
 
 from app.core.entity_ids import (
     ALERT_PREFIX,
@@ -32,11 +34,35 @@ from app.models.search_schemas import (
     SearchTagMatch,
     DateRangeApplied,
     PaginatedSearchResponse,
+    QueueSearchResponse,
+    QueueSearchRow,
 )
 from app.core.validation import STRICT_PATTERNS
+from app.models.models import Alert, Case, Task
+from app.models.enums import AlertStatus, CaseStatus, TaskStatus
+from app.services.assignee_filter_utils import append_assignee_filter
+from app.services.tag_filter_utils import append_tag_filters
 
 
 logger = logging.getLogger(__name__)
+
+QUEUE_MODELS = {
+    EntityType.ALERT: (Alert, AlertStatus),
+    EntityType.CASE: (Case, CaseStatus),
+    EntityType.TASK: (Task, TaskStatus),
+}
+QUEUE_SORT_FIELDS = {"created_at", "updated_at", "priority", "status"}
+FULL_TEXT_MATCH_SQL = "search_vector @@ websearch_to_tsquery('english', :query)"
+SUBSTRING_MATCH_SQL = """(
+    title ILIKE :substring_pattern ESCAPE '\\'
+    OR description ILIKE :substring_pattern ESCAPE '\\'
+)"""
+FUZZY_MATCH_SQL = """(
+    similarity(COALESCE(title, ''), :query) > :threshold
+    OR similarity(COALESCE(description, ''), :query) > :threshold
+)"""
+FUZZY_SIMILARITY_THRESHOLD = 0.3
+_SUBSTRING_TRIGRAM_PATTERN = re.compile(r"[^\W_]{3}")
 
 
 TIMELINE_ITEMS_SQL = """
@@ -86,6 +112,49 @@ class QueryClassification:
     human_id_entity_type: Optional[str] = None  # 'alert', 'case', or 'task' if HUMAN_ID
     human_id_numeric: Optional[int] = None      # Numeric ID if HUMAN_ID
     numeric_id: Optional[int] = None            # Plain numeric ID (could match any entity type)
+
+    @property
+    def is_filter_only(self) -> bool:
+        return self.original_query == "*"
+
+
+_ExactMatch = TypeVar("_ExactMatch")
+_ContentMatch = TypeVar("_ContentMatch")
+
+
+@dataclass
+class _EntityMatches(Generic[_ExactMatch, _ContentMatch]):
+    exact: _ExactMatch | None
+    content: _ContentMatch | None
+    total: int
+
+
+async def _match_entity(
+    classification: QueryClassification,
+    entity_type: EntityType,
+    *,
+    lookup_exact: Callable[[int], Awaitable[_ExactMatch | None]],
+    lookup_content: Callable[[int | None], Awaitable[tuple[_ContentMatch, int]]],
+    lookup_fuzzy: Callable[[int | None], Awaitable[tuple[_ContentMatch, int]]],
+) -> _EntityMatches[_ExactMatch, _ContentMatch]:
+    """Apply the matching rules to one entity type within the caller's filters."""
+    if classification.query_type == QueryType.HUMAN_ID:
+        entity_id = classification.human_id_numeric
+        if classification.human_id_entity_type != entity_type.value or entity_id is None:
+            return _EntityMatches(exact=None, content=None, total=0)
+        exact = await lookup_exact(entity_id)
+        return _EntityMatches(exact=exact, content=None, total=int(exact is not None))
+
+    numeric_id = classification.numeric_id
+    exact = await lookup_exact(numeric_id) if numeric_id is not None else None
+    # Count the exact row only once, and don't let it suppress fuzzy fallback
+    # when there is no other eligible content match.
+    excluded_id = numeric_id if exact is not None else None
+    content, count = await lookup_content(excluded_id)
+    if count == 0 and not classification.is_filter_only:
+        content, count = await lookup_fuzzy(excluded_id)
+
+    return _EntityMatches(exact=exact, content=content, total=count + int(exact is not None))
 
 
 # Regex patterns for query classification
@@ -138,13 +207,23 @@ class SearchDateRangeValidationError(ValueError):
     """Raised when resolved search date bounds are inconsistent."""
 
 
+class SearchQueueValidationError(ValueError):
+    """Raised for unsupported queue filters."""
+
+
 def resolve_search_date_range(
     start_date: Optional[datetime],
     end_date: Optional[datetime],
     *,
     now: Optional[datetime] = None,
-) -> tuple[datetime, datetime]:
-    """Resolve optional search bounds and enforce the supported one-year window."""
+    all_time: bool = False,
+) -> tuple[datetime | None, datetime | None]:
+    """Resolve explicit all-time or bounded search, preserving the default window."""
+    if all_time:
+        if start_date is not None or end_date is not None:
+            raise SearchDateRangeValidationError("All time cannot be combined with date bounds")
+        return None, None
+
     resolved_end = end_date or now or datetime.now(timezone.utc)
     resolved_start = start_date or resolved_end - timedelta(days=30)
 
@@ -156,12 +235,42 @@ def resolve_search_date_range(
     return resolved_start, resolved_end
 
 
+def _created_at_search_clause(
+    start_date: datetime | None,
+    end_date: datetime | None,
+) -> tuple[str, dict[str, datetime]]:
+    """Build optional date predicates without imposing bounds on all-time search."""
+    clause = ""
+    params: dict[str, datetime] = {}
+    if start_date is not None:
+        clause += " AND created_at >= :start_date"
+        params["start_date"] = start_date
+    if end_date is not None:
+        clause += " AND created_at <= :end_date"
+        params["end_date"] = end_date
+    return clause, params
+
+
 def _contains_like_pattern(value: str, *, asterisk_wildcard: bool = False) -> str:
     """Build a literal SQL LIKE substring pattern, optionally honoring ``*``."""
     escaped = value.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
     if asterisk_wildcard:
         escaped = escaped.replace("*", "%")
     return f"%{escaped}%"
+
+
+def _substring_match_params(classification: QueryClassification) -> dict[str, str]:
+    """Bind a literal fragment that can use the existing column trigram indexes."""
+    value = classification.normalized_value
+    # An unanchored pattern without a usable trigram can require a full scan.
+    # Keep ID and explicit wildcard searches on their existing paths.
+    if (
+        classification.query_type in {QueryType.HUMAN_ID, QueryType.NUMERIC_ID}
+        or classification.has_wildcard
+        or not _SUBSTRING_TRIGRAM_PATTERN.search(value)
+    ):
+        return {}
+    return {"substring_pattern": _contains_like_pattern(value)}
 
 
 def classify_query(query: str) -> QueryClassification:
@@ -337,12 +446,6 @@ class SearchService:
         EntityType.CASE: "cases",
         EntityType.TASK: "tasks",
     }
-    ENTITY_TYPES_BY_KIND = {
-        "alert": EntityType.ALERT,
-        "case": EntityType.CASE,
-        "task": EntityType.TASK,
-    }
-    
     def _generate_human_id(self, entity_type: EntityType, entity_id: int) -> str:
         """Generate human-readable ID like ALT-0000123."""
         prefix = self.PREFIXES[entity_type]
@@ -519,53 +622,19 @@ class SearchService:
 
         return matches
     
-    async def _lookup_by_human_id(
-        self,
-        db: AsyncSession,
-        classification: QueryClassification,
-        target_entity_type: EntityType,
-        start_date: datetime,
-        end_date: datetime,
-        normalized_tags: List[str],
-    ) -> Optional[SearchResultItem]:
-        """Look up a filtered exact human-ID match for one entity type."""
-        if classification.query_type != QueryType.HUMAN_ID:
-            return None
-        
-        entity_type_str = classification.human_id_entity_type
-        entity_id = classification.human_id_numeric
-        
-        if not entity_type_str or entity_id is None:
-            return None
-        
-        entity_type = self.ENTITY_TYPES_BY_KIND.get(entity_type_str)
-        if not entity_type:
-            return None
-        
-        if entity_type != target_entity_type:
-            return None
-
-        return await self._lookup_exact_id(
-            db,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            start_date=start_date,
-            end_date=end_date,
-            normalized_tags=normalized_tags,
-        )
-
     async def _lookup_exact_id(
         self,
         db: AsyncSession,
         *,
         entity_type: EntityType,
         entity_id: int,
-        start_date: datetime,
-        end_date: datetime,
+        start_date: datetime | None,
+        end_date: datetime | None,
         normalized_tags: List[str],
     ) -> Optional[SearchResultItem]:
         """Return an exact ID match that satisfies the active search filters."""
         table_name = self.TABLE_NAMES[entity_type]
+        date_clause, date_params = _created_at_search_clause(start_date, end_date)
         tag_filter_sql, tag_filter_params = self._build_tag_filter_sql(normalized_tags)
         tag_filter_clause = f" AND {tag_filter_sql}" if tag_filter_sql else ""
 
@@ -583,15 +652,13 @@ class SearchService:
                 assignee
             FROM {table_name}
             WHERE id = :entity_id
-              AND created_at >= :start_date
-              AND created_at <= :end_date
+              {date_clause}
               {tag_filter_clause}
         """)
 
         result = await db.execute(sql, {
             "entity_id": entity_id,
-            "start_date": start_date,
-            "end_date": end_date,
+            **date_params,
             **tag_filter_params,
         })
         row = result.fetchone()
@@ -606,39 +673,6 @@ class SearchService:
             score=1.0,
             normalized_tags=normalized_tags,
         )
-    
-    async def _lookup_by_numeric_id(
-        self,
-        db: AsyncSession,
-        classification: QueryClassification,
-        entity_types: List[EntityType],
-        start_date: datetime,
-        end_date: datetime,
-        normalized_tags: List[str],
-    ) -> List[SearchResultItem]:
-        """Look up filtered plain numeric-ID matches across entity types."""
-        if classification.query_type != QueryType.NUMERIC_ID:
-            return []
-        
-        entity_id = classification.numeric_id
-        if entity_id is None:
-            return []
-        
-        results: List[SearchResultItem] = []
-
-        for entity_type in entity_types:
-            match = await self._lookup_exact_id(
-                db,
-                entity_type=entity_type,
-                entity_id=entity_id,
-                start_date=start_date,
-                end_date=end_date,
-                normalized_tags=normalized_tags,
-            )
-            if match:
-                results.append(match)
-
-        return results
     
     def _build_timeline_match_sql(
         self,
@@ -843,6 +877,128 @@ class SearchService:
 
         return sql, params
 
+    async def search_queue(
+        self,
+        db: AsyncSession,
+        *,
+        query: str,
+        entity_type: EntityType,
+        status: list[str] | None,
+        assignee: list[str] | None,
+        include_tags: list[str] | None,
+        exclude_tags: list[str] | None,
+        start_date: datetime | None,
+        end_date: datetime | None,
+        sort_by: str,
+        sort_order: str,
+        skip: int,
+        limit: int,
+    ) -> QueueSearchResponse:
+        """Use Search matching with the queue's scope, sort and row projection."""
+        model, status_enum = QUEUE_MODELS[entity_type]
+        if sort_by not in QUEUE_SORT_FIELDS or sort_order not in {"asc", "desc"}:
+            raise SearchQueueValidationError("Unsupported queue sort")
+        try:
+            statuses = [status_enum(value) for value in status or []]
+        except ValueError as exc:
+            raise SearchQueueValidationError(f"Invalid status for {entity_type.value} queue") from exc
+
+        filters: list[Any] = []
+        if statuses:
+            filters.append(model.status.in_(statuses))
+        append_assignee_filter(filters, model.assignee, assignee)
+        append_tag_filters(filters, model.tags, include_tags, exclude_tags)
+        if start_date is not None:
+            filters.append(model.created_at >= start_date)
+        if end_date is not None:
+            filters.append(model.created_at <= end_date)
+
+        count = select(func.count()).select_from(model).where(*filters)
+        classification = classify_query(query)
+
+        async def lookup_exact(entity_id: int) -> ColumnElement[bool] | None:
+            predicate = model.id == entity_id
+            return predicate if await db.scalar(count.where(predicate)) else None
+
+        async def lookup_content(
+            excluded_id: int | None, *, fuzzy: bool = False,
+        ) -> tuple[ColumnElement[bool] | TextClause, int]:
+            predicate: ColumnElement[bool] | TextClause
+            substring: ColumnElement[bool] | TextClause | None = None
+            if fuzzy:
+                predicate = text(FUZZY_MATCH_SQL).bindparams(
+                    query=query, threshold=FUZZY_SIMILARITY_THRESHOLD,
+                )
+            else:
+                timeline_sql, timeline_params = self._build_timeline_match_sql(classification)
+                substring_params = _substring_match_params(classification)
+                predicate = or_(
+                    text(FULL_TEXT_MATCH_SQL).bindparams(query=classification.normalized_value),
+                    text(timeline_sql).bindparams(**timeline_params),
+                )
+                if substring_params:
+                    substring = text(SUBSTRING_MATCH_SQL).bindparams(**substring_params)
+            if excluded_id is not None:
+                exclusion = model.id != excluded_id
+                predicate = and_(exclusion, predicate)
+                if substring is not None:
+                    substring = and_(exclusion, substring)
+            if substring is not None:
+                # Give the count query an indexable substring branch. The
+                # ordered page can still use the existing single-row predicate.
+                scoped_ids = select(model.id).where(*filters)
+                matched_ids = scoped_ids.where(predicate).union(scoped_ids.where(substring))
+                total = await db.scalar(select(func.count()).select_from(matched_ids.subquery()))
+                return or_(predicate, substring), total or 0
+            return predicate, await db.scalar(count.where(predicate)) or 0
+
+        matches = await _match_entity(
+            classification,
+            entity_type,
+            lookup_exact=lookup_exact,
+            lookup_content=lookup_content,
+            lookup_fuzzy=lambda excluded_id: lookup_content(excluded_id, fuzzy=True),
+        )
+
+        rows = []
+        if skip < matches.total:
+            predicates = [p for p in (matches.exact, matches.content) if p is not None]
+            sort_column = getattr(model, sort_by)
+            ordering = sort_column.asc() if sort_order == "asc" else sort_column.desc()
+            statement = (
+                select(
+                    model.id, model.title, model.created_at, model.updated_at,
+                    model.status, model.priority, model.assignee, model.tags,
+                    (model.case_id if model is not Case else literal(None)).label("case_id"),
+                )
+                .where(*filters, or_(*predicates))
+                .order_by(ordering, model.id.desc())
+                .offset(skip)
+                .limit(limit)
+            )
+            rows = (await db.execute(statement)).all()
+
+        return QueueSearchResponse(
+            results=[
+                QueueSearchRow(
+                    id=row.id,
+                    human_id=self._generate_human_id(entity_type, row.id),
+                    title=row.title,
+                    created_at=row.created_at,
+                    updated_at=row.updated_at,
+                    status=row.status,
+                    priority=row.priority,
+                    assignee=row.assignee,
+                    tags=self._coerce_tags(row.tags),
+                    case_id=row.case_id,
+                )
+                for row in rows
+            ],
+            total=matches.total,
+            skip=skip,
+            limit=limit,
+        )
+
     async def paginated_search(
         self,
         db: AsyncSession,
@@ -854,6 +1010,8 @@ class SearchService:
         end_date: Optional[datetime] = None,
         tags: Optional[List[str]] = None,
         user_id: Optional[str] = None,
+        *,
+        all_time: bool = False,
     ) -> PaginatedSearchResponse:
         """Perform paginated search across one or more entity types.
 
@@ -868,99 +1026,78 @@ class SearchService:
             start_date: Start of date range (default: 30 days ago)
             end_date: End of date range (default: now)
             user_id: User ID for audit logging
+            all_time: Search without date bounds, rather than applying defaults
 
         Returns:
             PaginatedSearchResponse with results and pagination info
         """
-        start_date, end_date = resolve_search_date_range(start_date, end_date)
+        start_date, end_date = resolve_search_date_range(start_date, end_date, all_time=all_time)
         entity_types = list(dict.fromkeys(entity_types))
         normalized_tags = self._normalize_tag_filters(tags)
-        filter_only_mode = query == "*"
+        classification = classify_query(query)
 
-        # Check for human ID query - don't do fuzzy fallback for these
-        classification = classify_query(query) if not filter_only_mode else QueryClassification(
-            query_type=QueryType.GENERIC,
-            normalized_value=query,
-            has_wildcard=True,
-            original_query=query,
-        )
-        is_human_id_query = classification.query_type == QueryType.HUMAN_ID
-        is_numeric_id_query = classification.query_type == QueryType.NUMERIC_ID
-        
-        # For numeric ID queries, look up matching entities first
-        numeric_id_matches: List[SearchResultItem] = []
-        if is_numeric_id_query and not filter_only_mode:
-            numeric_id_matches = await self._lookup_by_numeric_id(
-                db,
+        async def search_entity(entity_type: EntityType) -> _EntityMatches[SearchResultItem, List[SearchResultItem]]:
+            candidate_args = {
+                "db": db,
+                "table_name": self.TABLE_NAMES[entity_type],
+                "entity_type": entity_type,
+                "start_date": start_date,
+                "end_date": end_date,
+                "candidate_limit": skip + limit,
+                "normalized_tags": normalized_tags,
+            }
+            return await _match_entity(
                 classification,
-                entity_types,
-                start_date,
-                end_date,
-                normalized_tags,
-            )
-            if numeric_id_matches:
-                logger.info(
-                    "Numeric ID matches found in paginated search",
-                    extra={
-                        "user_id": user_id,
-                        "query": query,
-                        "numeric_id": classification.numeric_id,
-                        "match_count": len(numeric_id_matches),
-                        "entity_types": [m.entity_type.value for m in numeric_id_matches],
-                    },
-                )
-
-        numeric_match_by_type = {
-            match.entity_type: match for match in numeric_id_matches
-        }
-        
-        # Search across all entity types and aggregate results
-        all_items: List[SearchResultItem] = []
-        total_count = 0
-        
-        for entity_type in entity_types:
-            table_name = self.TABLE_NAMES[entity_type]
-            # First try full-text search
-            exact_numeric_match = numeric_match_by_type.get(entity_type)
-            items, count = await self._search_entity_candidates(
-                db=db,
-                table_name=table_name,
-                entity_type=entity_type,
-                query=query,
-                start_date=start_date,
-                end_date=end_date,
-                candidate_limit=skip + limit,
-                normalized_tags=normalized_tags,
-                excluded_entity_id=(
-                    exact_numeric_match.entity_id if exact_numeric_match else None
-                ),
-            )
-            
-            # If no results, try fuzzy search fallback (but NOT for human ID queries)
-            if count == 0 and not is_human_id_query and not filter_only_mode:
-                items, count = await self._fuzzy_search_entity_candidates(
-                    db=db,
-                    table_name=table_name,
+                entity_type,
+                lookup_exact=lambda entity_id: self._lookup_exact_id(
+                    db,
                     entity_type=entity_type,
-                    query=query,
+                    entity_id=entity_id,
                     start_date=start_date,
                     end_date=end_date,
-                    candidate_limit=skip + limit,
                     normalized_tags=normalized_tags,
-                    excluded_entity_id=(
-                        exact_numeric_match.entity_id if exact_numeric_match else None
-                    ),
-                )
-            
-            all_items.extend(items)
-            total_count += count
-        
-        # Content queries exclude these rows, so exact-ID totals cannot double-count.
-        all_items.extend(numeric_id_matches)
-        total_count += len(numeric_id_matches)
+                ),
+                lookup_content=lambda excluded_id: self._search_entity_candidates(
+                    classification=classification,
+                    excluded_entity_id=excluded_id,
+                    **candidate_args,
+                ),
+                lookup_fuzzy=lambda excluded_id: self._fuzzy_search_entity_candidates(
+                    query=query,
+                    excluded_entity_id=excluded_id,
+                    **candidate_args,
+                ),
+            )
+
+        # Search across all entity types and aggregate results
+        all_items: List[SearchResultItem] = []
+        numeric_match_types: list[str] = []
+        total_count = 0
+
+        for entity_type in entity_types:
+            matches = await search_entity(entity_type)
+            if matches.exact is not None:
+                all_items.append(matches.exact)
+                if classification.numeric_id is not None:
+                    numeric_match_types.append(entity_type.value)
+            if matches.content is not None:
+                all_items.extend(matches.content)
+            total_count += matches.total
+
+        if numeric_match_types:
+            logger.info(
+                "Numeric ID matches found in paginated search",
+                extra={
+                    "user_id": user_id,
+                    "query": query,
+                    "numeric_id": classification.numeric_id,
+                    "match_count": len(numeric_match_types),
+                    "entity_types": numeric_match_types,
+                },
+            )
         
         # Sort merged results by score (descending), then by created_at (descending)
-        if filter_only_mode:
+        if classification.is_filter_only:
             all_items.sort(
                 key=lambda item: (
                     -item.created_at.timestamp(),
@@ -991,6 +1128,7 @@ class SearchService:
                 "skip": skip,
                 "limit": limit,
                 "total_results": total_count,
+                "all_time": all_time,
             },
         )
         
@@ -1002,8 +1140,8 @@ class SearchService:
             query=query,
             entity_types=entity_types,
             date_range=DateRangeApplied(
-                start=start_date.isoformat(),
-                end=end_date.isoformat(),
+                start=start_date.isoformat() if start_date is not None else None,
+                end=end_date.isoformat() if end_date is not None else None,
             ),
         )
 
@@ -1012,23 +1150,24 @@ class SearchService:
         db: AsyncSession,
         table_name: str,
         entity_type: EntityType,
-        query: str,
-        start_date: datetime,
-        end_date: datetime,
+        classification: QueryClassification,
+        start_date: datetime | None,
+        end_date: datetime | None,
         candidate_limit: int,
         normalized_tags: Optional[List[str]] = None,
         excluded_entity_id: Optional[int] = None,
     ) -> Tuple[List[SearchResultItem], int]:
         """Return one entity type's top candidates and unpaginated count."""
         normalized_tags = normalized_tags or []
+        date_clause, date_params = _created_at_search_clause(start_date, end_date)
         tag_filter_sql, tag_filter_params = self._build_tag_filter_sql(normalized_tags)
         tag_filter_clause = f" AND {tag_filter_sql}" if tag_filter_sql else ""
         id_exclusion_clause = (
             " AND id != :excluded_entity_id" if excluded_entity_id is not None else ""
         )
+        candidate_scope = f"{date_clause}{id_exclusion_clause}{tag_filter_clause}"
         common_params = {
-            "start_date": start_date,
-            "end_date": end_date,
+            **date_params,
             "limit": candidate_limit,
             **(
                 {"excluded_entity_id": excluded_entity_id}
@@ -1038,7 +1177,7 @@ class SearchService:
             **tag_filter_params,
         }
 
-        if query == "*":
+        if classification.is_filter_only:
             sql = text(f"""
                 WITH filtered AS (
                     SELECT
@@ -1053,10 +1192,7 @@ class SearchService:
                         status,
                         assignee
                     FROM {table_name}
-                    WHERE created_at >= :start_date
-                      AND created_at <= :end_date
-                      {id_exclusion_clause}
-                      {tag_filter_clause}
+                    WHERE TRUE {candidate_scope}
                 ),
                 counted AS (
                     SELECT *, COUNT(*) OVER() AS total_count
@@ -1097,70 +1233,44 @@ class SearchService:
                 for row in rows
             ], rows[0].total_count
 
-        classification = classify_query(query)
         normalized_query = classification.normalized_value
-        
-        # Check for exact human ID match first (highest priority)
-        if classification.query_type == QueryType.HUMAN_ID:
-            exact_match = await self._lookup_by_human_id(
-                db,
-                classification,
-                entity_type,
-                start_date,
-                end_date,
-                normalized_tags,
-            )
-            if exact_match:
-                return [exact_match], 1
-            # If no match for this entity type, return empty
-            return [], 0
-        
+
         # Build JSONB containment conditions based on classification
         timeline_condition, timeline_params = self._build_timeline_match_sql(classification)
+        substring_params = _substring_match_params(classification)
+        candidate_fields = """
+            id, title, description, tags, created_at, updated_at, priority,
+            status, assignee, timeline_items
+        """
+        # Keep substring in its own branch so PostgreSQL can use title and
+        # description trigram indexes even if the timeline condition scans.
+        substring_union = (
+            f"""
+                UNION ALL
+                SELECT {candidate_fields}, 0.0 AS score, 'substring' AS match_source
+                FROM {table_name}
+                WHERE {SUBSTRING_MATCH_SQL}
+                {candidate_scope}
+            """
+            if substring_params else ""
+        )
         
         sql = text(f"""
             WITH search_results AS (
-                SELECT 
-                    id,
-                    title,
-                    description,
-                    tags,
-                    created_at,
-                    updated_at,
-                    priority,
-                    status,
-                    assignee,
-                    timeline_items,
-                    ts_rank(search_vector, websearch_to_tsquery('english', :query)) AS score,
+                SELECT {candidate_fields},
+                    GREATEST(ts_rank(search_vector, websearch_to_tsquery('english', :query)), 0.000001) AS score,
                     'fulltext' AS match_source
                 FROM {table_name}
-                WHERE search_vector @@ websearch_to_tsquery('english', :query)
-                  AND created_at >= :start_date
-                  AND created_at <= :end_date
-                  {id_exclusion_clause}
-                  {tag_filter_clause}
+                WHERE {FULL_TEXT_MATCH_SQL}
+                {candidate_scope}
                 
                 UNION ALL
                 
-                SELECT 
-                    id,
-                    title,
-                    description,
-                    tags,
-                    created_at,
-                    updated_at,
-                    priority,
-                    status,
-                    assignee,
-                    timeline_items,
-                    0.8 AS score,
-                    'jsonb' AS match_source
+                SELECT {candidate_fields}, 0.8 AS score, 'jsonb' AS match_source
                 FROM {table_name}
                 WHERE {timeline_condition}
-                  AND created_at >= :start_date
-                  AND created_at <= :end_date
-                  {id_exclusion_clause}
-                  {tag_filter_clause}
+                {candidate_scope}
+                {substring_union}
             ),
             deduplicated AS (
                 SELECT DISTINCT ON (id)
@@ -1205,7 +1315,7 @@ class SearchService:
                             websearch_to_tsquery('english', :query),
                             'MaxWords=25, MinWords=10, StartSel=<mark>, StopSel=</mark>, MaxFragments=1'
                         )
-                    ELSE
+                    WHEN match_source = 'jsonb' THEN
                         COALESCE(
                             (
                                 SELECT item.item::text
@@ -1215,6 +1325,7 @@ class SearchService:
                             ),
                             COALESCE(title, '') || ' ' || COALESCE(LEFT(description, 100), '')
                         )
+                    ELSE COALESCE(title, '') || ' ' || COALESCE(LEFT(description, 100), '')
                 END AS snippet
             FROM counted
             ORDER BY score DESC, created_at DESC, id DESC
@@ -1228,6 +1339,7 @@ class SearchService:
                 asterisk_wildcard=True,
             ),
             **timeline_params,
+            **substring_params,
             **common_params,
         }
 
@@ -1254,15 +1366,16 @@ class SearchService:
         table_name: str,
         entity_type: EntityType,
         query: str,
-        start_date: datetime,
-        end_date: datetime,
+        start_date: datetime | None,
+        end_date: datetime | None,
         candidate_limit: int,
-        similarity_threshold: float = 0.3,
+        similarity_threshold: float = FUZZY_SIMILARITY_THRESHOLD,
         normalized_tags: Optional[List[str]] = None,
         excluded_entity_id: Optional[int] = None,
     ) -> Tuple[List[SearchResultItem], int]:
         """Return fuzzy candidates for one entity type and its full count."""
         normalized_tags = normalized_tags or []
+        date_clause, date_params = _created_at_search_clause(start_date, end_date)
         tag_filter_sql, tag_filter_params = self._build_tag_filter_sql(normalized_tags)
         tag_filter_clause = f" AND {tag_filter_sql}" if tag_filter_sql else ""
         id_exclusion_clause = (
@@ -1287,12 +1400,8 @@ class SearchService:
                         similarity(COALESCE(description, ''), :query) * 0.8
                     ) AS score
                 FROM {table_name}
-                WHERE (
-                    similarity(COALESCE(title, ''), :query) > :threshold
-                    OR similarity(COALESCE(description, ''), :query) > :threshold
-                )
-                AND created_at >= :start_date
-                AND created_at <= :end_date
+                WHERE {FUZZY_MATCH_SQL}
+                {date_clause}
                 {id_exclusion_clause}
                 {tag_filter_clause}
             ),
@@ -1310,8 +1419,7 @@ class SearchService:
         result = await db.execute(sql, {
             "query": query,
             "threshold": similarity_threshold,
-            "start_date": start_date,
-            "end_date": end_date,
+            **date_params,
             "limit": candidate_limit,
             **(
                 {"excluded_entity_id": excluded_entity_id}

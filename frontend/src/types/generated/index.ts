@@ -160,6 +160,8 @@ export type { ProcessItem } from './models/ProcessItem';
 export type { Protocol } from './models/Protocol';
 export type { QueueJobRead } from './models/QueueJobRead';
 export type { QueueJobsPage } from './models/QueueJobsPage';
+export type { QueueSearchResponse } from './models/QueueSearchResponse';
+export type { QueueSearchRow } from './models/QueueSearchRow';
 export type { QueueStatsRead } from './models/QueueStatsRead';
 export type { RecentItem } from './models/RecentItem';
 export type { RecentItemsResponse } from './models/RecentItemsResponse';
