@@ -104,6 +104,9 @@ async def require_mcp_principal(
         raise HTTPException(status_code=401, detail="MCP authentication required")
 
     claims = access_token.claims or {}
+    # MultiAuth qualifies client_id for MCP sessions. Grants are stored under
+    # the client ID supplied by the verifying provider.
+    provider_client_id = access_token.original_client_id or access_token.client_id
     raw_user_id = claims.get("intercept_user_id")
     auth_source = str(claims.get("auth_source") or "").strip()
     if not raw_user_id or auth_source not in {"api_key", "oauth", "oidc"}:
@@ -198,7 +201,7 @@ async def require_mcp_principal(
                 ) from exc
             if (
                 oauth_result.user.id != user_id
-                or oauth_result.client.client_id != access_token.client_id
+                or oauth_result.client.client_id != provider_client_id
             ):
                 raise HTTPException(
                     status_code=401,
@@ -243,7 +246,7 @@ async def require_mcp_principal(
                 await mcp_oauth_service.validate_provider_grant_reference(
                     active_db,
                     user_id=user_id,
-                    client_id=access_token.client_id,
+                    client_id=provider_client_id,
                     provider_reference_hash=provider_reference_hash,
                     for_update=True,
                     skip_locked=skip_locked,

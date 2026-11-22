@@ -20,12 +20,14 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.settings_registry import get_local
 from app.main import api_app, app, compose_http_app
 from app.mcp.local_oauth_provider import (
     PendingAuthorizationUnavailableError,
     create_local_oauth_provider,
 )
 from app.mcp.oidc_provider import _AuthorizationCapacityStore
+from app.mcp.principal import require_mcp_principal
 from app.mcp.runtime import (
     MCPAuthMode,
     MCPAuthSnapshot,
@@ -103,7 +105,7 @@ async def local_oauth_client_factory(
                 registration_policy=policy,
             ),
             database_url="postgresql://unused-in-local-mode",
-            secret_key="test-fastmcp-local-oauth-secret",
+            secret_key=str(get_local("secret_key")),
             session_factory=session_maker,
             local_provider_factory=(
                 lambda snapshot, token_hash_key: create_local_oauth_provider(
@@ -1678,9 +1680,15 @@ async def test_native_local_oauth_pkce_flow_uses_intercept_session(
     assert refreshed_payload["refresh_token"] != token_payload["refresh_token"]
     token_payload = refreshed_payload
 
-    access = await runtime.provider.load_access_token(token_payload["access_token"])
+    access = await runtime.auth.verify_token(token_payload["access_token"])
     assert access is not None
-    assert access.claims["intercept_user_id"] == str(user.id)
+    principal = await require_mcp_principal(
+        access_token=access,
+        session_factory=session_maker,
+        revalidate_source_credential=True,
+        skip_locked=True,
+    )
+    assert principal.user.id == user.id
 
     async with runtime.http_app.lifespan(runtime.http_app):
         initialized = await client.post(

@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import pytest
-from fastmcp.server.auth import AccessToken
+from fastmcp.server.auth import AccessToken, MultiAuth
 from fastmcp.server.auth.oidc_proxy import OIDCConfiguration, OIDCProxy
 from fastmcp.server.auth.oauth_proxy.models import ConsentCSRFToken, OAuthTransaction, ProxyDCRClient
 from httpx import ASGITransport, AsyncClient
@@ -29,6 +29,7 @@ from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
 from app.mcp.auth import MCP_ACCESS_SCOPE
+from app.mcp.principal import require_mcp_principal
 from app.mcp.oidc_provider import (
     CONNECTED_CLIENT_REFERENCE_COLLECTION,
     INTERCEPT_AUTHORIZATION_EPOCH_CLAIM,
@@ -2786,9 +2787,23 @@ async def test_validated_reference_updates_token_free_connected_client_projectio
     proxy._client_storage = SimpleNamespace(put=AsyncMock())
     monkeypatch.setattr("app.mcp.oidc_provider.time.time", lambda: 1_900_000_000)
 
-    result = await proxy.load_access_token("fastmcp-reference-token")
+    auth = MultiAuth(
+        server=proxy,
+        server_source_id="oidc",
+        base_url="https://intercept.example/mcp",
+        resource_base_url="https://intercept.example/mcp",
+        required_scopes=[MCP_ACCESS_SCOPE],
+    )
+    result = await auth.verify_token("fastmcp-reference-token")
 
     assert result is not None
+    principal = await require_mcp_principal(
+        access_token=result,
+        session_factory=session_maker,
+        revalidate_source_credential=True,
+        skip_locked=True,
+    )
+    assert principal.user.id == user_id
     async with session_maker() as db:
         client = (await db.execute(select(MCPOAuthClient))).scalar_one()
         consent = (await db.execute(select(MCPOAuthConsent))).scalar_one()
