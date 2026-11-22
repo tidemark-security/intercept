@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from app.models.enums import AlertStatus, CaseRunbookStatus, CaseStatus, PICERLStage, TaskStatus
+from app.models.enums import AlertStatus, CaseRunbookStatus, CaseStatus, PICERLStage, Priority, TaskStatus
 from app.models.models import AlertRead, CaseRead, CaseRunbookRead, TaskRead
 from app.services.tag_filter_utils import (
     merge_persisted_tags,
@@ -38,7 +38,7 @@ def test_read_models_normalize_legacy_persisted_tags() -> None:
             "id": 1,
             "title": "Alert",
             "description": None,
-            "priority": None,
+            "priority": Priority.MEDIUM,
             "source": "seed",
             "status": AlertStatus.NEW,
             "created_at": now,

@@ -678,7 +678,7 @@ async def test_enqueue_item_enrichment_returns_task_id(
                 "item_id": "item-1",
                 "enrichment_request_id": request_id,
             }
-            assert priority == 0
+            assert priority == 25
             assert dedupe_key == (
                 f"enrich_item:alert:{alert.id}:item-1:{request_id}"
             )
@@ -991,7 +991,7 @@ async def test_add_internal_actor_auto_enqueues_matching_enrichment(
                 "item_id": item_id,
                 "enrichment_request_id": request_id,
             },
-            "priority": 0,
+            "priority": 25,
         }
     ]
 
@@ -1103,7 +1103,7 @@ async def test_update_observable_clears_stale_enrichment_and_reenqueues(
                 "item_id": "item-ip-1",
                 "enrichment_request_id": request_id,
             },
-            "priority": 0,
+            "priority": 25,
         }
     ]
 
