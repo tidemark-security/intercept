@@ -73,7 +73,9 @@ async def test_router_and_role_dependency_authenticate_once(
 ) -> None:
     authentication_calls = 0
 
-    async def authenticate(_request: Request, _db: AsyncSession) -> UserAccount:
+    async def authenticate(
+        _request: Request, _db: AsyncSession, *, shared_auth_lock: bool = False
+    ) -> UserAccount:
         nonlocal authentication_calls
         authentication_calls += 1
         return cast(
@@ -103,10 +105,12 @@ async def test_router_and_role_dependency_preserve_unauthenticated_response(
     authentication_calls = 0
     authenticate_from_request = admin_auth._authenticate_from_request
 
-    async def counting_authenticate(request: Request, db: AsyncSession) -> UserAccount:
+    async def counting_authenticate(
+        request: Request, db: AsyncSession, *, shared_auth_lock: bool = False
+    ) -> UserAccount:
         nonlocal authentication_calls
         authentication_calls += 1
-        return await authenticate_from_request(request, db)
+        return await authenticate_from_request(request, db, shared_auth_lock=shared_auth_lock)
 
     monkeypatch.setattr(admin_auth, "_authenticate_from_request", counting_authenticate)
 
