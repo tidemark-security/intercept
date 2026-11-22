@@ -211,40 +211,73 @@ const EntityHeaderRoot = React.forwardRef<
   const isReadOnly = mode === 'readonly';
   const isEditable = mode === 'editable';
   const isCompactHeader = isMobile || isTablet;
-  const hasAdaptiveAlertActions = isAlert && !isCompactHeader;
+  const [compactActionsInline, setCompactActionsInline] = React.useState(false);
   const titleRowRef = React.useRef<HTMLDivElement>(null);
-  const alertActionsRef = React.useRef<HTMLDivElement>(null);
+  const titleBlockRef = React.useRef<HTMLDivElement>(null);
+  const inlineActionsRef = React.useRef<HTMLDivElement>(null);
+  const timelineControlsRef = React.useRef<HTMLButtonElement>(null);
 
   React.useLayoutEffect(() => {
     const row = titleRowRef.current;
-    const actions = alertActionsRef.current;
-    if (!hasAdaptiveAlertActions || !row || !actions) return;
+    const title = titleBlockRef.current;
+    const actions = inlineActionsRef.current;
+    if (!row || !title || !actions) return;
 
-    let fullWidth = 0;
+    let secondaryActions: HTMLElement[] = [];
+    let actionWidths: number[] = [];
     let disposed = false;
     let resizeFrame = 0;
+    let lastInline: boolean | undefined;
     const fitActions = () => {
-      actions.toggleAttribute("data-icons-only", fullWidth > row.clientWidth);
+      const { width, columnGap } = getComputedStyle(row);
+      const gap = Number.parseFloat(columnGap) || 0;
+      // On compact headers, reserve room for the title and the separate filter menu.
+      // The title allowance also fits the back button on mobile.
+      const titleMinWidth = isCompactHeader ? 168 : Number.parseFloat(getComputedStyle(title).minWidth) || 0;
+      const controls = timelineControlsRef.current;
+      const controlsReserve = controls ? controls.offsetWidth + gap : 0;
+      const availableWidth = Number.parseFloat(width) - titleMinWidth - gap - controlsReserve;
+      const firstFit = actionWidths.findIndex((actionWidth) => actionWidth <= availableWidth);
+      // Use the fewest icon-only buttons that fit. If nothing fits, wrap on
+      // desktop but put the actions in Timeline controls on compact screens.
+      const iconCount = firstFit === -1 ? secondaryActions.length : firstFit;
+      secondaryActions.forEach((action, index) => {
+        action.toggleAttribute("data-icon-only", index < iconCount);
+      });
+      if (isCompactHeader) {
+        const inline = firstFit !== -1 && actionWidths[0] > 0;
+        if (inline !== lastInline) {
+          lastInline = inline;
+          setCompactActionsInline(inline);
+        }
+      }
     };
-    const measureFullWidth = () => {
+    const measureActionWidths = () => {
       if (disposed) return;
-      // Measure the real triggers on one line, including the current assignee
-      // and whichever actions are available for this alert.
+      // Cache each layout in DOM order so a divider drag only picks a layout,
+      // without remeasuring every combination.
+      secondaryActions = Array.from(actions.querySelectorAll<HTMLElement>(`.${styles.collapsibleAction}`));
       actions.setAttribute("data-measuring", "");
-      fullWidth = actions.offsetWidth;
+      secondaryActions.forEach((action) => action.removeAttribute("data-icon-only"));
+      const measure = () => Number.parseFloat(getComputedStyle(actions).width);
+      actionWidths = [measure()];
+      for (const action of secondaryActions) {
+        action.setAttribute("data-icon-only", "");
+        actionWidths.push(measure());
+      }
       actions.removeAttribute("data-measuring");
       fitActions();
     };
 
-    measureFullWidth();
+    measureActionWidths();
     const resizeObserver = new ResizeObserver(() => {
       cancelAnimationFrame(resizeFrame);
       resizeFrame = requestAnimationFrame(fitActions);
     });
     resizeObserver.observe(row);
-    const contentObserver = new MutationObserver(measureFullWidth);
+    const contentObserver = new MutationObserver(measureActionWidths);
     contentObserver.observe(actions, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["class"] });
-    void document.fonts?.ready.then(measureFullWidth);
+    void document.fonts?.ready.then(measureActionWidths);
 
     return () => {
       disposed = true;
@@ -252,7 +285,7 @@ const EntityHeaderRoot = React.forwardRef<
       resizeObserver.disconnect();
       contentObserver.disconnect();
     };
-  }, [hasAdaptiveAlertActions]);
+  }, [isCompactHeader]);
 
   // Determine if entity is closed (works for alerts, cases, and tasks)
   // Status prop comes from API in UPPERCASE format
@@ -273,7 +306,6 @@ const EntityHeaderRoot = React.forwardRef<
   const [isTriageRejectDialogOpen, setIsTriageRejectDialogOpen] = React.useState(false);
   const showAssignmentControls = Boolean(onAssignToMe || onAssignToUser || onUnassign);
 
-  const buttonSize = isCompactHeader ? "small" : "medium";
   const shouldShowTimelineViewToggle = showTimelineViewToggle && Boolean(onTimelineViewModeChange);
   const timelineModeLabelKeys = React.useMemo(() => ['timeline', 'graph', 'swimlane'], []);
   const [timelineModeLabelIndexes, setTimelineModeLabelIndexes] = React.useState<Record<string, number>>({});
@@ -299,11 +331,7 @@ const EntityHeaderRoot = React.forwardRef<
     : isCase
       ? "Close Case..."
       : "Close Alert...";
-  const reopenButtonLabel = isTask
-    ? (buttonSize === "medium" ? "Re-Open Task" : "Re-Open")
-    : isCase
-      ? (buttonSize === "medium" ? "Re-Open Case" : "Re-Open")
-      : (buttonSize === "medium" ? "Re-Open Alert" : "Re-Open");
+  const reopenButtonLabel = isTask ? "Re-Open Task" : isCase ? "Re-Open Case" : "Re-Open Alert";
 
   // In preview mode (readonly), hide close/reopen buttons but keep assignment
   // In editable mode, show all controls
@@ -324,7 +352,7 @@ const EntityHeaderRoot = React.forwardRef<
     ? "View Task"
     : isCase && isReadOnly
       ? "View Case"
-      : (buttonSize === "medium" ? "Escalate to Case" : "Escalate");
+      : "Escalate to Case";
 
   const handleAcceptAiEscalation = () => {
     onAcceptTriageRecommendation?.({
@@ -440,36 +468,36 @@ const EntityHeaderRoot = React.forwardRef<
     ) : null
   );
 
-  const renderHeaderActions = (variant: "desktop" | "compact") => {
+  const renderHeaderActions = (variant: "inline" | "compact") => {
     const compact = variant === "compact";
-    const adaptive = !compact && hasAdaptiveAlertActions;
-    const desktopButtonClassName = adaptive ? "h-9 w-auto flex-none" : "h-auto w-auto flex-none self-stretch";
-    const controlButtonClassName = compact ? "h-8 w-full" : desktopButtonClassName;
-    const linkButtonClassName = compact ? "h-8 flex-1" : desktopButtonClassName;
+    const inlineButtonClassName = "h-9 w-auto flex-none";
+    const controlButtonClassName = compact ? "h-8 w-full" : inlineButtonClassName;
+    const secondaryButtonClassName = cn(controlButtonClassName, !compact && styles.collapsibleAction);
+    const linkButtonClassName = compact ? "h-8 flex-1" : inlineButtonClassName;
     const controlGroupClassName = compact
       ? "flex w-full min-w-0 items-center justify-stretch gap-2"
-      : adaptive ? "contents" : "flex flex-none items-center justify-end gap-2 self-stretch";
+      : "contents";
     const customLinksClassName = compact
       ? "flex w-full min-w-0 items-center justify-stretch gap-1"
       : "flex flex-none items-center justify-end gap-1 self-stretch";
     const actionsButtonSize = compact ? "small" : "medium";
-    const actionsAssigneeSize = compact ? "small" : "medium";
 
     return (
       <div
-        ref={adaptive ? alertActionsRef : undefined}
+        ref={compact ? undefined : inlineActionsRef}
         className={cn(
           "flex min-h-9 flex-wrap items-stretch justify-end gap-2",
-          compact ? "w-full justify-stretch" : "flex",
-          adaptive && cn(styles.alertActions, "max-w-full items-center"),
+          compact ? "w-full justify-stretch" : cn(styles.inlineActions, "max-w-full items-center"),
+          !compact && isCompactHeader && !compactActionsInline && "hidden",
         )}
       >
         {isAlert && isEscalated && onUnlinkFromCase && (
           <Button
-            className={controlButtonClassName}
+            className={secondaryButtonClassName}
             variant="neutral-secondary"
             size={actionsButtonSize}
             icon={<Link2Off />}
+            title={compact ? undefined : "Unlink from Case"}
             onClick={onUnlinkFromCase}
             disabled={isUpdating}
           >
@@ -492,11 +520,11 @@ const EntityHeaderRoot = React.forwardRef<
           </div>
         ) : null}
         {showAssignmentControls && (
-          <div className={controlGroupClassName} title={adaptive ? `Assignee: ${assignee || "Unassigned"}` : undefined}>
+          <div className={controlGroupClassName} title={compact ? undefined : `Assignee: ${assignee || "Unassigned"}`}>
             <AssigneeSelector
               mode="assign"
-              size={actionsAssigneeSize}
-              className={cn(controlButtonClassName, adaptive && styles.collapsibleAction, adaptive && styles.assigneeAction)}
+              size={actionsButtonSize}
+              className={cn(secondaryButtonClassName, !compact && styles.assigneeAction)}
               currentAssignee={assignee || null}
               currentUser={currentUser || null}
               users={users}
@@ -512,10 +540,11 @@ const EntityHeaderRoot = React.forwardRef<
           <div className={controlGroupClassName}>
             {onEdit && (
               <Button
-                className={controlButtonClassName}
+                className={secondaryButtonClassName}
                 variant="neutral-secondary"
                 size={actionsButtonSize}
                 icon={<Edit2 />}
+                title={compact ? undefined : "Edit"}
                 onClick={onEdit}
                 disabled={isUpdating}
               >
@@ -537,10 +566,11 @@ const EntityHeaderRoot = React.forwardRef<
                   </Button>
                 ) : isCase ? (
                   <Button
-                    className={controlButtonClassName}
+                    className={secondaryButtonClassName}
                     variant="neutral-secondary"
                     size={actionsButtonSize}
                     icon={<X />}
+                    title={compact ? undefined : closeButtonLabel}
                     disabled={isUpdating}
                     onClick={() => {
                       if (onCloseCaseWithDetails) {
@@ -556,11 +586,11 @@ const EntityHeaderRoot = React.forwardRef<
                   <DropdownMenuRoot modal={false}>
                     <DropdownMenuTrigger asChild={true}>
                       <Button
-                        className={cn(controlButtonClassName, adaptive && styles.collapsibleAction)}
+                        className={secondaryButtonClassName}
                         variant="neutral-secondary"
                         size={actionsButtonSize}
                         icon={<X />}
-                        title={adaptive ? closeButtonLabel : undefined}
+                        title={compact ? undefined : closeButtonLabel}
                         disabled={isUpdating}
                       >
                         {compact ? "Close" : closeButtonLabel}
@@ -588,11 +618,11 @@ const EntityHeaderRoot = React.forwardRef<
             )}
             {isAlert && !isEscalated && !isClosed && onLinkToCase && (
               <Button
-                className={cn(controlButtonClassName, adaptive && styles.collapsibleAction)}
+                className={secondaryButtonClassName}
                 variant="neutral-secondary"
                 size={actionsButtonSize}
                 icon={<Link />}
-                title={adaptive ? "Link to Case" : undefined}
+                title={compact ? undefined : "Link to Case"}
                 onClick={onLinkToCase}
                 disabled={isUpdating}
               >
@@ -676,7 +706,7 @@ const EntityHeaderRoot = React.forwardRef<
       {...otherProps}
     >
       <div ref={titleRowRef} className="flex w-full flex-wrap items-center gap-4 mobile:gap-2 ">
-        <div className={cn(
+        <div ref={titleBlockRef} className={cn(
           "flex grow shrink-0 basis-0 flex-col items-start gap-1",
           isCompactHeader ? "min-w-0" : "min-w-[288px]",
         )}>
@@ -688,6 +718,7 @@ const EntityHeaderRoot = React.forwardRef<
                 <IconButton
                   size="large"
                   icon={<ChevronLeft />}
+                  aria-label="Back to list"
                   onClick={onBackClick}
                   variant="neutral-primary"
                 />
@@ -695,7 +726,7 @@ const EntityHeaderRoot = React.forwardRef<
             )}
 
             {/* ID and Description block */}
-            <div className="flex flex-col gap-1 flex-1 mobile:gap-0">
+            <div className={cn("flex flex-col gap-1 flex-1 mobile:gap-0", isCompactHeader && "min-w-0 break-words")}>
               {id ? (
                 <div className="w-full flex items-center gap-2">
                   <span className="text-heading-2 font-heading-2 text-default-font">
@@ -714,11 +745,12 @@ const EntityHeaderRoot = React.forwardRef<
           </div>
 
         </div>
-        {!isCompactHeader ? renderHeaderActions("desktop") : null}
+        {renderHeaderActions("inline")}
         {isCompactHeader ? (
           <DropdownMenuRoot modal={false}>
             <DropdownMenuTrigger asChild={true}>
               <IconButton
+                ref={timelineControlsRef}
                 className="ml-auto h-9 w-9 flex-none"
                 icon={<SlidersHorizontal />}
                 aria-label="Timeline controls"
@@ -733,7 +765,7 @@ const EntityHeaderRoot = React.forwardRef<
               className="max-h-[min(36rem,calc(100vh-7rem))] w-[min(42rem,calc(100vw-2rem))] overflow-y-auto border border-neutral-border bg-default-background p-3 shadow-accent-1-shadow-sm"
             >
               <div className="flex min-w-0 flex-col gap-3">
-                {renderHeaderActions("compact")}
+                {!compactActionsInline && renderHeaderActions("compact")}
                 {renderTimelineFilter("compact")}
               </div>
             </DropdownMenuContent>

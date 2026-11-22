@@ -695,9 +695,9 @@ for (const split of wideSplitRoutes) {
   });
 }
 
-test("alert header fits icon-only secondary actions without shrinking buttons", async ({ page }) => {
+test("alert header collapses secondary actions before wrapping below the title", async ({ page }) => {
   await installProductionApiMocks(page);
-  const assignee = "lead-investigator-with-a-long-username@example.test";
+  const assignee = "lead-investigator";
   await page.route(/\/api\/v1\/alerts\/1(?:\?|$)/, (route) => route.fulfill(jsonResponse({
     ...sampleAlert,
     assignee,
@@ -714,32 +714,69 @@ test("alert header fits icon-only secondary actions without shrinking buttons", 
     },
   })));
   await page.addInitScript(() => localStorage.setItem("intercept-ai-pane-width", "400"));
-  await page.setViewportSize({ width: 1660, height: 1000 });
+  await page.setViewportSize({ width: 1540, height: 1000 });
   await page.goto("/alerts/ALT-0000001");
 
   const assign = page.getByRole("button", { name: assignee, exact: true });
   const close = page.getByRole("button", { name: /^Close Alert/ });
   const link = page.getByRole("button", { name: "Link to Case", exact: true });
   const escalate = page.getByRole("button", { name: "Escalate to case", exact: true });
+  const entityId = page.getByText(sampleAlert.human_id, { exact: true }).and(page.locator("span.text-heading-2"));
   const collapseTargets = [assign, close, link];
   const labelWidth = (button: Locator) => button.locator(":scope > span:not(:has(svg))").evaluate((label) => label.getBoundingClientRect().width);
+  const getLayout = () => escalate.evaluate((button) => {
+    const actions = button.closest("div.min-h-9")!;
+    const row = actions.parentElement!;
+    const rowStyle = getComputedStyle(row);
+    return {
+      rowWidth: Number.parseFloat(rowStyle.width),
+      titleReserve: Number.parseFloat(getComputedStyle(row.firstElementChild!).minWidth) + Number.parseFloat(rowStyle.columnGap),
+      actionsWidth: Number.parseFloat(getComputedStyle(actions).width),
+    };
+  });
+  const actionsBesideTitle = async () => {
+    const id = (await entityId.boundingBox())!;
+    const action = (await escalate.boundingBox())!;
+    return action.y < id.y + id.height && action.y + action.height > id.y;
+  };
 
   for (const button of [...collapseTargets, escalate]) await expect(button).toHaveCSS("height", "36px");
   for (const button of collapseTargets) expect(await labelWidth(button)).toBeGreaterThan(1);
+  const fullEscalateLabelWidth = await labelWidth(escalate);
+  expect(fullEscalateLabelWidth).toBeGreaterThan(1);
+  expect(await actionsBesideTitle()).toBe(true);
 
   const rail = page.getByRole("separator", { name: "Resize alert list" });
-  await rail.press("End");
+  const { actionsWidth } = await getLayout();
+  const requiredWidths = [actionsWidth];
   for (const button of collapseTargets) {
-    await expect(button).toHaveCSS("width", "36px");
-    await expect(button).toHaveCSS("height", "36px");
-    expect(await labelWidth(button)).toBeLessThanOrEqual(1);
+    const fullWidth = await button.evaluate((element) => element.getBoundingClientRect().width);
+    requiredWidths.push(requiredWidths.at(-1)! - (fullWidth - 36));
   }
-  await expect(escalate).toHaveCSS("height", "36px");
-  expect(await labelWidth(escalate)).toBeGreaterThan(1);
-  const actionTops = await Promise.all([...collapseTargets, escalate].map(
-    (button) => button.evaluate((element) => element.getBoundingClientRect().top),
-  ));
-  expect(Math.max(...actionTops) - Math.min(...actionTops)).toBeLessThan(1);
+  const resizeToIcons = async (count: number) => {
+    const { rowWidth, titleReserve } = await getLayout();
+    const bounds = (await rail.boundingBox())!;
+    // Aim between adjacent layouts' minimum widths, so exactly count icons fit.
+    const available = count === 0 ? requiredWidths[0] + 12 : (requiredWidths[count - 1] + requiredWidths[count]) / 2;
+    const x = bounds.x + bounds.width / 2;
+    const y = bounds.y + bounds.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + rowWidth - titleReserve - available, y);
+    await page.mouse.up();
+    await expect.poll(async () => Promise.all(collapseTargets.map(async (button) => (await labelWidth(button)) <= 1)))
+      .toEqual(collapseTargets.map((_, index) => index < count));
+    for (const button of [...collapseTargets, escalate]) await expect(button).toHaveCSS("height", "36px");
+    expect(await labelWidth(escalate)).toBeCloseTo(fullEscalateLabelWidth, 0);
+    expect(await actionsBesideTitle()).toBe(true);
+  };
+
+  for (const count of [1, 2, 3]) await resizeToIcons(count);
+  for (const button of collapseTargets) await expect(button).toHaveCSS("width", "36px");
+  await rail.press("End");
+  await expect.poll(actionsBesideTitle).toBe(false);
+  expect(await labelWidth(escalate)).toBeCloseTo(fullEscalateLabelWidth, 0);
+  await resizeToIcons(3);
 
   await assign.press("Enter");
   await expect(page.getByRole("menuitem", { name: /Assign to me/ })).toBeVisible();
@@ -753,13 +790,71 @@ test("alert header fits icon-only secondary actions without shrinking buttons", 
   await link.click();
   await expect(page.getByRole("dialog").getByText("Link to Case", { exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
-  await rail.press("Home");
-  await expect.poll(() => labelWidth(assign)).toBeGreaterThan(1);
-  for (const button of collapseTargets) expect(await labelWidth(button)).toBeGreaterThan(1);
+  for (const count of [2, 1, 0]) await resizeToIcons(count);
 });
+
+for (const { entity, resource, sample, closedStatus } of [
+  { entity: "Case", resource: "cases", sample: sampleCase, closedStatus: "CLOSED" },
+  { entity: "Task", resource: "tasks", sample: sampleTask, closedStatus: "DONE" },
+]) {
+  test(`${entity} header shares compact inline actions and filter overflow`, async ({ page }) => {
+    await installProductionApiMocks(page);
+    const assignee = "lead-investigator-with-a-long-username@example.test";
+    let status = sample.status;
+    await page.route(new RegExp(`/api/v1/${resource}/1(?:\\?|$)`), (route) =>
+      route.fulfill(jsonResponse({ ...sample, status, assignee })),
+    );
+    await page.setViewportSize({ width: 800, height: 900 });
+    await page.goto(`/${resource}/${sample.human_id}`);
+
+    const assign = page.getByRole("button", { name: assignee, exact: true });
+    const edit = page.getByRole("button", { name: "Edit", exact: true });
+    const close = page.getByRole("button", { name: new RegExp(`^Close ${entity}`) });
+    const controls = page.getByRole("button", { name: "Timeline controls" });
+    const filters = page.getByRole("radio", { name: "All Items", exact: true });
+    await expect(controls).toBeVisible();
+    const assistant = page.getByRole("region", { name: "AI Assistant pane", exact: true });
+    await activateFloatingPane(assistant, "left");
+    await assistant.getByRole("button", { name: "Close AI Assistant" }).click();
+    await expect(assign).toHaveCSS("width", "36px");
+    for (const button of [assign, edit, close]) await expect(button).toHaveCSS("height", "36px");
+    await expect(filters).toHaveCount(0);
+    await controls.click();
+    const filterMenu = page.getByRole("menu", { name: "Timeline controls" });
+    await expect(filterMenu.getByRole("radio", { name: "All Items", exact: true })).toBeVisible();
+    await expect(filterMenu.getByRole("button", { name: "Edit", exact: true })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    // Inline controls keep their existing behavior and hit targets when compacted.
+    await close.click();
+    if (entity === "Case") {
+      await expect(page.getByRole("dialog").getByText("Close Case", { exact: true }).first()).toBeVisible();
+    } else {
+      await expect(page.getByRole("menuitem", { name: "Mark as Done", exact: true })).toBeVisible();
+    }
+    await page.keyboard.press("Escape");
+
+    await page.setViewportSize({ width: 320, height: 900 });
+    await expect(edit).toHaveCount(0);
+    await controls.click();
+    await expect(filterMenu.getByRole("button", { name: "Edit", exact: true })).toBeVisible();
+    await expect(filters).toBeVisible();
+    await page.keyboard.press("Escape");
+
+    status = closedStatus;
+    await page.reload();
+    const reopen = page.getByRole("button", { name: `Re-Open ${entity}`, exact: true });
+    await controls.click();
+    await expect(reopen).toBeVisible();
+    await page.keyboard.press("Escape");
+    await page.setViewportSize({ width: 800, height: 900 });
+    await expect(reopen).toHaveCSS("height", "36px");
+  });
+}
 
 for (const { viewport, width, useAi } of [
   { viewport: "desktop", width: 1660, useAi: true },
+  { viewport: "tablet", width: 800, useAi: true },
   { viewport: "mobile", width: 390, useAi: false },
 ]) {
   test(`alert escalation menu preserves the ${useAi ? "AI" : "manual"} flow on ${viewport}`, async ({ page }) => {
@@ -789,9 +884,32 @@ for (const { viewport, width, useAi } of [
     });
     await page.setViewportSize({ width, height: 900 });
     await page.goto("/alerts/ALT-0000001");
-    if (viewport === "mobile") await page.getByRole("button", { name: "Timeline controls" }).click();
-
     const escalate = page.getByRole("button", { name: "Escalate to case", exact: true });
+    const timelineControls = page.getByRole("button", { name: "Timeline controls" });
+    if (viewport === "tablet") {
+      await expect(page.getByRole("button", { name: "Unassigned", exact: true })).toHaveCSS("width", "36px");
+      await expect(page.getByRole("button", { name: /^Close Alert/ })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Link to Case", exact: true })).toBeVisible();
+      await expect(escalate).toBeVisible();
+      const allItems = page.getByRole("radio", { name: "All Items", exact: true });
+      await expect(allItems).toHaveCount(0);
+      await timelineControls.click();
+      await expect(allItems).toBeVisible();
+      await expect(page.getByRole("menu").getByRole("button", { name: "Escalate to case", exact: true })).toHaveCount(0);
+      await page.keyboard.press("Escape");
+      await page.setViewportSize({ width: 390, height: 900 });
+      await expect(escalate).toHaveCount(0);
+      await timelineControls.click();
+      await expect(escalate).toBeVisible();
+      await page.keyboard.press("Escape");
+      await page.setViewportSize({ width, height: 900 });
+      await expect(escalate).toBeVisible();
+    } else if (viewport === "mobile") {
+      await expect(timelineControls).toBeVisible();
+      await expect(escalate).toHaveCount(0);
+      await timelineControls.click();
+    }
+
     await escalate.press("Enter");
     const withAi = page.getByRole("menuitem", { name: "Use AI recommendation" });
     const manual = page.getByRole("menuitem", { name: "Escalate manually" });
