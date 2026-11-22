@@ -7,26 +7,9 @@ import type { CaseRead } from '@/types/generated/models/CaseRead';
 import type { TaskRead } from '@/types/generated/models/TaskRead';
 import { deleteDraft } from '@/utils/draftStorage';
 import type { TimelineItemType } from '@/types/drafts';
-import { getEntityQueryKey } from './queryKeys';
-
-function normalizeTimelineItemMap(
-  timelineItems: TimelineItemResponse['timeline_items']
-): Record<string, any> {
-  if (!timelineItems) {
-    return {};
-  }
-
-  if (Array.isArray(timelineItems)) {
-    return timelineItems.reduce<Record<string, any>>((accumulator, item) => {
-      if (item && typeof item === 'object' && 'id' in item && typeof item.id === 'string') {
-        accumulator[item.id] = item;
-      }
-      return accumulator;
-    }, {});
-  }
-
-  return { ...timelineItems };
-}
+import { createOptimisticTimelineItem } from '@/utils/timelineUtils';
+import { getQueueSearchQueryKey, type EntityType } from './queryKeys';
+import { timelineItemCache, type TimelineMutationContext } from './timelineItemCache';
 
 /**
  * Timeline item creation payload
@@ -47,6 +30,8 @@ export interface TimelineItemCreate {
   flagged?: boolean;
   /** Highlight status */
   highlighted?: boolean;
+  /** The item to attach a reply to */
+  parent_id?: string | null;
   /** Type-specific fields (observable_type, observable_value, etc.) */
   [key: string]: any;
 }
@@ -54,7 +39,7 @@ export interface TimelineItemCreate {
 /**
  * Context type for timeline items - 'alert', 'case', or 'task'
  */
-export type TimelineContext = 'alert' | 'case' | 'task';
+export type TimelineContext = EntityType;
 
 /**
  * Response type for timeline item creation (union of AlertRead, CaseRead, and TaskRead)
@@ -118,16 +103,19 @@ interface UseTimelineItemCreateOptions {
 export function useTimelineItemCreate(
   entityId: number | null,
   options?: UseTimelineItemCreateOptions
-): UseMutationResult<{ response: TimelineItemResponse; itemId?: string }, Error, TimelineItemCreate, { previousData: TimelineItemResponse | undefined }> {
+): UseMutationResult<{ response: TimelineItemResponse; itemId?: string }, Error, TimelineItemCreate, TimelineMutationContext> {
   const queryClient = useQueryClient();
   const context = options?.context || 'alert';
+  const cache = timelineItemCache(queryClient, context, entityId);
 
   return useMutation<
     { response: TimelineItemResponse; itemId?: string },
     Error,
     TimelineItemCreate,
-    { previousData: TimelineItemResponse | undefined }
+    TimelineMutationContext
   >({
+    mutationKey: cache.mutationKey,
+    scope: cache.scope,
     mutationFn: async (formData: TimelineItemCreate) => {
       if (entityId === null) {
         throw new Error(`${context === 'alert' ? 'Alert' : context === 'case' ? 'Case' : 'Task'} ID is required`);
@@ -160,60 +148,16 @@ export function useTimelineItemCreate(
       return { response, itemId: formData.id };
     },
 
-    // Optimistic update: Add temporary item to timeline if client ID provided
-    onMutate: async (formData: TimelineItemCreate) => {
-      if (entityId === null || !formData.id) {
-        return { previousData: undefined };
-      }
-
-      // Determine the correct query key based on context
-      const queryKey = getEntityQueryKey(context, entityId);
-
-      // Cancel any outgoing refetches
-      // Use partial key matching (exact: false) to handle query keys with options like includeLinkedTimelines
-      await queryClient.cancelQueries({ queryKey, exact: false });
-
-      // Snapshot the previous value
-      // Use partial key matching to handle query keys with options
-      const queriesData = queryClient.getQueriesData<TimelineItemResponse>({ queryKey, exact: false });
-      const previousData: TimelineItemResponse | undefined =
-        queriesData.length > 0 ? queriesData[0][1] : undefined;
-
-      // Optimistically add the new item
-      if (previousData) {
-        const optimisticItem = {
-          ...formData,
-          id: formData.id,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          // Mark as temporary for UI indication (optional)
-          _optimistic: true,
-        };
-
-        const timelineItems = normalizeTimelineItemMap(previousData.timeline_items);
-
-        const updatedData: TimelineItemResponse = {
-          ...previousData,
-          timeline_items: {
-            ...timelineItems,
-            [formData.id]: optimisticItem as any,
-          } as any,
-        };
-
-        // Use partial key matching to handle query keys with options like includeLinkedTimelines
-        queryClient.setQueriesData<TimelineItemResponse>({ queryKey, exact: false }, updatedData);
-      }
-
-      return { previousData };
+    onMutate: (formData) => {
+      const parentId = options?.parentItemId || formData.parent_id || null;
+      const optimisticItem = formData.id
+        ? { ...createOptimisticTimelineItem({ ...formData, parent_id: parentId }), _optimistic: true }
+        : undefined;
+      return cache.begin({ type: 'create', parentId, item: optimisticItem });
     },
 
-    // On error, roll back optimistic update and preserve draft
-    onError: (error, formData, mutationContext) => {
-      if (mutationContext?.previousData && entityId !== null) {
-        const queryKey = getEntityQueryKey(context, entityId);
-        // Use partial key matching to handle query keys with options like includeLinkedTimelines
-        queryClient.setQueriesData({ queryKey, exact: false }, mutationContext.previousData);
-      }
+    onError: (error, _formData, mutationContext) => {
+      cache.finish(mutationContext);
       
       console.error(`Failed to create ${context} timeline item:`, error);
       
@@ -225,19 +169,14 @@ export function useTimelineItemCreate(
       options?.onError?.(error);
     },
 
-    // On success, update cache with server response and delete draft
-    onSuccess: ({ response, itemId }, formData) => {
-      // Update cache with server response
-      if (entityId !== null) {
-        const queryKey = getEntityQueryKey(context, entityId);
-        // Use partial key matching to handle query keys with options like includeLinkedTimelines
-        queryClient.setQueriesData<TimelineItemResponse>({ queryKey, exact: false }, response);
-      }
+    onSuccess: ({ response, itemId }, formData, mutationContext) => {
+      cache.finish(mutationContext, response);
+      void queryClient.invalidateQueries({ queryKey: getQueueSearchQueryKey(context) });
 
       // Delete draft if enabled (default: true)
       if (options?.deleteDraftOnSuccess !== false && entityId !== null) {
         try {
-          deleteDraft(entityId, formData.type as TimelineItemType);
+          deleteDraft(entityId, formData.type as TimelineItemType, context);
         } catch (error) {
           console.warn('Failed to delete draft after successful creation:', error);
         }
