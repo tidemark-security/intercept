@@ -2,54 +2,28 @@
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
-
-MIGRATION_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "db_migrations"
-    / "versions"
-    / "028_mcp_client_assertion_replay.py"
-)
-
-
-def _load_migration() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "mcp_client_assertion_replay_migration",
-        MIGRATION_PATH,
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_migration_follows_password_verification_capacity() -> None:
-    migration = _load_migration()
-
-    assert migration.revision == "028_mcp_assertion_replay"
-    assert migration.down_revision == "027_password_verify_capacity"
+from db_migrations.v0_6_0 import assertion_replay
 
 
 def test_upgrade_creates_ledger_before_scheduling_cleanup(monkeypatch) -> None:
-    migration = _load_migration()
     events: list[tuple[str, object]] = []
-    migration.op = SimpleNamespace(
+    operations = SimpleNamespace(
         create_table=lambda name, *columns: events.append(("create_table", name)),
         create_index=lambda name, *args, **kwargs: events.append(("create_index", name)),
         get_bind=lambda: _Bind(active_claims=0),
     )
+    monkeypatch.setattr(assertion_replay, "op", operations)
     monkeypatch.setattr(
-        migration,
+        assertion_replay,
         "schedule_cron_job",
         lambda **job: events.append(("schedule", job)),
     )
 
-    migration.upgrade()
+    assertion_replay.upgrade()
 
     assert events == [
         ("create_table", "mcp_oauth_client_assertion_jtis"),
@@ -57,7 +31,7 @@ def test_upgrade_creates_ledger_before_scheduling_cleanup(monkeypatch) -> None:
         (
             "schedule",
             {
-                **migration.MCP_ASSERTION_REPLAY_CLEANUP_JOB,
+                **assertion_replay.MCP_ASSERTION_REPLAY_CLEANUP_JOB,
                 "name": (
                     "cleanup-mcp-client-assertion-jtis:intercept_test"
                 ),
@@ -66,7 +40,7 @@ def test_upgrade_creates_ledger_before_scheduling_cleanup(monkeypatch) -> None:
             },
         ),
     ]
-    assert migration.MCP_ASSERTION_REPLAY_CLEANUP_JOB == {
+    assert assertion_replay.MCP_ASSERTION_REPLAY_CLEANUP_JOB == {
         "schedule": "* * * * *",
         "command": (
             "WITH expired AS (SELECT ctid FROM "
@@ -79,10 +53,8 @@ def test_upgrade_creates_ledger_before_scheduling_cleanup(monkeypatch) -> None:
 
 
 def test_cleanup_jobs_are_namespaced_for_shared_pg_cron_catalogs() -> None:
-    migration = _load_migration()
-
-    first = migration.assertion_replay_cleanup_job("intercept_one")
-    second = migration.assertion_replay_cleanup_job("intercept_two")
+    first = assertion_replay.assertion_replay_cleanup_job("intercept_one")
+    second = assertion_replay.assertion_replay_cleanup_job("intercept_two")
 
     assert first["name"] == (
         "cleanup-mcp-client-assertion-jtis:intercept_one"
@@ -106,38 +78,37 @@ class _Bind:
 
 
 def test_downgrade_refuses_to_remove_unexpired_replay_claims(monkeypatch) -> None:
-    migration = _load_migration()
     unscheduled: list[str] = []
-    migration.op = SimpleNamespace(get_bind=lambda: _Bind(active_claims=1))
+    monkeypatch.setattr(assertion_replay, "op", SimpleNamespace(get_bind=lambda: _Bind(active_claims=1)))
     monkeypatch.setattr(
-        migration,
+        assertion_replay,
         "unschedule_cron_job",
         lambda *, name, strict: unscheduled.append(name),
     )
 
     with pytest.raises(RuntimeError, match="unexpired claims"):
-        migration.downgrade()
+        assertion_replay.downgrade()
 
     assert unscheduled == []
 
 
 def test_downgrade_unschedules_before_dropping_ledger(monkeypatch) -> None:
-    migration = _load_migration()
     events: list[tuple[str, str]] = []
-    migration.op = SimpleNamespace(
+    operations = SimpleNamespace(
         get_bind=lambda: _Bind(active_claims=0),
         drop_index=lambda name, **kwargs: events.append(("drop_index", name)),
         drop_table=lambda name: events.append(("drop_table", name)),
     )
+    monkeypatch.setattr(assertion_replay, "op", operations)
     monkeypatch.setattr(
-        migration,
+        assertion_replay,
         "unschedule_cron_job",
         lambda *, name, strict: events.append(
             ("unschedule_strict" if strict else "unschedule", name)
         ),
     )
 
-    migration.downgrade()
+    assertion_replay.downgrade()
 
     assert events == [
         (

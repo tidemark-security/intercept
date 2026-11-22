@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import importlib.util
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from types import ModuleType
 
 import pytest
 from sqlalchemy import text
@@ -12,25 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.models.enums import AlertStatus, CaseStatus, Priority, TaskStatus
 from app.models.models import Alert, Case, Task
 from app.services.metrics_service import MetricsService
-
-
-MIGRATION_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "db_migrations"
-    / "versions"
-    / "016_soc_metrics_work_grain.py"
-)
-
-
-def _load_migration_module() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "soc_metrics_work_grain_integration_migration",
-        MIGRATION_PATH,
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from db_migrations.v0_6_0 import soc_metrics
 
 
 @pytest.mark.asyncio
@@ -38,7 +17,6 @@ async def test_soc_metrics_view_does_not_repeat_work_for_each_alert_source(
     async_engine: AsyncEngine,
     session_maker: async_sessionmaker[AsyncSession],
 ) -> None:
-    migration = _load_migration_module()
     created_at = datetime.now(timezone.utc) - timedelta(minutes=5)
 
     async with session_maker() as session:
@@ -81,8 +59,8 @@ async def test_soc_metrics_view_does_not_repeat_work_for_each_alert_source(
         await connection.execute(
             text("DROP MATERIALIZED VIEW IF EXISTS soc_metrics_15m;")
         )
-        await connection.execute(text(migration.SOC_METRICS_VIEW_SQL))
-        await connection.execute(text(migration.SOC_METRICS_INDEX_SQL))
+        await connection.execute(text(soc_metrics.SOC_METRICS_VIEW_SQL))
+        await connection.execute(text(soc_metrics.SOC_METRICS_INDEX_SQL))
 
     try:
         async with session_maker() as session:

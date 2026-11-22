@@ -2,51 +2,15 @@
 
 from __future__ import annotations
 
-import importlib.util
 from datetime import datetime, timezone
-from pathlib import Path
-from types import ModuleType
-from typing import Any
 from uuid import uuid4
 
 import pytest
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-
-BACKEND_ROOT = Path(__file__).resolve().parents[3]
-MIGRATION_PATH = (
-    BACKEND_ROOT
-    / "db_migrations"
-    / "versions"
-    / "021_credential_invalidation_cutoff.py"
-)
-
-
-def _load_migration() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "credential_invalidation_cutoff_migration",
-        MIGRATION_PATH,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _run_upgrade(sync_connection: Any) -> None:
-    migration = _load_migration()
-    migration.op = Operations(MigrationContext.configure(sync_connection))
-    migration.upgrade()
-
-
-def _run_downgrade(sync_connection: Any) -> None:
-    migration = _load_migration()
-    migration.op = Operations(MigrationContext.configure(sync_connection))
-    migration.downgrade()
+from db_migrations.v0_6_0 import auth
+from tests.fixtures.migrations import run_migration
 
 
 async def test_upgrade_adds_cutoff_to_legacy_user_accounts_table(
@@ -63,7 +27,7 @@ async def test_upgrade_adds_cutoff_to_legacy_user_accounts_table(
             await connection.execute(
                 text("CREATE TABLE user_accounts (id UUID PRIMARY KEY)")
             )
-            await connection.run_sync(_run_upgrade)
+            await connection.run_sync(run_migration, auth.add_credential_cutoff)
 
             columns = set(
                 (
@@ -104,8 +68,8 @@ async def test_upgrade_is_noop_for_fresh_user_accounts_table(
                 )
             )
 
-            await connection.run_sync(_run_upgrade)
-            await connection.run_sync(_run_upgrade)
+            await connection.run_sync(run_migration, auth.add_credential_cutoff)
+            await connection.run_sync(run_migration, auth.add_credential_cutoff)
 
             column_count = await connection.scalar(
                 text(
@@ -128,7 +92,7 @@ async def test_upgrade_is_noop_for_fresh_user_accounts_table(
 async def test_downgrade_fails_closed_with_active_credential_cutoff(
     async_engine: AsyncEngine,
 ) -> None:
-    schema = f"t21_guard_{uuid4().hex}"
+    schema = f"test_cutoff_guard_{uuid4().hex}"
     quoted_schema = f'"{schema}"'
     user_id = uuid4()
     cutoff = datetime(2026, 8, 8, 1, 2, 3, tzinfo=timezone.utc)
@@ -156,11 +120,11 @@ async def test_downgrade_fails_closed_with_active_credential_cutoff(
             with pytest.raises(
                 RuntimeError,
                 match=(
-                    r"Cannot downgrade 021_credential_cutoff.*"
+                    r"Cannot downgrade v0\.6\.0.*"
                     r"credentials_invalidated_at contains non-NULL values"
                 ),
             ):
-                await connection.run_sync(_run_downgrade)
+                await connection.run_sync(run_migration, auth.remove_credential_cutoff)
 
             stored_cutoff = await connection.scalar(
                 text(
@@ -191,7 +155,7 @@ async def test_downgrade_fails_closed_with_active_credential_cutoff(
 async def test_downgrade_drops_unused_credential_cutoff_column(
     async_engine: AsyncEngine,
 ) -> None:
-    schema = f"t21_empty_{uuid4().hex}"
+    schema = f"test_cutoff_empty_{uuid4().hex}"
     quoted_schema = f'"{schema}"'
     user_id = uuid4()
     try:
@@ -215,7 +179,7 @@ async def test_downgrade_drops_unused_credential_cutoff_column(
                 {"id": user_id},
             )
 
-            await connection.run_sync(_run_downgrade)
+            await connection.run_sync(run_migration, auth.remove_credential_cutoff)
 
             columns = set(
                 (

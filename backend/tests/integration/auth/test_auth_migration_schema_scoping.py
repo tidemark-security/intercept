@@ -2,66 +2,15 @@
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-from types import ModuleType
-from typing import Any
 from uuid import uuid4
 
 import pytest
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-
-BACKEND_ROOT = Path(__file__).resolve().parents[3]
-MIGRATIONS = {
-    "018": BACKEND_ROOT / "db_migrations" / "versions" / "018_scoped_api_keys.py",
-    "019": (
-        BACKEND_ROOT
-        / "db_migrations"
-        / "versions"
-        / "019_oidc_identity_pair_constraint.py"
-    ),
-    "020": (
-        BACKEND_ROOT
-        / "db_migrations"
-        / "versions"
-        / "020_oidc_login_abuse_controls.py"
-    ),
-    "022": (
-        BACKEND_ROOT
-        / "db_migrations"
-        / "versions"
-        / "022_passkey_login_abuse_controls.py"
-    ),
-}
-
-
-def _load_migration(name: str) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        f"auth_migration_{name}",
-        MIGRATIONS[name],
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _run_upgrade(sync_connection: Any, name: str) -> None:
-    migration = _load_migration(name)
-    migration.op = Operations(MigrationContext.configure(sync_connection))
-    migration.upgrade()
-
-
-def _run_downgrade(sync_connection: Any, name: str) -> None:
-    migration = _load_migration(name)
-    migration.op = Operations(MigrationContext.configure(sync_connection))
-    migration.downgrade()
+from db_migrations.v0_6_0 import auth
+from tests.fixtures.migrations import run_migration
 
 
 @pytest.mark.parametrize(
@@ -72,7 +21,7 @@ def _run_downgrade(sync_connection: Any, name: str) -> None:
         ("AUDITOR", ["api:read", "mcp:access"]),
     ],
 )
-async def test_018_upgrade_backfills_legacy_key_scopes_to_owner_role_ceiling(
+async def test_upgrade_backfills_legacy_key_scopes_to_owner_role_ceiling(
     async_engine: AsyncEngine,
     role: str,
     expected_scopes: list[str],
@@ -107,7 +56,7 @@ async def test_018_upgrade_backfills_legacy_key_scopes_to_owner_role_ceiling(
                 {"id": api_key_id, "user_id": user_id},
             )
 
-            await connection.run_sync(_run_upgrade, "018")
+            await connection.run_sync(run_migration, auth.add_key_scopes)
 
             scopes = await connection.scalar(
                 text("SELECT scopes FROM api_keys WHERE id = :id"),
@@ -131,7 +80,7 @@ async def test_018_upgrade_backfills_legacy_key_scopes_to_owner_role_ceiling(
             )
 
 
-async def test_018_upgrade_is_noop_for_fresh_table(
+async def test_upgrade_is_noop_for_fresh_table(
     async_engine: AsyncEngine,
 ) -> None:
     schema = f"test_scoped_api_keys_fresh_{uuid4().hex}"
@@ -147,8 +96,8 @@ async def test_018_upgrade_is_noop_for_fresh_table(
                 )
             )
 
-            await connection.run_sync(_run_upgrade, "018")
-            await connection.run_sync(_run_upgrade, "018")
+            await connection.run_sync(run_migration, auth.add_key_scopes)
+            await connection.run_sync(run_migration, auth.add_key_scopes)
 
             column_count = await connection.scalar(
                 text(
@@ -167,7 +116,7 @@ async def test_018_upgrade_is_noop_for_fresh_table(
             )
 
 
-async def test_019_upgrade_rejects_existing_ascii_whitespace_only_identities(
+async def test_upgrade_rejects_existing_ascii_whitespace_only_identities(
     async_engine: AsyncEngine,
 ) -> None:
     schema = f"test_oidc_identity_preflight_{uuid4().hex}"
@@ -200,7 +149,7 @@ async def test_019_upgrade_rejects_existing_ascii_whitespace_only_identities(
                 RuntimeError,
                 match=r"2 user account\(s\).*partial or blank OIDC identity",
             ):
-                await connection.run_sync(_run_upgrade, "019")
+                await connection.run_sync(run_migration, auth.add_oidc_identity_constraint)
     finally:
         async with async_engine.begin() as connection:
             await connection.execute(
@@ -208,7 +157,7 @@ async def test_019_upgrade_rejects_existing_ascii_whitespace_only_identities(
             )
 
 
-async def test_019_constraint_rejects_ascii_whitespace_only_identities(
+async def test_constraint_rejects_ascii_whitespace_only_identities(
     async_engine: AsyncEngine,
 ) -> None:
     schema = f"test_oidc_identity_constraint_{uuid4().hex}"
@@ -229,7 +178,7 @@ async def test_019_constraint_rejects_ascii_whitespace_only_identities(
                 )
             )
 
-            await connection.run_sync(_run_upgrade, "019")
+            await connection.run_sync(run_migration, auth.add_oidc_identity_constraint)
 
             for issuer, subject in invalid_pairs:
                 with pytest.raises(IntegrityError):
@@ -253,7 +202,7 @@ async def test_019_constraint_rejects_ascii_whitespace_only_identities(
             )
 
 
-async def test_020_upgrade_targets_legacy_table_in_current_schema(
+async def test_upgrade_targets_legacy_table_in_current_schema(
     async_engine: AsyncEngine,
 ) -> None:
     schema = f"test_oidc_abuse_controls_{uuid4().hex}"
@@ -276,7 +225,7 @@ async def test_020_upgrade_targets_legacy_table_in_current_schema(
                 {"id": uuid4()},
             )
 
-            await connection.run_sync(_run_upgrade, "020")
+            await connection.run_sync(run_migration, auth.add_oidc_login_controls)
 
             source_fingerprint = await connection.scalar(
                 text("SELECT source_fingerprint FROM oidc_auth_requests")
@@ -325,10 +274,10 @@ async def test_020_upgrade_targets_legacy_table_in_current_schema(
             )
 
 
-async def test_020_downgrade_restores_nullable_created_at(
+async def test_downgrade_restores_nullable_created_at(
     async_engine: AsyncEngine,
 ) -> None:
-    schema = f"t20_down_{uuid4().hex}"
+    schema = f"test_oidc_down_{uuid4().hex}"
     quoted_schema = f'"{schema}"'
     try:
         async with async_engine.begin() as connection:
@@ -341,8 +290,8 @@ async def test_020_downgrade_restores_nullable_created_at(
                 )
             )
 
-            await connection.run_sync(_run_upgrade, "020")
-            await connection.run_sync(_run_downgrade, "020")
+            await connection.run_sync(run_migration, auth.add_oidc_login_controls)
+            await connection.run_sync(run_migration, auth.remove_oidc_login_controls)
 
             nullable = await connection.scalar(
                 text(
@@ -362,7 +311,7 @@ async def test_020_downgrade_restores_nullable_created_at(
             )
 
 
-async def test_020_upgrade_creates_missing_indexes_when_column_exists(
+async def test_upgrade_creates_missing_indexes_when_column_exists(
     async_engine: AsyncEngine,
 ) -> None:
     schema = f"test_oidc_partial_{uuid4().hex}"
@@ -379,7 +328,7 @@ async def test_020_upgrade_creates_missing_indexes_when_column_exists(
                 )
             )
 
-            await connection.run_sync(_run_upgrade, "020")
+            await connection.run_sync(run_migration, auth.add_oidc_login_controls)
 
             indexes = set(
                 (
@@ -415,7 +364,7 @@ async def test_020_upgrade_creates_missing_indexes_when_column_exists(
         ("ix_oidc_auth_requests_created_at", "created_at"),
     ],
 )
-async def test_020_upgrade_creates_each_index_independently(
+async def test_upgrade_creates_each_index_independently(
     async_engine: AsyncEngine,
     existing_index_name: str,
     existing_index_columns: str,
@@ -440,7 +389,7 @@ async def test_020_upgrade_creates_each_index_independently(
                 )
             )
 
-            await connection.run_sync(_run_upgrade, "020")
+            await connection.run_sync(run_migration, auth.add_oidc_login_controls)
 
             indexes = set(
                 (
@@ -466,7 +415,7 @@ async def test_020_upgrade_creates_each_index_independently(
             )
 
 
-async def test_020_upgrade_is_noop_for_fresh_table(
+async def test_upgrade_is_noop_for_fresh_table(
     async_engine: AsyncEngine,
 ) -> None:
     schema = f"test_oidc_abuse_controls_fresh_{uuid4().hex}"
@@ -495,8 +444,8 @@ async def test_020_upgrade_is_noop_for_fresh_table(
                 )
             )
 
-            await connection.run_sync(_run_upgrade, "020")
-            await connection.run_sync(_run_upgrade, "020")
+            await connection.run_sync(run_migration, auth.add_oidc_login_controls)
+            await connection.run_sync(run_migration, auth.add_oidc_login_controls)
 
             column_count = await connection.scalar(
                 text(
@@ -516,7 +465,7 @@ async def test_020_upgrade_is_noop_for_fresh_table(
             )
 
 
-async def test_022_upgrade_adds_passkey_login_ledger_columns_and_indexes(
+async def test_upgrade_adds_passkey_login_ledger_columns_and_indexes(
     async_engine: AsyncEngine,
 ) -> None:
     schema = f"test_passkey_abuse_controls_{uuid4().hex}"
@@ -532,7 +481,7 @@ async def test_022_upgrade_adds_passkey_login_ledger_columns_and_indexes(
                 )
             )
 
-            await connection.run_sync(_run_upgrade, "022")
+            await connection.run_sync(run_migration, auth.add_passkey_controls)
 
             columns = set(
                 (
@@ -571,7 +520,7 @@ async def test_022_upgrade_adds_passkey_login_ledger_columns_and_indexes(
             )
 
 
-async def test_022_upgrade_is_noop_for_fresh_passkey_challenge_table(
+async def test_upgrade_is_noop_for_fresh_passkey_challenge_table(
     async_engine: AsyncEngine,
 ) -> None:
     schema = f"test_passkey_fresh_{uuid4().hex}"
@@ -601,8 +550,8 @@ async def test_022_upgrade_is_noop_for_fresh_passkey_challenge_table(
                 )
             )
 
-            await connection.run_sync(_run_upgrade, "022")
-            await connection.run_sync(_run_upgrade, "022")
+            await connection.run_sync(run_migration, auth.add_passkey_controls)
+            await connection.run_sync(run_migration, auth.add_passkey_controls)
 
             fingerprint_column_count = await connection.scalar(
                 text(

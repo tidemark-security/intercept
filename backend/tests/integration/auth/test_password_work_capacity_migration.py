@@ -2,62 +2,20 @@
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-from types import ModuleType
-from typing import Any
 from uuid import uuid4
 
 import pytest
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-
-MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "db_migrations"
-    / "versions"
-    / "027_password_verification_capacity.py"
-)
-
-
-def _load_migration() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "password_verification_capacity_migration",
-        MIGRATION_PATH,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _run_upgrade(sync_connection: Any) -> None:
-    migration = _load_migration()
-    migration.op = Operations(MigrationContext.configure(sync_connection))
-    migration.upgrade()
-
-
-def _run_downgrade(sync_connection: Any) -> None:
-    migration = _load_migration()
-    migration.op = Operations(MigrationContext.configure(sync_connection))
-    migration.downgrade()
-
-
-def test_password_work_capacity_migration_follows_causal_epochs() -> None:
-    migration = _load_migration()
-
-    assert migration.revision == "027_password_verify_capacity"
-    assert migration.down_revision == "026_mcp_oauth_causal_epochs"
+from db_migrations.v0_6_0 import auth
+from tests.fixtures.migrations import run_migration
 
 
 async def test_downgrade_refuses_live_security_state_and_reupgrade_is_clean(
     async_engine: AsyncEngine,
 ) -> None:
-    schema = f"t27_password_work_{uuid4().hex}"
+    schema = f"test_password_work_{uuid4().hex}"
     quoted_schema = f'"{schema}"'
     user_id = uuid4()
     try:
@@ -67,7 +25,7 @@ async def test_downgrade_refuses_live_security_state_and_reupgrade_is_clean(
             await connection.execute(
                 text("CREATE TABLE user_accounts (id UUID PRIMARY KEY)")
             )
-            await connection.run_sync(_run_upgrade)
+            await connection.run_sync(run_migration, auth.create_password_work_tables)
 
             await connection.execute(
                 text(
@@ -78,7 +36,7 @@ async def test_downgrade_refuses_live_security_state_and_reupgrade_is_clean(
                 {"id": uuid4()},
             )
             with pytest.raises(RuntimeError, match="active leases or pending failure"):
-                await connection.run_sync(_run_downgrade)
+                await connection.run_sync(run_migration, auth.remove_password_work_tables)
 
             await connection.execute(text("DELETE FROM password_hash_work_leases"))
             await connection.execute(
@@ -94,13 +52,13 @@ async def test_downgrade_refuses_live_security_state_and_reupgrade_is_clean(
                 {"user_id": user_id, "fingerprint": "f" * 64},
             )
             with pytest.raises(RuntimeError, match="active leases or pending failure"):
-                await connection.run_sync(_run_downgrade)
+                await connection.run_sync(run_migration, auth.remove_password_work_tables)
 
             await connection.execute(
                 text("DELETE FROM password_login_failure_counters")
             )
-            await connection.run_sync(_run_downgrade)
-            await connection.run_sync(_run_upgrade)
+            await connection.run_sync(run_migration, auth.remove_password_work_tables)
+            await connection.run_sync(run_migration, auth.create_password_work_tables)
 
             tables = set(
                 (

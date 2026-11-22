@@ -55,7 +55,7 @@ from app.models.enums import (
     ContextCriterionType,
 )
 
-# Migration 026 owns this sequence. Keep it detached from SQLModel metadata so
+# The v0.6.0 migration owns this sequence. Keep it detached from SQLModel metadata so
 # the filtered baseline schema in migration 001 cannot create it prematurely.
 MCP_OAUTH_GRANT_EPOCH_SEQUENCE = Sequence("mcp_oauth_grant_epoch_seq")
 

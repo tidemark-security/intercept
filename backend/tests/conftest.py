@@ -1,5 +1,4 @@
 import os
-from importlib import import_module
 import re
 import shutil
 import subprocess
@@ -25,6 +24,7 @@ from sqlalchemy import text
 from sqlalchemy.pool import NullPool
 from sqlmodel import SQLModel
 
+from db_migrations.v0_6_0 import timeline_search
 from app.core.database import get_db
 from app.core.authentication_activity import flush_deferred_authentication_activity
 from app.models.models import MCP_OAUTH_GRANT_EPOCH_SEQUENCE
@@ -139,12 +139,11 @@ def _truncate_sqlmodel_tables(sync_connection) -> None:
 def _create_migration_managed_test_objects(sync_connection) -> None:
     """Create non-metadata objects normally provisioned by Alembic."""
 
-    # Production receives this sequence from migration 026. Integration tests
+    # Production receives this sequence from the v0.6.0 migration. Integration tests
     # construct the current table schema directly from SQLModel metadata, so
     # they must provision the migration-owned sequence explicitly.
     MCP_OAUTH_GRANT_EPOCH_SEQUENCE.create(sync_connection, checkfirst=True)
-    timeline_indexes = import_module("db_migrations.versions.031_timeline_search_indexes")
-    sync_connection.exec_driver_sql(timeline_indexes.CREATE_IOC_FUNCTION)
+    sync_connection.exec_driver_sql(timeline_search.CREATE_IOC_FUNCTION)
 
 
 def _drop_migration_managed_test_objects(sync_connection) -> None:

@@ -2,62 +2,29 @@
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-from types import ModuleType
-from typing import Any
 from uuid import uuid4
 
 import pytest
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-
-MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "db_migrations"
-    / "versions"
-    / "028_mcp_client_assertion_replay.py"
-)
-
-
-def _load_migration() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "mcp_client_assertion_replay_schema_migration",
-        MIGRATION_PATH,
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    module.schedule_cron_job = lambda **kwargs: None
-    module.unschedule_cron_job = lambda **kwargs: None
-    return module
-
-
-def _run_upgrade(sync_connection: Any) -> None:
-    migration = _load_migration()
-    migration.op = Operations(MigrationContext.configure(sync_connection))
-    migration.upgrade()
-
-
-def _run_downgrade(sync_connection: Any) -> None:
-    migration = _load_migration()
-    migration.op = Operations(MigrationContext.configure(sync_connection))
-    migration.downgrade()
+from db_migrations.v0_6_0 import assertion_replay
+from tests.fixtures.migrations import run_migration
 
 
 async def test_migration_schema_downgrade_guard_and_reupgrade(
     async_engine: AsyncEngine,
+    monkeypatch,
 ) -> None:
-    schema = f"t28_mcp_assertion_{uuid4().hex}"
+    monkeypatch.setattr(assertion_replay, "schedule_cron_job", lambda **kwargs: None)
+    monkeypatch.setattr(assertion_replay, "unschedule_cron_job", lambda **kwargs: None)
+    schema = f"test_mcp_assertion_{uuid4().hex}"
     quoted_schema = f'"{schema}"'
     try:
         async with async_engine.begin() as connection:
             await connection.execute(text(f"CREATE SCHEMA {quoted_schema}"))
             await connection.execute(text(f"SET LOCAL search_path TO {quoted_schema}"))
-            await connection.run_sync(_run_upgrade)
+            await connection.run_sync(run_migration, assertion_replay.upgrade)
 
             columns = set(
                 (
@@ -101,13 +68,13 @@ async def test_migration_schema_downgrade_guard_and_reupgrade(
                 {"client_hash": "c" * 64, "jti_hash": "j" * 64},
             )
             with pytest.raises(RuntimeError, match="unexpired claims"):
-                await connection.run_sync(_run_downgrade)
+                await connection.run_sync(run_migration, assertion_replay.downgrade)
 
             await connection.execute(
                 text("DELETE FROM mcp_oauth_client_assertion_jtis")
             )
-            await connection.run_sync(_run_downgrade)
-            await connection.run_sync(_run_upgrade)
+            await connection.run_sync(run_migration, assertion_replay.downgrade)
+            await connection.run_sync(run_migration, assertion_replay.upgrade)
     finally:
         async with async_engine.begin() as connection:
             await connection.execute(

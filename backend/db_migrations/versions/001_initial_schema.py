@@ -501,9 +501,7 @@ def upgrade() -> None:
     # STEP 11: Create SOC metrics materialized views
     # =========================================================================
     
-    # SOC Metrics View - 15 minute windows with alert/case/task aggregations.
-    # Alert rows vary by source while case/task rows do not, so the two grains
-    # are emitted as separate scopes rather than joined and multiplied.
+    # SOC Metrics View - 15 minute windows with alert/case/task aggregations
     op.execute("""
         CREATE MATERIALIZED VIEW IF NOT EXISTS soc_metrics_15m AS
         WITH alert_metrics AS (
@@ -566,96 +564,45 @@ def upgrade() -> None:
             FROM tasks
             WHERE created_at >= NOW() - INTERVAL '90 days'
             GROUP BY 1, 2
-        ),
-        work_metrics AS (
-            SELECT
-                COALESCE(c.time_window, t.time_window) AS time_window,
-                COALESCE(c.priority, t.priority) AS priority,
-                COALESCE(c.case_count, 0) AS case_count,
-                COALESCE(c.cases_closed, 0) AS cases_closed,
-                COALESCE(c.cases_new, 0) AS cases_new,
-                COALESCE(c.cases_in_progress, 0) AS cases_in_progress,
-                c.mttr_p50_seconds,
-                c.mttr_mean_seconds,
-                c.mttr_p95_seconds,
-                COALESCE(t.task_count, 0) AS task_count,
-                COALESCE(t.tasks_completed, 0) AS tasks_completed,
-                COALESCE(t.tasks_todo, 0) AS tasks_todo,
-                COALESCE(t.tasks_in_progress, 0) AS tasks_in_progress
-            FROM case_metrics c
-            FULL OUTER JOIN task_metrics t
-              ON c.time_window = t.time_window
-             AND c.priority::text = t.priority::text
         )
         SELECT
-            a.time_window,
-            a.priority,
-            'alert'::text AS metric_scope,
+            COALESCE(a.time_window, c.time_window, t.time_window) AS time_window,
+            COALESCE(a.priority, c.priority, t.priority) AS priority,
             a.source AS alert_source,
-            a.alert_count,
-            a.alerts_closed,
-            a.alerts_tp,
-            a.alerts_fp,
-            a.alerts_bp,
-            a.alerts_duplicate,
-            a.alerts_unresolved,
-            a.alerts_escalated,
-            a.alerts_triaged,
+            COALESCE(a.alert_count, 0) AS alert_count,
+            COALESCE(a.alerts_closed, 0) AS alerts_closed,
+            COALESCE(a.alerts_tp, 0) AS alerts_tp,
+            COALESCE(a.alerts_fp, 0) AS alerts_fp,
+            COALESCE(a.alerts_bp, 0) AS alerts_bp,
+            COALESCE(a.alerts_duplicate, 0) AS alerts_duplicate,
+            COALESCE(a.alerts_unresolved, 0) AS alerts_unresolved,
+            COALESCE(a.alerts_escalated, 0) AS alerts_escalated,
+            COALESCE(a.alerts_triaged, 0) AS alerts_triaged,
             a.mttt_p50_seconds,
             a.mttt_mean_seconds,
             a.mttt_p95_seconds,
-            0::bigint AS case_count,
-            0::bigint AS cases_closed,
-            0::bigint AS cases_new,
-            0::bigint AS cases_in_progress,
-            NULL AS mttr_p50_seconds,
-            NULL AS mttr_mean_seconds,
-            NULL AS mttr_p95_seconds,
-            0::bigint AS task_count,
-            0::bigint AS tasks_completed,
-            0::bigint AS tasks_todo,
-            0::bigint AS tasks_in_progress,
+            COALESCE(c.case_count, 0) AS case_count,
+            COALESCE(c.cases_closed, 0) AS cases_closed,
+            COALESCE(c.cases_new, 0) AS cases_new,
+            COALESCE(c.cases_in_progress, 0) AS cases_in_progress,
+            c.mttr_p50_seconds,
+            c.mttr_mean_seconds,
+            c.mttr_p95_seconds,
+            COALESCE(t.task_count, 0) AS task_count,
+            COALESCE(t.tasks_completed, 0) AS tasks_completed,
+            COALESCE(t.tasks_todo, 0) AS tasks_todo,
+            COALESCE(t.tasks_in_progress, 0) AS tasks_in_progress,
             NOW() AS refreshed_at
         FROM alert_metrics a
-
-        UNION ALL
-
-        SELECT
-            w.time_window,
-            w.priority,
-            'work'::text AS metric_scope,
-            NULL::text AS alert_source,
-            0::bigint AS alert_count,
-            0::bigint AS alerts_closed,
-            0::bigint AS alerts_tp,
-            0::bigint AS alerts_fp,
-            0::bigint AS alerts_bp,
-            0::bigint AS alerts_duplicate,
-            0::bigint AS alerts_unresolved,
-            0::bigint AS alerts_escalated,
-            0::bigint AS alerts_triaged,
-            NULL AS mttt_p50_seconds,
-            NULL AS mttt_mean_seconds,
-            NULL AS mttt_p95_seconds,
-            w.case_count,
-            w.cases_closed,
-            w.cases_new,
-            w.cases_in_progress,
-            w.mttr_p50_seconds,
-            w.mttr_mean_seconds,
-            w.mttr_p95_seconds,
-            w.task_count,
-            w.tasks_completed,
-            w.tasks_todo,
-            w.tasks_in_progress,
-            NOW() AS refreshed_at
-        FROM work_metrics w;
+        FULL OUTER JOIN case_metrics c ON a.time_window = c.time_window AND a.priority::text = c.priority::text
+        FULL OUTER JOIN task_metrics t ON COALESCE(a.time_window, c.time_window) = t.time_window
+            AND COALESCE(a.priority::text, c.priority::text) = t.priority::text
+        WHERE COALESCE(a.time_window, c.time_window, t.time_window) IS NOT NULL;
     """)
     
     op.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS soc_metrics_15m_idx 
-        ON soc_metrics_15m (time_window, priority, metric_scope, alert_source)
-        NULLS NOT DISTINCT;
+        ON soc_metrics_15m (time_window, priority, alert_source);
     """)
     
     # Analyst Metrics View - 15 minute windows with per-analyst aggregations
@@ -724,7 +671,7 @@ def upgrade() -> None:
             NOW() AS refreshed_at
         FROM alert_triage a
         FULL OUTER JOIN case_participation c ON a.time_window = c.time_window AND a.analyst = c.analyst
-        FULL OUTER JOIN task_completion t ON COALESCE(a.time_window, c.time_window) = t.time_window 
+        FULL OUTER JOIN task_completion t ON COALESCE(a.time_window, c.time_window) = t.time_window
             AND COALESCE(a.analyst, c.analyst) = t.analyst
         WHERE COALESCE(a.time_window, c.time_window, t.time_window) IS NOT NULL
           AND COALESCE(a.analyst, c.analyst, t.analyst) IS NOT NULL;

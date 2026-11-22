@@ -2,49 +2,20 @@
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-from types import ModuleType
-from typing import Any
 from uuid import uuid4
 
 import pytest
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-
-MIGRATION_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "db_migrations"
-    / "versions"
-    / "018_scoped_api_keys.py"
-)
+from db_migrations.v0_6_0 import auth
+from tests.fixtures.migrations import run_migration
 
 
-def _load_migration() -> ModuleType:
-    spec = importlib.util.spec_from_file_location(
-        "scoped_api_keys_migration_downgrade",
-        MIGRATION_PATH,
-    )
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _run_downgrade(sync_connection: Any) -> None:
-    migration = _load_migration()
-    migration.op = Operations(MigrationContext.configure(sync_connection))
-    migration.downgrade()
-
-
-async def test_018_downgrade_fails_closed_with_existing_api_keys(
+async def test_downgrade_fails_closed_with_existing_api_keys(
     async_engine: AsyncEngine,
 ) -> None:
-    schema = f"t18_guard_{uuid4().hex}"
+    schema = f"test_key_guard_{uuid4().hex}"
     quoted_schema = f'"{schema}"'
     api_key_id = uuid4()
     try:
@@ -69,9 +40,9 @@ async def test_018_downgrade_fails_closed_with_existing_api_keys(
 
             with pytest.raises(
                 RuntimeError,
-                match=r"Cannot downgrade 018_scoped_api_keys.*api_keys contains rows",
+                match=r"Cannot downgrade v0\.6\.0.*api_keys contains rows",
             ):
-                await connection.run_sync(_run_downgrade)
+                await connection.run_sync(run_migration, auth.remove_key_scopes)
 
             scopes = await connection.scalar(
                 text("SELECT scopes FROM api_keys WHERE id = :id"),
@@ -95,10 +66,10 @@ async def test_018_downgrade_fails_closed_with_existing_api_keys(
             )
 
 
-async def test_018_downgrade_drops_scopes_when_no_api_keys_exist(
+async def test_downgrade_drops_scopes_when_no_api_keys_exist(
     async_engine: AsyncEngine,
 ) -> None:
-    schema = f"t18_empty_{uuid4().hex}"
+    schema = f"test_key_empty_{uuid4().hex}"
     quoted_schema = f'"{schema}"'
     try:
         async with async_engine.begin() as connection:
@@ -113,7 +84,7 @@ async def test_018_downgrade_drops_scopes_when_no_api_keys_exist(
                 )
             )
 
-            await connection.run_sync(_run_downgrade)
+            await connection.run_sync(run_migration, auth.remove_key_scopes)
 
             column_count = await connection.scalar(
                 text(

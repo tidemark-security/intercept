@@ -1,10 +1,9 @@
 """Plan regression for selective searches with ordinary PostgreSQL planner settings."""
 
-from importlib import import_module
-
 import pytest
 from sqlalchemy import event, text
 
+from db_migrations.v0_6_0 import timeline_search
 from app.models.search_schemas import EntityType
 from app.services.observable_correlation import observable_occurrences
 from app.services.search_service import search_service
@@ -38,7 +37,6 @@ async def _explain_calls(connection, operation):
 
 @pytest.mark.asyncio
 async def test_selective_timeline_count_page_and_occurrences_use_indexes(session_maker):
-    revision = import_module("db_migrations.versions.031_timeline_search_indexes")
     async with session_maker() as db:
         conn = await db.connection()
         # Temp rows and indexes disappear with the session. Use entity column types
@@ -65,9 +63,13 @@ async def test_selective_timeline_count_page_and_occurrences_use_indexes(session
             ("title_trgm", "title gin_trgm_ops"),
             ("description_trgm", "description gin_trgm_ops"),
         )
-        for suffix, expr in (*existing_indexes, *revision.INDEX_EXPRESSIONS):
+        # Match the release migration's index build settings, then run every
+        # search and EXPLAIN with the database defaults.
+        await db.execute(text("SET LOCAL jit = off"))
+        for suffix, expr in (*existing_indexes, *timeline_search.INDEX_EXPRESSIONS):
             await db.execute(text(f"CREATE INDEX idx_alerts_{suffix} ON alerts USING gin ({expr})"))
         await db.execute(text("ANALYZE alerts"))
+        await db.execute(text("SET LOCAL jit TO DEFAULT"))
 
         def queue_search(query):
             return search_service.search_queue(

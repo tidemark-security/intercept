@@ -1,24 +1,9 @@
-"""Persist FastMCP private_key_jwt replay claims across workers.
-
-Revision ID: 028_mcp_assertion_replay
-Revises: 027_password_verify_capacity
-Create Date: 2026-08-08
-"""
-
-from __future__ import annotations
-
-from typing import Sequence, Union
+"""MCP assertion replay ledger and its database-specific cleanup job."""
 
 from alembic import op
 import sqlalchemy as sa
 
 from db_migrations.cron_utils import schedule_cron_job, unschedule_cron_job
-
-
-revision: str = "028_mcp_assertion_replay"
-down_revision: Union[str, None] = "027_password_verify_capacity"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
 
 
 MCP_ASSERTION_REPLAY_CLEANUP_JOB = {

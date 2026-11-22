@@ -1,13 +1,8 @@
-"""Index exact timeline field values and literal timeline text on work queues."""
+"""Timeline search indexes introduced in v0.6.0."""
 
 from alembic import op
 import sqlalchemy as sa
 
-
-revision = "031_timeline_search_indexes"
-down_revision = "030_alert_triage_runs"
-branch_labels = None
-depends_on = None
 
 TABLES = ("alerts", "cases", "tasks")
 INDEX_EXPRESSIONS = (
@@ -62,21 +57,26 @@ def upgrade() -> None:
     op.execute(CREATE_IOC_FUNCTION)
     context = op.get_context()
     with context.autocommit_block():
-        for table in TABLES:
-            for suffix, expression in INDEX_EXPRESSIONS:
-                name = f"idx_{table}_{suffix}"
-                # Interrupted concurrent builds leave an invalid index behind.
-                if not context.as_sql and op.get_bind().scalar(sa.text(
-                    "SELECT NOT indisvalid FROM pg_index WHERE indexrelid = to_regclass(:name)"
-                ), {"name": name}):
-                    op.execute(f"DROP INDEX CONCURRENTLY {name}")
-                op.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} ON {table} USING gin ({expression})")
-            op.execute(f"ANALYZE {table}")
+        # PostgreSQL can JIT-compile the recursive SQL function for each row
+        # while building the expression index and collecting its statistics.
+        op.execute("SET jit = off")
+        try:
+            for table in TABLES:
+                for suffix, expression in INDEX_EXPRESSIONS:
+                    name = f"idx_{table}_{suffix}"
+                    # Interrupted concurrent builds leave an invalid index behind.
+                    if not context.as_sql and op.get_bind().scalar(sa.text(
+                        "SELECT NOT indisvalid FROM pg_index WHERE indexrelid = to_regclass(:name)"
+                    ), {"name": name}):
+                        op.execute(f"DROP INDEX CONCURRENTLY {name}")
+                    op.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} ON {table} USING gin ({expression})")
+                op.execute(f"ANALYZE {table}")
+        finally:
+            op.execute("RESET jit")
 
 
 def downgrade() -> None:
-    with op.get_context().autocommit_block():
-        for table in TABLES:
-            op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS idx_{table}_timeline_text_trgm")
-            op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS idx_{table}_ioc_keys")
+    for table in TABLES:
+        for suffix, _ in INDEX_EXPRESSIONS:
+            op.execute(f"DROP INDEX IF EXISTS idx_{table}_{suffix}")
     op.execute("DROP FUNCTION IF EXISTS timeline_ioc_keys(jsonb)")

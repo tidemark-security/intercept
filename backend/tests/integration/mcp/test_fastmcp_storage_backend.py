@@ -1,36 +1,18 @@
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
 from typing import Any
 
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 from cryptography.fernet import Fernet
 from key_value.aio.stores.postgresql import PostgreSQLStore
 from key_value.aio.wrappers.encryption import FernetEncryptionWrapper
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from db_migrations.v0_6_0 import oauth
+from tests.fixtures.migrations import run_migration
 
-BACKEND_ROOT = Path(__file__).resolve().parents[3]
+
 TABLE_NAME = "fastmcp_oauth_kv"
-
-
-def _load_storage_migration():
-    migration_path = BACKEND_ROOT / "db_migrations" / "versions" / "014_fastmcp_auth_storage.py"
-    spec = importlib.util.spec_from_file_location("fastmcp_auth_storage_migration", migration_path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _run_upgrade(sync_connection: Any) -> None:
-    migration = _load_storage_migration()
-    migration.op = Operations(MigrationContext.configure(sync_connection))
-    migration.upgrade()
 
 
 def _assert_native_schema(sync_connection: Any) -> None:
@@ -110,8 +92,7 @@ def _assert_native_schema(sync_connection: Any) -> None:
 async def test_migration_provisions_native_encrypted_postgresql_store(async_engine: AsyncEngine) -> None:
     async with async_engine.begin() as connection:
         await connection.execute(text(f"DROP TABLE IF EXISTS {TABLE_NAME}"))
-        await connection.execute(text("DROP TABLE IF EXISTS mcp_oauth_pending_authorizations"))
-        await connection.run_sync(_run_upgrade)
+        await connection.run_sync(run_migration, oauth.create_native_store)
         await connection.run_sync(_assert_native_schema)
 
     store_url = async_engine.url.render_as_string(hide_password=False).replace(

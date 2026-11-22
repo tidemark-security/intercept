@@ -1,40 +1,16 @@
 from __future__ import annotations
 
-import importlib.util
 import re
 from pathlib import Path
-from types import ModuleType
+
+from db_migrations.v0_6_0 import auth
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-MIGRATION_PATH = (
-    PROJECT_ROOT
-    / "backend"
-    / "db_migrations"
-    / "versions"
-    / "015_auth_session_cron_jobs.py"
-)
-
-
-def _load_migration_module() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("auth_session_cron_migration", MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_auth_session_cron_migration_is_next_revision() -> None:
-    migration = _load_migration_module()
-
-    assert migration.revision == "015_auth_session_cron_jobs"
-    assert migration.down_revision == "014_fastmcp_auth_storage"
 
 
 def test_auth_session_cron_jobs_target_the_existing_table() -> None:
-    migration = _load_migration_module()
-
-    assert migration.AUTH_SESSION_MAINTENANCE_JOBS == (
+    assert auth.AUTH_SESSION_MAINTENANCE_JOBS == (
         {
             "name": "cleanup-expired-sessions",
             "schedule": "0 3 * * *",
@@ -49,30 +25,28 @@ def test_auth_session_cron_jobs_target_the_existing_table() -> None:
     assert all(
         re.search(r"\bauth_sessions\b", job["command"])
         and re.search(r"\bsessions\b", job["command"]) is None
-        for job in migration.AUTH_SESSION_MAINTENANCE_JOBS
+        for job in auth.AUTH_SESSION_MAINTENANCE_JOBS
     )
 
 
 def test_upgrade_upserts_each_corrected_job(monkeypatch) -> None:
-    migration = _load_migration_module()
     scheduled: list[dict[str, str]] = []
-    monkeypatch.setattr(migration, "schedule_cron_job", lambda **job: scheduled.append(job))
+    monkeypatch.setattr(auth, "schedule_cron_job", lambda **job: scheduled.append(job))
 
-    migration.upgrade()
+    auth.schedule_session_jobs()
 
-    assert scheduled == list(migration.AUTH_SESSION_MAINTENANCE_JOBS)
+    assert scheduled == list(auth.AUTH_SESSION_MAINTENANCE_JOBS)
 
 
 def test_downgrade_removes_corrected_jobs_without_restoring_stale_commands(monkeypatch) -> None:
-    migration = _load_migration_module()
     unscheduled: list[str] = []
     monkeypatch.setattr(
-        migration,
+        auth,
         "unschedule_cron_job",
         lambda *, name: unscheduled.append(name),
     )
 
-    migration.downgrade()
+    auth.remove_session_jobs()
 
     assert unscheduled == [
         "cleanup-expired-sessions",

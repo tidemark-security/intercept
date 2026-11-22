@@ -159,19 +159,36 @@ docker exec -e "PGPASSWORD=${POSTGRES_PASSWORD}" "$POSTGRES_CONTAINER" \
     psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 \
     -c "SELECT extname FROM pg_extension WHERE extname = 'pg_cron';"
 
-log "Bootstrapping database to N-1 Alembic head with candidate migration scripts"
+log "Bootstrapping database with the released N-1 migrations and models"
 docker run --rm \
     --name "migration-compat-n-minus-1-${RUN_SUFFIX}" \
     --network "$NETWORK_NAME" \
     "${docker_run_backend_env[@]}" \
     --entrypoint alembic \
-    "$CANDIDATE_BACKEND_IMAGE" \
+    "$PREVIOUS_BACKEND_IMAGE" \
     upgrade "$PREVIOUS_ALEMBIC_HEAD"
 
 log "N-1 Alembic revision"
 docker exec -e "PGPASSWORD=${POSTGRES_PASSWORD}" "$POSTGRES_CONTAINER" \
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
     -c "SELECT version_num FROM alembic_version;"
+
+# Both v0.5.x releases used this schema. The initial migration imports its
+# image's SQLModel definitions, so these fixtures must run on the released image's schema.
+if [[ "$PREVIOUS_ALEMBIC_HEAD" == "012_nhi_override_timestamps" ]]; then
+    docker exec -i -e "PGPASSWORD=${POSTGRES_PASSWORD}" "$POSTGRES_CONTAINER" \
+        psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 <<'SQL'
+INSERT INTO alerts (title, status, priority) VALUES
+    ('migration-test-no-priority', 'NEW', NULL), ('migration-test-high', 'NEW', 'HIGH');
+INSERT INTO user_accounts (
+    id, role, account_type, status, assignable, override_timestamps, must_change_password, failed_login_attempts
+) VALUES ('00000000-0000-0000-0000-000000000001', 'AUDITOR', 'HUMAN', 'ACTIVE', false, false, false, 0);
+INSERT INTO api_keys (id, user_id, name, prefix) VALUES
+    (gen_random_uuid(), '00000000-0000-0000-0000-000000000001', 'migration-test-key', 'test');
+INSERT INTO oidc_auth_requests (state, nonce, browser_binding_hash, redirect_to)
+    VALUES ('migration-test-state', 'test', 'test', '/');
+SQL
+fi
 
 log "Upgrading database with candidate backend image"
 docker run --rm \
@@ -180,6 +197,27 @@ docker run --rm \
     "${docker_run_backend_env[@]}" \
     "$CANDIDATE_BACKEND_IMAGE" \
     python -c "print('Candidate migrations complete')"
+
+if [[ "$PREVIOUS_ALEMBIC_HEAD" == "012_nhi_override_timestamps" ]]; then
+    docker exec -i -e "PGPASSWORD=${POSTGRES_PASSWORD}" "$POSTGRES_CONTAINER" \
+        psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 <<'SQL'
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM alerts WHERE title = 'migration-test-no-priority' AND priority = 'MEDIUM')
+       OR NOT EXISTS (SELECT FROM alerts WHERE title = 'migration-test-high' AND priority = 'HIGH') THEN
+        RAISE EXCEPTION 'Alert priority backfill failed';
+    END IF;
+    IF NOT EXISTS (SELECT FROM api_keys WHERE name = 'migration-test-key' AND scopes = '["api:read", "mcp:access"]'::jsonb) THEN
+        RAISE EXCEPTION 'Legacy auditor key lost its role-bound scopes';
+    END IF;
+    IF NOT EXISTS (SELECT FROM oidc_auth_requests WHERE state = 'migration-test-state'
+                   AND created_at IS NOT NULL AND source_fingerprint IS NOT NULL) THEN
+        RAISE EXCEPTION 'Legacy OIDC request backfill failed';
+    END IF;
+END
+$$;
+SQL
+fi
 
 log "Re-running candidate migrations and checking Alembic heads"
 docker run --rm \
