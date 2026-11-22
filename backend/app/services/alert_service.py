@@ -483,7 +483,14 @@ class AlertService:
                 mark_alert_escalated(db_alert, case_id=new_case.id)  # type: ignore[arg-type]
                 
                 logger.info(f"Alert escalated to case {new_case.id}")
-            
+
+            await emit_event(
+                db,
+                entity_type="alert",
+                entity_id=alert_id,
+                event_type=RealtimeEventType.ENTITY_UPDATED,
+                performed_by=triaged_by,
+            )
             await db.commit()
         except Exception as e:
             await db.rollback()
@@ -530,7 +537,21 @@ class AlertService:
             await triage_recommendation_service.auto_reject_if_pending(
                 db, alert_id, linked_by
             )
-            
+
+            await emit_event(
+                db,
+                entity_type="alert",
+                entity_id=alert_id,
+                event_type=RealtimeEventType.ENTITY_UPDATED,
+                performed_by=linked_by,
+            )
+            await emit_event(
+                db,
+                entity_type="case",
+                entity_id=case_id,
+                event_type=RealtimeEventType.ENTITY_UPDATED,
+                performed_by=linked_by,
+            )
             await db.commit()
         except Exception as e:
             await db.rollback()
@@ -1172,7 +1193,14 @@ class AlertService:
             db_alert.linked_at = None
             # Change status back to IN_PROGRESS (alert is no longer escalated)
             db_alert.status = AlertStatus.IN_PROGRESS
-            
+
+            await emit_event(
+                db,
+                entity_type="alert",
+                entity_id=alert_id,
+                event_type=RealtimeEventType.ENTITY_UPDATED,
+                performed_by=unlinked_by,
+            )
             await db.commit()
         except Exception as e:
             await db.rollback()

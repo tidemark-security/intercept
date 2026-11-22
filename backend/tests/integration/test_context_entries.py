@@ -12,9 +12,10 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 from app.mcp import tools as mcp_tools
-from app.models.enums import ContextCriterionType, Priority, RecommendationStatus, SettingType
+from app.models.enums import ContextCriterionType, Priority, RealtimeEventType, RecommendationStatus, SettingType
 from app.models.models import Alert, AlertTriageRun, AppSetting, AuditLog, ContextEntry
 from app.services.context_service import ContextService
+from app.services.realtime_service import emit_event
 from app.services.tasks import _mark_triage_failed, handle_triage_alert
 from app.services.triage_recommendation_service import TRIAGE_RUN_HEADER
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
@@ -49,7 +50,10 @@ async def test_analyst_can_create_edit_and_expire_context_entry_with_audit(
     client: AsyncClient,
     session_maker: Any,
     analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    publish = AsyncMock(wraps=emit_event)
+    monkeypatch.setattr("app.services.context_service.emit_event", publish)
     session_cookie, username = await _login_and_get_session_cookie(
         client, session_maker, analyst_user_factory
     )
@@ -111,6 +115,14 @@ async def test_analyst_can_create_edit_and_expire_context_entry_with_audit(
         "context_entry.updated",
         "context_entry.expired",
     }
+    assert publish.await_count == 3
+    for event in publish.await_args_list:
+        assert event.kwargs == {
+            "entity_type": "context_entry",
+            "entity_id": created["id"],
+            "event_type": RealtimeEventType.ENTITY_UPDATED,
+            "performed_by": username,
+        }
 
 
 @pytest.mark.asyncio

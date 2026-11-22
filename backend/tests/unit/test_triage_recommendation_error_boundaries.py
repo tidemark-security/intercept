@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from fastapi import HTTPException, Request, status
@@ -14,6 +14,7 @@ from app.mcp import tools as mcp_tools
 from app.models.enums import (
     AlertStatus,
     Priority,
+    RealtimeEventType,
     RecommendationStatus,
     RejectionCategory,
     TriageDisposition,
@@ -59,7 +60,7 @@ def _arrange_enqueue_failure(
     compensation_read: bool,
 ) -> tuple[SimpleNamespace, AsyncMock]:
     recommendation = _recommendation(status_value=RecommendationStatus.ACCEPTED)
-    db = SimpleNamespace(add=Mock(), flush=AsyncMock(), commit=AsyncMock())
+    db = SimpleNamespace(add=Mock(), flush=AsyncMock(), commit=AsyncMock(), emit_event=AsyncMock())
 
     async def get_setting(_self: object, _key: str) -> str:
         return "flow-1"
@@ -73,6 +74,7 @@ def _arrange_enqueue_failure(
     monkeypatch.setattr("app.services.settings_service.SettingsService.get", get_setting)
     monkeypatch.setattr(triage_service, "_lock_alert", AsyncMock(return_value=_alert()))
     monkeypatch.setattr(triage_service, "get_by_alert_id", get_recommendation)
+    monkeypatch.setattr(triage_service, "emit_event", db.emit_event)
     monkeypatch.setattr(
         "app.services.task_queue_service.get_task_queue_service",
         lambda: SimpleNamespace(enqueue=AsyncMock(side_effect=queue_error)),
@@ -209,6 +211,33 @@ async def test_reject_requires_other_reason_at_service_seam(
 
 
 @pytest.mark.asyncio
+async def test_reject_publishes_before_committing(monkeypatch: pytest.MonkeyPatch) -> None:
+    publish = AsyncMock()
+    db = SimpleNamespace(add=Mock(), commit=AsyncMock())
+    transaction = Mock()
+    transaction.attach_mock(publish, "publish")
+    transaction.attach_mock(db.commit, "commit")
+    monkeypatch.setattr(triage_service, "_lock_alert", AsyncMock(return_value=_alert()))
+    monkeypatch.setattr(triage_service, "get_by_alert_id", AsyncMock(return_value=_recommendation()))
+    monkeypatch.setattr(triage_service, "emit_event", publish)
+
+    result = await triage_service.reject_recommendation(
+        cast(AsyncSession, db),
+        alert_id=7,
+        category=RejectionCategory.OTHER,
+        reason="Additional investigation needed",
+        reviewed_by="analyst",
+    )
+
+    assert result.status == RecommendationStatus.REJECTED
+    assert transaction.mock_calls == [
+        call.publish(db, entity_type="alert", entity_id=7,
+                     event_type=RealtimeEventType.TRIAGE_REJECTED, performed_by="analyst"),
+        call.commit(),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_acceptance_locks_alert_before_refreshing_recommendation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -329,6 +358,12 @@ async def test_enqueue_compensates_expected_queue_failures(
     assert result.status == RecommendationStatus.FAILED
     assert result.error_message == "Task queue unavailable"
     assert db.commit.await_count == 2
+    assert db.emit_event.await_args_list == [
+        call(db, entity_type="alert", entity_id=7,
+             event_type=RealtimeEventType.TRIAGE_QUEUED, performed_by="analyst"),
+        call(db, entity_type="alert", entity_id=7,
+             event_type=RealtimeEventType.TRIAGE_COMPLETED, performed_by="system"),
+    ]
 
 
 @pytest.mark.asyncio

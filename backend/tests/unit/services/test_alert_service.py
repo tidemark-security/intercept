@@ -325,6 +325,7 @@ async def test_alert_case_link_locks_parent_before_alert(
         AsyncMock(side_effect=lock_alert),
     )
     monkeypatch.setattr(alert_service, "get_alert", AsyncMock(return_value=alert))
+    monkeypatch.setattr(alert_service_module, "emit_event", AsyncMock())
     monkeypatch.setattr(
         alert_service_module.triage_recommendation_service,
         "auto_reject_if_pending",

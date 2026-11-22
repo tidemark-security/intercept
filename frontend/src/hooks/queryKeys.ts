@@ -45,6 +45,10 @@ export type EntityType = 'alert' | 'case' | 'task';
  * ```
  */
 export const queryKeys = {
+  contextEntries: {
+    listBase: () => ['context-entries'] as const,
+    list: (includeExpired: boolean) => ['context-entries', includeExpired] as const,
+  },
   alert: {
     /** Prefix for invalidating alert details across all alerts. */
     detailsBase: () => ['alert-detail'] as const,

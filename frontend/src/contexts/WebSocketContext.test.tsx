@@ -23,7 +23,7 @@ vi.mock('@/types/generated/core/OpenAPI', () => ({
   OpenAPI: { BASE: 'http://localhost:8000' },
 }));
 
-import { queryKeys } from '@/hooks/queryKeys';
+import { queryKeys, type EntityType } from '@/hooks/queryKeys';
 import { usePresence, useWebSocket, WebSocketProvider } from './WebSocketContext';
 
 type MockMessage = { data: string };
@@ -138,6 +138,78 @@ describe('WebSocketProvider', () => {
       queryKey: queryKeys.case.listBase(),
       exact: false,
     });
+  });
+
+  it.each([
+    ['alert', 'triage_queued'],
+    ['alert', 'triage_rejected'],
+    ['case', 'entity_updated'],
+    ['task', 'entity_updated'],
+  ] as const)('invalidates timelines that contain the updated %s on %s', (entityType, eventType) => {
+    const queryClient = new QueryClient();
+    const entityId = 7;
+    const changedDetail = queryKeys[entityType].detail(entityId);
+    const changedList = queryKeys[entityType].listBase();
+    const linkedItem = { type: entityType, [`${entityType}_id`]: entityId };
+    const parentDetail = queryKeys.case.detail(12);
+    const nestedDetail = queryKeys.alert.detail(13, { includeLinkedTimelines: true });
+    const unrelatedDetail = queryKeys.task.detail(14);
+    const sameIdDifferentType: EntityType = entityType === 'task' ? 'alert' : 'task';
+
+    queryClient.setQueryData(changedDetail, { timeline_items: {} });
+    queryClient.setQueryData(changedList, []);
+    queryClient.setQueryData(parentDetail, { timeline_items: { link: linkedItem } });
+    queryClient.setQueryData(nestedDetail, {
+      timeline_items: {
+        link: {
+          type: 'case',
+          case_id: 12,
+          source_timeline_items: {
+            note: { type: 'note', replies: { link: linkedItem } },
+          },
+        },
+      },
+    });
+    queryClient.setQueryData(unrelatedDetail, {
+      timeline_items: { link: { type: sameIdDifferentType, [`${sameIdDifferentType}_id`]: entityId } },
+    });
+
+    render(createWrappedUi(<div />, queryClient));
+    act(() => {
+      MockWebSocket.instances[0].receive({
+        type: 'event',
+        payload: { entity_type: entityType, entity_id: entityId, event_type: eventType },
+      });
+    });
+
+    for (const key of [changedDetail, changedList, parentDetail, nestedDetail]) {
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    }
+    expect(queryClient.getQueryState(unrelatedDetail)?.isInvalidated).toBe(false);
+  });
+
+  it('refreshes shared analyst context and alert detail queries after a context change', () => {
+    const queryClient = new QueryClient();
+    const keys = [
+      queryKeys.contextEntries.list(false),
+      queryKeys.contextEntries.list(true),
+      queryKeys.alert.detail(21),
+      queryKeys.alert.detail(22, { includeLinkedTimelines: true }),
+    ];
+    for (const key of keys) queryClient.setQueryData(key, {});
+    const caseKey = queryKeys.case.detail(21);
+    queryClient.setQueryData(caseKey, {});
+
+    render(createWrappedUi(<div />, queryClient));
+    act(() => {
+      MockWebSocket.instances[0].receive({
+        type: 'event',
+        payload: { entity_type: 'context_entry', entity_id: 4, event_type: 'entity_updated' },
+      });
+    });
+
+    for (const key of keys) expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(caseKey)?.isInvalidated).toBe(false);
   });
 
   it('shows a toast for subscribed timeline events from another user', async () => {

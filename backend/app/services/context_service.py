@@ -8,7 +8,7 @@ from typing import Any, Iterable
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.enums import ContextCriterionType
+from app.models.enums import ContextCriterionType, RealtimeEventType
 from app.models.models import (
     Alert,
     ContextCriterion,
@@ -18,6 +18,7 @@ from app.models.models import (
     ContextEntryUpdate,
 )
 from app.services.audit_service import AuditContext, get_audit_service
+from app.services.realtime_service import emit_event
 
 
 EXTRACTABLE_OBSERVABLE_KEYS = {
@@ -279,9 +280,7 @@ class ContextService:
             performed_by=author,
             context=audit_context,
         )
-        response = _read_model(entry)
-        await self.db.commit()
-        return response
+        return await self._commit_entry_change(entry, author)
 
     async def update_entry(
         self,
@@ -319,9 +318,7 @@ class ContextService:
             performed_by=updated_by,
             context=audit_context,
         )
-        response = _read_model(entry)
-        await self.db.commit()
-        return response
+        return await self._commit_entry_change(entry, updated_by)
 
     async def expire_entry(
         self,
@@ -351,7 +348,19 @@ class ContextService:
             performed_by=expired_by,
             context=audit_context,
         )
+        return await self._commit_entry_change(entry, expired_by)
+
+    async def _commit_entry_change(
+        self, entry: ContextEntry, performed_by: str
+    ) -> ContextEntryRead:
         response = _read_model(entry)
+        await emit_event(
+            self.db,
+            entity_type="context_entry",
+            entity_id=response.id,
+            event_type=RealtimeEventType.ENTITY_UPDATED,
+            performed_by=performed_by,
+        )
         await self.db.commit()
         return response
 

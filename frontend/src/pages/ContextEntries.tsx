@@ -28,8 +28,6 @@ import {
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 import { queryKeys } from '@/hooks/queryKeys';
 
-const QUERY_KEY = ['context-entries'] as const;
-
 const CRITERION_OPTIONS: { value: ContextCriterionType; label: string; placeholder: string }[] = [
   { value: 'ALERT_SOURCE', label: 'Alert source', placeholder: 'edr-*' },
   { value: 'ACTOR', label: 'Actor', placeholder: 'secops-?' },
@@ -119,7 +117,7 @@ export default function ContextEntries() {
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
 
   const contextQuery = useQuery({
-    queryKey: [...QUERY_KEY, showExpired],
+    queryKey: queryKeys.contextEntries.list(showExpired),
     queryFn: () => listContextEntries(showExpired),
   });
 
@@ -130,7 +128,7 @@ export default function ContextEntries() {
   };
 
   const invalidate = () => Promise.all([
-    queryClient.invalidateQueries({ queryKey: QUERY_KEY }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.contextEntries.listBase() }),
     queryClient.invalidateQueries({ queryKey: queryKeys.alert.detailsBase() }),
   ]);
 

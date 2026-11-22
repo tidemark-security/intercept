@@ -516,6 +516,10 @@ class CaseService:
         for task in tasks:
             if self._close_linked_task(task, case_human_id, closed_by):
                 results["tasks_closed"] += 1
+                await emit_event(
+                    db, entity_type="task", entity_id=task.id,
+                    event_type=RealtimeEventType.ENTITY_UPDATED, performed_by=closed_by,
+                )
 
         for alert in alerts:
             custom_status = alert_closure_statuses.get(alert.id)
@@ -526,6 +530,10 @@ class CaseService:
                 custom_status,
             ):
                 results["alerts_closed"] += 1
+                await emit_event(
+                    db, entity_type="alert", entity_id=alert.id,
+                    event_type=RealtimeEventType.ENTITY_UPDATED, performed_by=closed_by,
+                )
 
         await db.flush()
         logger.info(

@@ -531,6 +531,13 @@ async def _compensate_failed_enqueue(
         current.error_message = "Task queue unavailable"
         failed_response = TriageRecommendationRead.model_validate(current)
         try:
+            await emit_event(
+                db,
+                entity_type="alert",
+                entity_id=alert_id,
+                event_type=RealtimeEventType.TRIAGE_COMPLETED,
+                performed_by="system",
+            )
             await db.commit()
         except Exception:
             # Preserve the truthful committed QUEUED snapshot if the optional
@@ -617,6 +624,13 @@ async def enqueue_triage(
     db.add(recommendation)
     await db.flush()
     queued_response = TriageRecommendationRead.model_validate(recommendation)
+    await emit_event(
+        db,
+        entity_type="alert",
+        entity_id=alert_id,
+        event_type=RealtimeEventType.TRIAGE_QUEUED,
+        performed_by=enqueued_by,
+    )
     await db.commit()
 
     # Enqueue the task
@@ -1100,6 +1114,13 @@ async def reject_recommendation(
 
     db.add(recommendation)
     response = TriageRecommendationRead.model_validate(recommendation)
+    await emit_event(
+        db,
+        entity_type="alert",
+        entity_id=alert_id,
+        event_type=RealtimeEventType.TRIAGE_REJECTED,
+        performed_by=reviewed_by,
+    )
     await db.commit()
 
     return response

@@ -2,9 +2,11 @@ import React, { createContext, useContext, useEffect, useRef, useCallback, useSt
 import { useQueryClient } from '@tanstack/react-query';
 import { useSession } from './sessionContext';
 import { useToast } from './ToastContext';
-import { queryKeys } from '@/hooks/queryKeys';
+import { getEntityListQueryKey, getEntityQueryKey, queryKeys } from '@/hooks/queryKeys';
 import type { EntityType } from '@/hooks/queryKeys';
 import { OpenAPI } from '@/types/generated/core/OpenAPI';
+import { convertTaskHumanIdToNumeric } from '@/utils/humanIdHelpers';
+import { getTimelineItemMap } from '@/utils/timelineHelpers';
 
 type RealtimeEventPayload = {
   entity_type: string;
@@ -43,9 +45,24 @@ function getWsUrl(): string {
 
 const INITIAL_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
+const ENTITY_DETAIL_PREFIXES = new Set<string>([
+  queryKeys.alert.detailsBase()[0],
+  queryKeys.case.detail(null)[0],
+  queryKeys.task.detail(null)[0],
+]);
 
 function getEntityKey(entityType: string, entityId: number): string {
   return `${entityType}:${entityId}`;
+}
+
+function timelineReferencesEntity(items: unknown, entityType: EntityType, entityId: number): boolean {
+  return Object.values(getTimelineItemMap({ timeline_items: items })).some((item) => (
+    (entityType === 'alert' && item.type === 'alert' && 'alert_id' in item && item.alert_id === entityId) ||
+    (entityType === 'case' && item.type === 'case' && 'case_id' in item && item.case_id === entityId) ||
+    (entityType === 'task' && item.type === 'task' && 'task_id' in item && item.task_id === entityId) ||
+    timelineReferencesEntity(item.replies, entityType, entityId) ||
+    timelineReferencesEntity(item.source_timeline_items, entityType, entityId)
+  ));
 }
 
 function formatItemType(itemType?: string | null): string {
@@ -98,31 +115,39 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
 
   const invalidateEntity = useCallback(
     (entityType: string, entityId: number, eventType?: string) => {
-      const type = entityType as EntityType;
+      if (entityType === 'context_entry') {
+        // Changes to shared criteria can add or remove context on any alert.
+        queryClient.invalidateQueries({ queryKey: queryKeys.contextEntries.listBase() });
+        queryClient.invalidateQueries({ queryKey: queryKeys.alert.detailsBase() });
+        return;
+      }
+
       if (eventType === 'timeline_graph_updated') {
-        if (type === 'case') {
+        if (entityType === 'case') {
           queryClient.invalidateQueries({ queryKey: queryKeys.case.graphBase(entityId), exact: false });
-        } else if (type === 'task') {
+        } else if (entityType === 'task') {
           queryClient.invalidateQueries({ queryKey: queryKeys.task.graphBase(entityId), exact: false });
         }
         return;
       }
 
-      // Invalidate detail query
-      switch (type) {
-        case 'alert':
-          queryClient.invalidateQueries({ queryKey: queryKeys.alert.detailBase(entityId), exact: false });
-          queryClient.invalidateQueries({ queryKey: queryKeys.alert.listBase(), exact: false });
-          break;
-        case 'case':
-          queryClient.invalidateQueries({ queryKey: queryKeys.case.detailBase(entityId), exact: false });
-          queryClient.invalidateQueries({ queryKey: queryKeys.case.listBase(), exact: false });
-          break;
-        case 'task':
-          queryClient.invalidateQueries({ queryKey: queryKeys.task.detailBase(entityId), exact: false });
-          queryClient.invalidateQueries({ queryKey: queryKeys.task.listBase(), exact: false });
-          break;
-      }
+      if (entityType !== 'alert' && entityType !== 'case' && entityType !== 'task') return;
+
+      const [detailPrefix] = getEntityQueryKey(entityType, entityId);
+      queryClient.invalidateQueries({
+        predicate: ({ queryKey: [prefix, id], state: { data } }) => {
+          if (typeof prefix !== 'string' || !ENTITY_DETAIL_PREFIXES.has(prefix)) return false;
+          const numericId = entityType === 'task' && typeof id === 'string'
+            ? convertTaskHumanIdToNumeric(id) ?? Number(id)
+            : id;
+          if (prefix === detailPrefix && numericId === entityId) return true;
+
+          // Linked cards are served as part of their parent detail query.
+          return Boolean(data && typeof data === 'object' && 'timeline_items' in data &&
+            timelineReferencesEntity(data.timeline_items, entityType, entityId));
+        },
+      });
+      queryClient.invalidateQueries({ queryKey: getEntityListQueryKey(entityType) });
     },
     [queryClient],
   );

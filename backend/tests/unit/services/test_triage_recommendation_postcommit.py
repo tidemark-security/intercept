@@ -60,6 +60,7 @@ async def test_enqueue_returns_committed_snapshot_when_compensation_read_fails(
 
     monkeypatch.setattr("app.services.settings_service.SettingsService.get", get_setting)
     monkeypatch.setattr(service, "_lock_alert", AsyncMock(return_value=alert))
+    monkeypatch.setattr(service, "emit_event", AsyncMock())
     monkeypatch.setattr(
         service,
         "get_by_alert_id",
