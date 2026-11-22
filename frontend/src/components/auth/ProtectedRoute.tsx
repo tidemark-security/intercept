@@ -41,7 +41,7 @@ export function ProtectedRoute({ children, requiredRole }: ProtectedRouteProps) 
   // If role is required and user doesn't have it, redirect to home or show unauthorized
   if (requiredRole && user.role !== requiredRole) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-default-background">
+      <div className="flex h-full w-full items-center justify-center bg-default-background">
         <div className="text-center">
           <h1 className="text-2xl font-bold mb-4 text-error-600">Access Denied</h1>
           <p className="text-subtext-color">

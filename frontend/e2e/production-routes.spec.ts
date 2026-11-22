@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
+import { expect, test, type BrowserContext, type Locator, type Page, type Route } from "@playwright/test";
 
 const now = "2026-01-01T00:00:00.000Z";
 
@@ -251,8 +251,8 @@ function apiResponse(pathname: string): unknown {
   return {};
 }
 
-async function installProductionApiMocks(page: Page) {
-  await page.addInitScript(() => {
+async function installProductionApiMocks(target: Page | BrowserContext) {
+  await target.addInitScript(() => {
     class SmokeWebSocket {
       static readonly CONNECTING = 0;
       static readonly OPEN = 1;
@@ -279,7 +279,7 @@ async function installProductionApiMocks(page: Page) {
     window.WebSocket = SmokeWebSocket as unknown as typeof WebSocket;
   });
 
-  await page.route("**/api/**", async (route: Route) => {
+  await target.route("**/api/**", async (route: Route) => {
     const url = new URL(route.request().url());
     await route.fulfill(jsonResponse(apiResponse(url.pathname)));
   });
@@ -354,6 +354,138 @@ test("production bundle loads all major lazy routes", async ({ page }) => {
       expect(routeFailures, `${routePath} production runtime errors`).toEqual([]);
     });
   }
+});
+
+test("sidebar links support new tabs and normal navigation", async ({ page, context }) => {
+  await installProductionApiMocks(context);
+  await page.setViewportSize({ width: 1920, height: 900 });
+  await page.goto("/alerts");
+
+  const logo = page.getByRole("link", { name: "Tidemark home" });
+  const home = page.getByRole("link", { name: "Home", exact: true });
+  const search = page.getByRole("link", { name: "Search", exact: true });
+  await expect(home).toHaveAttribute("href", "/");
+  await expect(logo).toHaveAttribute("href", "/");
+  await expect(search).toHaveAttribute("href", "/search");
+
+  const [homeTab] = await Promise.all([
+    context.waitForEvent("page"),
+    logo.click({ button: "middle" }),
+  ]);
+  await expect(homeTab).toHaveURL(/\/$/);
+  await homeTab.close();
+  const [searchTab] = await Promise.all([
+    context.waitForEvent("page"),
+    search.click({ modifiers: ["ControlOrMeta"] }),
+  ]);
+  await expect(searchTab).toHaveURL((url) => url.pathname === "/search");
+  await searchTab.close();
+  await expect(page).toHaveURL(/\/alerts$/);
+
+  await search.press("Enter");
+  await expect(page).toHaveURL((url) => url.pathname === "/search");
+  await expect(search).toHaveAttribute("aria-current", "page");
+  await logo.click();
+  await expect(page).toHaveURL(/\/$/);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("link", { name: "Alerts", exact: true })).toHaveAttribute("href", "/alerts");
+  await page.getByRole("button", { name: "More navigation" }).click();
+  for (const [label, href] of [["Search", "/search"], ["Admin", "/admin"], ["Profile", "/profile"], ["Logout", "/logout"]]) {
+    const item = page.getByRole("menuitem", { name: label, exact: true });
+    await expect(item).toHaveJSProperty("tagName", "A");
+    await expect(item).toHaveAttribute("href", href);
+  }
+});
+
+function pageModuleRequest(name: string) {
+  // These smoke tests also run against the local Vite development server.
+  return new RegExp(`/((src/pages/${name}\\.tsx)|(assets/${name}-[\\w-]+\\.js))(?:\\?.*)?$`);
+}
+
+for (const width of [1440, 390]) {
+  test(`navigation stays mounted during a cold route load at ${width}px`, async ({ page }) => {
+    await installProductionApiMocks(page);
+    await page.setViewportSize({ width, height: 900 });
+
+    let releaseReports!: () => void;
+    const reportsGate = new Promise<void>((resolve) => { releaseReports = resolve; });
+    let reportsRequested = false;
+    const reportsModule = pageModuleRequest("Reports");
+    await page.route(reportsModule, async (route) => {
+      reportsRequested = true;
+      await reportsGate;
+      await route.continue();
+    });
+
+    try {
+      await page.goto("/alerts");
+      const reports = page.getByRole("link", { name: "Reports", exact: true });
+      const home = page.getByRole("link", { name: "Home", exact: true });
+      const originalHome = await home.elementHandle();
+      expect(reportsRequested).toBe(false);
+
+      await reports.focus();
+      await expect.poll(() => reportsRequested, { message: "Focus should preload Reports before navigating" }).toBe(true);
+      await expect(page).toHaveURL(/\/alerts$/);
+
+      await reports.press("Enter");
+      await expect(page).toHaveURL(/\/reports$/);
+      await expect(page.getByRole("status", { name: "Loading page" })).toBeVisible();
+      await expect(home).toBeVisible();
+      await expect(reports).toBeFocused();
+      await expect(reports).toHaveAttribute("aria-current", "page");
+
+      releaseReports();
+      await expect(page.getByText("SOC operational metrics and performance analysis")).toBeVisible();
+      await expect(page.getByRole("status", { name: "Loading page" })).toHaveCount(0);
+      expect(await home.evaluate((node, original) => node === original, originalHome)).toBe(true);
+      await originalHome.dispose();
+    } finally {
+      releaseReports();
+    }
+  });
+}
+
+test("idle preloading warms queue code without making queue API requests", async ({ page }) => {
+  await installProductionApiMocks(page);
+  const listCode = ["Alerts", "CaseList", "TaskList"].map(pageModuleRequest);
+  const preloaded = new Set<RegExp>();
+  const queueCalls: string[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (/^\/api\/v1\/(alerts|cases|tasks)$/.test(path)) queueCalls.push(path);
+  });
+  page.on("response", (response) => {
+    if (!response.ok()) return;
+    for (const match of listCode) {
+      if (match.test(response.url())) preloaded.add(match);
+    }
+  });
+
+  await page.goto("/reports");
+  await expect.poll(() => preloaded.size).toBe(listCode.length);
+  await expect(page).toHaveURL((url) => url.pathname === "/reports");
+  expect(queueCalls).toEqual([]);
+});
+
+test("admin route access stays gated inside the signed-in shell", async ({ page }) => {
+  await installProductionApiMocks(page);
+  await page.route("**/api/v1/auth/session", (route) => route.fulfill(jsonResponse({
+    ...apiResponse("/api/v1/auth/session") as Record<string, unknown>,
+    user: { ...adminUser, role: "ANALYST" },
+  })));
+  const adminModule = pageModuleRequest("AdminUsers");
+  const requestedAdminModules: string[] = [];
+  page.on("request", (request) => {
+    if (adminModule.test(request.url())) requestedAdminModules.push(request.url());
+  });
+
+  await page.goto("/admin/users");
+  await expect(page.getByRole("heading", { name: "Access Denied" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Home", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Admin", exact: true })).toHaveCount(0);
+  expect(requestedAdminModules).toEqual([]);
 });
 
 const assigneeFilterRoutes = [

@@ -3,7 +3,6 @@
 import React from "react";
 import { DefaultPageLayout as UxDefaultPageLayout } from "@tidemark-security/ux";
 import type { DefaultPageLayoutProps as UxDefaultPageLayoutProps } from "@tidemark-security/ux";
-import { DesktopSidebar, MobileSidebar, SearchOverlay } from "./AppSidebar";
 import { cn } from "@/utils/cn";
 import styles from "./DefaultPageLayout.module.css";
 
@@ -18,10 +17,7 @@ const DefaultPageLayoutRoot = React.forwardRef<
   return (
     <UxDefaultPageLayout
       ref={ref}
-      className={cn(styles.priorityBackdrop, className)}
-      desktopSidebar={<DesktopSidebar />}
-      mobileSidebar={<MobileSidebar />}
-      overlaySlot={<SearchOverlay />}
+      className={cn("h-full min-h-0", styles.priorityBackdrop, className)}
       {...props}
     />
   );

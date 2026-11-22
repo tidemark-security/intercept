@@ -106,7 +106,7 @@ test("case runbooks production route renders and opens the editor", async ({ pag
   expect(response?.status()).toBeLessThan(400);
 
   await expect(page.getByText("Case Runbooks").first()).toBeVisible();
-  await expect(page.getByRole("button", { name: "Runbooks" }).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: "Runbooks", exact: true }).first()).toBeVisible();
   await expect(page.getByText("RUN-0000007").first()).toBeVisible();
   await expect(page.getByText("Review identity provider logs")).toBeVisible();
   await expect(page.getByText("Case Templates")).toHaveCount(0);

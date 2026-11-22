@@ -1,4 +1,5 @@
 export { AdminPageLayout } from './AdminPageLayout';
+export { AuthenticatedAppShell } from './AuthenticatedAppShell';
 export { ColumnRail } from './ColumnRail';
 export { DefaultPageLayout } from './DefaultPageLayout';
 export { Footer } from './Footer';
