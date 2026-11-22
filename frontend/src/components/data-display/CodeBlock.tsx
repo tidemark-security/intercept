@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
 import SyntaxHighlighter from 'react-syntax-highlighter/dist/esm/prism-light';
+import createCodeElement from 'react-syntax-highlighter/dist/esm/create-element';
+import { QueueSearchText } from '@/components/search/QueueSearchHighlight';
+import { useQueueSearchPattern } from '@/components/search/queueSearchMatches';
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Check, Copy } from 'lucide-react';
 
@@ -109,6 +112,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
   const [isHovered, setIsHovered] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
+  const searchPattern = useQueueSearchPattern();
 
   const totalLines = code.split('\n').length;
   const isTruncated = Boolean(maxLines && totalLines > maxLines);
@@ -164,7 +168,12 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
         customStyle={{ borderRadius: 0 }}
         showLineNumbers={showLineNumbers}
         wrapLongLines={!truncateLongLines}
-        wrapLines={truncateLongLines}
+        wrapLines={truncateLongLines || !!searchPattern}
+        renderer={searchPattern ? ({ rows, stylesheet, useInlineStyles }) => rows.map((node, index) => (
+          <QueueSearchText key={index}>
+            {createCodeElement({ node, stylesheet, useInlineStyles, key: index })}
+          </QueueSearchText>
+        )) : undefined}
         lineProps={{
           style: truncateLongLines
             ? {

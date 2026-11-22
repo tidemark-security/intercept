@@ -1,0 +1,81 @@
+.queueCard {
+  container: queue-card / inline-size;
+}
+
+.queueCard .header {
+  column-gap: 0.75rem;
+}
+
+.queueCard .identity,
+.queueCard .metadata {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.queueCard .idLine {
+  width: 100%;
+  flex-wrap: nowrap;
+  column-gap: 0.75rem;
+  align-items: baseline;
+}
+
+.queueCard .id {
+  flex: none;
+}
+
+.queueCard .timestamp {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: start;
+}
+
+.queueCard .title,
+.queueCard .badges,
+.queueCard .assignee {
+  min-width: 0;
+}
+
+.queueCard [data-queue-indicator] {
+  flex: none;
+}
+
+@container queue-card (max-width: 20rem) {
+  .queueCard .idLine {
+    column-gap: 0.5rem;
+  }
+
+  .queueCard .titleLine,
+  .queueCard .metadata {
+    padding-inline: 0;
+  }
+
+  .queueCard .badges {
+    gap: 0.25rem;
+  }
+
+  .queueCard .assignee,
+  .queueCard [data-queue-indicator] {
+    padding-inline: 0.375rem;
+  }
+
+  .queueCard [data-queue-indicator] {
+    width: auto;
+  }
+
+  .queueCard .tags {
+    flex-wrap: wrap;
+  }
+
+  .queueCard .tag {
+    max-width: 100%;
+  }
+
+  .queueCard .tag > :first-child {
+    display: block;
+    min-width: 0;
+    height: auto;
+    white-space: nowrap;
+  }
+}

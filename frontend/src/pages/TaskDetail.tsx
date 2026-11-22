@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { useParams } from 'react-router-dom';
+import { useLocation, useParams } from 'react-router-dom';
+import { normalizeQueueSearch } from "@/utils/queueSearch";
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { convertTaskHumanIdToNumeric } from '@/utils/humanIdHelpers';
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
@@ -43,6 +44,8 @@ import { AiChat } from "@/components/ai";
  * @returns The Task Detail page component
  */
 function TaskDetailPage() {
+  const { search } = useLocation();
+  const searchQuery = normalizeQueueSearch(new URLSearchParams(search).get("search") ?? "");
   const { humanId } = useParams<{ humanId: string }>();
   const navigate = useViewTransitionNavigate();
   const { user, isAuditor } = useSession();
@@ -318,7 +321,10 @@ function TaskDetailPage() {
   };
 
   const handleBackToList = () => {
-    navigate('/tasks');
+    const params = new URLSearchParams(search);
+    params.delete("scrollTo");
+    const query = params.toString();
+    navigate(query ? `/tasks?${query}` : '/tasks');
   };
 
   // Custom column config for Task Detail page - narrower left column for AI chat
@@ -361,6 +367,7 @@ function TaskDetailPage() {
   return (
     <DefaultPageLayout priority={taskDetail?.priority || undefined}>
       <ThreeColumnLayout
+        floatingPanes={{ mode: "narrow", labels: { left: "AI Assistant pane", center: "Task detail" } }}
         leftColumn={
           <AiChat
             contextType="task"
@@ -373,6 +380,7 @@ function TaskDetailPage() {
         centerColumn={
           <div className="relative flex h-full w-full">
             <UnifiedTimeline
+              searchQuery={searchQuery}
               entityDetail={taskDetail ?? null}
               entityType="task"
               selectedEntityId={selectedTaskId}

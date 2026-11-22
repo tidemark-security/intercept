@@ -28,6 +28,7 @@ import type { TimelineItemType } from '@/types/drafts';
 import type { AlertRead } from '@/types/generated/models/AlertRead';
 import type { AlertStatus } from '@/types/generated/models/AlertStatus';
 import InterceptLogo from '@/assets/Intercept-Green.svg';
+import { QueueSearchHighlightScope } from '@/components/search/QueueSearchHighlight';
 import InterceptLogoBlack from '@/assets/Intercept-Black.svg';
 import { ContextCard } from '@/components/cards/ContextCard';
 import { EntityMetadataCard } from '@/components/cards/EntityMetadataCard';
@@ -356,6 +357,21 @@ function PICERLSwimlaneView({
     </div>
   );
 }
+
+function TimelinePlaceholder() {
+  const { resolvedTheme } = useTheme();
+  const logoSrc = resolvedTheme === 'dark' ? InterceptLogo : InterceptLogoBlack;
+
+  return (
+    <div
+      data-timeline-placeholder
+      className="flex grow shrink-0 basis-0 flex-col items-center justify-center gap-2 self-stretch rounded-md px-12 py-12"
+    >
+      <img className="flex-none" src={logoSrc} alt="Intercept Logo" />
+    </div>
+  );
+}
+
 /**
  * UnifiedTimeline - Displays entity details, timeline items, and quick terminal
  * 
@@ -387,20 +403,8 @@ function PICERLSwimlaneView({
  * ```
  */
 export function UnifiedTimeline(props: UnifiedTimelineProps) {
-  const { resolvedTheme } = useTheme();
-  const logoSrc = resolvedTheme === 'dark' ? InterceptLogo : InterceptLogoBlack;
-
-  // Don't render if no entity is selected
   if (props.selectedEntityId === null) {
-    return (
-      <div className="flex grow shrink-0 basis-0 flex-col items-center justify-center gap-2 self-stretch rounded-md px-12 py-12">
-        <img
-          className="flex-none"
-          src={logoSrc}
-          alt="Intercept Logo"
-        />
-      </div>
-    );
+    return <TimelinePlaceholder />;
   }
 
   return (
@@ -408,7 +412,9 @@ export function UnifiedTimeline(props: UnifiedTimelineProps) {
       entityId={props.selectedEntityId}
       entityType={props.entityType}
     >
-      <UnifiedTimelineInner {...props} selectedEntityId={props.selectedEntityId} />
+      <QueueSearchHighlightScope query={props.searchQuery ?? ""}>
+        <UnifiedTimelineInner {...props} selectedEntityId={props.selectedEntityId} />
+      </QueueSearchHighlightScope>
     </ReplyProvider>
   );
 }
@@ -475,7 +481,6 @@ function UnifiedTimelineInner({
     () => presenceText ?? formatPresenceText(presenceViewers, entityType, currentUser),
     [currentUser, entityType, presenceText, presenceViewers],
   );
-  const logoSrc = isDarkTheme ? InterceptLogo : InterceptLogoBlack;
 
   // Access reply context
   const { activeReplyParentId, activeReplyDepth, enterReplyMode, exitReplyMode, isInReplyMode } = useReplyMode();
@@ -946,15 +951,7 @@ function UnifiedTimelineInner({
 
   // If no entity selected, show placeholder
   if (!selectedEntityId) {
-    return (
-      <div className="flex grow shrink-0 basis-0 flex-col items-center justify-center gap-2 self-stretch rounded-md px-12 py-12">
-        <img
-          className="flex-none"
-          src={logoSrc}
-          alt="Intercept Logo"
-        />
-      </div>
-    );
+    return <TimelinePlaceholder />;
   }
 
   // Determine available item types based on entity type

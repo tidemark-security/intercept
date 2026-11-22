@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import { useLocation, useParams } from 'react-router-dom';
 import { Copy, FolderPlus, Link2, X } from 'lucide-react';
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
@@ -9,13 +9,12 @@ import { TextArea } from "@/components/forms/TextArea";
 import { TextField } from "@/components/forms/TextField";
 import { Dialog } from "@/components/overlays/Dialog";
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
-import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
+import { EntityQueueLayout } from "@/components/layout/EntityQueueLayout";
 import { getPersistedWidth } from "@/components/layout/ColumnRail";
 import { EntityList } from "@/components/data-display/EntityList";
 import { UnifiedTimeline } from "@/components/timeline/UnifiedTimeline";
 import { RightDock } from '@/components/layout/RightDock';
 import { BulkActionModal } from "@/components/entities/BulkActionModal";
-import { BulkSelectionSummary, BulkSelectionToolbar } from "@/components/entities/BulkSelection";
 import { CaseSelectorModal } from "@/components/entities/CaseSelectorModal";
 import {
   DuplicateTargetSelectorModal,
@@ -42,6 +41,8 @@ import { useFeatureFlags } from "@/hooks/useFeatureFlags";
 import { useSession } from "@/contexts/sessionContext";
 import { useURLFilters } from "@/hooks/useURLFilters";
 import { toEntityListQueryFilters } from "@/utils/entityListQueryFilters";
+import { normalizeQueueSearch } from "@/utils/queueSearch";
+import { useQueueSearch, type QueueListRow } from "@/hooks/useQueueSearch";
 import { useTagFilterClick } from "@/hooks/useTagFilterClick";
 import type { RejectionCategory } from "@/types/generated/models/RejectionCategory";
 import { cleanupExpiredDrafts } from "@/utils/draftStorage";
@@ -52,16 +53,13 @@ import { useColumnNavigation } from "@/hooks/useColumnNavigation";
 import { useAutoScroll } from "@/hooks/useAutoScroll";
 import { findTimelineItem, mapItemTypeToDockType } from "@/utils/timelineUtils";
 import { getTimelineItems, getTimelineItemProperty } from "@/utils/timelineHelpers";
-import { getColumnConfig, getInitialVisibleColumns } from "@/utils/columnConfig";
 import type { AlertStatus } from "@/types/generated/models/AlertStatus";
-import type { AlertRead } from "@/types/generated/models/AlertRead";
 import type { FilterState } from "@/types/filters";
 import type { TimelineItemType } from '@/types/drafts';
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { alertStatusToUIState, priorityToUIPriority, uiStateToAlertStatus, type UIState } from "@/utils/statusHelpers";
 import { getApiErrorMessage } from "@/utils/entityBulkActions";
 import { NotFoundError } from "@/pages/NotFoundError";
-import styles from './Alerts.module.css';
 
 const ALERT_SORT_OPTIONS = [
   {
@@ -116,7 +114,7 @@ function Alerts() {
 
   // UI state for filtering - synced with URL query params
   // Default status to ['NEW', 'IN_PROGRESS'] to show active work for analysts
-  const { filters, setFilters, currentPage, setCurrentPage } = useURLFilters<FilterState>({
+  const { filters, setFilters, setSearch, currentPage, setCurrentPage } = useURLFilters<FilterState>({
     defaults: {
       search: "",
       assignee: null,
@@ -136,16 +134,9 @@ function Alerts() {
   const [bulkCaseDescription, setBulkCaseDescription] = useState('');
   const [acceptRecommendationError, setAcceptRecommendationError] = useState<string | null>(null);
 
-  // Column visibility state: controls which columns are visible
-  // On mobile (<768px): typically 'left' | 'center' | 'right' for single column
-  // On tablet/desktop: typically 'left+center' | 'center+right' based on dock state
-  // On ultrawide: typically 'all' for three columns
-  const [visibleColumns, setVisibleColumns] = useState<VisibleColumns>(() => getInitialVisibleColumns());
+  // Alerts can move independently between queue, timeline, and dock on mobile.
+  const [mobileColumns, setMobileColumns] = useState<VisibleColumns>(() => humanId ? 'center' : 'left');
   const [alertListWidth, setAlertListWidth] = useState<number>(() => getPersistedWidth(768));
-  const [listInFront, setListInFront] = useState(false);
-  const listPaneRef = useRef<HTMLDivElement>(null);
-  const detailPaneRef = useRef<HTMLDivElement>(null);
-  const focusDetailOnOpen = useRef(false);
 
   // Right Dock state for three-column layout (with automatic persistence per alert)
   const {
@@ -171,28 +162,7 @@ function Alerts() {
   const breakpoint = useBreakpoint();
   const viewportWidth = useViewportWidth();
   const showSplitCenter = canShowSplitPaneCenter(viewportWidth, alertListWidth, breakpoint);
-  const { switchToColumnOnMobile } = useColumnNavigation(setVisibleColumns);
-
-  // Automatically adjust visible columns based on screen size, dock state, and alert selection
-  // This provides responsive behavior while allowing manual override on mobile
-  useEffect(() => {
-    // If no alert is selected
-    if (!selectedAlertId) {
-      setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
-      return;
-    }
-
-    if (breakpoint === 'mobile') {
-      return;
-    }
-
-    if (showSplitCenter) {
-      setVisibleColumns(dockOpen ? 'all' : 'left+center');
-      return;
-    }
-
-    setVisibleColumns(dockOpen ? 'center+right' : 'center');
-  }, [dockOpen, selectedAlertId, breakpoint, showSplitCenter]);
+  const { switchToColumnOnMobile } = useColumnNavigation(setMobileColumns);
 
   // Initialize selectedAlertId from URL parameter if present
   useEffect(() => {
@@ -201,49 +171,34 @@ function Alerts() {
       if (numericId !== null) {
         setSelectedAlertId(numericId);
 
-        // Set appropriate columns based on current breakpoint
-        if (breakpoint === 'mobile') {
-          setVisibleColumns('center');
-        } else if (showSplitCenter) {
-          setVisibleColumns('left+center');
-        } else {
-          setVisibleColumns('center');
-        }
+        if (breakpoint === 'mobile') setMobileColumns('center');
       }
     } else {
       // No humanId in URL - clear selected alert
       setSelectedAlertId(null);
-      setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
+      setMobileColumns('left');
     }
-  }, [humanId, breakpoint, showSplitCenter]);
+  }, [humanId, breakpoint]);
 
   // Fetch users for assignee dropdown
   const { data: users = [], isLoading: isLoadingUsers } = useUsers({});
 
   // Fetch alerts list from API with TanStack Query (automatic caching, retries, and deduplication)
   const pageSize = 50;
-  const { data: alertsData, isLoading, error } = useAlerts({
+  const searchQuery = normalizeQueueSearch(filters.search);
+  const queue = useAlerts({
     ...toEntityListQueryFilters(filters),
+    search: null,
+    enabled: !searchQuery,
     page: currentPage,
     size: pageSize,
   });
+  const searchedQueue = useQueueSearch("alert", filters, currentPage, pageSize);
+  const { data: alertsData, isLoading, error } = searchQuery ? searchedQueue : queue;
   const bulk = useEntityBulkActions("alert", alertsData?.items, {
-    enabled: !isAuditor, users, currentUser, usersLoading: isLoadingUsers, showSplitCenter,
+    enabled: !isAuditor, users, currentUser, usersLoading: isLoadingUsers, showSplitCenter, selectionScope: searchQuery,
   });
   const bulkSelectedIds = bulk.ids;
-  const showDock = dockOpen && !bulk.hasMultiple;
-  const useOverlappingPanes = breakpoint !== 'mobile' && !showSplitCenter && (selectedAlertId !== null || bulk.hasMultiple);
-  const showFloatingDetail = useOverlappingPanes && !showDock;
-
-  useEffect(() => {
-    setListInFront(bulk.hasMultiple);
-    if (!bulk.hasMultiple && showFloatingDetail && (
-      focusDetailOnOpen.current || listPaneRef.current?.contains(document.activeElement)
-    )) {
-      detailPaneRef.current?.focus({ preventScroll: true });
-      focusDetailOnOpen.current = false;
-    }
-  }, [humanId, showFloatingDetail, bulk.hasMultiple]);
 
   // Fetch selected alert details from API (only when an alert is selected)
   // TanStack Query automatically cancels previous requests when selectedAlertId changes
@@ -665,23 +620,11 @@ function Alerts() {
   };
 
   // Alert selection handler
-  const handleAlertSelect = (alertId: number, humanId: string) => {
+  const handleAlertSelect = (alertId: number, humanId: string, { floating }: { floating: boolean }) => {
     bulk.clear();
-    const opensFloatingDetail = breakpoint !== 'mobile' && !showSplitCenter;
-    if (opensFloatingDetail) {
-      setListInFront(false);
-      if (showFloatingDetail) {
-        detailPaneRef.current?.focus({ preventScroll: true });
-      } else {
-        focusDetailOnOpen.current = true;
-      }
-    }
     setSelectedAlertId(alertId);
-    navigate(`/alerts/${humanId}${location.search}`, opensFloatingDetail ? { viewTransition: false } : undefined);
-
-    // Only change visible columns on mobile - ultrawide/desktop/tablet stay as-is
+    navigate(`/alerts/${humanId}${location.search}`, floating ? { viewTransition: false } : undefined);
     switchToColumnOnMobile('center');
-    // On ultrawide/desktop/tablet, the resize effect handles visibility
   };
 
   // Handler for going back to alert list from 404 page
@@ -691,14 +634,8 @@ function Alerts() {
   };
 
   const isBulkPending = bulk.isPending || bulkAlertActionMutation.isPending;
-  const bulkActionsPanel = bulk.hasMultiple ? (
-    <BulkSelectionToolbar
-      {...bulk.toolbarProps}
-      onReview={showFloatingDetail
-        ? () => detailPaneRef.current?.focus({ preventScroll: true })
-        : bulk.toolbarProps.onReview}
-      disabled={isBulkPending}
-    >
+  const bulkActionButtons = (
+    <>
       <Button
         size="small"
         variant="neutral-secondary"
@@ -723,22 +660,8 @@ function Alerts() {
       >
         Duplicate
       </Button>
-    </BulkSelectionToolbar>
-  ) : null;
-  // Keep the list mounted when the dock opens so its scroll position survives.
-  const layoutColumns = useOverlappingPanes ? (showDock ? 'all' : 'left+center')
-    : bulk.selectionColumns ?? visibleColumns;
-  const isLeftOnlyView = layoutColumns === 'left';
-  const paneClassName = showFloatingDetail ? 'flex h-full min-h-0 w-full flex-col items-start focus:outline-none' : 'contents';
-  const columnConfig = getColumnConfig(selectedAlertId, alertListWidth, isLeftOnlyView);
-  if (useOverlappingPanes) {
-    const overlapConfig = {
-      ...columnConfig.tablet,
-      leftWidth: showDock ? styles.listBehindDock : styles.listLayer,
-      centerWidth: showDock ? columnConfig.tablet?.centerWidth : styles.detailLayer,
-    };
-    columnConfig.tablet = columnConfig.desktop = columnConfig.ultrawide = overlapConfig;
-  }
+    </>
+  );
 
   // Show 404 error if alert not found (when viewing a specific alert)
   if (is404Error && !bulk.hasMultiple) {
@@ -756,140 +679,114 @@ function Alerts() {
   // Main render
   return (
     <DefaultPageLayout priority={bulk.hasMultiple ? undefined : alertDetail?.priority || undefined}>
-      <ThreeColumnLayout
-        className={showFloatingDetail ? `${styles.overlap} ${listInFront ? styles.listInFront : ''}` : undefined}
-        showLeftRail={showSplitCenter}
-        leftRailLabel="Resize alert list"
-        leftColumnWidth={alertListWidth}
-        onLeftColumnWidthChange={setAlertListWidth}
-        leftColumn={
-          <div
-            ref={listPaneRef}
-            className={paneClassName}
-            role={showFloatingDetail ? 'region' : undefined}
-            aria-label={showFloatingDetail ? 'Alert list' : undefined}
-            tabIndex={showFloatingDetail ? -1 : undefined}
-            onFocusCapture={showFloatingDetail ? () => setListInFront(true) : undefined}
-            onPointerEnter={showFloatingDetail ? (event) => {
-              if (event.pointerType === 'mouse') setListInFront(true);
-            } : undefined}
-            onClick={showFloatingDetail ? (event) => {
-              if (event.target === event.currentTarget) setListInFront(true);
-            } : undefined}
-          >
-            <EntityList
-              items={alertsData?.items ?? []}
-              selectedId={bulk.hasMultiple ? null : selectedAlertId}
-              onSelect={handleAlertSelect}
-              getItemHref={(_id, humanId) => `/alerts/${humanId}${location.search}`}
-              {...bulk.listProps}
-              toolbarActions={bulkActionsPanel}
-              filters={filters}
-              onFilterChange={setFilters}
-              sortOptions={ALERT_SORT_OPTIONS}
-              currentPage={currentPage}
-              totalPages={totalPages}
-              totalItems={alertsData?.total}
-              onPageChange={handlePageChange}
-              alwaysShowPaginator
-              isLoading={isLoading}
-              error={error}
-              users={users}
-              usersLoading={isLoadingUsers}
-              enableTagFilters
-              onTagClick={handleFilterByTag}
-              getItemIds={(alert: AlertRead) => ({ id: alert.id, humanId: alert.human_id })}
-              mapItemToCard={(alert: AlertRead) => ({
-                id: alert.human_id,
-                title: alert.title,
-                description: alert.description || '',
-                timestamp: alert.created_at,
-                assignee: alert.assignee || 'Unassigned',
-                tags: alert.tags || [],
-                state: alertStatusToUIState(alert.status),
-                priority: priorityToUIPriority(alert.priority),
-              })}
-              emptyMessage="No alerts found"
-            />
-          </div>
+      <EntityQueueLayout
+        searchQuery={searchQuery}
+        entityType="alert"
+        isMobile={breakpoint === 'mobile'}
+        showSplitCenter={showSplitCenter}
+        listWidth={alertListWidth}
+        onListWidthChange={setAlertListWidth}
+        mobileColumns={mobileColumns}
+        selectedId={selectedAlertId}
+        onSelect={handleAlertSelect}
+        selection={bulk.selectionColumns ? {
+          columns: bulk.selectionColumns,
+          toolbar: { ...bulk.toolbarProps, children: bulkActionButtons, disabled: isBulkPending },
+          summary: { ...bulk.summaryProps, disabled: isBulkPending },
+        } : undefined}
+        renderList={(queueListProps) => (
+          <EntityList
+            items={alertsData?.items ?? []}
+            selectedId={bulk.hasMultiple ? null : selectedAlertId}
+            getItemHref={(_id, humanId) => `/alerts/${humanId}${location.search}`}
+            {...bulk.listProps}
+            {...queueListProps}
+            filters={filters}
+            onFilterChange={setFilters}
+            onSearchChange={setSearch}
+            retrySearch={searchQuery ? searchedQueue.refetch : undefined}
+            sortOptions={ALERT_SORT_OPTIONS}
+            currentPage={currentPage}
+            totalPages={totalPages}
+            totalItems={alertsData?.total}
+            onPageChange={handlePageChange}
+            alwaysShowPaginator
+            isLoading={isLoading}
+            error={error}
+            users={users}
+            usersLoading={isLoadingUsers}
+            enableTagFilters
+            onTagClick={handleFilterByTag}
+            getItemIds={(alert: QueueListRow) => ({ id: alert.id, humanId: alert.human_id })}
+            mapItemToCard={(alert: QueueListRow) => ({
+              id: alert.human_id,
+              title: alert.title,
+              description: alert.description || '',
+              timestamp: alert.created_at,
+              assignee: alert.assignee || 'Unassigned',
+              tags: alert.tags || [],
+              state: alertStatusToUIState(alert.status as AlertStatus),
+              priority: priorityToUIPriority(alert.priority),
+            })}
+            emptyMessage="No alerts found"
+          />
+        )}
+        detail={
+          <UnifiedTimeline
+            searchQuery={searchQuery}
+            entityDetail={alertDetail ?? null}
+            entityType="alert"
+            mode={isAlertReadOnly ? 'readonly' : 'editable'}
+            selectedEntityId={selectedAlertId}
+            currentUser={currentUser}
+            isLoading={isLoadingDetail}
+            error={detailError}
+            users={users}
+            usersLoading={isLoadingUsers}
+            isUpdating={updateAlertMutation.isPending}
+            isOverlayOpen={dockOpen || isCaseSelectorOpen || isBulkCaseSelectorOpen || bulkDialog !== null}
+            onFlagItem={handleFlagItem}
+            onHighlightItem={handleHighlightItem}
+            onEditItem={handleEditItem}
+            onDeleteItem={handleDeleteItem}
+            onDeleteBatch={handleDeleteBatch}
+            onAssignToMe={isAuditor ? undefined : handleAssignToMe}
+            onAssignToUser={isAuditor ? undefined : handleAssignToUser}
+            onUnassign={isAuditor ? undefined : handleUnassign}
+            onCloseEntity={isAuditor ? undefined : handleCloseAlert}
+            onReopenEntity={isAuditor ? undefined : handleReopenAlert}
+            onLinkToCase={isAuditor ? undefined : handleLinkToCase}
+            onUnlinkFromCase={isAuditor ? undefined : handleUnlinkFromCase}
+            onOpenEntity={isAuditor ? undefined : handleEscalate}
+            onQuickTerminalSubmit={handleQuickTerminalSubmit}
+            onSlashCommand={handleSlashCommand}
+            onAddNote={handleAddNote}
+            onMenuItemSelect={handleMenuItemSelect}
+            onPasteFiles={handlePasteFiles}
+            isSubmittingNote={quickTerminalMutation.isPending}
+            onBackToList={handleBackToList}
+            scrollToItemId={scrollToItemId}
+            onReplyParentIdChange={setReplyParentId}
+            onUpdateTags={isAuditor ? undefined : handleUpdateTags}
+            onAcceptTriageRecommendation={isAuditor ? undefined : handleAcceptTriageRecommendation}
+            onRejectTriageRecommendation={isAuditor ? undefined : handleRejectTriageRecommendation}
+            onScrollToTimelineItem={handleScrollToTimelineItem}
+            onNavigateToCase={handleNavigateToCase}
+            isAcceptingRecommendation={acceptTriageRecommendationMutation.isPending}
+            isRejectingRecommendation={rejectTriageRecommendationMutation.isPending}
+            acceptRecommendationError={acceptRecommendationError}
+            onRetryTriage={isAuditor ? undefined : handleRetryTriage}
+            onRequestTriage={isAuditor ? undefined : handleRequestTriage}
+            isEnqueuingTriage={enqueueTriageMutation.isPending}
+            isTriageEnabled={isTriageEnabled}
+          />
         }
-        centerColumn={
-          <div
-            ref={detailPaneRef}
-            className={paneClassName}
-            role={showFloatingDetail ? 'region' : undefined}
-            aria-label={showFloatingDetail ? 'Alert detail' : undefined}
-            tabIndex={showFloatingDetail ? -1 : undefined}
-            onFocusCapture={showFloatingDetail ? () => setListInFront(false) : undefined}
-            onPointerEnter={showFloatingDetail ? (event) => {
-              if (event.pointerType === 'mouse') setListInFront(false);
-            } : undefined}
-            onClick={showFloatingDetail ? (event) => {
-              if (event.target === event.currentTarget) setListInFront(false);
-            } : undefined}
-          >
-            {bulk.hasMultiple ? (
-              <BulkSelectionSummary
-                {...bulk.summaryProps}
-                onBack={showFloatingDetail
-                  ? () => listPaneRef.current?.focus({ preventScroll: true })
-                  : bulk.summaryProps.onBack}
-                disabled={isBulkPending}
-              />
-            ) : <UnifiedTimeline
-              entityDetail={alertDetail ?? null}
-              entityType="alert"
-              mode={isAlertReadOnly ? 'readonly' : 'editable'}
-              selectedEntityId={selectedAlertId}
-              currentUser={currentUser}
-              isLoading={isLoadingDetail}
-              error={detailError}
-              users={users}
-              usersLoading={isLoadingUsers}
-              isUpdating={updateAlertMutation.isPending}
-              isOverlayOpen={dockOpen || isCaseSelectorOpen || isBulkCaseSelectorOpen || bulkDialog !== null}
-              onFlagItem={handleFlagItem}
-              onHighlightItem={handleHighlightItem}
-              onEditItem={handleEditItem}
-              onDeleteItem={handleDeleteItem}
-              onDeleteBatch={handleDeleteBatch}
-              onAssignToMe={isAuditor ? undefined : handleAssignToMe}
-              onAssignToUser={isAuditor ? undefined : handleAssignToUser}
-              onUnassign={isAuditor ? undefined : handleUnassign}
-              onCloseEntity={isAuditor ? undefined : handleCloseAlert}
-              onReopenEntity={isAuditor ? undefined : handleReopenAlert}
-              onLinkToCase={isAuditor ? undefined : handleLinkToCase}
-              onUnlinkFromCase={isAuditor ? undefined : handleUnlinkFromCase}
-              onOpenEntity={isAuditor ? undefined : handleEscalate}
-              onQuickTerminalSubmit={handleQuickTerminalSubmit}
-              onSlashCommand={handleSlashCommand}
-              onAddNote={handleAddNote}
-              onMenuItemSelect={handleMenuItemSelect}
-              onPasteFiles={handlePasteFiles}
-              isSubmittingNote={quickTerminalMutation.isPending}
-              onBackToList={handleBackToList}
-              scrollToItemId={scrollToItemId}
-              onReplyParentIdChange={setReplyParentId}
-              onUpdateTags={isAuditor ? undefined : handleUpdateTags}
-              onAcceptTriageRecommendation={isAuditor ? undefined : handleAcceptTriageRecommendation}
-              onRejectTriageRecommendation={isAuditor ? undefined : handleRejectTriageRecommendation}
-              onScrollToTimelineItem={handleScrollToTimelineItem}
-              onNavigateToCase={handleNavigateToCase}
-              isAcceptingRecommendation={acceptTriageRecommendationMutation.isPending}
-              isRejectingRecommendation={rejectTriageRecommendationMutation.isPending}
-              acceptRecommendationError={acceptRecommendationError}
-              onRetryTriage={isAuditor ? undefined : handleRetryTriage}
-              onRequestTriage={isAuditor ? undefined : handleRequestTriage}
-              isEnqueuingTriage={enqueueTriageMutation.isPending}
-              isTriageEnabled={isTriageEnabled}
-            />}
-          </div>
-        }
-        rightColumn={
-          selectedAlertId !== null ? (
+        dock={selectedAlertId !== null ? {
+          open: dockOpen,
+          content: (
             <RightDock
               alertId={selectedAlertId}
-              isOpen={showDock}
+              isOpen={dockOpen}
               itemType={dockItemType}
               onClose={handleDockClose}
               onItemCreated={handleDockItemCreated}
@@ -899,14 +796,8 @@ function Alerts() {
               pendingFiles={pendingFiles}
               onPendingFilesConsumed={clearPendingFiles}
             />
-          ) : (
-            <div />
-          )
-        }
-        visibleColumns={layoutColumns}
-        onVisibleColumnsChange={setVisibleColumns}
-        columnConfig={columnConfig}
-        dimLeftColumn={!bulk.hasMultiple && !!selectedAlertId && !useOverlappingPanes}
+          ),
+        } : undefined}
       />
 
       {/* Case Selector Modal */}

@@ -14,6 +14,7 @@ export type UnifiedUser = app__api__routes__admin_auth__UserSummary | any;
 export type UnifiedEntity = AlertRead | CaseReadWithAlerts | TaskRead;
 
 export interface UnifiedTimelineProps {
+  searchQuery?: string;
   /** 
    * Entity detail data with timeline items
    * Null when no entity is selected

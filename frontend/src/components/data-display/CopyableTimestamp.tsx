@@ -8,6 +8,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
 
 import { useTheme } from '@/contexts/ThemeContext';
+import { QueueSearchText } from '@/components/search/QueueSearchHighlight';
 import { useTimezonePreference } from '@/contexts/TimezoneContext';
 import { cn } from '@/utils/cn';
 import { parseISO8601 } from '@/utils/dateFilters';
@@ -129,7 +130,7 @@ export function CopyableTimestamp({
         title={`Click to copy: ${displayTime}`}
       >
         {!isRightVariant && icon}
-        <span>{label ? `${label} ` : ""}{relativeTime}</span>
+        <span>{label ? `${label} ` : ""}<QueueSearchText>{relativeTime}</QueueSearchText></span>
         {isRightVariant && icon}
       </button>
     );
@@ -156,12 +157,12 @@ export function CopyableTimestamp({
               </span>
             )}
             <span className={timestampClasses}>
-              {displayTime}
+              <QueueSearchText>{displayTime}</QueueSearchText>
             </span>
           </span>
           {showFull && (
             <span className={cn("text-caption font-caption", supportingTextClasses)}>
-              {relativeTime}
+              <QueueSearchText>{relativeTime}</QueueSearchText>
             </span>
           )}
         </div>
@@ -188,11 +189,11 @@ export function CopyableTimestamp({
         </span>
       )}
       <span className={timestampClasses}>
-        {displayTime}
+        <QueueSearchText>{displayTime}</QueueSearchText>
       </span>
       {showFull && (
         <span className={cn("text-caption font-caption", supportingTextClasses)}>
-          ({relativeTime})
+          (<QueueSearchText>{relativeTime}</QueueSearchText>)
         </span>
       )}
       {isRightVariant && icon}

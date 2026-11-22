@@ -6,6 +6,7 @@ import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS, QUERY_REFETCH_INTERVALS_WS 
 import { useWebSocket } from '@/contexts/WebSocketContext';
 
 export interface UseCasesParams {
+  enabled?: boolean;
   page?: number;
   size?: number;
   status?: CaseStatus[] | null;
@@ -34,6 +35,7 @@ export interface UseCasesParams {
  * ```
  */
 export function useCases({
+  enabled = true,
   page = 1,
   size = 50,
   status = null,
@@ -49,6 +51,7 @@ export function useCases({
   const { isConnected } = useWebSocket();
 
   return useQuery<Page_CaseRead_, Error>({
+    enabled,
     queryKey: ['cases', { page, size, status, assignee, includeTags, excludeTags, search, startDate, endDate, sortBy, sortOrder }],
     queryFn: async () => {
       const response = await CasesService.getCasesApiV1CasesGet({

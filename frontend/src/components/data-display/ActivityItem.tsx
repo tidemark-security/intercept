@@ -8,6 +8,7 @@ import { Button } from "@/components/buttons/Button";
 import { IconButton } from "@/components/buttons/IconButton";
 import { IconWithBackground } from "@/components/misc/IconWithBackground";
 import { CopyableTimestamp } from "@/components/data-display/CopyableTimestamp";
+import { QueueSearchText } from "@/components/search/QueueSearchHighlight";
 import { RelativeTime } from "@/components/data-display/RelativeTime";
 
 import { Check, Copy, Flag, Highlighter, MessageSquare, Pencil, Trash } from 'lucide-react';
@@ -321,7 +322,7 @@ const ActivityItemRoot = React.forwardRef<
               <div className="flex grow shrink-0 basis-0 flex-wrap items-start gap-1">
                 {username ? (
                   <span className="text-body-bold font-body-bold text-default-font">
-                    {username}
+                    <QueueSearchText>{username}</QueueSearchText>
                   </span>
                 ) : null}
                 {action ? (
@@ -356,7 +357,7 @@ const ActivityItemRoot = React.forwardRef<
                         isDarkTheme ? "text-neutral-400 hover:text-neutral-500" : "text-neutral-600 hover:text-neutral-700"
                       )}
                     >
-                      {displayItemId}
+                      <QueueSearchText>{displayItemId}</QueueSearchText>
                     </span>
                   </div>
                 )}

@@ -1,0 +1,77 @@
+.overlap {
+  --floating-pane-gutter: 1rem;
+  --floating-pane-peek: clamp(7rem, 14%, 11rem);
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.overlap > .leftLayer,
+.overlap > .centerLayer {
+  position: absolute;
+  inset-block: var(--floating-pane-gutter);
+  min-width: 0;
+  transition: transform 180ms ease-out, box-shadow 180ms ease-out;
+}
+
+.leftLayer {
+  inset-inline: var(--floating-pane-gutter) calc(var(--floating-pane-gutter) + var(--floating-pane-peek));
+  z-index: 0;
+  transform-origin: left center;
+  transform: translateX(-4px) scale(0.98);
+}
+
+.centerLayer {
+  inset-inline: calc(var(--floating-pane-gutter) + var(--floating-pane-peek)) var(--floating-pane-gutter);
+  z-index: 1;
+  box-shadow: -8px 0 24px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(var(--color-neutral-border));
+  transform-origin: right center;
+  animation: reveal-center 180ms ease-out;
+}
+
+.leftInFront .leftLayer {
+  z-index: 2;
+  transform: none;
+  box-shadow: 8px 0 24px rgb(0 0 0 / 0.45), 0 0 0 1px rgb(var(--color-neutral-border));
+}
+
+.leftInFront .centerLayer {
+  transform: translateX(4px) scale(0.98);
+  box-shadow: none;
+}
+
+.placeholder .centerLayer {
+  animation: none;
+}
+
+.placeholder .centerLayer [data-timeline-placeholder] {
+  position: relative;
+  container-type: size;
+}
+
+.placeholder .centerLayer [data-timeline-placeholder] > img {
+  /* Center the wordmark in the visible strip, using pane height for its rotated length. */
+  position: absolute;
+  top: 50%;
+  right: calc(var(--floating-pane-peek) / 2);
+  width: min(40rem, calc(100cqh - 3rem));
+  max-width: none;
+  translate: 50% -50%;
+  rotate: 90deg;
+}
+
+.leftBehindDock {
+  display: none;
+}
+
+@keyframes reveal-center {
+  from { transform: translateX(1rem) scale(0.98); }
+  to { transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlap > .leftLayer,
+  .overlap > .centerLayer {
+    animation: none;
+    transition: none;
+  }
+}

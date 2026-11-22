@@ -1,14 +1,13 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { useLocation } from "react-router-dom";
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
-import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
+import { EntityQueueLayout } from "@/components/layout/EntityQueueLayout";
 import { getPersistedWidth } from "@/components/layout/ColumnRail";
 import { EntityList } from "@/components/data-display/EntityList";
 import { BulkActionModal } from "@/components/entities/BulkActionModal";
-import { BulkSelectionSummary, BulkSelectionToolbar } from "@/components/entities/BulkSelection";
 import { useEntityBulkActions } from "@/hooks/useEntityBulkActions";
 import { UnifiedTimeline } from "@/components/timeline/UnifiedTimeline";
 import { useTasks } from "@/hooks/useTasks";
@@ -20,12 +19,11 @@ import { useBreakpoint } from "@/hooks/useBreakpoint";
 import { canShowSplitPaneCenter, useViewportWidth } from "@/hooks/useSplitPaneCenter";
 import { useURLFilters } from "@/hooks/useURLFilters";
 import { toEntityListQueryFilters } from "@/utils/entityListQueryFilters";
+import { normalizeQueueSearch } from "@/utils/queueSearch";
+import { useQueueSearch, type QueueListRow } from "@/hooks/useQueueSearch";
 import { useTagFilterClick } from "@/hooks/useTagFilterClick";
-import { getColumnConfig, getInitialVisibleColumns } from "@/utils/columnConfig";
 import type { TaskStatus } from "@/types/generated/models/TaskStatus";
-import type { TaskRead } from "@/types/generated/models/TaskRead";
 import type { TaskFilterState } from "@/types/filters";
-import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { taskStatusToUIState, priorityToUIPriority, taskStateToMenuCardState } from "@/utils/statusHelpers";
 import { TASK_STATUS_OPTIONS } from "@/utils/statusLabels";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
@@ -60,7 +58,7 @@ const TASK_SORT_OPTIONS = [
  * - Paginated task list with filters
  * - Read-only timeline preview in center column (when task selected)
  * - On mobile: tapping a task navigates to detail page
- * - On non-mobile: task list always visible with side-by-side preview
+ * - On non-mobile: preview beside or floating over the task list
  * 
  * @returns The Tasks List page component
  */
@@ -72,7 +70,7 @@ function TasksListPage() {
   const currentUser = user?.username || null;
 
   // UI state for filtering - synced with URL query params
-  const { filters, setFilters, currentPage, setCurrentPage } = useURLFilters<TaskFilterState>({
+  const { filters, setFilters, setSearch, currentPage, setCurrentPage } = useURLFilters<TaskFilterState>({
     defaults: {
       search: "",
       assignee: null,
@@ -87,8 +85,6 @@ function TasksListPage() {
   const [selectedTaskId, setSelectedTaskId] = useState<number | null>(null);
   const handleFilterByTag = useTagFilterClick(filters, setFilters);
 
-  // Column visibility state
-  const [visibleColumns, setVisibleColumns] = useState<VisibleColumns>(() => getInitialVisibleColumns());
   const [taskListWidth, setTaskListWidth] = useState<number>(() => getPersistedWidth(768));
 
   // Reactive breakpoint state
@@ -96,33 +92,23 @@ function TasksListPage() {
   const viewportWidth = useViewportWidth();
   const showSplitCenter = canShowSplitPaneCenter(viewportWidth, taskListWidth, breakpoint);
 
-  // Automatically adjust visible columns based on selection and screen size
-  useEffect(() => {
-    if (!selectedTaskId) {
-      setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
-    } else {
-      if (breakpoint === 'mobile') {
-        setVisibleColumns('center');
-      } else if (showSplitCenter) {
-        setVisibleColumns('left+center');
-      } else {
-        setVisibleColumns('center');
-      }
-    }
-  }, [selectedTaskId, breakpoint, showSplitCenter]);
-
   // Fetch users for assignee dropdown
   const { data: users = [], isLoading: isLoadingUsers } = useUsers({});
 
   // Fetch tasks list from API
   const pageSize = 50;
-  const { data: tasksData, isLoading, error } = useTasks({
+  const searchQuery = normalizeQueueSearch(filters.search);
+  const queue = useTasks({
     ...toEntityListQueryFilters(filters),
+    search: null,
+    enabled: !searchQuery,
     page: currentPage,
     size: pageSize,
   });
+  const searchedQueue = useQueueSearch("task", filters, currentPage, pageSize);
+  const { data: tasksData, isLoading, error } = searchQuery ? searchedQueue : queue;
   const bulk = useEntityBulkActions("task", tasksData?.items, {
-    enabled: !isAuditor, users, currentUser, usersLoading: isLoadingUsers, showSplitCenter,
+    enabled: !isAuditor, users, currentUser, usersLoading: isLoadingUsers, showSplitCenter, selectionScope: searchQuery,
   });
 
   // Fetch selected task details from API (only when a task is selected)
@@ -182,10 +168,10 @@ function TasksListPage() {
   // Task selection handler
   const handleTaskSelect = (taskId: number, taskHumanId: string) => {
     bulk.clear();
-    setSelectedTaskId(taskId);
-    
-    if (breakpoint === 'mobile' || !showSplitCenter) {
+    if (breakpoint === 'mobile') {
       navigate(`/tasks/${taskHumanId}${location.search}`);
+    } else {
+      setSelectedTaskId(taskId);
     }
   };
 
@@ -204,26 +190,36 @@ function TasksListPage() {
   // Handle back to list (for mobile only)
   const handleBackToList = () => {
     setSelectedTaskId(null);
-    setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
   };
-
-  const layoutColumns = bulk.selectionColumns ?? visibleColumns;
-  const isLeftOnlyView = layoutColumns === 'left';
 
   return (
     <DefaultPageLayout priority={bulk.hasMultiple ? undefined : taskDetail?.priority || undefined}>
-      <ThreeColumnLayout
-        leftColumn={
+      <EntityQueueLayout
+        searchQuery={searchQuery}
+        entityType="task"
+        isMobile={breakpoint === 'mobile'}
+        showSplitCenter={showSplitCenter}
+        selectedId={selectedTaskId}
+        listWidth={taskListWidth}
+        onListWidthChange={setTaskListWidth}
+        onSelect={handleTaskSelect}
+        selection={bulk.selectionColumns ? {
+          columns: bulk.selectionColumns,
+          toolbar: bulk.toolbarProps,
+          summary: bulk.summaryProps,
+        } : undefined}
+        renderList={(queueListProps) => (
           <EntityList
             items={tasksData?.items ?? []}
             selectedId={bulk.hasMultiple ? null : selectedTaskId}
             {...bulk.listProps}
-            toolbarActions={bulk.hasMultiple && <BulkSelectionToolbar {...bulk.toolbarProps} />}
-            onSelect={handleTaskSelect}
+            {...queueListProps}
             onDoubleClick={handleTaskDoubleClick}
             getItemHref={(_id, humanId) => `/tasks/${humanId}${location.search}`}
             filters={filters}
             onFilterChange={setFilters}
+            onSearchChange={setSearch}
+            retrySearch={searchQuery ? searchedQueue.refetch : undefined}
             enableTagFilters
             onTagClick={handleFilterByTag}
             statusOptions={TASK_STATUS_OPTIONS}
@@ -237,24 +233,23 @@ function TasksListPage() {
             error={error}
             users={users}
             usersLoading={isLoadingUsers}
-            getItemIds={(taskItem: TaskRead) => ({ id: taskItem.id, humanId: taskItem.human_id })}
-            mapItemToCard={(taskItem: TaskRead) => ({
+            getItemIds={(taskItem: QueueListRow) => ({ id: taskItem.id, humanId: taskItem.human_id })}
+            mapItemToCard={(taskItem: QueueListRow) => ({
               id: taskItem.human_id,
               title: taskItem.title,
               description: taskItem.description || '',
               timestamp: taskItem.created_at,
               assignee: taskItem.assignee || 'Unassigned',
               tags: taskItem.tags || [],
-              state: taskStateToMenuCardState(taskStatusToUIState(taskItem.status)),
+              state: taskStateToMenuCardState(taskStatusToUIState(taskItem.status as TaskStatus)),
               priority: priorityToUIPriority(taskItem.priority),
             })}
             emptyMessage="No tasks found"
           />
-        }
-        centerColumn={bulk.hasMultiple ? (
-          <BulkSelectionSummary {...bulk.summaryProps} />
-        ) : (
+        )}
+        detail={
           <UnifiedTimeline
+            searchQuery={searchQuery}
             entityDetail={taskDetail ?? null}
             entityType="task"
             selectedEntityId={selectedTaskId}
@@ -271,16 +266,7 @@ function TasksListPage() {
             onBackToList={handleBackToList}
             onOpenEntity={handleOpenTask}
           />
-        )}
-        rightColumn={<div></div>}
-        visibleColumns={layoutColumns}
-        onVisibleColumnsChange={setVisibleColumns}
-        columnConfig={getColumnConfig(selectedTaskId, taskListWidth, isLeftOnlyView)}
-        dimLeftColumn={!bulk.hasMultiple && !!selectedTaskId}
-        showLeftRail={showSplitCenter}
-        leftRailLabel="Resize task list"
-        leftColumnWidth={taskListWidth}
-        onLeftColumnWidthChange={setTaskListWidth}
+        }
       />
       {bulk.dialogProps && <BulkActionModal {...bulk.dialogProps} />}
     </DefaultPageLayout>

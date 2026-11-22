@@ -2,6 +2,7 @@ import React from 'react';
 import { Minus, Plus, X } from 'lucide-react';
 import { openGlobalSearch } from '@/components/search/globalSearchEvents';
 import { cn } from '@/utils/cn';
+import { QueueSearchText } from '@/components/search/QueueSearchHighlight';
 
 export function getTagSearchHref(tag: string): string {
   const params = new URLSearchParams();
@@ -154,10 +155,10 @@ const TagRoot = React.forwardRef<HTMLSpanElement, TagProps>(function TagRoot(
             event.stopPropagation();
           }}
         >
-          {tagText}
+          <QueueSearchText>{tagText}</QueueSearchText>
         </a>
       ) : tagText ? (
-        <span className={textClassName}>{tagText}</span>
+        <span className={textClassName}><QueueSearchText>{tagText}</QueueSearchText></span>
       ) : null}
       {action ? (
         <span className={cn('hidden h-4 w-4 flex-none items-center justify-center gap-1', { flex: showAction })}>

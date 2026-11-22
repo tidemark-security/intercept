@@ -21,6 +21,9 @@ export interface EntityListProps<T, F = FilterState> {
   
   /** Optional callback when an item is double-clicked */
   onDoubleClick?: (id: number, humanId: string) => void;
+
+  /** Give a double-click time to land before a mouse click opens an overlapping preview. */
+  deferPointerSelection?: boolean;
   
   /** 
    * Function to generate href for each item (enables middle-click/ctrl+click to open in new tab)
@@ -53,6 +56,8 @@ export interface EntityListProps<T, F = FilterState> {
   
   /** Callback when filters change */
   onFilterChange: (filters: F) => void;
+  onSearchChange?: (query: string) => void;
+  retrySearch?: () => void;
   
   /** Options for the status filter dropdown */
   statusOptions?: { value: string; label: string }[];

@@ -3,6 +3,7 @@
 import React from "react";
 
 import { cn } from "@/utils/cn";
+import { QueueSearchText } from "@/components/search/QueueSearchHighlight";
 import { IconWrapper } from "@/utils/IconWrapper";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useTimezonePreference } from "@/contexts/TimezoneContext";
@@ -17,6 +18,7 @@ import {
   getMenuCardTitleClassName,
   MenuCardBase,
 } from "@/components/cards/MenuCardBase";
+import styles from "./MenuCard.module.css";
 
 import { ListTree, User2 } from 'lucide-react';
 type MenuCardTag = string | {
@@ -53,6 +55,7 @@ interface MenuCardRootProps
   | "critical"
   | "extreme";
   variant?: "default" | "selected";
+  layout?: "default" | "queue";
   leadingContent?: React.ReactNode;
   bodyContent?: React.ReactNode;
   showDescription?: boolean;
@@ -102,6 +105,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
       state = "closed",
       priority = "default",
       variant = "default",
+      layout = "default",
       leadingContent,
       bodyContent,
       showDescription = false,
@@ -180,7 +184,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
     return (
       <MenuCardBase
         variant={variant}
-        className={className}
+        className={cn(layout === "queue" && styles.queueCard, className)}
         ref={ref}
         {...otherProps}
       >
@@ -193,21 +197,21 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
           <div className="flex min-w-0 grow shrink basis-0 flex-col items-start gap-1">
             <div
               className={cn(
-                "flex w-full flex-wrap items-center justify-between",
+                styles.header, "flex w-full flex-wrap items-center justify-between",
                 { "flex-row flex-wrap justify-between": showDescription }
               )}
             >
-              <div className="flex grow shrink-0 basis-0 flex-col flex-wrap items-start">
-                <div className="flex flex-wrap items-start gap-4">
+              <div className={cn(styles.identity, "flex grow shrink-0 basis-0 flex-col flex-wrap items-start")}>
+                <div className={cn(styles.idLine, "flex flex-wrap items-start gap-4")}>
                   {id ? (
                     <span
                       className={getMenuCardMetaClassName(
                         isDarkTheme,
                         variant,
-                        "grow shrink-0 basis-0 whitespace-nowrap text-caption-bold font-caption-bold"
+                        cn(styles.id, "grow shrink-0 basis-0 whitespace-nowrap text-caption-bold font-caption-bold")
                       )}
                     >
-                      {id}
+                      <QueueSearchText>{id}</QueueSearchText>
                     </span>
                   ) : null}
                   {formattedTimestamp ? (
@@ -215,35 +219,41 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
                       className={getMenuCardMetaClassName(
                         isDarkTheme,
                         variant,
-                        "grow shrink-0 basis-0 whitespace-nowrap text-caption text-right"
+                        cn(styles.timestamp, "grow shrink-0 basis-0 whitespace-nowrap text-caption text-right")
                       )}
+                      title={layout === "queue" && typeof formattedTimestamp === "string" ? formattedTimestamp : undefined}
                     >
-                      {formattedTimestamp}
+                      <QueueSearchText>{formattedTimestamp}</QueueSearchText>
                     </span>
                   ) : null}
                 </div>
-                <div className="flex w-full flex-wrap items-center justify-center gap-2 pr-2">
+                <div className={cn(styles.titleLine, "flex w-full flex-wrap items-center justify-center gap-2 pr-2")}>
                   {title ? (
-                    <span className={getMenuCardTitleClassName(isDarkTheme, variant)}>
-                      {title}
+                    <span
+                      className={getMenuCardTitleClassName(isDarkTheme, variant, styles.title)}
+                      title={layout === "queue" && typeof title === "string" ? title : undefined}
+                    >
+                      <QueueSearchText>{title}</QueueSearchText>
                     </span>
                   ) : null}
                 </div>
               </div>
-              <div className="flex grow shrink-0 basis-0 flex-wrap items-center gap-2 px-1 py-1">
-                <div className="flex grow shrink-0 basis-0 items-center justify-end gap-2">
+              <div className={cn(styles.metadata, "flex grow shrink-0 basis-0 flex-wrap items-center gap-2 px-1 py-1")}>
+                <div className={cn(styles.badges, "flex grow shrink-0 basis-0 items-center justify-end gap-2")}>
                   <Badge
-                    className="h-6 min-w-[128px] grow shrink-0 basis-0"
+                    className={cn(styles.assignee, "h-6 min-w-[128px] grow shrink-0 basis-0")}
+                    title={layout === "queue" && typeof assignee === "string" ? assignee : undefined}
                     variant="neutral"
                     icon={<User2 />}
                     iconRight={null}
                   >
-                    {assignee}
+                    <QueueSearchText>{assignee}</QueueSearchText>
                   </Badge>
 
                   <State
                     state={state}
                     variant="mini"
+                    data-queue-indicator={layout === "queue" ? "status" : undefined}
                   />
                   <Priority
                     priority={
@@ -260,7 +270,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
                                 : undefined
                     }
                     size="mini"
-                  // className="grayscale-[50%]"
+                    data-queue-indicator={layout === "queue" ? "priority" : undefined}
                   />
                 </div>
               </div>
@@ -274,7 +284,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
         </div>
         {tagList.length > 0 && (
           <div className="-mx-4 -mb-3 mt-2 w-[calc(100%+2rem)] border-t border-solid border-neutral-border bg-neutral-500/10 px-4 py-2">
-            <div className="flex w-full items-center gap-1 overflow-hidden flex-nowrap">
+            <div className={cn(styles.tags, "flex w-full items-center gap-1 overflow-hidden flex-nowrap")}>
               {tagList.map((tag, index) => {
                 const tagValue = getTagValue(tag);
                 const isTimelineTag = getTagSource(tag) === "timeline";
@@ -293,7 +303,8 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
                     onMouseMove={(event) => setIsExcludeModifierActive(event.metaKey || event.ctrlKey)}
                     p={isHighlighted ? "4" : "0"}
                     searchable={!isTimelineTag}
-                    className="shrink-0"
+                    className={cn(styles.tag, "shrink-0")}
+                    title={layout === "queue" ? tagValue : undefined}
                   />
                 );
               })}
@@ -316,7 +327,7 @@ const MenuCardRoot = React.forwardRef<HTMLDivElement, MenuCardRootProps>(
                 { inline: showDescription }
               )}
             >
-              {description}
+              <QueueSearchText>{description}</QueueSearchText>
             </span>
           ) : null}
         </div>

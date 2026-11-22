@@ -11,7 +11,7 @@ export interface BulkSelectionItem {
   human_id: string;
   title: string;
   status: BulkEntityStatus[EntityType];
-  priority?: Priority;
+  priority?: Priority | null;
   assignee?: string | null;
   case_id?: number | null;
 }
@@ -25,11 +25,13 @@ export function useEntityBulkActions<K extends EntityType>(
     currentUser: string | null;
     usersLoading: boolean;
     showSplitCenter: boolean;
+    selectionScope?: string;
   },
 ) {
   const [selection, setSelection] = useState<ReadonlyMap<number, BulkSelectionItem>>(() => new Map());
   const [dialogOpen, setDialogOpen] = useState(false);
   const [reviewing, setReviewing] = useState(false);
+  const [selectionScope, setSelectionScope] = useState(options.selectionScope);
   const queryClient = useQueryClient();
   const config = entityBulkActions[entityType];
   const visibleById = useMemo(() => new Map(visibleItems?.map((item) => [item.id, item])), [visibleItems]);
@@ -43,6 +45,12 @@ export function useEntityBulkActions<K extends EntityType>(
     setReviewing(false);
     setDialogOpen(false);
   };
+  // Reset before rendering the next result set; paging and regular filter
+  // changes leave the committed search scope unchanged.
+  if (selectionScope !== options.selectionScope) {
+    setSelectionScope(options.selectionScope);
+    clear();
+  }
 
   const mutation = useMutation({
     mutationFn: ({ targets, fields }: { targets: BulkSelectionItem[]; fields: BulkUpdateFields<BulkEntityStatus[K]> }) =>

@@ -2,6 +2,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { ArrowLeft, ListChecks, X } from "lucide-react";
 import { Priority } from "@tidemark-security/ux";
 import { Button } from "@/components/buttons/Button";
+import { QueueSearchText } from "@/components/search/QueueSearchHighlight";
 import type { BulkSelectionItem } from "@/hooks/useEntityBulkActions";
 import { bulkEntityLabels } from "@/utils/entityBulkActions";
 import { priorityToUIPriority } from "@/utils/statusHelpers";
@@ -58,10 +59,10 @@ export function BulkSelectionSummary({
         {items.map((item) => (
           <li key={item.id} className="flex items-start gap-3 py-3">
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <span className="text-caption font-caption text-subtext-color">{item.human_id}</span>
-              <span className="break-words text-body-bold font-body-bold">{item.title}</span>
+              <span className="text-caption font-caption text-subtext-color"><QueueSearchText>{item.human_id}</QueueSearchText></span>
+              <span className="break-words text-body-bold font-body-bold"><QueueSearchText>{item.title}</QueueSearchText></span>
               <span className="text-caption font-caption text-subtext-color">
-                {formatEntityStatusLabel(entityType, item.status)} · {item.assignee || "Unassigned"}
+                <QueueSearchText>{formatEntityStatusLabel(entityType, item.status)}</QueueSearchText> · <QueueSearchText>{item.assignee || "Unassigned"}</QueueSearchText>
               </span>
             </div>
             <Priority priority={priorityToUIPriority(item.priority)} size="mini" />

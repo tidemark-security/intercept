@@ -54,12 +54,13 @@ function renderToolbar(
 }
 
 function getModifiedIndicator(button: HTMLElement) {
-  return button.querySelector("[data-modified-indicator='true']");
+  return button.matches("[data-modified-indicator='true']");
 }
 
 describe("EntityFilterToolbar", () => {
-  it("renders compact two-line toolbar values", () => {
-    const { container } = renderToolbar({
+  it("summarizes only active filters and opens the editor on demand", async () => {
+    const user = userEvent.setup();
+    renderToolbar({
       search: "",
       assignee: ["analyst"],
       status: ["NEW", "IN_PROGRESS"],
@@ -72,14 +73,23 @@ describe("EntityFilterToolbar", () => {
       },
     });
 
-    expect(screen.getByRole("button", { name: /assignee analyst/i })).toBeInTheDocument();
+    const trigger = screen.getByRole("button", { name: "Filters, 5 active" });
+    expect(screen.queryByRole("dialog", { name: "Queue filters" })).not.toBeInTheDocument();
+    const chips = within(screen.getByRole("group", { name: "Active filters" }));
+    expect(chips.getByRole("button", { name: "Remove assignee analyst" })).toHaveTextContent("analyst");
+    expect(chips.getByRole("button", { name: "Remove time filter: Last 30 days" })).toHaveTextContent("Last 30 days");
+    expect(chips.getByRole("button", { name: "Remove include tag phishing" })).toHaveTextContent("+ phishing");
+    expect(chips.getByRole("button", { name: "Remove exclude tag noisy" })).toHaveTextContent("− noisy");
+    expect(chips.queryByRole("button", { name: /^Restore default statuses/ })).not.toBeInTheDocument();
+
+    await user.click(trigger);
+    expect(screen.getByRole("button", { name: /^assignee analyst$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /status 2 statuses/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /time last 30 days/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /tags \+2 -1/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /reset clear all/i })).toBeInTheDocument();
-    expect(container.querySelector("[style*='--toolbar-min-item-width']")).toHaveStyle({
-      "--toolbar-min-item-width": "112px",
-    });
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("dialog", { name: "Queue filters" })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 
   it("renders generic actions below the filter controls", () => {
@@ -106,24 +116,30 @@ describe("EntityFilterToolbar", () => {
   it("does not mark the default open statuses as modified", () => {
     renderToolbar();
 
-    const statusButton = screen.getByRole("button", { name: /status 2 statuses/i });
-
-    expect(getModifiedIndicator(statusButton)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Filters" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Active filters" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^clear/i })).not.toBeInTheDocument();
   });
 
-  it("marks status as modified when it differs from the default open statuses", () => {
+  it("lets the status chip restore default open statuses without changing other filters", async () => {
+    const user = userEvent.setup();
+    const onFilterChange = vi.fn();
     renderToolbar({
       search: "",
-      assignee: null,
+      assignee: ["__unassigned__", "analyst"],
       status: ["NEW"],
       includeTags: null,
       excludeTags: null,
       dateRange: null,
-    });
+    }, onFilterChange);
 
-    const statusButton = screen.getByRole("button", { name: /status new/i });
-
-    expect(getModifiedIndicator(statusButton)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Filters, 3 active" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^Restore default statuses/ }));
+    expect(onFilterChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      assignee: ["__unassigned__", "analyst"], status: ["NEW", "IN_PROGRESS"],
+    }));
+    await user.click(screen.getByRole("button", { name: "Remove assignee Unassigned" }));
+    expect(onFilterChange).toHaveBeenLastCalledWith(expect.objectContaining({ assignee: ["analyst"], status: ["NEW"] }));
   });
 
   it("selects every status from the all status parent option", async () => {
@@ -131,6 +147,7 @@ describe("EntityFilterToolbar", () => {
     const onFilterChange = vi.fn();
     renderToolbar(undefined, onFilterChange);
 
+    await user.click(screen.getByRole("button", { name: /^Filters/ }));
     await user.click(screen.getByRole("button", { name: /status 2 statuses/i }));
     await user.click(screen.getByRole("menuitem", { name: /^all$/i }));
 
@@ -168,6 +185,7 @@ describe("EntityFilterToolbar", () => {
       onFilterChange,
     );
 
+    await user.click(screen.getByRole("button", { name: /^Filters/ }));
     await user.click(screen.getByRole("button", { name: /status 2 statuses/i }));
     await user.click(screen.getByRole("menuitem", { name: /all open/i }));
 
@@ -186,6 +204,7 @@ describe("EntityFilterToolbar", () => {
     const onFilterChange = vi.fn();
     renderToolbar(undefined, onFilterChange);
 
+    await user.click(screen.getByRole("button", { name: /^Filters/ }));
     await user.click(screen.getByRole("button", { name: /status 2 statuses/i }));
     await user.click(screen.getByRole("menuitem", { name: /all closed/i }));
 
@@ -228,6 +247,7 @@ describe("EntityFilterToolbar", () => {
       onFilterChange,
     );
 
+    await user.click(screen.getByRole("button", { name: /^Filters/ }));
     await user.click(screen.getByRole("button", { name: /status 7 statuses/i }));
     await user.click(screen.getByRole("menuitem", { name: /all open/i }));
 
@@ -267,6 +287,7 @@ describe("EntityFilterToolbar", () => {
       />,
     );
 
+    await user.click(screen.getByRole("button", { name: /^Filters/ }));
     await user.click(screen.getByRole("button", { name: /status 2 statuses/i }));
     await user.click(screen.getByRole("menuitem", { name: /all closed/i }));
 
@@ -284,6 +305,7 @@ describe("EntityFilterToolbar", () => {
     const user = userEvent.setup();
     renderToolbar();
 
+    await user.click(screen.getByRole("button", { name: /^Filters/ }));
     await user.click(screen.getByRole("button", { name: /status 2 statuses/i }));
 
     expect(screen.queryByRole("menuitem", { name: /clear selection/i })).not.toBeInTheDocument();
@@ -370,7 +392,7 @@ describe("EntityFilterToolbar", () => {
 
     const sortButton = screen.getByRole("button", { name: /sort newest first/i });
 
-    expect(getModifiedIndicator(sortButton)).not.toBeInTheDocument();
+    expect(getModifiedIndicator(sortButton)).toBe(false);
   });
 
   it("marks sort as modified when it differs from newest first", () => {
@@ -406,10 +428,11 @@ describe("EntityFilterToolbar", () => {
 
     const sortButton = screen.getByRole("button", { name: /sort oldest first/i });
 
-    expect(getModifiedIndicator(sortButton)).toBeInTheDocument();
+    expect(getModifiedIndicator(sortButton)).toBe(true);
+    expect(screen.getByRole("button", { name: "Filters" })).toBeInTheDocument();
   });
 
-  it("clears every filter when reset is selected", async () => {
+  it("clears structured filters without resetting search or sort", async () => {
     const user = userEvent.setup();
     const onFilterChange = vi.fn();
     renderToolbar(
@@ -417,6 +440,8 @@ describe("EntityFilterToolbar", () => {
         search: "suspicious",
         assignee: ["analyst"],
         status: ["NEW"],
+        sortBy: "created_at",
+        sortOrder: "asc",
         includeTags: ["phishing"],
         excludeTags: ["noisy"],
         dateRange: {
@@ -428,12 +453,14 @@ describe("EntityFilterToolbar", () => {
       onFilterChange,
     );
 
-    await user.click(screen.getByRole("button", { name: /reset clear all/i }));
+    await user.click(screen.getByRole("button", { name: "Clear" }));
 
     expect(onFilterChange).toHaveBeenCalledWith({
-      search: "",
+      search: "suspicious",
       assignee: null,
       status: null,
+      sortBy: "created_at",
+      sortOrder: "asc",
       includeTags: null,
       excludeTags: null,
       dateRange: null,
@@ -444,6 +471,7 @@ describe("EntityFilterToolbar", () => {
     const user = userEvent.setup();
     renderToolbar();
 
+    await user.click(screen.getByRole("button", { name: /^Filters/ }));
     await user.click(screen.getByRole("button", { name: /tags no tags/i }));
 
     const dropdown = screen.getByText("Tags in current results").closest("[data-radix-popper-content-wrapper]") ?? document.body;

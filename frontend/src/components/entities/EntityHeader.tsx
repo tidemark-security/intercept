@@ -9,6 +9,7 @@ import { IconButton } from "@/components/buttons/IconButton";
 import { LinkButton } from "@/components/timeline/LinkButton";
 import { DropdownMenu, DropdownMenuRoot, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuSeparator } from "@/components/overlays/DropdownMenu";
 import { AssigneeSelector } from "@/components/forms/AssigneeSelector";
+import { QueueSearchText } from "@/components/search/QueueSearchHighlight";
 import { TimelineFilter } from "@/components/timeline/TimelineFilter";
 import { AdaptiveToggleLabel } from "@/components/timeline/AdaptiveToggleLabel";
 import { CaseClosureModal } from "@/components/entities/CaseClosureModal";
@@ -730,7 +731,7 @@ const EntityHeaderRoot = React.forwardRef<
               {id ? (
                 <div className="w-full flex items-center gap-2">
                   <span className="text-heading-2 font-heading-2 text-default-font">
-                    {id}
+                    <QueueSearchText>{id}</QueueSearchText>
                   </span>
                 </div>
               ) : null}
@@ -738,7 +739,7 @@ const EntityHeaderRoot = React.forwardRef<
               {/* Description */}
               {description ? (
                 <div className={isDarkTheme ? "w-full text-body font-body text-brand-primary" : "w-full text-body font-body text-black"}>
-                  {description}
+                  <QueueSearchText>{description}</QueueSearchText>
                 </div>
               ) : null}
             </div>

@@ -91,6 +91,8 @@ export default defineConfig({
     analyzePlugin(),
   ],
   resolve: {
+    // The app's popover and the linked UX menus share one dismissal/focus stack.
+    dedupe: ["@radix-ui/react-dismissable-layer", "@radix-ui/react-focus-scope"],
     alias: [
       ...uxAliases,
       { find: "@", replacement: resolve(__dirname, "./src") },

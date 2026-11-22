@@ -138,6 +138,10 @@ export const queryKeys = {
   },
 } as const;
 
+export function getQueueSearchQueryKey(entityType: EntityType) {
+  return [...queryKeys[entityType].listBase(), "search"] as const;
+}
+
 /**
  * Helper to get the base query key for an entity type.
  * Useful for partial matching in cache operations.

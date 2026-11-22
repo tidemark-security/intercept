@@ -2,21 +2,7 @@
  * Column configuration utilities for three-column layout
  */
 
-import type { ColumnConfig, VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
-import type { Breakpoint } from '@/hooks/useBreakpoint';
-import { getBreakpoint } from '@/hooks/useBreakpoint';
-
-/**
- * Compute initial visible columns based on breakpoint
- * Used to avoid flash on initial page load by computing correct initial state
- */
-export function getInitialVisibleColumns(): VisibleColumns {
-  if (typeof window === 'undefined') return 'left';
-  const breakpoint = getBreakpoint(window.innerWidth);
-  // Keep the list/detail split visible on non-mobile breakpoints, even before
-  // an entity is selected, so the placeholder detail pane remains resizable.
-  return breakpoint === 'mobile' ? 'left' : 'left+center';
-}
+import type { ColumnConfig } from '@/components/layout/ThreeColumnLayout.types';
 
 /**
  * Generate column configuration for responsive layout

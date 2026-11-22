@@ -145,6 +145,7 @@ interface UseURLFiltersResult<T extends AnyFilterState> {
   filters: T;
   /** Update filters (resets page to 1) */
   setFilters: (filters: T) => void;
+  setSearch: (query: string) => void;
   /** Current page number (1-indexed) */
   currentPage: number;
   /** Update current page */
@@ -215,5 +216,15 @@ export function useURLFilters<T extends AnyFilterState>(
     }, { replace: true });
   }, [setSearchParams]);
 
-  return { filters, setFilters, currentPage, setCurrentPage };
+  const setSearch = useCallback((query: string) => {
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous);
+      if (query) next.set('search', query);
+      else next.delete('search');
+      next.delete('page');
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+
+  return { filters, setFilters, setSearch, currentPage, setCurrentPage };
 }

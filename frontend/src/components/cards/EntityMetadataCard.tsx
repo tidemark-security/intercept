@@ -2,6 +2,7 @@
 
 import React from "react";
 import { useNavigate } from "react-router-dom";
+import { QueueSearchText } from "@/components/search/QueueSearchHighlight";
 
 import { PicerlStage } from "@/components/misc/PicerlStage";
 import { Priority } from "@/components/misc/Priority";
@@ -208,7 +209,7 @@ export function EntityMetadataCard({
     <MetaField icon={<User className="h-3.5 w-3.5" />} label={label}>
       <div className="flex min-h-5 w-full min-w-0 items-center">
         <span className="min-w-0 truncate text-caption-bold font-caption-bold text-default-font">
-          {value || "Unassigned"}
+          <QueueSearchText>{value || "Unassigned"}</QueueSearchText>
         </span>
       </div>
     </MetaField>
@@ -252,7 +253,7 @@ export function EntityMetadataCard({
             <span className="flex h-6 min-w-0 max-w-44 flex-none items-center justify-center gap-1 rounded-md border border-solid border-neutral-border bg-neutral-50 px-2">
               <User className="h-3.5 w-3.5 flex-none text-neutral-700" />
               <span className="min-w-0 grow shrink-0 basis-0 truncate text-center text-caption font-caption text-neutral-700">
-                {entity.assignee}
+                <QueueSearchText>{entity.assignee}</QueueSearchText>
               </span>
             </span>
           ) : null}
@@ -324,7 +325,7 @@ export function EntityMetadataCard({
         {sourceValue ? (
           <MetaField icon={<RadioTower className="h-3.5 w-3.5" />} label="Source" className={detailFieldClassName}>
             <span className="min-w-0 truncate text-caption-bold font-caption-bold text-default-font">
-              {sourceValue}
+              <QueueSearchText>{sourceValue}</QueueSearchText>
             </span>
           </MetaField>
         ) : null}

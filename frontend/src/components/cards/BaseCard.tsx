@@ -6,6 +6,7 @@ import { useTheme } from "@/contexts/ThemeContext";
 
 import { cn } from "@/utils/cn";
 import { IconWrapper } from "@/utils/IconWrapper";
+import { QueueSearchText } from "@/components/search/QueueSearchHighlight";
 
 import { Check, Copy, Cpu } from "lucide-react";
 
@@ -229,7 +230,7 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
             ) : null}
             {lineValue ? (
               <span className={cn("min-w-0 flex-1", textClassName)}>
-                {lineValue}
+                <QueueSearchText>{lineValue}</QueueSearchText>
               </span>
             ) : null}
           </div>
@@ -275,7 +276,7 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
                 onClick={isCopyEnabled("title", titleText) ? handleCopy("title", titleText) : undefined}
                 title={isCopyEnabled("title", titleText) ? `Click to copy: ${titleText}` : undefined}
               >
-                {title}
+                <QueueSearchText>{title}</QueueSearchText>
               </span>
             ) : null}
           </div>
@@ -402,7 +403,7 @@ const BaseCardRoot = React.forwardRef<HTMLDivElement, BaseCardRootProps>(
                     {item.label}
                   </span>
                   <span className="line-clamp-1 break-words text-caption font-caption text-default-font">
-                    {item.value}
+                    <QueueSearchText>{item.value}</QueueSearchText>
                   </span>
                 </div>
               </div>

@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { useParams } from 'react-router-dom';
+import { useLocation, useParams } from 'react-router-dom';
+import { normalizeQueueSearch } from "@/utils/queueSearch";
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
@@ -47,6 +48,8 @@ import { AiChat } from "@/components/ai";
  * @returns The Case Detail page component
  */
 function CaseDetailPage() {
+  const { search } = useLocation();
+  const searchQuery = normalizeQueueSearch(new URLSearchParams(search).get("search") ?? "");
   const { humanId } = useParams<{ humanId: string }>();
   const navigate = useViewTransitionNavigate();
   const { user, isAuditor } = useSession();
@@ -422,7 +425,10 @@ function CaseDetailPage() {
   }, [selectedCaseId, caseDetail?.status, updateCaseMutation, handleUnassign]);
 
   const handleBackToList = () => {
-    navigate('/cases');
+    const params = new URLSearchParams(search);
+    params.delete("scrollTo");
+    const query = params.toString();
+    navigate(query ? `/cases?${query}` : '/cases');
   };
 
   // Custom column config for Case Detail page - standardized left column width
@@ -465,6 +471,7 @@ function CaseDetailPage() {
   return (
     <DefaultPageLayout priority={caseDetail?.priority || undefined}>
       <ThreeColumnLayout
+        floatingPanes={{ mode: "narrow", labels: { left: "AI Assistant pane", center: "Case detail" } }}
         leftColumn={
           <AiChat
             contextType="case"
@@ -477,6 +484,7 @@ function CaseDetailPage() {
         centerColumn={
           <div className="relative flex h-full w-full">
             <UnifiedTimeline
+              searchQuery={searchQuery}
               entityDetail={caseDetail ?? null}
               entityType="case"
               selectedEntityId={selectedCaseId}

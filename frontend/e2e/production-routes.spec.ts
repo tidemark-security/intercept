@@ -559,11 +559,16 @@ for (const { resource, sample, prefix } of assigneeFilterRoutes) {
 
     await page.setViewportSize({ width: 1640, height: 900 });
     await page.goto(`/${resource}`);
+    const filtersButton = page.getByRole("button", { name: /^Filters/ });
+    const filterPanel = page.getByRole("dialog", { name: "Queue filters" });
     const trigger = page.getByRole("button", { name: /^Assignee/ });
     const entityLinks = page.locator(`a[href^="/${resource}/${prefix}-"]`);
     const choose = async (name: string) => {
       const option = page.getByRole("menuitem", { name, exact: true });
-      if (!await option.isVisible()) await trigger.click();
+      if (!await option.isVisible()) {
+        if (!await filterPanel.isVisible()) await filtersButton.click();
+        await trigger.click();
+      }
       await option.click();
     };
     const expectItems = async (...titles: string[]) => {
@@ -607,8 +612,76 @@ for (const { resource, sample, prefix } of assigneeFilterRoutes) {
     const actual = new URL((await request).url()).searchParams;
     expect(actual.getAll("assignee").sort()).toEqual(["__unassigned__", analystA.username].sort());
     for (const [key, value] of filters) expect(actual.get(key)).toBe(value);
+
+    await expect(filtersButton).toHaveAccessibleName("Filters, 6 active");
+    await page.getByRole("button", { name: "Remove assignee Unassigned", exact: true }).click();
+    await expect(filtersButton).toHaveAccessibleName("Filters, 5 active");
+    await expect(page).toHaveURL((url) => url.searchParams.get("assignee") === analystA.username);
+    await expect(page).toHaveURL((url) => url.searchParams.get("include_tags") === "incident");
   });
 }
+
+test("queue filters float over the compact list with independent sorting and clear controls", async ({ page }) => {
+  await installProductionApiMocks(page);
+  await page.route(/\/api\/v1\/tasks(?:\?|$)/, (route) =>
+    route.fulfill(jsonResponse({ ...emptyPage, items: [sampleTask], total: 1, pages: 1 })),
+  );
+  await page.addInitScript(() => localStorage.setItem("intercept-ai-pane-width", "320"));
+  await page.setViewportSize({ width: 1372, height: 900 });
+  await page.goto("/tasks");
+
+  const filters = page.getByRole("button", { name: /^Filters/ });
+  const panel = page.getByRole("dialog", { name: "Queue filters" });
+  const sort = page.getByRole("button", { name: /^Sort/ });
+  const card = page.getByRole("link", { name: /Production smoke task/ });
+  await expect(card).toBeVisible();
+  await expect(filters).toHaveAccessibleName("Filters");
+  const originalY = (await card.boundingBox())!.y;
+
+  await sort.click();
+  await page.getByRole("menuitem", { name: "Oldest first", exact: true }).click();
+  await expect(sort).toHaveAccessibleName("Sort Oldest first");
+  await filters.press("Enter");
+  await expect(panel).toBeVisible();
+  expect((await panel.boundingBox())!.width).toBeLessThanOrEqual(320);
+  expect((await card.boundingBox())!.y).toBeCloseTo(originalY, 0);
+
+  await panel.getByRole("button", { name: "Time All time" }).click();
+  await page.getByText("Last 7 days", { exact: true }).click();
+  await expect(panel.getByRole("button", { name: "Time Last 7 days" })).toBeVisible();
+
+  await panel.getByRole("button", { name: "Tags No tags" }).click();
+  const tagInput = page.getByPlaceholder("Add include tag");
+  await tagInput.fill("incident");
+  await tagInput.press("Enter");
+  await expect(page).toHaveURL((url) => url.searchParams.get("include_tags") === "incident");
+  await tagInput.press("Escape");
+  await expect(panel).toBeVisible();
+
+  await panel.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(filters).toBeFocused();
+  await expect(filters).toHaveAccessibleName("Filters, 2 active");
+  await page.getByRole("button", { name: "Remove include tag incident", exact: true }).click();
+  await expect(filters).toHaveAccessibleName("Filters, 1 active");
+  await filters.click();
+  await panel.getByRole("button", { name: "Clear all", exact: true }).click();
+  await expect(filters).toHaveAccessibleName("Filters");
+  await expect(sort).toHaveAccessibleName("Sort Oldest first");
+  await expect(page).toHaveURL((url) => url.searchParams.get("sort_order") === "asc" && !url.searchParams.has("timeframe"));
+  await page.keyboard.press("Escape");
+  await expect(panel).toBeHidden();
+  await expect(filters).toBeFocused();
+
+  for (const width of [360, 800, 1920]) {
+    await page.setViewportSize({ width, height: 900 });
+    await filters.click();
+    await expect(panel).toBeVisible();
+    const bounds = (await panel.boundingBox())!;
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
+    await panel.getByRole("button", { name: "Done", exact: true }).click();
+  }
+});
 
 const wideSplitRoutes = [
   { name: "Alerts", path: "/alerts/ALT-0000001", entity: "alert", railLabel: "Resize alert list", list: "alerts", item: sampleAlert },
@@ -1166,6 +1239,170 @@ test("alert card expansion preferences are independent and follow the analyst ac
   await expect(collapseTriage).toHaveAttribute("aria-expanded", "true");
 });
 
+const floatingQueues = [
+  { entity: "Alert", resource: "alerts", sample: sampleAlert, prefix: "ALT" },
+  { entity: "Case", resource: "cases", sample: sampleCase, prefix: "CAS" },
+  { entity: "Task", resource: "tasks", sample: sampleTask, prefix: "TSK" },
+] as const;
+
+for (const { entity, resource, sample } of floatingQueues) {
+  test(`${resource} searches the current queue and highlights matching list and detail text`, async ({ page }) => {
+    await installProductionApiMocks(page);
+    const oldRow = { ...sample, title: "Normal queue item" };
+    const matchingRow = { ...sample, title: "Quartz detection", tags: ["quartz-tag"] };
+    const detail = {
+      ...matchingRow,
+      description: "**Quartz** was observed",
+      timeline_items: {
+        "note-1": { id: "note-1", type: "note", timestamp: now, created_at: now, description: "Review **Quartz** in the note" },
+      },
+    };
+    await page.route(new RegExp(`/api/v1/${resource}(?:\\?|$)`), (route) =>
+      route.fulfill(jsonResponse({ ...emptyPage, items: [oldRow], total: 1, pages: 1 })));
+    await page.route(new RegExp(`/api/v1/${resource}/(?:1|${sample.human_id})(?:\\?|$)`), (route) =>
+      route.fulfill(jsonResponse(detail)));
+    await page.route("**/api/v1/search/queue?*", (route) =>
+      route.fulfill(jsonResponse({ results: [matchingRow], total: 1, skip: 0, limit: 50 })));
+    await page.addInitScript(() => localStorage.setItem("intercept-ai-pane-width", "320"));
+    await page.emulateMedia({ colorScheme: resource === "cases" ? "light" : "dark" });
+    await page.setViewportSize({ width: 1372, height: 900 });
+    const initialFilters = "assignee=__unassigned__%2Canalyst&include_tags=quartz-tag&exclude_tags=noise&sort_by=updated_at&sort_order=asc&page=2";
+    await page.goto(`/${resource}?${initialFilters}`);
+
+    const search = page.getByRole("textbox", { name: "Search this queue" });
+    const filter = page.getByRole("button", { name: /^Filters/ });
+    const order = page.getByRole("button", { name: /^Sort/ });
+    const checkbox = page.getByRole("checkbox", { name: `Select ${sample.human_id}` });
+    await checkbox.press("Space");
+    await expect(checkbox).toBeChecked();
+    const [inputBox, filterBox, sortBox] = await Promise.all([search.boundingBox(), filter.boundingBox(), order.boundingBox()]);
+    expect(inputBox!.x).toBeGreaterThan(filterBox!.x + filterBox!.width);
+    expect(inputBox!.x + inputBox!.width).toBeLessThan(sortBox!.x);
+
+    const request = page.waitForRequest((req) => new URL(req.url()).pathname === "/api/v1/search/queue");
+    await search.fill("Quartz");
+    const args = new URL((await request).url()).searchParams;
+    expect(args.get("entity_type")).toBe(entity.toLowerCase());
+    expect(args.getAll("assignee").sort()).toEqual(["__unassigned__", "analyst"]);
+    expect(args.getAll("status")).toEqual([sample.status, "IN_PROGRESS"]);
+    expect(args.get("include_tags")).toBe("quartz-tag");
+    expect(args.get("exclude_tags")).toBe("noise");
+    expect(args.get("sort_by")).toBe("updated_at");
+    expect(args.get("sort_order")).toBe("asc");
+    expect(args.get("skip")).toBe("0");
+    expect(args.has("start_date")).toBe(false);
+    const row = page.locator(`a[href^="/${resource}/${sample.human_id}"]`);
+    await expect(row.locator("[data-search-highlight]").first()).toHaveText("Quartz");
+    await expect(checkbox).not.toBeChecked();
+    await expect(row).not.toContainText("observed");
+
+    await page.setViewportSize({ width: 390, height: 900 });
+    await row.click();
+    const timeline = page.getByLabel(`${entity.toLowerCase()} timeline content`);
+    await expect(timeline.locator("[data-search-highlight]").filter({ hasText: "Quartz" }).first()).toBeVisible();
+    await expect(timeline.locator("strong [data-search-highlight]").filter({ hasText: "Quartz" })).toHaveCount(2);
+    await expect(page).toHaveURL((url) => url.searchParams.get("search") === "Quartz");
+    await page.getByRole("button", { name: "Back to list", exact: true }).click();
+    await expect(search).toHaveValue("Quartz");
+    await page.getByRole("button", { name: "Clear search" }).click();
+    await expect(page).toHaveURL((url) => !url.searchParams.has("search") && url.searchParams.get("sort_by") === "updated_at");
+    await expect(row).toHaveText(/Normal queue item/);
+    await expect(row.locator("[data-search-highlight]")).toHaveCount(0);
+  });
+}
+
+test("a late queue search cannot replace newer results", async ({ page }) => {
+  await installProductionApiMocks(page);
+  let releaseSlow!: () => void;
+  const slow = new Promise<void>((resolve) => { releaseSlow = resolve; });
+  await page.route("**/api/v1/search/queue?*", async (route) => {
+    const query = new URL(route.request().url()).searchParams.get("q");
+    if (query === "older") await slow;
+    await route.fulfill(jsonResponse({
+      results: [{ ...sampleAlert, title: query === "older" ? "Older answer" : "Newest answer" }],
+      total: 1, skip: 0, limit: 50,
+    })).catch(() => { /* A superseded request can already be cancelled. */ });
+  });
+  await page.goto("/alerts");
+  try {
+    const search = page.getByRole("textbox", { name: "Search this queue" });
+    const previous = page.waitForRequest((req) => new URL(req.url()).searchParams.get("q") === "older");
+    await search.fill("older");
+    await previous;
+    await expect(page.getByRole("status").filter({ hasText: "Searching…" })).toBeVisible();
+    await search.fill("newest");
+    await expect(page.getByRole("link", { name: /Newest answer/ })).toBeVisible();
+  } finally {
+    releaseSlow();
+  }
+  await expect(page.getByRole("link", { name: /Newest answer/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /Older answer/ })).toHaveCount(0);
+});
+
+test("a failed queue search can retry without showing unfiltered rows", async ({ page }) => {
+  await installProductionApiMocks(page);
+  let attempts = 0;
+  await page.route("**/api/v1/search/queue?*", (route) => {
+    attempts++;
+    return route.fulfill(attempts === 1
+      ? { status: 503, json: { detail: "Temporarily unavailable" } }
+      : jsonResponse({ results: [], total: 0, skip: 0, limit: 50 }));
+  });
+  await page.goto("/alerts?search=no-match");
+  await expect(page.getByRole("alert")).toContainText("Couldn’t search this queue.");
+  await expect(page.getByRole("link", { name: /Production smoke alert/ })).toHaveCount(0);
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByText("No matching results", { exact: true })).toBeVisible();
+  expect(attempts).toBe(2);
+});
+
+async function installFloatingQueueMocks(page: Page, { resource, sample, prefix }: typeof floatingQueues[number]) {
+  await installProductionApiMocks(page);
+  const second = { ...sample, id: 2, human_id: `${prefix}-0000002`, title: `Second ${resource} preview` };
+  await page.route(new RegExp(`/api/v1/${resource}(?:\\?|$)`), (route) =>
+    route.fulfill(jsonResponse({ ...emptyPage, items: [sample, second], total: 2, pages: 1 })),
+  );
+  await page.route(new RegExp(`/api/v1/${resource}/2(?:\\?|$)`), (route) =>
+    route.fulfill(jsonResponse(second)),
+  );
+  return second;
+}
+
+const paneScale = (pane: Locator) => pane.evaluate((el) => el.getBoundingClientRect().width / el.clientWidth);
+
+const paneActivator = (pane: Locator) => pane.getByRole("button", { name: /^Bring .* to front$/ });
+async function activateFloatingPane(pane: Locator, edge: "left" | "right") {
+  const button = paneActivator(pane);
+  const bounds = (await button.boundingBox())!;
+  await button.click({ position: { x: edge === "left" ? 30 : bounds.width - 30, y: 100 } });
+}
+
+test("floating panes require 1000 ms of continuous hover before changing the stack", async ({ page }) => {
+  await installFloatingQueueMocks(page, floatingQueues[0]);
+  await page.setViewportSize({ width: 1000, height: 900 });
+  await page.goto("/alerts/ALT-0000001");
+  const list = page.getByRole("region", { name: "Alert list", exact: true });
+  const button = paneActivator(list);
+  await expect(button).toBeVisible();
+  const edge = (await button.boundingBox())!;
+  const now = new Date();
+  await page.clock.install({ time: now });
+  await page.clock.pauseAt(new Date(now.getTime() + 60_000));
+
+  const enter = () => page.mouse.move(edge.x + 30, edge.y + 100);
+  await enter();
+  await page.clock.runFor(600);
+  await page.mouse.move(0, 0);
+  await page.clock.runFor(1000);
+  await expect(button).toBeVisible();
+
+  await enter();
+  await page.clock.runFor(999);
+  await expect(button).toBeVisible();
+  await page.clock.runFor(1);
+  await expect(button).toHaveCount(0);
+});
+
 test("the case timeline fits narrow screens with wide emails and attachments", async ({ page }) => {
   const longLine = "mailbody".repeat(25);
   const attachmentName = `${"attachment".repeat(16)}.pdf`;
@@ -1205,49 +1442,240 @@ test("the case timeline fits narrow screens with wide emails and attachments", a
   }
 });
 
-test("narrow alerts view keeps the queue and detail reachable", async ({ page }) => {
-  await installProductionApiMocks(page);
-  await page.setViewportSize({ width: 1000, height: 900 });
-  await page.goto("/alerts");
-  const alertLinks = page.locator('a[href^="/alerts/ALT-"]');
-  await alertLinks.first().click();
+for (const { entity, path } of [
+  { entity: "Case", path: "/cases/CAS-0000001" },
+  { entity: "Task", path: "/tasks/TSK-0000001" },
+]) {
+  test(`the narrow ${entity} detail and AI assistant float over each other`, async ({ page }) => {
+    await installProductionApiMocks(page);
+    await page.setViewportSize({ width: 1000, height: 900 });
+    await page.goto(path);
 
-  const list = page.getByRole("region", { name: "Alert list", exact: true });
-  const detail = page.getByRole("region", { name: "Alert detail", exact: true });
-  const paneScale = (pane: Locator) => pane.evaluate((el) => el.getBoundingClientRect().width / el.clientWidth);
-  await expect(detail).toBeFocused();
-  await expect.poll(() => paneScale(list)).toBeCloseTo(0.98, 2);
+    const assistant = page.getByRole("region", { name: "AI Assistant pane", exact: true });
+    const detail = page.getByRole("region", { name: `${entity} detail`, exact: true });
+    const rail = page.getByRole("separator", { name: "Resize assistant pane" });
+    const timeline = page.getByLabel(`${entity.toLowerCase()} timeline content`);
+    await expect(timeline).toBeVisible();
+    await expect(rail).toHaveCount(0);
+    await expect.poll(() => paneScale(assistant)).toBeCloseTo(0.98, 2);
+    await expect.poll(() => paneScale(detail)).toBeCloseTo(1, 2);
 
-  // Each pane retains a reachable edge when behind the other pane.
-  await list.hover({ position: { x: 30, y: 100 } });
-  await expect.poll(() => paneScale(list)).toBeCloseTo(1, 2);
-  await expect.poll(() => paneScale(detail)).toBeCloseTo(0.98, 2);
-  const detailBounds = await detail.boundingBox();
-  if (!detailBounds) throw new Error("Expected the detail edge to remain visible");
-  await detail.hover({ position: { x: detailBounds.width - 30, y: 100 } });
-  await expect.poll(() => paneScale(detail)).toBeCloseTo(1, 2);
+    const timelineWidth = await detail.evaluate((element) => element.clientWidth);
+    await expect(assistant.getByRole("textbox", { name: /Ask me anything/ })).toHaveCount(0);
+    await activateFloatingPane(assistant, "left");
+    await expect.poll(() => paneScale(assistant)).toBeCloseTo(1, 2);
+    await expect.poll(() => paneScale(detail)).toBeCloseTo(0.98, 2);
+    expect(await detail.evaluate((element) => element.clientWidth)).toBe(timelineWidth);
+    await activateFloatingPane(detail, "right");
+    await expect.poll(() => paneScale(detail)).toBeCloseTo(1, 2);
 
-  const nextAlert = list.getByRole("link", { name: /Second smoke alert/ });
-  await nextAlert.focus();
-  await expect.poll(() => paneScale(list)).toBeCloseTo(1, 2);
-  await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/\/alerts\/ALT-0000002$/);
-  await expect(detail).toBeFocused();
-  await expect.poll(() => paneScale(detail)).toBeCloseTo(1, 2);
+    await paneActivator(assistant).focus();
+    await expect.poll(() => paneScale(assistant)).toBeCloseTo(0.98, 2);
+    await page.keyboard.press("Enter");
+    await expect(assistant).toBeFocused();
+    await expect.poll(() => paneScale(assistant)).toBeCloseTo(1, 2);
+    await page.setViewportSize({ width: 800, height: 900 });
+    await expect(assistant).toBeVisible();
+    await expect(detail).toBeVisible();
 
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await expect(list).toBeVisible();
-  await expect(detail).toBeVisible();
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await expect(rail).toBeVisible();
+    await expect(assistant).toHaveCount(0);
+    await expect(timeline).toBeVisible();
 
-  await page.setViewportSize({ width: 700, height: 900 });
-  await expect(list).toHaveCount(0);
-  await expect(alertLinks).toHaveCount(0);
-  await expect(page.getByLabel("alert timeline content")).toBeVisible();
+    await page.setViewportSize({ width: 700, height: 900 });
+    await page.reload();
+    await expect(timeline).toBeVisible();
+    await expect(assistant).toHaveCount(0);
+    await expect(rail).toHaveCount(0);
+  });
+}
 
-  await page.setViewportSize({ width: 1920, height: 900 });
-  await expect(alertLinks.first()).toBeVisible();
-  await expect(page.getByLabel("alert timeline content")).toBeVisible();
-  await expect(list).toHaveCount(0);
+for (const queue of floatingQueues) {
+  const { entity, resource, sample, prefix } = queue;
+  test(`the ${resource} queue fits at the minimum split width`, async ({ page }) => {
+    const title = `${sample.title}: ${"long-title".repeat(12)}`;
+    const assignee = "on-call-investigator-with-a-long-username";
+    const tags = ["needs-review", "tag-with-an-unbroken-identifier".repeat(3), "follow-up"];
+    await installFloatingQueueMocks(page, {
+      ...queue, sample: { ...sample, title, tags, assignee },
+    });
+    await page.emulateMedia({ colorScheme: resource === "cases" ? "light" : "dark" });
+    await page.addInitScript(() => localStorage.setItem("intercept-ai-pane-width", "320"));
+    await page.setViewportSize({ width: 1372, height: 900 });
+    await page.goto(`/${resource}`);
+
+    const link = page.getByRole("link", { name: new RegExp(sample.title) });
+    const rail = page.getByRole("separator", { name: `Resize ${entity.toLowerCase()} list` });
+    await expect(rail).toHaveAttribute("aria-valuenow", "320");
+    const scrollArea = page.getByRole("checkbox", { name: `Select visible ${resource}` })
+      .locator("xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' overflow-auto ')][1]");
+    const status = link.locator('[data-queue-indicator="status"]');
+    const priority = link.locator('[data-queue-indicator="priority"]');
+    await expect(status).toHaveText(resource === "tasks" ? "TDO" : "NEW", { useInnerText: true });
+    await expect(priority).toHaveText("P4", { useInnerText: true });
+    await expect(link.getByTitle(title, { exact: true })).toBeVisible();
+    await expect(link.getByTitle(assignee, { exact: true })).toBeVisible();
+    await expect(link.getByTitle(/^2026-01-01/)).toBeVisible();
+    const rowCheckbox = page.getByRole("checkbox", { name: `Select ${sample.human_id}` });
+    await rowCheckbox.press("Space");
+    await expect(rowCheckbox).toBeChecked();
+    await rowCheckbox.press("Space");
+    await expect(rowCheckbox).not.toBeChecked();
+
+    const expectQueueToFit = async () => {
+      await expect.poll(() => scrollArea.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+      const cardBounds = (await link.boundingBox())!;
+      for (const item of [status, priority]) {
+        const bounds = (await item.boundingBox({ timeout: 5000 }))!;
+        expect(bounds.x + bounds.width).toBeLessThan(cardBounds.x + cardBounds.width);
+      }
+    };
+
+    await expectQueueToFit();
+    const lastTagAction = link.getByRole("button", { name: "Include follow-up", exact: true });
+    const lastTagBounds = (await lastTagAction.boundingBox({ timeout: 5000 }))!;
+    const cardBounds = (await link.boundingBox())!;
+    expect(lastTagBounds.x + lastTagBounds.width).toBeLessThan(cardBounds.x + cardBounds.width);
+
+    for (const width of [360, 800, 1920]) {
+      await page.setViewportSize({ width, height: 900 });
+      if (width === 1920) await rail.press("End");
+      await expectQueueToFit();
+    }
+  });
+
+  test(`the ${resource} placeholder logo fits the exposed strip only in floating mode`, async ({ page }) => {
+    await installFloatingQueueMocks(page, queue);
+    await page.setViewportSize({ width: 1131, height: 1253 });
+    await page.goto(`/${resource}`);
+
+    const list = page.getByRole("region", { name: `${entity} list`, exact: true });
+    const detail = page.getByRole("region", { name: `${entity} detail`, exact: true });
+    const logo = page.getByRole("img", { name: "Intercept Logo" });
+    for (const viewport of [{ width: 1131, height: 1253 }, { width: 800, height: 480 }]) {
+      await page.setViewportSize(viewport);
+      await expect(logo).toHaveCSS("rotate", "90deg");
+      await expect.poll(async () => {
+        const [image, queuePane, detailPane] = await Promise.all([
+          logo.boundingBox(), list.boundingBox(), detail.boundingBox(),
+        ]);
+        return !!(image && queuePane && detailPane && image.height > image.width &&
+          image.x > queuePane.x + queuePane.width && image.x + image.width < detailPane.x + detailPane.width &&
+          image.y > detailPane.y && image.y + image.height < detailPane.y + detailPane.height);
+      }).toBe(true);
+    }
+
+    await page.setViewportSize({ width: 1920, height: 900 });
+    await expect(logo).toHaveCSS("rotate", "none");
+    await page.setViewportSize({ width: 700, height: 900 });
+    await expect(logo).toHaveCount(0);
+  });
+
+  test(`narrow ${resource} view keeps the queue and detail reachable`, async ({ page }) => {
+    const second = await installFloatingQueueMocks(page, queue);
+    const timeline = page.getByLabel(`${entity.toLowerCase()} timeline content`);
+    const itemLinks = page.locator(`a[href^="/${resource}/${prefix}-"]`);
+    await page.setViewportSize({ width: 1000, height: 900 });
+    await page.goto(`/${resource}?sort_by=updated_at`);
+
+    const list = page.getByRole("region", { name: `${entity} list`, exact: true });
+    const detail = page.getByRole("region", { name: `${entity} detail`, exact: true });
+    const placeholder = detail.getByRole("img", { name: "Intercept Logo" });
+    await expect(placeholder).toBeVisible();
+    await expect.poll(() => paneScale(detail)).toBeCloseTo(0.98, 2);
+    await expect.poll(() => paneScale(list)).toBeCloseTo(1, 2);
+    const placeholderBounds = (await detail.boundingBox())!;
+    await detail.hover({ position: { x: placeholderBounds.width - 30, y: 100 } });
+    expect(await paneScale(detail)).toBeCloseTo(0.98, 2);
+    const initialQueue = (await list.elementHandle())!;
+    const dimensions = await list.evaluate((node) => [node.clientWidth, node.clientHeight]);
+
+    await itemLinks.first().click();
+    await expect(detail).toBeFocused();
+    await expect.poll(() => paneScale(list)).toBeCloseTo(0.98, 2);
+    await expect(placeholder).toHaveCount(0);
+    expect(await list.evaluate((node, initial) => node === initial, initialQueue)).toBe(true);
+    expect(await list.evaluate((node) => [node.clientWidth, node.clientHeight])).toEqual(dimensions);
+    await initialQueue.dispose();
+
+    // Clicking either exposed edge brings that pane forward immediately.
+    await activateFloatingPane(list, "left");
+    await expect.poll(() => paneScale(list)).toBeCloseTo(1, 2);
+    await expect.poll(() => paneScale(detail)).toBeCloseTo(0.98, 2);
+    await activateFloatingPane(detail, "right");
+    await expect.poll(() => paneScale(detail)).toBeCloseTo(1, 2);
+
+    await paneActivator(list).press("Space");
+    await expect(list).toBeFocused();
+    await list.getByRole("link", { name: new RegExp(second.title) }).focus();
+    await expect.poll(() => paneScale(list)).toBeCloseTo(1, 2);
+    await page.keyboard.press("Enter");
+    const previewPath = resource === "alerts" ? `/alerts/${second.human_id}` : `/${resource}`;
+    await expect(page).toHaveURL((url) => url.pathname === previewPath && url.searchParams.get("sort_by") === "updated_at");
+    await expect(detail).toBeFocused();
+    await expect(detail.getByText(second.title, { exact: true })).toBeVisible();
+
+    await page.setViewportSize({ width: 800, height: 900 });
+    await expect(list).toBeVisible();
+    await expect(detail).toBeVisible();
+
+    if (resource !== "alerts") {
+      // The floating preview doesn't replace the full-detail route.
+      await detail.getByRole("button", { name: `View ${entity}`, exact: true }).click();
+      await expect(page).toHaveURL((url) => url.pathname === `/${resource}/${second.human_id}`);
+      await page.goto(`/${resource}`);
+      await itemLinks.first().dblclick();
+      await expect(page).toHaveURL((url) => url.pathname === `/${resource}/${sample.human_id}`);
+      await page.setViewportSize({ width: 700, height: 900 });
+      await page.goto(`/${resource}`);
+      await itemLinks.first().click();
+      await expect(page).toHaveURL((url) => url.pathname === `/${resource}/${sample.human_id}`);
+      await expect(timeline).toBeVisible();
+      await expect(list).toHaveCount(0);
+      return;
+    }
+
+    await page.setViewportSize({ width: 700, height: 900 });
+    await expect(list).toHaveCount(0);
+    await expect(itemLinks).toHaveCount(0);
+    await expect(timeline).toBeVisible();
+
+    await page.setViewportSize({ width: 1920, height: 900 });
+    await expect(itemLinks.first()).toBeVisible();
+    await expect(timeline).toBeVisible();
+    await expect(list).toHaveCount(0);
+  });
+
+  test(`the narrow ${resource} overlay can bring the selection summary and list to the front`, async ({ page }) => {
+    await installFloatingQueueMocks(page, queue);
+    await page.setViewportSize({ width: 1000, height: 900 });
+    await page.goto(`/${resource}`);
+    await page.getByRole("checkbox", { name: `Select visible ${resource}` }).press("Space");
+    const list = page.getByRole("region", { name: `${entity} list`, exact: true });
+    const summary = page.getByRole("region", { name: "Selection summary" });
+    await list.getByRole("button", { name: "Review selection" }).click();
+    await expect(page.getByRole("region", { name: `${entity} detail`, exact: true })).toBeFocused();
+    await expect(summary.getByRole("heading")).toHaveText(`2 ${resource} selected`);
+    await summary.getByRole("button", { name: "Back to list" }).click();
+    await expect(list).toBeFocused();
+    await expect(list.getByRole("checkbox", { name: `Select visible ${resource}` })).toBeChecked();
+  });
+}
+
+test.describe("floating queue on touch", () => {
+  test.use({ hasTouch: true });
+
+  test("the exposed case queue edge brings the list back", async ({ page }) => {
+    await installFloatingQueueMocks(page, floatingQueues[1]);
+    await page.setViewportSize({ width: 800, height: 900 });
+    await page.goto("/cases");
+    await page.getByRole("link", { name: new RegExp(sampleCase.title) }).tap();
+    const list = page.getByRole("region", { name: "Case list", exact: true });
+    await expect.poll(() => paneScale(list)).toBeCloseTo(0.98, 2);
+    await paneActivator(list).tap({ position: { x: 30, y: 100 } });
+    await expect.poll(() => paneScale(list)).toBeCloseTo(1, 2);
+  });
 });
 
 test("alert Bulk Action sends one update with status, assignee, suggested tag and note", async ({ page }) => {
@@ -1401,21 +1829,6 @@ test("the shared selection summary keeps checked tasks across pages and works on
   await expect(summary.getByText(second.title)).toBeVisible();
   await summary.getByRole("button", { name: "Back to list" }).click();
   await expect(page.getByRole("checkbox", { name: `Select ${second.human_id}` })).toBeChecked();
-});
-
-test("the narrow alerts overlay can bring the selection summary and list to the front", async ({ page }) => {
-  await installProductionApiMocks(page);
-  await page.setViewportSize({ width: 1000, height: 900 });
-  await page.goto("/alerts/ALT-0000001");
-  const list = page.getByRole("region", { name: "Alert list", exact: true });
-  await list.getByRole("checkbox", { name: "Select visible alerts" }).press("Space");
-  const summary = page.getByRole("region", { name: "Selection summary" });
-  await page.getByRole("button", { name: "Review selection" }).click();
-  await expect(page.getByRole("region", { name: "Alert detail", exact: true })).toBeFocused();
-  await expect(summary.getByRole("heading")).toHaveText("2 alerts selected");
-  await summary.getByRole("button", { name: "Back to list" }).click();
-  await expect(list).toBeFocused();
-  await expect(list.getByRole("checkbox", { name: "Select visible alerts" })).toBeChecked();
 });
 
 test("MCP consent keeps its capability out of request URLs and posts FastMCP fields", async ({ page, baseURL }) => {

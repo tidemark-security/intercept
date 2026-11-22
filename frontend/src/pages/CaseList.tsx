@@ -1,14 +1,13 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { useLocation } from "react-router-dom";
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
-import { ThreeColumnLayout } from "@/components/layout/ThreeColumnLayout";
+import { EntityQueueLayout } from "@/components/layout/EntityQueueLayout";
 import { getPersistedWidth } from "@/components/layout/ColumnRail";
 import { EntityList } from "@/components/data-display/EntityList";
 import { BulkActionModal } from "@/components/entities/BulkActionModal";
-import { BulkSelectionSummary, BulkSelectionToolbar } from "@/components/entities/BulkSelection";
 import { useEntityBulkActions } from "@/hooks/useEntityBulkActions";
 import { Button } from "@/components/buttons/Button";
 import { CreateCaseModal } from "@/components/entities/CreateCaseModal";
@@ -24,12 +23,12 @@ import { useBreakpoint } from "@/hooks/useBreakpoint";
 import { canShowSplitPaneCenter, useViewportWidth } from "@/hooks/useSplitPaneCenter";
 import { useURLFilters } from "@/hooks/useURLFilters";
 import { toEntityListQueryFilters } from "@/utils/entityListQueryFilters";
+import { normalizeQueueSearch } from "@/utils/queueSearch";
+import { useQueueSearch, type QueueListRow } from "@/hooks/useQueueSearch";
 import { useTagFilterClick } from "@/hooks/useTagFilterClick";
-import { getColumnConfig, getInitialVisibleColumns } from "@/utils/columnConfig";
 import type { CaseStatus } from "@/types/generated/models/CaseStatus";
 import type { CaseRead } from "@/types/generated/models/CaseRead";
 import type { CaseFilterState } from "@/types/filters";
-import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { caseStatusToUIState, priorityToUIPriority } from "@/utils/statusHelpers";
 import { CASE_STATUS_OPTIONS } from "@/utils/statusLabels";
 import { Plus } from "lucide-react";
@@ -65,7 +64,7 @@ const CASE_SORT_OPTIONS = [
  * - Paginated case list with filters
  * - Read-only timeline preview in center column (when case selected)
  * - On mobile: tapping a case navigates to detail page
- * - On non-mobile: case list always visible with side-by-side preview
+ * - On non-mobile: preview beside or floating over the case list
  * 
  * @returns The Cases List page component
  */
@@ -78,7 +77,7 @@ function CasesListPage() {
   const currentUser = user?.username || null;
 
   // UI state for filtering - synced with URL query params
-  const { filters, setFilters, currentPage, setCurrentPage } = useURLFilters<CaseFilterState>({
+  const { filters, setFilters, setSearch, currentPage, setCurrentPage } = useURLFilters<CaseFilterState>({
     defaults: {
       search: "",
       assignee: null,
@@ -95,8 +94,6 @@ function CasesListPage() {
   const [isCreateCaseModalOpen, setIsCreateCaseModalOpen] = useState(false);
   const [createCaseError, setCreateCaseError] = useState<string | null>(null);
 
-  // Column visibility state
-  const [visibleColumns, setVisibleColumns] = useState<VisibleColumns>(() => getInitialVisibleColumns());
   const [caseListWidth, setCaseListWidth] = useState<number>(() => getPersistedWidth(768));
 
   // Reactive breakpoint state
@@ -104,33 +101,23 @@ function CasesListPage() {
   const viewportWidth = useViewportWidth();
   const showSplitCenter = canShowSplitPaneCenter(viewportWidth, caseListWidth, breakpoint);
 
-  // Automatically adjust visible columns based on selection and screen size
-  useEffect(() => {
-    if (!selectedCaseId) {
-      setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
-    } else {
-      if (breakpoint === 'mobile') {
-        setVisibleColumns('center');
-      } else if (showSplitCenter) {
-        setVisibleColumns('left+center');
-      } else {
-        setVisibleColumns('center');
-      }
-    }
-  }, [selectedCaseId, breakpoint, showSplitCenter]);
-
   // Fetch users for assignee dropdown
   const { data: users = [], isLoading: isLoadingUsers } = useUsers({});
 
   // Fetch cases list from API
   const pageSize = 50;
-  const { data: casesData, isLoading, error } = useCases({
+  const searchQuery = normalizeQueueSearch(filters.search);
+  const queue = useCases({
     ...toEntityListQueryFilters(filters),
+    search: null,
+    enabled: !searchQuery,
     page: currentPage,
     size: pageSize,
   });
+  const searchedQueue = useQueueSearch("case", filters, currentPage, pageSize);
+  const { data: casesData, isLoading, error } = searchQuery ? searchedQueue : queue;
   const bulk = useEntityBulkActions("case", casesData?.items, {
-    enabled: !isAuditor, users, currentUser, usersLoading: isLoadingUsers, showSplitCenter,
+    enabled: !isAuditor, users, currentUser, usersLoading: isLoadingUsers, showSplitCenter, selectionScope: searchQuery,
   });
 
   // Fetch selected case details from API (only when a case is selected)
@@ -187,10 +174,10 @@ function CasesListPage() {
   // Case selection handler
   const handleCaseSelect = (caseId: number, caseHumanId: string) => {
     bulk.clear();
-    setSelectedCaseId(caseId);
-    
-    if (breakpoint === 'mobile' || !showSplitCenter) {
+    if (breakpoint === 'mobile') {
       navigate(`/cases/${caseHumanId}${location.search}`);
+    } else {
+      setSelectedCaseId(caseId);
     }
   };
 
@@ -209,7 +196,6 @@ function CasesListPage() {
   // Handle back to list (for mobile only)
   const handleBackToList = () => {
     setSelectedCaseId(null);
-    setVisibleColumns(breakpoint === 'mobile' || !showSplitCenter ? 'left' : 'left+center');
   };
 
   const handleCreateCase = async (payload: {
@@ -232,23 +218,34 @@ function CasesListPage() {
       // Error state is handled by mutation onError callback
     }
   };
-  const layoutColumns = bulk.selectionColumns ?? visibleColumns;
-  const isLeftOnlyView = layoutColumns === 'left';
-
   return (
     <DefaultPageLayout priority={bulk.hasMultiple ? undefined : caseDetail?.priority || undefined}>
-      <ThreeColumnLayout
-        leftColumn={
+      <EntityQueueLayout
+        searchQuery={searchQuery}
+        entityType="case"
+        isMobile={breakpoint === 'mobile'}
+        showSplitCenter={showSplitCenter}
+        selectedId={selectedCaseId}
+        listWidth={caseListWidth}
+        onListWidthChange={setCaseListWidth}
+        onSelect={handleCaseSelect}
+        selection={bulk.selectionColumns ? {
+          columns: bulk.selectionColumns,
+          toolbar: bulk.toolbarProps,
+          summary: bulk.summaryProps,
+        } : undefined}
+        renderList={(queueListProps) => (
           <EntityList
             items={casesData?.items ?? []}
             selectedId={bulk.hasMultiple ? null : selectedCaseId}
             {...bulk.listProps}
-            toolbarActions={bulk.hasMultiple && <BulkSelectionToolbar {...bulk.toolbarProps} />}
-            onSelect={handleCaseSelect}
+            {...queueListProps}
             onDoubleClick={handleCaseDoubleClick}
             getItemHref={(_id, humanId) => `/cases/${humanId}${location.search}`}
             filters={filters}
             onFilterChange={setFilters}
+            onSearchChange={setSearch}
+            retrySearch={searchQuery ? searchedQueue.refetch : undefined}
             enableTagFilters
             onTagClick={handleFilterByTag}
             statusOptions={CASE_STATUS_OPTIONS}
@@ -272,24 +269,23 @@ function CasesListPage() {
             error={error}
             users={users}
             usersLoading={isLoadingUsers}
-            getItemIds={(caseItem: CaseRead) => ({ id: caseItem.id, humanId: caseItem.human_id })}
-            mapItemToCard={(caseItem: CaseRead) => ({
+            getItemIds={(caseItem: QueueListRow) => ({ id: caseItem.id, humanId: caseItem.human_id })}
+            mapItemToCard={(caseItem: QueueListRow) => ({
               id: caseItem.human_id,
               title: caseItem.title,
               description: caseItem.description || '',
               timestamp: caseItem.created_at,
               assignee: caseItem.assignee || 'Unassigned',
               tags: caseItem.tags || [],
-              state: caseStatusToUIState(caseItem.status),
+              state: caseStatusToUIState(caseItem.status as CaseStatus),
               priority: priorityToUIPriority(caseItem.priority),
             })}
             emptyMessage="No cases found"
           />
-        }
-        centerColumn={bulk.hasMultiple ? (
-          <BulkSelectionSummary {...bulk.summaryProps} />
-        ) : (
+        )}
+        detail={
           <UnifiedTimeline
+            searchQuery={searchQuery}
             entityDetail={caseDetail ?? null}
             entityType="case"
             selectedEntityId={selectedCaseId}
@@ -306,16 +302,7 @@ function CasesListPage() {
             onBackToList={handleBackToList}
             onOpenEntity={handleOpenCase}
           />
-        )}
-        rightColumn={<div></div>}
-        visibleColumns={layoutColumns}
-        onVisibleColumnsChange={setVisibleColumns}
-        columnConfig={getColumnConfig(selectedCaseId, caseListWidth, isLeftOnlyView)}
-        dimLeftColumn={!bulk.hasMultiple && !!selectedCaseId}
-        showLeftRail={showSplitCenter}
-        leftRailLabel="Resize case list"
-        leftColumnWidth={caseListWidth}
-        onLeftColumnWidthChange={setCaseListWidth}
+        }
       />
       {bulk.dialogProps && <BulkActionModal {...bulk.dialogProps} />}
 
