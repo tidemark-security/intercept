@@ -3,10 +3,25 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from unittest.mock import Mock
 
 import pytest
 
 from db_migrations import cron_utils
+
+
+def test_cron_connection_decodes_credentials_and_uses_the_cron_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://app%40dev:p%25w@db:5544/cases")
+    monkeypatch.setenv("PGCRON_DATABASE", "scheduler")
+    connect = Mock()
+    monkeypatch.setattr(cron_utils.psycopg2, "connect", connect)
+
+    with cron_utils._cron_connection():
+        connect.assert_called_once_with(
+            host="db", port=5544, user="app@dev", password="p%w", dbname="scheduler"
+        )
 
 
 class _Cursor:

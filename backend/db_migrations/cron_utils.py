@@ -18,9 +18,9 @@ import logging
 import os
 from contextlib import contextmanager
 from typing import Generator
-from urllib.parse import urlparse, urlunparse
 
 import psycopg2
+from sqlalchemy.engine import URL, make_url
 
 logger = logging.getLogger("db_migrations.cron_utils")
 
@@ -29,8 +29,8 @@ class CronJobManagementError(RuntimeError):
     """Raised when a required pg_cron mutation cannot be verified."""
 
 
-def _get_cron_database_url() -> str:
-    """Derive a psycopg2 connection URL for the pg_cron database.
+def _get_cron_database_url() -> URL:
+    """Derive the connection URL for the pg_cron database.
 
     Takes DATABASE_URL (which targets intercept_case_db) and swaps the
     database name to the cron database. The cron database can be overridden
@@ -47,28 +47,15 @@ def _get_cron_database_url() -> str:
             "@localhost:5432/intercept_case_db"
         )
 
-    # Convert asyncpg URL to psycopg2
-    sync_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
-
     cron_database = os.environ.get("PGCRON_DATABASE", "postgres")
-
-    parsed = urlparse(sync_url)
-    cron_url = urlunparse(parsed._replace(path=f"/{cron_database}"))
-    return cron_url
+    return make_url(database_url).set(database=cron_database)
 
 
 @contextmanager
 def _cron_connection() -> Generator[psycopg2.extensions.connection, None, None]:
     """Context manager for a connection to the pg_cron database."""
     url = _get_cron_database_url()
-    parsed = urlparse(url)
-    conn = psycopg2.connect(
-        host=parsed.hostname,
-        port=parsed.port or 5432,
-        user=parsed.username,
-        password=parsed.password,
-        dbname=parsed.path.lstrip("/"),
-    )
+    conn = psycopg2.connect(**url.translate_connect_args(username="user", database="dbname"))
     conn.autocommit = True
     try:
         yield conn
