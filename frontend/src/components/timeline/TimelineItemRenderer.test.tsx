@@ -1015,7 +1015,7 @@ describe('TimelineItemRenderer enrichments', () => {
         priority: 'LOW',
       },
     },
-  ] as const)('renders the linked $type entity markdown description in the rich card', ({ type, entityType, item: entityFields }) => {
+  ] as const)('uses the shared metadata and description for linked $type cards', ({ type, entityType, item: entityFields }) => {
     const item = {
       id: `linked-${type}-description-1`,
       type,
@@ -1037,7 +1037,11 @@ describe('TimelineItemRenderer enrichments', () => {
       <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType={entityType} />
     );
 
-    expect(screen.getByText('markdown')).toBeInTheDocument();
+    const description = screen.getByRole('region', { name: 'Description' });
+    expect(within(description).getByText('markdown')).toBeInTheDocument();
+    const assignee = screen.getByText('Assignee', { exact: true });
+    const status = screen.getByText('Status', { exact: true });
+    expect(assignee.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByText('Timeline link note', { selector: 'p' })).toBeInTheDocument();
   });
 
