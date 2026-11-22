@@ -22,6 +22,27 @@ def authorization_lock_key(user_id: UUID) -> int:
     return int.from_bytes(digest, byteorder="big", signed=True)
 
 
+async def acquire_mcp_grant_lock(
+    db: AsyncSession,
+    *,
+    user_id: UUID,
+    shared: bool,
+    wait: bool = True,
+) -> bool:
+    """Order MCP tool use and grant revocation within an account."""
+    digest = hashlib.blake2b(
+        user_id.bytes,
+        digest_size=8,
+        person=b"tmi-mcp-grants",
+    ).digest()
+    return await _acquire_lock(
+        db,
+        lock_key=int.from_bytes(digest, byteorder="big", signed=True),
+        shared=shared,
+        wait=wait,
+    )
+
+
 async def acquire_authorization_lock(
     db: AsyncSession,
     *,
@@ -36,6 +57,21 @@ async def acquire_authorization_lock(
     a continuous stream of read requests cannot starve an emergency disable or
     role downgrade.
     """
+    return await _acquire_lock(
+        db,
+        lock_key=authorization_lock_key(user_id),
+        shared=shared,
+        wait=wait,
+    )
+
+
+async def _acquire_lock(
+    db: AsyncSession,
+    *,
+    lock_key: int,
+    shared: bool,
+    wait: bool,
+) -> bool:
     # Service unit tests use deliberately tiny session doubles. The production
     # database seam always supplies a real AsyncSession (or subclass), where
     # PostgreSQL advisory locks are available and integration-tested.
@@ -54,7 +90,7 @@ async def acquire_authorization_lock(
         )
     result = await db.execute(
         text(f"SELECT {function_name}(:lock_key)"),  # noqa: S608 - fixed names above
-        {"lock_key": authorization_lock_key(user_id)},
+        {"lock_key": lock_key},
     )
     if wait:
         return True
@@ -64,5 +100,6 @@ async def acquire_authorization_lock(
 __all__ = [
     "AuthorizationConcurrencyError",
     "acquire_authorization_lock",
+    "acquire_mcp_grant_lock",
     "authorization_lock_key",
 ]

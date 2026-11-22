@@ -16,7 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.route_utils import read_session_cookie
 from app.api.request_metadata import build_audit_context
-from app.api.routes.admin_auth import require_authenticated_user
+from app.api.routes.admin_auth import (
+    require_authenticated_user,
+    require_shared_authentication,
+)
+from app.core.csrf import API_KEY_AUTH_RESULT_SCOPE_KEY, extract_api_key
 from app.core.database import get_db
 from app.core.settings_registry import get_local
 from app.mcp.local_oauth_provider import PendingAuthorizationUnavailableError
@@ -40,7 +44,6 @@ consent_router = APIRouter(
 management_router = APIRouter(
     prefix="/mcp/oauth",
     tags=["mcp-oauth"],
-    dependencies=[Depends(require_authenticated_user)],
 )
 
 
@@ -380,22 +383,44 @@ async def revoke_connected_mcp_client(
     consent_id: UUID,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user),
+    current_user: UserAccount = Depends(require_shared_authentication),
 ) -> Response:
+    revoked_lookup_hashes: list[str] = []
+    native_revocation_failed = False
+    delete_lookup = None
     try:
+        if extract_api_key(request.headers):
+            # The actor's API key can itself be under revocation. Do not wait
+            # for the grant gate while holding its credential row lock.
+            user_id = current_user.id
+            await db.commit()
+            request.scope.pop(API_KEY_AUTH_RESULT_SCOPE_KEY, None)
+            await mcp_oauth_service.lock_connected_client_revocation(db, user_id=user_id)
+            current_user = await require_shared_authentication(request, db)
+
         consent, _client = await mcp_oauth_service.resolve_connected_client(
             db,
             user=current_user,
             consent_id=consent_id,
         )
         if consent.provider_mode == "oidc":
-            runtime = getattr(request.app.state, "mcp_runtime", None)
-            revoke_native = getattr(
-                getattr(runtime, "provider", None),
-                "revoke_projected_client",
-                None,
+            await mcp_oauth_service.lock_connected_client_revocation(
+                db,
+                user_id=current_user.id,
             )
-            if not callable(revoke_native):
+            consent, _client = await mcp_oauth_service.resolve_connected_client(
+                db,
+                user=current_user,
+                consent_id=consent_id,
+                for_update=True,
+            )
+            if consent.provider_mode != "oidc":
+                raise OAuthInvalidRequestError("Connected MCP client authorization changed")
+            runtime = getattr(request.app.state, "mcp_runtime", None)
+            provider = getattr(runtime, "provider", None)
+            revoke_native = getattr(provider, "revoke_projected_client", None)
+            delete_lookup = getattr(provider, "delete_projected_client_lookup", None)
+            if not callable(revoke_native) or not callable(delete_lookup):
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail="OIDC client revocation is not available in this worker",
@@ -406,69 +431,65 @@ async def revoke_connected_mcp_client(
                     consent_id=consent.id,
                 )
             )
-            reference_pairs: list[tuple[Any | None, str, Any | None]] = [
-                (
-                    reference.id,
-                    reference.provider_reference_hash,
-                    reference,
-                )
+            reference_pairs = [
+                (reference.provider_reference_hash, reference)
                 for reference in references
             ]
-            # Compatibility for a projection written between migration 014 and
-            # normalized family-reference rollout.
-            if not reference_pairs and consent.provider_reference_hash:
-                reference_pairs.append(
-                    (None, consent.provider_reference_hash, None)
+            if not references and not (
+                await mcp_oauth_service.has_provider_grant_references(
+                    db, consent_id=consent.id
                 )
-            if not reference_pairs:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="OIDC grant references are not available for revocation",
-                )
-
-            for index, (
-                reference_id,
-                reference_hash,
-                reference,
-            ) in enumerate(reference_pairs):
-                if reference_id is not None and index > 0:
-                    reference = (
-                        await mcp_oauth_service.lock_active_provider_grant_reference(
-                            db,
-                            consent_id=consent.id,
-                            reference_id=reference_id,
-                        )
+            ):
+                # Legacy projections stored their only family on the consent.
+                if not consent.provider_reference_hash:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="OIDC grant references are not available for revocation",
                     )
-                    if reference is None:
-                        continue
+                reference_pairs.append((consent.provider_reference_hash, None))
+
+            # Hold the writer gate until all families and the consent have
+            # been processed. Keep each lookup until its tombstone commits.
+            for reference_hash, reference in reference_pairs:
                 revoked = await revoke_native(
                     user_id=current_user.id,
                     provider_reference_hash=reference_hash,
+                    retain_lookup=True,
                 )
                 if not revoked:
-                    await db.rollback()
-                    raise HTTPException(
-                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        detail="OIDC grant revocation could not be confirmed",
-                    )
+                    native_revocation_failed = True
+                    break
                 if reference is not None:
                     reference.revoked_at = datetime.now(timezone.utc)
-                    # Persist progress per token family. If a later native
-                    # family fails, a retry does not attempt to revoke an
-                    # already-deleted native reference again.
-                    await db.commit()
-        await mcp_oauth_service.revoke_connected_client(
-            db,
-            user=current_user,
-            consent_id=consent_id,
-            context=build_audit_context(request),
-        )
-        await db.commit()
+                revoked_lookup_hashes.append(reference_hash)
+
+        if not native_revocation_failed:
+            await mcp_oauth_service.revoke_connected_client(
+                db,
+                user=current_user,
+                consent_id=consent_id,
+                context=build_audit_context(request),
+            )
+        if revoked_lookup_hashes or not native_revocation_failed:
+            await db.commit()
+        else:
+            await db.rollback()
     except OAuthInvalidRequestError:
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Connected MCP client not found",
+        )
+    if delete_lookup is not None:
+        for reference_hash in revoked_lookup_hashes:
+            try:
+                await delete_lookup(provider_reference_hash=reference_hash)
+            except Exception:
+                logger.warning("Failed to delete a revoked MCP client lookup")
+    if native_revocation_failed:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="OIDC grant revocation could not be confirmed",
         )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

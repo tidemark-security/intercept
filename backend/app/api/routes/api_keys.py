@@ -14,8 +14,10 @@ from app.api.request_metadata import build_audit_context
 from app.api.routes.admin_auth import (
     require_authenticated_user,
     require_api_key_admin_scope,
+    require_shared_authentication,
 )
-from app.core.csrf import extract_api_key
+from app.core.authorization_lock import acquire_authorization_lock, acquire_mcp_grant_lock
+from app.core.csrf import API_KEY_AUTH_RESULT_SCOPE_KEY, extract_api_key
 from app.core.database import get_db
 from app.core.api_key_scopes import API_READ_SCOPE
 from app.models.models import ApiKeyCreateResponse, ApiKeyRead, UserAccount
@@ -34,7 +36,6 @@ from app.services.api_key_service import (
 router = APIRouter(
     prefix="/api-keys",
     tags=["api-keys"],
-    dependencies=[Depends(require_authenticated_user)],
 )
 
 
@@ -251,7 +252,7 @@ async def revoke_api_key(
     request: Request,
     api_key_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: UserAccount = Depends(require_authenticated_user),
+    current_user: UserAccount = Depends(require_shared_authentication),
 ):
     """
     Revoke an API key.
@@ -286,6 +287,32 @@ async def revoke_api_key(
             )
         require_api_key_admin_scope(request)
     
+    if extract_api_key(request.headers):
+        actor_id = current_user.id
+        target_id = api_key.user_id
+        # The presented key can be the key being revoked. Release its shared
+        # row lock before waiting for the writer gate and reauthenticate under
+        # the grant gates, ordered by account for reciprocal admin requests.
+        await db.commit()
+        request.scope.pop(API_KEY_AUTH_RESULT_SCOPE_KEY, None)
+        await acquire_authorization_lock(db, user_id=actor_id, shared=True)
+        for user_id in sorted({actor_id, target_id}):
+            await acquire_mcp_grant_lock(
+                db,
+                user_id=user_id,
+                shared=user_id != target_id,
+            )
+        current_user = await require_shared_authentication(request, db)
+        if target_id != current_user.id:
+            if current_user.role.value != "ADMIN":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=ValidationErrorResponse(
+                        message="You can only revoke your own API keys",
+                    ).model_dump(),
+                )
+            require_api_key_admin_scope(request)
+
     try:
         await api_key_service.revoke_api_key(
             db,

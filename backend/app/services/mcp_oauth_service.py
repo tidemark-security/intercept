@@ -19,6 +19,11 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.account_authentication import non_password_authentication_allowed
+from app.core.authentication_activity import defer_mcp_oauth_activity
+from app.core.authorization_lock import (
+    acquire_authorization_lock,
+    acquire_mcp_grant_lock,
+)
 from app.core.settings_registry import get_local
 from app.mcp.auth import derive_mcp_keys
 from app.models.models import (
@@ -388,12 +393,14 @@ class MCPOAuthService:
         user_id = await self._token_user_id(db, token=refresh_token)
         if user_id is None:
             raise OAuthInvalidGrantError("Invalid refresh token")
+        await acquire_authorization_lock(db, user_id=user_id, shared=True)
+        await acquire_mcp_grant_lock(db, user_id=user_id, shared=False)
         user = self.require_eligible_user(
             await db.get(
                 UserAccount,
                 user_id,
                 populate_existing=True,
-                with_for_update=True,
+                with_for_update={"read": True},
             )
         )
         old_refresh = await self._load_token(
@@ -456,16 +463,18 @@ class MCPOAuthService:
         context: Optional[AuditContext] = None,
         for_update: bool = False,
         skip_locked: bool = False,
+        shared_lock: bool = True,
         audit_success: bool = True,
     ) -> OAuthTokenValidationResult:
         settings = await self.get_enabled_settings(db)
         expected_resource = self.resource_url_for_path(settings, request_path)
-        now = datetime.now(timezone.utc)
         oauth_token = await self._load_token(
             db,
             token=token,
             for_update=for_update,
             skip_locked=skip_locked,
+            shared_lock=shared_lock,
+            upgrade_hash=False,
         )
         if oauth_token is None:
             raise OAuthInvalidTokenError()
@@ -478,8 +487,8 @@ class MCPOAuthService:
             raise OAuthInvalidTokenError()
         if oauth_token.revoked_at is not None:
             raise OAuthInvalidTokenError("Access token has been revoked")
+        now = datetime.now(timezone.utc)
         if oauth_token.expires_at <= now:
-            oauth_token.revoked_at = now
             raise OAuthInvalidTokenError("Access token has expired")
         if client.revoked_at is not None:
             raise OAuthInvalidClientError()
@@ -496,8 +505,13 @@ class MCPOAuthService:
         if oauth_token.resource.rstrip("/") != expected_resource.rstrip("/"):
             raise OAuthInvalidTokenError("Access token resource does not match MCP endpoint")
 
-        oauth_token.last_used_at = now
-        client.last_seen_at = now
+        if for_update:
+            defer_mcp_oauth_activity(
+                db,
+                token_id=oauth_token.id,
+                client_id=client.id,
+                observed_at=now,
+            )
         if audit_success:
             await get_audit_service(db).log_event(
                 event_type="auth.mcp_oauth.mcp_request",
@@ -515,6 +529,28 @@ class MCPOAuthService:
             )
         return OAuthTokenValidationResult(user=user, token=oauth_token, client=client)
 
+    async def upgrade_legacy_access_token_hash(
+        self,
+        db: AsyncSession,
+        *,
+        token_id: Any,
+        token: str,
+    ) -> None:
+        """Opportunistically migrate a legacy hash after bearer verification."""
+        current_hash, legacy_hash = self._secret_hashes_for_lookup(token)
+        result = await db.execute(
+            select(MCPOAuthToken)
+            .where(
+                cast(Any, MCPOAuthToken.id == token_id),
+                cast(Any, MCPOAuthToken.token_hash == legacy_hash),
+                cast(Any, MCPOAuthToken.revoked_at == None),  # noqa: E711
+            )
+            .with_for_update(skip_locked=True)
+        )
+        row = result.scalar_one_or_none()
+        if row is not None:
+            row.token_hash = current_hash
+
     async def validate_provider_grant_reference(
         self,
         db: AsyncSession,
@@ -525,6 +561,7 @@ class MCPOAuthService:
         allow_unprojected: bool = False,
         for_update: bool = False,
         skip_locked: bool = False,
+        shared_lock: bool = False,
     ) -> OAuthProviderGrantValidationResult | None:
         """Validate one OIDC token family against its durable revocation state.
 
@@ -574,7 +611,9 @@ class MCPOAuthService:
                 populate_existing=True
             ).with_for_update(
                 of=MCPOAuthProviderGrantReference,
-                skip_locked=skip_locked,
+                read=shared_lock,
+                key_share=shared_lock,
+                nowait=skip_locked,
             )
         reference_result = await db.execute(reference_statement)
         reference = reference_result.scalar_one_or_none()
@@ -619,6 +658,10 @@ class MCPOAuthService:
         context: Optional[AuditContext] = None,
     ) -> None:
         await self.get_enabled_settings(db)
+        user_id = await self._token_user_id(db, token=token)
+        if user_id is None:
+            return
+        await acquire_mcp_grant_lock(db, user_id=user_id, shared=False)
         oauth_token = await self._load_token(
             db,
             token=token,
@@ -696,11 +739,12 @@ class MCPOAuthService:
         consent_id: Any,
         context: Optional[AuditContext] = None,
     ) -> None:
+        await self.lock_connected_client_revocation(db, user_id=user.id)
         locked_user = await db.get(
             UserAccount,
             user.id,
             populate_existing=True,
-            with_for_update=True,
+            with_for_update={"read": True},
         )
         if locked_user is None:
             raise OAuthInvalidRequestError("Connected MCP client not found")
@@ -746,6 +790,16 @@ class MCPOAuthService:
             performed_by=locked_user.username,
             context=context,
         )
+
+    @staticmethod
+    async def lock_connected_client_revocation(
+        db: AsyncSession,
+        *,
+        user_id: Any,
+    ) -> None:
+        """Order connected-client revocation before grant row access."""
+        await acquire_authorization_lock(db, user_id=user_id, shared=True)
+        await acquire_mcp_grant_lock(db, user_id=user_id, shared=False)
 
     async def invalidate_user_grants(
         self,
@@ -856,35 +910,25 @@ class MCPOAuthService:
         )
         return list(result.scalars().all())
 
-    async def lock_active_provider_grant_reference(
+    async def has_provider_grant_references(
         self,
         db: AsyncSession,
         *,
         consent_id: Any,
-        reference_id: Any,
-    ) -> MCPOAuthProviderGrantReference | None:
-        """Reacquire one family lock after a prior progress commit."""
+    ) -> bool:
+        """Distinguish fully revoked normalized grants from legacy projections."""
 
-        result = await db.execute(
-            select(MCPOAuthProviderGrantReference)
+        reference_id = await db.scalar(
+            select(MCPOAuthProviderGrantReference.id)
             .where(
                 cast(
                     Any,
-                    MCPOAuthProviderGrantReference.id == reference_id,
-                ),
-                cast(
-                    Any,
                     MCPOAuthProviderGrantReference.consent_id == consent_id,
-                ),
-                cast(
-                    Any,
-                    MCPOAuthProviderGrantReference.revoked_at == None,  # noqa: E711
-                ),
+                )
             )
-            .execution_options(populate_existing=True)
-            .with_for_update()
+            .limit(1)
         )
-        return result.scalar_one_or_none()
+        return reference_id is not None
 
     async def _issue_token_pair(
         self,
@@ -1356,6 +1400,8 @@ class MCPOAuthService:
         token: str,
         for_update: bool = False,
         skip_locked: bool = False,
+        shared_lock: bool = False,
+        upgrade_hash: bool = True,
     ) -> MCPOAuthToken | None:
         current_hash, legacy_hash = self._secret_hashes_for_lookup(token)
         statement = select(MCPOAuthToken).where(
@@ -1369,10 +1415,14 @@ class MCPOAuthService:
         if for_update:
             statement = statement.execution_options(
                 populate_existing=True
-            ).with_for_update(skip_locked=skip_locked)
+            ).with_for_update(
+                read=shared_lock,
+                key_share=shared_lock,
+                nowait=skip_locked,
+            )
         result = await db.execute(statement)
         oauth_token = result.scalar_one_or_none()
-        if oauth_token is not None and oauth_token.token_hash == legacy_hash:
+        if upgrade_hash and oauth_token is not None and oauth_token.token_hash == legacy_hash:
             oauth_token.token_hash = current_hash
         return oauth_token
 

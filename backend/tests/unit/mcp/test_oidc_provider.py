@@ -1122,7 +1122,7 @@ class _Session:
         self.committed = False
         self.rolled_back = False
 
-    async def get(self, _model, user_id):
+    async def get(self, _model, user_id, **_kwargs):
         return self.user if self.user is not None and self.user.id == user_id else None
 
     async def commit(self) -> None:
@@ -2691,6 +2691,11 @@ async def test_proxy_returns_reference_token_with_local_identity_not_upstream_to
     proxy._client_storage = SimpleNamespace(put=AsyncMock())
     proxy.get_client = AsyncMock(return_value=None)
     proxy._record_connected_client_projection = AsyncMock()
+    monkeypatch.setattr(
+        mcp_oauth_service,
+        "validate_provider_grant_reference",
+        AsyncMock(return_value=None),
+    )
 
     result = await proxy.load_access_token("fastmcp-reference-token")
 
@@ -2836,6 +2841,17 @@ async def test_validated_reference_updates_token_free_connected_client_projectio
     }
     assert native_write["ttl"] == 200_000_000
 
+    proxy._client_storage.put.reset_mock()
+    proxy.get_client.reset_mock()
+    proxy._record_connected_client_projection = AsyncMock()
+
+    repeated = await proxy.load_access_token("fastmcp-reference-token")
+
+    assert repeated is not None
+    proxy.get_client.assert_not_awaited()
+    proxy._record_connected_client_projection.assert_not_awaited()
+    proxy._client_storage.put.assert_awaited_once_with(**native_write)
+
 
 @pytest.mark.asyncio
 async def test_connected_client_projection_is_idempotent_across_workers(
@@ -2958,6 +2974,7 @@ async def test_revoke_projected_client_invalidates_native_token_family() -> None
     revoked = await proxy.revoke_projected_client(
         user_id=user_id,
         provider_reference_hash=reference_hash,
+        retain_lookup=True,
     )
 
     assert revoked is True
@@ -2968,6 +2985,19 @@ async def test_revoke_projected_client_invalidates_native_token_family() -> None
     proxy._upstream_token_store.delete.assert_awaited_once_with(
         key="upstream-set-id"
     )
+    proxy._client_storage.delete.assert_not_awaited()
+
+    proxy._upstream_token_store.get.return_value = None
+    proxy.revoke_token.reset_mock()
+    assert await proxy.revoke_projected_client(
+        user_id=user_id,
+        provider_reference_hash=reference_hash,
+        retain_lookup=True,
+    )
+    proxy.revoke_token.assert_not_awaited()
+    proxy._client_storage.delete.assert_not_awaited()
+
+    await proxy.delete_projected_client_lookup(provider_reference_hash=reference_hash)
     proxy._client_storage.delete.assert_awaited_once_with(
         key=reference_hash,
         collection=CONNECTED_CLIENT_REFERENCE_COLLECTION,

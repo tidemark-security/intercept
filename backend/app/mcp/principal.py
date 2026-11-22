@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
 from typing import Any, Callable
 from urllib.parse import urlsplit
@@ -13,13 +14,19 @@ from fastapi import HTTPException
 from fastmcp.server.auth import AccessToken
 from fastmcp.server.dependencies import get_access_token, get_http_request
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
+from sqlalchemy.exc import DBAPIError
 
 from app.core.account_authentication import non_password_authentication_allowed
+from app.core.authentication_activity import (
+    defer_mcp_oidc_activity,
+    persist_deferred_authentication_activity,
+)
 from app.core.client_address import request_client_address
 from app.core.database import async_session_factory
 from app.core.authorization_lock import (
     AuthorizationConcurrencyError,
     acquire_authorization_lock,
+    acquire_mcp_grant_lock,
 )
 from app.mcp.auth import MCP_ACCESS_SCOPE
 from app.models.models import UserAccount
@@ -89,13 +96,12 @@ async def require_mcp_principal(
     commit: bool = True,
     revalidate_source_credential: bool = False,
     skip_locked: bool = False,
-    shared_lock: bool = False,
+    shared_lock: bool = True,
 ) -> MCPPrincipal:
     """Reload and validate the local user represented by a native access token.
 
-    Tool middleware supplies its own session with ``commit=False`` so user and
-    source-credential locks remain held through tool execution. Direct callers
-    retain the existing self-contained transaction behavior.
+    Middleware supplies its own session with ``commit=False`` to control when
+    authorization locks are released and credential activity is persisted.
     """
 
     if access_token is None:
@@ -133,11 +139,22 @@ async def require_mcp_principal(
             wait=not skip_locked,
         )
         if not authorization_acquired:
-            raise HTTPException(
-                status_code=503,
-                detail="MCP authorization state is busy; retry the request",
-            )
-        user = None
+            raise AuthorizationConcurrencyError()
+        if revalidate_source_credential and not await acquire_mcp_grant_lock(
+            active_db,
+            user_id=user_id,
+            shared=True,
+            wait=not skip_locked,
+        ):
+            raise AuthorizationConcurrencyError()
+        user = await active_db.get(
+            UserAccount,
+            user_id,
+            populate_existing=True,
+            with_for_update={"read": shared_lock, "nowait": skip_locked},
+        )
+        if user is None:
+            raise HTTPException(status_code=401, detail="MCP user no longer exists")
         if auth_source == "api_key" and revalidate_source_credential:
             try:
                 api_key_result = await api_key_service.validate_api_key(
@@ -150,7 +167,6 @@ async def require_mcp_principal(
                     shared_lock=shared_lock,
                 )
             except (
-                AuthorizationConcurrencyError,
                 ApiKeyExpiredError,
                 ApiKeyNotFoundError,
                 ApiKeyRevokedError,
@@ -192,6 +208,7 @@ async def require_mcp_principal(
                     context=None,
                     for_update=True,
                     skip_locked=skip_locked,
+                    shared_lock=shared_lock,
                     audit_success=False,
                 )
             except MCPOAuthError as exc:
@@ -218,68 +235,30 @@ async def require_mcp_principal(
                     status_code=401,
                     detail="MCP OIDC grant is no longer valid",
                 )
-            candidate_user = await active_db.get(UserAccount, user_id)
-            if candidate_user is None:
-                raise HTTPException(
-                    status_code=401,
-                    detail="MCP user no longer exists",
-                )
-            user = await active_db.get(
-                UserAccount,
-                user_id,
-                populate_existing=True,
-                with_for_update={
-                    "read": shared_lock,
-                    "skip_locked": skip_locked,
-                },
-            )
-            if user is None:
-                raise HTTPException(
-                    status_code=503 if skip_locked else 401,
-                    detail=(
-                        "MCP authorization state is busy; retry the request"
-                        if skip_locked
-                        else "MCP user no longer exists"
-                    ),
-                )
             try:
-                await mcp_oauth_service.validate_provider_grant_reference(
+                grant = await mcp_oauth_service.validate_provider_grant_reference(
                     active_db,
                     user_id=user_id,
                     client_id=provider_client_id,
                     provider_reference_hash=provider_reference_hash,
                     for_update=True,
                     skip_locked=skip_locked,
+                    shared_lock=shared_lock,
                 )
             except MCPOAuthError as exc:
                 raise HTTPException(
                     status_code=401,
                     detail="MCP OIDC grant is no longer valid",
                 ) from exc
+            if grant is not None and grant.reference is not None:
+                defer_mcp_oidc_activity(
+                    active_db,
+                    client_id=grant.client.id,
+                    consent_id=grant.consent.id,
+                    reference_id=grant.reference.id,
+                    observed_at=datetime.now(timezone.utc),
+                )
 
-        if user is None:
-            candidate_user = await active_db.get(UserAccount, user_id)
-            if candidate_user is None:
-                raise HTTPException(
-                    status_code=401,
-                    detail="MCP user no longer exists",
-                )
-            user = await active_db.get(
-                UserAccount,
-                user_id,
-                populate_existing=True,
-                with_for_update={
-                    "read": shared_lock,
-                    "skip_locked": skip_locked,
-                },
-            )
-        if user is None:
-            if skip_locked:
-                raise HTTPException(
-                    status_code=503,
-                    detail="MCP authorization state is busy; retry the request",
-                )
-            raise HTTPException(status_code=401, detail="MCP user no longer exists")
         if not non_password_authentication_allowed(user):
             raise HTTPException(status_code=403, detail="MCP user account is not active")
         if user.must_change_password:
@@ -306,15 +285,33 @@ async def require_mcp_principal(
         )
         return principal
 
+    async def authorize(active_db: Any) -> MCPPrincipal:
+        try:
+            return await load_principal(active_db)
+        except AuthorizationConcurrencyError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="MCP authorization state is busy; retry the request",
+            ) from exc
+        except DBAPIError as exc:
+            if not skip_locked or getattr(exc.orig, "sqlstate", None) != "55P03":
+                raise
+            raise HTTPException(
+                status_code=503,
+                detail="MCP authorization state is busy; retry the request",
+            ) from exc
+
     if db is not None:
-        principal = await load_principal(db)
+        principal = await authorize(db)
         if commit:
             await db.commit()
+            await persist_deferred_authentication_activity(db)
         return principal
 
     async with session_factory() as owned_db:
-        principal = await load_principal(owned_db)
+        principal = await authorize(owned_db)
         await owned_db.commit()
+        await persist_deferred_authentication_activity(owned_db)
         return principal
 
 
@@ -334,16 +331,23 @@ class MCPPrincipalMiddleware(Middleware):
         if context.method == "tools/call":
             return await call_next(context)
 
-        principal = await require_mcp_principal(
-            session_factory=self._session_factory,
-            skip_locked=True,
-            shared_lock=True,
-        )
-        reset_token = _current_principal.set(principal)
-        try:
-            return await call_next(context)
-        finally:
-            _current_principal.reset(reset_token)
+        async with self._session_factory() as db:
+            principal = await require_mcp_principal(
+                db=db,
+                commit=False,
+                revalidate_source_credential=True,
+                skip_locked=True,
+            )
+            # Discovery uses the authorized snapshot and releases its locks
+            # before dispatching to the protocol handler.
+            await db.commit()
+            reset_token = _current_principal.set(principal)
+            try:
+                response = await call_next(context)
+            finally:
+                _current_principal.reset(reset_token)
+            await persist_deferred_authentication_activity(db)
+            return response
 
     async def on_call_tool(
         self,
@@ -357,6 +361,7 @@ class MCPPrincipalMiddleware(Middleware):
                 commit=False,
                 revalidate_source_credential=True,
                 skip_locked=True,
+                shared_lock=True,
             )
             reset_token = _current_principal.set(principal)
             try:
@@ -369,9 +374,12 @@ class MCPPrincipalMiddleware(Middleware):
                 except Exception:
                     await db.rollback()
                     logger.exception("Failed to persist MCP access audit event")
+                else:
+                    await persist_deferred_authentication_activity(db)
                 raise
             else:
                 await db.commit()
+                await persist_deferred_authentication_activity(db)
                 return response
             finally:
                 _current_principal.reset(reset_token)

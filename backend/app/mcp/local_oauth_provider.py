@@ -34,6 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.routing import Route
 
+from app.core.authorization_lock import acquire_mcp_grant_lock
 from app.mcp.auth import normalize_public_dcr_client
 from app.mcp.cimd import (
     BoundedCIMDClientManager,
@@ -510,34 +511,12 @@ class MCPOAuthDatabaseBackend:
             raise TokenError("invalid_grant", exc.description) from exc
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
-        now = datetime.now(timezone.utc)
         async with self._session() as session:
-            stored = await self.service._load_token(  # noqa: SLF001
-                session,
-                token=token.token,
-                for_update=True,
-            )
-            if stored is None:
-                return
-
             await self.service.revoke_token(
                 session,
                 token=token.token,
                 client_id=token.client_id,
             )
-            stored.revoked_at = now
-            refresh_id = (
-                stored.id if stored.token_type == "refresh" else stored.refresh_token_id
-            )
-            if refresh_id is not None:
-                refresh = await session.get(MCPOAuthToken, refresh_id)
-                if refresh is not None:
-                    refresh.revoked_at = now
-                await self.service._revoke_refresh_family(  # noqa: SLF001
-                    session,
-                    refresh_token_id=refresh_id,
-                    now=now,
-                )
 
     async def load_access_token(self, token: str) -> AccessToken | None:
         try:
@@ -547,7 +526,10 @@ class MCPOAuthDatabaseBackend:
                     token=token,
                     request_path=self.request_path,
                 )
-                return AccessToken(
+                legacy_hash = self.service._legacy_hash_secret(token)  # noqa: SLF001
+                legacy_token = validation.token.token_hash == legacy_hash
+                token_id = validation.token.id
+                access = AccessToken(
                     token=token,
                     client_id=validation.client.client_id,
                     scopes=validation.token.scope.split(),
@@ -559,6 +541,17 @@ class MCPOAuthDatabaseBackend:
                         "client_id": validation.client.client_id,
                     },
                 )
+            if legacy_token:
+                try:
+                    async with self._session() as session:
+                        await self.service.upgrade_legacy_access_token_hash(
+                            session,
+                            token_id=token_id,
+                            token=token,
+                        )
+                except Exception:
+                    logger.warning("Unable to update a legacy MCP access-token hash")
+            return access
         except MCPOAuthError:
             return None
 
@@ -580,7 +573,7 @@ class MCPOAuthDatabaseBackend:
             stored = await self.service._load_token(  # noqa: SLF001
                 session,
                 token=refresh_token,
-                for_update=True,
+                upgrade_hash=False,
             )
             if (
                 stored is None
@@ -589,6 +582,18 @@ class MCPOAuthDatabaseBackend:
             ):
                 return None
             if stored.revoked_at is not None or stored.expires_at <= now:
+                await acquire_mcp_grant_lock(
+                    session,
+                    user_id=stored.user_id,
+                    shared=False,
+                )
+                stored = await self.service._load_token(  # noqa: SLF001
+                    session,
+                    token=refresh_token,
+                    for_update=True,
+                )
+                if stored is None:
+                    return None
                 stored.revoked_at = stored.revoked_at or now
                 await self.service._revoke_refresh_family(  # noqa: SLF001
                     session,

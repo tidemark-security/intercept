@@ -15,6 +15,7 @@ from typing import Any, Optional, cast
 from uuid import UUID
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -27,6 +28,7 @@ from app.core.api_key_scopes import (
 from app.core.authorization_lock import (
     AuthorizationConcurrencyError,
     acquire_authorization_lock,
+    acquire_mcp_grant_lock,
 )
 from app.core.authentication_activity import defer_api_key_activity
 from app.core.security import hash_opaque_token
@@ -250,12 +252,17 @@ class ApiKeyService:
             )
 
         async with session_factory() as revocation_db:
-            await revocation_db.execute(
-                update(ApiKey)
+            active_key = (
+                select(ApiKey.id)
                 .where(
                     cast(Any, ApiKey.id == api_key_id),
                     cast(Any, ApiKey.revoked_at == None),  # noqa: E711
                 )
+                .with_for_update()
+            )
+            await revocation_db.execute(
+                update(ApiKey)
+                .where(cast(Any, ApiKey.id.in_(active_key)))
                 .values(revoked_at=datetime.now(timezone.utc))
             )
             await revocation_db.commit()
@@ -383,10 +390,18 @@ class ApiKeyService:
         Returns:
             The revoked ApiKey object
         """
+        user_id = await db.scalar(
+            select(ApiKey.user_id).where(cast(Any, ApiKey.id == api_key_id))
+        )
+        if user_id is None:
+            raise ApiKeyNotFoundError()
+        await acquire_mcp_grant_lock(db, user_id=user_id, shared=False)
         result = await db.execute(
             select(ApiKey)
             .options(selectinload(ApiKey.user))
             .where(cast(Any, ApiKey.id == api_key_id))
+            .execution_options(populate_existing=True)
+            .with_for_update(of=ApiKey)
         )
         api_key = result.scalar_one_or_none()
 
@@ -549,24 +564,27 @@ class ApiKeyService:
         # Credential issuance and administrative/OIDC reconciliation use the
         # same user-first lock order, so no request can authenticate from a
         # stale role after a downgrade transaction completes.
-        user = await db.get(
-            UserAccount,
-            api_key_user_id,
-            populate_existing=True,
-            with_for_update={
-                "read": shared_lock,
-                "skip_locked": skip_locked,
-            },
-        )
-        locked_key_result = await db.execute(
-            select(ApiKey)
-            .where(cast(Any, ApiKey.id == api_key_id))
-            .with_for_update(
-                read=shared_lock,
-                skip_locked=skip_locked,
+        try:
+            user = await db.get(
+                UserAccount,
+                api_key_user_id,
+                populate_existing=True,
+                with_for_update={"read": shared_lock, "nowait": skip_locked},
             )
-            .execution_options(populate_existing=True)
-        )
+            locked_key_result = await db.execute(
+                select(ApiKey)
+                .where(cast(Any, ApiKey.id == api_key_id))
+                .with_for_update(
+                    read=shared_lock,
+                    key_share=shared_lock,
+                    nowait=skip_locked,
+                )
+                .execution_options(populate_existing=True)
+            )
+        except DBAPIError as exc:
+            if not skip_locked or getattr(exc.orig, "sqlstate", None) != "55P03":
+                raise
+            raise AuthorizationConcurrencyError() from exc
         api_key = locked_key_result.scalar_one_or_none()
         if api_key is None:
             await self._persist_auth_failure(
@@ -577,7 +595,6 @@ class ApiKeyService:
                 context=context,
             )
             raise ApiKeyNotFoundError()
-        api_key.user = user
 
         now = datetime.now(timezone.utc)
 
@@ -611,9 +628,7 @@ class ApiKeyService:
             raise ApiKeyExpiredError()
 
         # Check user status
-        if api_key.user is None or not non_password_authentication_allowed(
-            api_key.user
-        ):
+        if user is None or not non_password_authentication_allowed(user):
             await self._persist_auth_failure(
                 db,
                 reason="user_inactive",
@@ -624,10 +639,10 @@ class ApiKeyService:
             raise UserInactiveError()
 
         if not credential_was_issued_after_cutoff(
-            api_key.user,
+            user,
             issued_at=api_key.created_at,
         ):
-            user_id = api_key.user.id
+            user_id = user.id
             await self._persist_auth_failure(
                 db,
                 reason="credential_invalidated",
@@ -641,10 +656,10 @@ class ApiKeyService:
 
         capabilities = await oidc_local_credential_policy.capabilities_for(
             db,
-            user=api_key.user,
+            user=user,
         )
         if not capabilities.api_key_allowed:
-            user_id = api_key.user.id
+            user_id = user.id
             api_key_prefix = api_key.prefix
             await self._persist_auth_failure(
                 db,
@@ -661,7 +676,7 @@ class ApiKeyService:
             raise ApiKeyPolicyError()
 
         stored_scopes = normalize_api_key_scopes(api_key.scopes or [])
-        disallowed_scopes = stored_scopes - allowed_api_key_scopes(api_key.user.role)
+        disallowed_scopes = stored_scopes - allowed_api_key_scopes(user.role)
         if disallowed_scopes:
             api_key_id = api_key.id
             await self._persist_auth_failure(
@@ -707,14 +722,14 @@ class ApiKeyService:
         # lock-only revalidation suppresses a duplicate success event.
         if audit_success:
             await get_audit_service(db).api_key_auth_success(
-                user_id=api_key.user.id,
-                username=api_key.user.username,
+                user_id=user.id,
+                username=user.username,
                 api_key_id=api_key.id,
                 api_key_prefix=api_key.prefix,
                 context=context,
             )
 
-        return ApiKeyResult(user=api_key.user, api_key=api_key)
+        return ApiKeyResult(user=user, api_key=api_key)
 
 
 # Module-level singleton

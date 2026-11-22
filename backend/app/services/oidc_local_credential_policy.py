@@ -75,12 +75,17 @@ class OIDCLocalCredentialPolicy:
     ) -> None:
         """Permanently revoke active passkeys and API keys for one account."""
         now = datetime.now(timezone.utc)
-        await db.execute(
-            update(ApiKey)
+        active_keys = (
+            select(ApiKey.id)
             .where(
                 cast(Any, ApiKey.user_id == user_id),
                 cast(Any, ApiKey.revoked_at == None),  # noqa: E711
             )
+            .with_for_update()
+        )
+        await db.execute(
+            update(ApiKey)
+            .where(cast(Any, ApiKey.id.in_(active_keys)))
             .values(revoked_at=now)
         )
         await db.execute(

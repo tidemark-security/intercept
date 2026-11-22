@@ -266,6 +266,8 @@ class AdminPasskeyRead(BaseModel):
 async def _authenticate_from_request(
     request: Request,
     db: AsyncSession,
+    *,
+    shared_auth_lock: bool = False,
 ) -> UserAccount:
     """
     Authenticate a request using either API key or session cookie.
@@ -287,7 +289,7 @@ async def _authenticate_from_request(
         if request.method.upper() in {"GET", "HEAD"}
         else API_WRITE_SCOPE
     )
-    shared_auth_lock = request.method.upper() in {"GET", "HEAD"}
+    shared_auth_lock = shared_auth_lock or request.method.upper() in {"GET", "HEAD"}
 
     # Try API key authentication first
     cached_api_key_result = request.scope.get(API_KEY_AUTH_RESULT_SCOPE_KEY)
@@ -533,7 +535,24 @@ async def require_authenticated_user(
     Raises:
         HTTPException: 401 if not authenticated
     """
-    user = await _authenticate_from_request(request, db)
+    return await _require_authenticated_user(request, db)
+
+
+async def require_shared_authentication(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> UserAccount:
+    """Authenticate a request that coordinates its own credential writes."""
+    return await _require_authenticated_user(request, db, shared_auth_lock=True)
+
+
+async def _require_authenticated_user(
+    request: Request,
+    db: AsyncSession,
+    *,
+    shared_auth_lock: bool = False,
+) -> UserAccount:
+    user = await _authenticate_from_request(request, db, shared_auth_lock=shared_auth_lock)
     if user.must_change_password:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

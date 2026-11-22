@@ -11,12 +11,20 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import AnyUrl
 
 from app.api.routes import mcp_oauth
+from app.core.authorization_lock import acquire_mcp_grant_lock
 from app.core.request_body_limit import (
     MCP_CONSENT_CONTEXT_REQUEST_MAX_BODY_BYTES,
     MCP_CONSENT_CONTEXT_REQUEST_PATHS,
     RequestBodyLimitMiddleware,
 )
 from app.mcp.local_oauth_provider import PendingAuthorization
+from app.models.enums import UserRole, UserStatus
+from app.models.models import (
+    MCPOAuthClient,
+    MCPOAuthConsent,
+    MCPOAuthProviderGrantReference,
+    UserAccount,
+)
 
 
 REQUEST_ID = UUID("16ad90ad-4cf0-4c56-b4e2-9f39c44ca001")
@@ -309,8 +317,10 @@ async def test_oidc_consent_context_rejects_invalid_body_without_caching(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("second_family_revoked", [True, False])
 async def test_oidc_connected_client_revokes_native_grant_before_projection(
     monkeypatch: pytest.MonkeyPatch,
+    second_family_revoked: bool,
 ) -> None:
     user = SimpleNamespace(id=UUID("46ad90ad-4cf0-4c56-b4e2-9f39c44ca004"))
     consent = SimpleNamespace(
@@ -330,11 +340,22 @@ async def test_oidc_connected_client_revokes_native_grant_before_projection(
             revoked_at=None,
         ),
     ]
-    native_provider = SimpleNamespace(revoke_projected_client=AsyncMock(return_value=True))
     db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+    outcomes = iter([True, second_family_revoked])
+
+    async def revoke_native(**_kwargs):
+        db.commit.assert_not_awaited()
+        return next(outcomes)
+
+    async def delete_lookup(**_kwargs):
+        db.commit.assert_awaited_once()
+
+    native_provider = SimpleNamespace(
+        revoke_projected_client=AsyncMock(side_effect=revoke_native),
+        delete_projected_client_lookup=AsyncMock(side_effect=delete_lookup),
+    )
     resolve_projection = AsyncMock(return_value=(consent, SimpleNamespace()))
     list_references = AsyncMock(return_value=references)
-    lock_reference = AsyncMock(return_value=references[1])
     mark_projection = AsyncMock()
     monkeypatch.setattr(
         mcp_oauth.mcp_oauth_service,
@@ -345,11 +366,6 @@ async def test_oidc_connected_client_revokes_native_grant_before_projection(
         mcp_oauth.mcp_oauth_service,
         "list_active_provider_grant_references",
         list_references,
-    )
-    monkeypatch.setattr(
-        mcp_oauth.mcp_oauth_service,
-        "lock_active_provider_grant_reference",
-        lock_reference,
     )
     monkeypatch.setattr(
         mcp_oauth.mcp_oauth_service,
@@ -368,7 +384,7 @@ async def test_oidc_connected_client_revokes_native_grant_before_projection(
         return user
 
     app.dependency_overrides[mcp_oauth.get_db] = fake_db
-    app.dependency_overrides[mcp_oauth.require_authenticated_user] = authenticated_user
+    app.dependency_overrides[mcp_oauth.require_shared_authentication] = authenticated_user
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://localhost:8080"
     ) as client:
@@ -376,19 +392,24 @@ async def test_oidc_connected_client_revokes_native_grant_before_projection(
             f"/api/v1/mcp/oauth/clients/{REQUEST_ID}"
         )
 
-    assert response.status_code == 204
+    assert response.status_code == (204 if second_family_revoked else 503)
     assert native_provider.revoke_projected_client.await_args_list == [
-        call(user_id=user.id, provider_reference_hash="reference-one"),
-        call(user_id=user.id, provider_reference_hash="reference-two"),
+        call(
+            user_id=user.id, provider_reference_hash="reference-one", retain_lookup=True
+        ),
+        call(
+            user_id=user.id, provider_reference_hash="reference-two", retain_lookup=True
+        ),
     ]
-    assert all(reference.revoked_at is not None for reference in references)
-    lock_reference.assert_awaited_once_with(
-        db,
-        consent_id=consent.id,
-        reference_id=references[1].id,
-    )
-    mark_projection.assert_awaited_once()
-    assert db.commit.await_count == 3
+    assert references[0].revoked_at is not None
+    assert (references[1].revoked_at is not None) == second_family_revoked
+    assert native_provider.delete_projected_client_lookup.await_args_list == [
+        call(provider_reference_hash=reference.provider_reference_hash)
+        for reference in references
+        if reference.revoked_at is not None
+    ]
+    assert mark_projection.await_count == int(second_family_revoked)
+    db.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -407,7 +428,8 @@ async def test_oidc_connected_client_keeps_projection_when_native_revoke_fails(
         revoked_at=None,
     )
     native_provider = SimpleNamespace(
-        revoke_projected_client=AsyncMock(return_value=False)
+        revoke_projected_client=AsyncMock(return_value=False),
+        delete_projected_client_lookup=AsyncMock(),
     )
     db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
     monkeypatch.setattr(
@@ -438,7 +460,7 @@ async def test_oidc_connected_client_keeps_projection_when_native_revoke_fails(
         return user
 
     app.dependency_overrides[mcp_oauth.get_db] = fake_db
-    app.dependency_overrides[mcp_oauth.require_authenticated_user] = authenticated_user
+    app.dependency_overrides[mcp_oauth.require_shared_authentication] = authenticated_user
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://localhost:8080"
     ) as client:
@@ -446,5 +468,96 @@ async def test_oidc_connected_client_keeps_projection_when_native_revoke_fails(
 
     assert response.status_code == 503
     mark_projection.assert_not_awaited()
+    native_provider.delete_projected_client_lookup.assert_not_awaited()
     db.commit.assert_not_awaited()
     db.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_oidc_client_revoke_keeps_writer_gate_and_resumes_partial_progress(
+    session_maker,
+) -> None:
+    user = UserAccount(
+        username="oidc-revoke@example.com",
+        email="oidc-revoke@example.com",
+        role=UserRole.ANALYST,
+        status=UserStatus.ACTIVE,
+    )
+    client_row = MCPOAuthClient(client_id="oidc-revoke-client", client_name="MCP Client")
+    async with session_maker() as db:
+        db.add_all([user, client_row])
+        await db.flush()
+        consent = MCPOAuthConsent(
+            user_id=user.id,
+            client_db_id=client_row.id,
+            provider_mode="oidc",
+            provider_reference_hash="family-two",
+        )
+        db.add(consent)
+        await db.flush()
+        first = MCPOAuthProviderGrantReference(
+            consent_id=consent.id,
+            provider_reference_hash="family-one",
+            created_at=NOW,
+        )
+        second = MCPOAuthProviderGrantReference(
+            consent_id=consent.id,
+            provider_reference_hash="family-two",
+            created_at=NOW + timedelta(seconds=1),
+        )
+        db.add_all([first, second])
+        await db.commit()
+
+    attempts: list[str] = []
+
+    async def revoke_native(*, user_id, provider_reference_hash, retain_lookup):
+        assert retain_lookup
+        attempts.append(provider_reference_hash)
+        async with session_maker() as observer:
+            assert not await acquire_mcp_grant_lock(
+                observer, user_id=user_id, shared=True, wait=False
+            )
+            if len(attempts) == 2:
+                # The first family is still in the original writer transaction.
+                first_grant = await observer.get(MCPOAuthProviderGrantReference, first.id)
+                assert first_grant is not None and first_grant.revoked_at is None
+                return False
+        return True
+
+    app = FastAPI()
+    app.state.mcp_runtime = SimpleNamespace(
+        provider=SimpleNamespace(
+            revoke_projected_client=revoke_native,
+            delete_projected_client_lookup=AsyncMock(),
+        )
+    )
+    app.include_router(mcp_oauth.management_router, prefix="/api/v1")
+
+    async def fake_db():
+        async with session_maker() as db:
+            yield db
+
+    async def authenticated_user():
+        return user
+
+    app.dependency_overrides[mcp_oauth.get_db] = fake_db
+    app.dependency_overrides[mcp_oauth.require_shared_authentication] = authenticated_user
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://localhost:8080"
+    ) as client:
+        path = f"/api/v1/mcp/oauth/clients/{consent.id}"
+        assert (await client.delete(path)).status_code == 503
+        async with session_maker() as observer:
+            first_grant = await observer.get(MCPOAuthProviderGrantReference, first.id)
+            second_grant = await observer.get(MCPOAuthProviderGrantReference, second.id)
+            persisted_consent = await observer.get(MCPOAuthConsent, consent.id)
+            assert first_grant is not None and first_grant.revoked_at is not None
+            assert second_grant is not None and second_grant.revoked_at is None
+            assert persisted_consent is not None and persisted_consent.revoked_at is None
+        assert (await client.delete(path)).status_code == 204
+        async with session_maker() as observer:
+            persisted_consent = await observer.get(MCPOAuthConsent, consent.id)
+            assert persisted_consent is not None and persisted_consent.revoked_at is not None
+        assert (await client.delete(path)).status_code == 204
+
+    assert attempts == ["family-one", "family-two", "family-two"]

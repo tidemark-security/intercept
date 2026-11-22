@@ -40,11 +40,16 @@ from mcp.server.auth.provider import (
 from mcp.server.auth.routes import build_metadata, cors_middleware
 from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse
 from starlette.routing import Route
 
 from app.core.account_authentication import non_password_authentication_allowed
+from app.core.authorization_lock import (
+    acquire_authorization_lock,
+    acquire_mcp_grant_lock,
+)
 from app.core.database import async_session_factory
 from app.core.settings_registry import get_local
 from app.mcp.auth import MCP_ACCESS_SCOPE, normalize_public_dcr_client
@@ -992,9 +997,6 @@ class InterceptOIDCProxy(OIDCProxy):
                     "invalid_grant",
                     "Refresh token does not reference a validated OIDC family",
                 ) from exc
-            refresh_context_token = self._refresh_marker_context_var().set(
-                previous_marker
-            )
             try:
                 await self._require_active_provider_grant(
                     local_claims=local_claims,
@@ -1007,6 +1009,9 @@ class InterceptOIDCProxy(OIDCProxy):
                     "invalid_grant",
                     "The OIDC connected-client grant has been revoked",
                 ) from exc
+            refresh_context_token = self._refresh_marker_context_var().set(
+                previous_marker
+            )
 
         try:
             registration_service = getattr(self, "_registration_service", None)
@@ -1162,22 +1167,13 @@ class InterceptOIDCProxy(OIDCProxy):
             raise OIDCIdentityError("OIDC authorization epoch does not match")
 
         reference_hash = _provider_reference_hash(upstream_token_id)
-        family_expiries = [
-            value
-            for value in (
-                access_payload.get("exp"),
-                upstream_tokens.expires_at,
-                upstream_tokens.refresh_token_expires_at,
-            )
-            if isinstance(value, (int, float))
-        ]
-        ttl = (
-            max(int(max(family_expiries)) - int(time.time()), 1)
-            if family_expiries
-            else None
-        )
         async with self._intercept_session_factory() as db:
             try:
+                await self._lock_projection_account(
+                    db,
+                    user_id=user.id,
+                    issued_at=authorization_started_at,
+                )
                 await self._record_connected_client_projection(
                     db,
                     user_id=user.id,
@@ -1193,10 +1189,44 @@ class InterceptOIDCProxy(OIDCProxy):
                 await db.rollback()
                 raise
 
+        await self._put_connected_client_reference(
+            user_id=user.id,
+            client_id=client_id,
+            jti=jti,
+            upstream_token_id=upstream_token_id,
+            access_expiry=access_payload.get("exp"),
+            upstream_tokens=upstream_tokens,
+        )
+        return reference_hash
+
+    async def _put_connected_client_reference(
+        self,
+        *,
+        user_id: UUID,
+        client_id: str,
+        jti: str,
+        upstream_token_id: str,
+        access_expiry: Any,
+        upstream_tokens: Any,
+    ) -> None:
+        family_expiries = [
+            expiry
+            for expiry in (
+                access_expiry,
+                upstream_tokens.expires_at,
+                upstream_tokens.refresh_token_expires_at,
+            )
+            if isinstance(expiry, (int, float))
+        ]
+        ttl = (
+            max(int(max(family_expiries)) - int(time.time()), 1)
+            if family_expiries
+            else None
+        )
         await self._client_storage.put(
-            key=reference_hash,
+            key=_provider_reference_hash(upstream_token_id),
             value={
-                "user_id": str(user.id),
+                "user_id": str(user_id),
                 "client_id": client_id,
                 "jti": jti,
                 "upstream_token_id": upstream_token_id,
@@ -1204,7 +1234,6 @@ class InterceptOIDCProxy(OIDCProxy):
             collection=CONNECTED_CLIENT_REFERENCE_COLLECTION,
             ttl=ttl,
         )
-        return reference_hash
 
     async def _require_active_provider_grant(
         self,
@@ -1225,6 +1254,8 @@ class InterceptOIDCProxy(OIDCProxy):
 
         async with self._intercept_session_factory() as db:
             try:
+                await acquire_authorization_lock(db, user_id=user_id, shared=True)
+                await acquire_mcp_grant_lock(db, user_id=user_id, shared=True)
                 await mcp_oauth_service.validate_provider_grant_reference(
                     db,
                     user_id=user_id,
@@ -1234,6 +1265,7 @@ class InterceptOIDCProxy(OIDCProxy):
                     ),
                     allow_unprojected=allow_unprojected,
                     for_update=True,
+                    shared_lock=True,
                 )
                 await db.commit()
             except Exception:
@@ -1737,7 +1769,7 @@ class InterceptOIDCProxy(OIDCProxy):
         user_id = user.id
 
         # Transparent refresh can replace the stored family during validation.
-        # Re-read and authenticate the marker before projecting the grant.
+        # Re-read and authenticate the marker before validating the grant.
         upstream_tokens = await self._upstream_token_store.get(
             key=jti_mapping.upstream_token_id
         )
@@ -1752,54 +1784,40 @@ class InterceptOIDCProxy(OIDCProxy):
         except (AttributeError, OIDCIdentityError):
             return None
 
-        client_info = await self.get_client(client_id)
         reference_hash = _provider_reference_hash(
             jti_mapping.upstream_token_id
         )
-        family_expiries = [
-            value
-            for value in (
-                token_payload.get("exp"),
-                upstream_tokens.expires_at,
-                upstream_tokens.refresh_token_expires_at,
-            )
-            if isinstance(value, (int, float))
-        ]
-        ttl = (
-            max(int(max(family_expiries)) - int(time.time()), 1)
-            if family_expiries
-            else None
-        )
-        async with self._intercept_session_factory() as db:
-            try:
-                await self._record_connected_client_projection(
+        try:
+            async with self._intercept_session_factory() as db:
+                grant = await mcp_oauth_service.validate_provider_grant_reference(
                     db,
                     user_id=user_id,
                     client_id=client_id,
-                    client_info=client_info,
+                    provider_reference_hash=reference_hash,
+                    allow_unprojected=True,
+                )
+            if grant is None or grant.reference is None:
+                await self._backfill_connected_client_projection(
+                    user_id=user_id,
+                    client_id=client_id,
                     reference_hash=reference_hash,
-                    reauthorize=False,
                     authorization_epoch=authorization_epoch,
+                    issued_at=local_claims.get(
+                        INTERCEPT_CREDENTIAL_FAMILY_STARTED_AT_CLAIM
+                    ),
                 )
-                await db.commit()
-            except OIDCIdentityError:
-                await db.rollback()
-                await self._jti_mapping_store.delete(key=jti)
-                await self._upstream_token_store.delete(
-                    key=jti_mapping.upstream_token_id
-                )
-                return None
+        except (MCPOAuthError, OIDCIdentityError):
+            await self._jti_mapping_store.delete(key=jti)
+            await self._upstream_token_store.delete(key=jti_mapping.upstream_token_id)
+            return None
 
-        await self._client_storage.put(
-            key=reference_hash,
-            value={
-                "user_id": str(user_id),
-                "client_id": client_id,
-                "jti": jti,
-                "upstream_token_id": jti_mapping.upstream_token_id,
-            },
-            collection=CONNECTED_CLIENT_REFERENCE_COLLECTION,
-            ttl=ttl,
+        await self._put_connected_client_reference(
+            user_id=user_id,
+            client_id=client_id,
+            jti=jti,
+            upstream_token_id=jti_mapping.upstream_token_id,
+            access_expiry=token_payload.get("exp"),
+            upstream_tokens=upstream_tokens,
         )
 
         return validated.model_copy(
@@ -1816,6 +1834,57 @@ class InterceptOIDCProxy(OIDCProxy):
                 },
             }
         )
+
+    async def _backfill_connected_client_projection(
+        self,
+        *,
+        user_id: UUID,
+        client_id: str,
+        reference_hash: str,
+        authorization_epoch: int,
+        issued_at: datetime | int | float | None,
+    ) -> None:
+        client_info = await self.get_client(client_id)
+        async with self._intercept_session_factory() as db:
+            await self._lock_projection_account(
+                db, user_id=user_id, issued_at=issued_at
+            )
+            # A revoke, reauthorization, or another legacy bearer can complete
+            # between the read-only check and taking the writer gate.
+            grant = await mcp_oauth_service.validate_provider_grant_reference(
+                db,
+                user_id=user_id,
+                client_id=client_id,
+                provider_reference_hash=reference_hash,
+                allow_unprojected=True,
+            )
+            if grant is None or grant.reference is None:
+                await self._record_connected_client_projection(
+                    db,
+                    user_id=user_id,
+                    client_id=client_id,
+                    client_info=client_info,
+                    reference_hash=reference_hash,
+                    authorization_epoch=authorization_epoch,
+                )
+                await db.commit()
+
+    async def _lock_projection_account(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: UUID,
+        issued_at: datetime | int | float | None,
+    ) -> None:
+        await acquire_authorization_lock(db, user_id=user_id, shared=True)
+        await acquire_mcp_grant_lock(db, user_id=user_id, shared=False)
+        user = await db.get(UserAccount, user_id, populate_existing=True)
+        if (
+            user is None
+            or not non_password_authentication_allowed(user)
+            or not credential_was_issued_after_cutoff(user, issued_at=issued_at)
+        ):
+            raise OIDCIdentityError("OIDC local credentials are no longer current")
 
     async def _current_local_user(
         self,
@@ -2016,13 +2085,15 @@ class InterceptOIDCProxy(OIDCProxy):
         *,
         user_id: UUID,
         provider_reference_hash: str,
+        retain_lookup: bool = False,
     ) -> bool:
         """Revoke a projected grant through FastMCP's encrypted native stores.
 
         Deleting the upstream token set invalidates every access and refresh JTI
         in that native token family. Individual stale JTI mappings are left for
         their native TTL cleanup because ``AsyncKeyValue`` intentionally has no
-        collection-scanning API.
+        collection-scanning API. A caller coordinating relational revocation
+        can retain the lookup until its transaction commits.
         """
 
         reference = await self._client_storage.get(
@@ -2061,11 +2132,20 @@ class InterceptOIDCProxy(OIDCProxy):
 
         await self._jti_mapping_store.delete(key=jti)
         await self._upstream_token_store.delete(key=upstream_token_id)
+        if not retain_lookup:
+            await self.delete_projected_client_lookup(
+                provider_reference_hash=provider_reference_hash,
+            )
+        return True
+
+    async def delete_projected_client_lookup(
+        self, *, provider_reference_hash: str
+    ) -> None:
+        """Discard the retry lookup after durable revocation commits."""
         await self._client_storage.delete(
             key=provider_reference_hash,
             collection=CONNECTED_CLIENT_REFERENCE_COLLECTION,
         )
-        return True
 
 
 __all__ = [

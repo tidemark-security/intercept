@@ -20,6 +20,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.authentication_activity import (
+    defer_mcp_oauth_activity,
+    persist_deferred_authentication_activity,
+)
 from app.core.settings_registry import get_local
 from app.main import api_app, app, compose_http_app
 from app.mcp.local_oauth_provider import (
@@ -65,6 +69,53 @@ CODE_VERIFIER = "a" * 64
 def _code_challenge(verifier: str = CODE_VERIFIER) -> str:
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+@pytest.mark.asyncio
+async def test_deferred_oauth_activity_skips_locked_tokens_and_preserves_newer_timestamps(
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+) -> None:
+    first = datetime.now(timezone.utc)
+    second = first + timedelta(seconds=1)
+    third = second + timedelta(seconds=1)
+    user = analyst_user_factory(username="mcp-activity")
+    client = MCPOAuthClient(client_id="activity-test", client_name="Activity test")
+    async with session_maker() as db:
+        db.add_all([user, client])
+        await db.flush()
+        token = MCPOAuthToken(
+            token_hash="test-activity",
+            token_type="access",
+            client_db_id=client.id,
+            user_id=user.id,
+            resource=RESOURCE,
+            expires_at=first + timedelta(hours=1),
+        )
+        db.add(token)
+        await db.commit()
+
+        async def record(observed_at: datetime) -> None:
+            defer_mcp_oauth_activity(
+                db, client_id=client.id, token_id=token.id, observed_at=observed_at
+            )
+            await persist_deferred_authentication_activity(db)
+
+        await record(second)
+        await record(first)
+        async with session_maker() as revoker:
+            locked = await revoker.get(MCPOAuthToken, token.id, with_for_update=True)
+            assert locked is not None
+            assert locked.last_used_at == second
+            await asyncio.wait_for(record(third), timeout=2)
+            locked.revoked_at = third
+            await revoker.commit()
+        await record(third)
+        await db.refresh(token)
+        await db.refresh(client)
+        assert token.last_used_at == second
+        assert token.revoked_at == third
+        assert client.last_seen_at == third
 
 
 @pytest_asyncio.fixture

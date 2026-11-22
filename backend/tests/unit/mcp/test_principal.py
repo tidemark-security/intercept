@@ -204,15 +204,27 @@ async def test_principal_middleware_binds_every_protocol_request(
     )
     resolver = AsyncMock(return_value=principal)
     monkeypatch.setattr("app.mcp.principal.require_mcp_principal", resolver)
+    persist_activity = AsyncMock()
+    monkeypatch.setattr(
+        "app.mcp.principal.persist_deferred_authentication_activity", persist_activity
+    )
     session = _Session(None)
     middleware = MCPPrincipalMiddleware(session_factory=_session_factory(session))
 
     async def call_next(_context):
         assert get_current_mcp_principal() is principal
+        assert session.committed
+        persist_activity.assert_not_awaited()
         return "listed"
 
     result = await middleware.on_request(SimpleNamespace(method="tools/list"), call_next)
 
     assert result == "listed"
-    resolver.assert_awaited_once()
+    resolver.assert_awaited_once_with(
+        db=session,
+        commit=False,
+        revalidate_source_credential=True,
+        skip_locked=True,
+    )
+    persist_activity.assert_awaited_once_with(session)
     assert get_current_mcp_principal() is None

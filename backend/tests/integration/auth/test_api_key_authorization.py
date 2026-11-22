@@ -9,15 +9,18 @@ from unittest.mock import AsyncMock
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.api_key_scopes import (
     API_ADMIN_SCOPE,
     API_READ_SCOPE,
     API_WRITE_SCOPE,
+    MCP_ACCESS_SCOPE,
 )
 from app.api.routes import soc_metrics as soc_metrics_routes
+from app.mcp.auth import InterceptApiKeyVerifier
+from app.mcp.principal import require_mcp_principal
 from app.models.enums import AccountType, UserRole, UserStatus
 from app.models.models import (
     AnalystMetricsResponse,
@@ -100,6 +103,53 @@ async def test_parallel_shared_api_key_validation_is_read_only_and_deadlock_free
         stored_key = await read_db.get(ApiKey, api_key_id)
         assert stored_key is not None
         assert stored_key.last_used_at is not None
+
+
+@pytest.mark.asyncio
+async def test_mcp_api_key_authentication_can_overlap_activity_touch(
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    user = UserAccount(
+        username="mcp-key-during-activity",
+        account_type=AccountType.NHI,
+        role=UserRole.ANALYST,
+        status=UserStatus.ACTIVE,
+    )
+    async with session_maker() as setup_db:
+        setup_db.add(user)
+        await setup_db.flush()
+        api_key, raw_key = await api_key_service.create_api_key(
+            setup_db,
+            user_id=user.id,
+            name="MCP activity overlap",
+            expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+            scopes={MCP_ACCESS_SCOPE},
+        )
+        await setup_db.commit()
+
+    verifier = InterceptApiKeyVerifier(
+        session_factory=session_maker,
+        resource_url="http://localhost:8000/mcp/streamable/",
+    )
+    async with session_maker() as activity_db:
+        await activity_db.execute(
+            update(ApiKey)
+            .where(ApiKey.id == api_key.id)
+            .values(last_used_at=datetime.now(timezone.utc))
+        )
+        access = await asyncio.wait_for(verifier.verify_token(raw_key), timeout=2)
+        assert access is not None
+        principal = await asyncio.wait_for(
+            require_mcp_principal(
+                access_token=access,
+                session_factory=session_maker,
+                revalidate_source_credential=True,
+                skip_locked=True,
+            ),
+            timeout=2,
+        )
+        assert principal.user.id == user.id
+        await activity_db.rollback()
 
 
 @pytest.mark.asyncio
