@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { getApiErrorMessage } from "@/services/apiRequestError";
 import { useLocation, useParams } from 'react-router-dom';
 import { Copy, FolderPlus, Link2, X } from 'lucide-react';
 import { useViewTransitionNavigate } from '@/hooks/useViewTransitionNavigate';
@@ -59,7 +60,6 @@ import type { FilterState } from "@/types/filters";
 import type { TimelineItemType } from '@/types/drafts';
 import type { VisibleColumns } from '@/components/layout/ThreeColumnLayout.types';
 import { alertStatusToUIState, priorityToUIPriority, uiStateToAlertStatus, type UIState } from "@/utils/statusHelpers";
-import { getApiErrorMessage } from "@/utils/entityBulkActions";
 import { NotFoundError } from "@/pages/NotFoundError";
 
 const ALERT_SORT_OPTIONS = [

@@ -330,6 +330,7 @@ export function ApiKeyCreatedContent({
 }
 
 interface CreateApiKeyModalContentProps {
+  error?: string | null;
   keyName: string;
   expiresAt: string;
   scopes: ApiKeyScope[];
@@ -347,6 +348,7 @@ interface CreateApiKeyModalContentProps {
 }
 
 export function CreateApiKeyModalContent({
+  error,
   keyName,
   expiresAt,
   scopes,
@@ -364,6 +366,11 @@ export function CreateApiKeyModalContent({
 }: CreateApiKeyModalContentProps) {
   const fields = (
     <div className="flex w-full flex-col items-start gap-6">
+      {error && (
+        <p role="alert" className="text-body font-body text-default-font">
+          {error}
+        </p>
+      )}
       <TextField
         className="h-auto w-full flex-none"
         label="Key Name"

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
+import { getApiErrorMessage } from "@/services/apiRequestError";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { bulkEntityLabels, entityBulkActions, getApiErrorMessage, type BulkEntityStatus, type BulkUpdateFields } from "@/utils/entityBulkActions";
+import { bulkEntityLabels, entityBulkActions, type BulkEntityStatus, type BulkUpdateFields } from "@/utils/entityBulkActions";
 import type { EntityType } from "@/utils/statusLabels";
 import type { Priority } from "@/types/generated/models/Priority";
 import type { VisibleColumns } from "@/components/layout/ThreeColumnLayout.types";

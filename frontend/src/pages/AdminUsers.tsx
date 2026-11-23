@@ -34,7 +34,7 @@ import type {
   AdminCreateNHIResponse,
   AdminPasskeyRead,
 } from "../types/generated";
-import { ApiError } from "../types/generated";
+import { getApiErrorMessage } from "@/services/apiRequestError";
 import { useSession } from "../contexts/sessionContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import {
@@ -228,6 +228,7 @@ function AdminUsers() {
     Record<string, AdminPasskeyRead[]>
   >({});
   const [passkeysLoading, setPasskeysLoading] = useState<string | null>(null);
+  const [createApiKeyError, setCreateApiKeyError] = useState<string | null>(null);
   const [showCreateApiKeyModal, setShowCreateApiKeyModal] = useState(false);
   const [createApiKeyFormData, setCreateApiKeyFormData] =
     useState<CreateApiKeyFormData>(EMPTY_API_KEY_FORM_DATA);
@@ -242,35 +243,6 @@ function AdminUsers() {
 
   // Check if current user is admin
   const isAdmin = currentUser?.role === "ADMIN";
-
-  // Helper function to extract error message from API responses
-  const extractErrorMessage = useCallback(
-    (err: any, fallback: string): string => {
-      if (err instanceof ApiError) {
-        // FastAPI HTTPException with detail containing ValidationErrorResponse
-        if (err.body && typeof err.body === "object" && "detail" in err.body) {
-          const detail = err.body.detail;
-          if (
-            typeof detail === "object" &&
-            detail !== null &&
-            "message" in detail
-          ) {
-            return detail.message;
-          }
-        }
-        // Direct message in body
-        if (err.body && typeof err.body === "object" && "message" in err.body) {
-          return err.body.message;
-        }
-      }
-      // Fall back to the error message
-      if (err instanceof Error) {
-        return err.message;
-      }
-      return fallback;
-    },
-    [],
-  );
 
   const {
     data: usersResponse = [],
@@ -294,7 +266,7 @@ function AdminUsers() {
   const activeError =
     error ??
     (usersQueryError
-      ? extractErrorMessage(usersQueryError, "Failed to load users")
+      ? getApiErrorMessage(usersQueryError, "Failed to load users")
       : null);
 
   const refreshUsers = useCallback(async () => {
@@ -400,7 +372,7 @@ function AdminUsers() {
         // Reload users list
         await refreshUsers();
       } catch (err) {
-        setError(extractErrorMessage(err, "Failed to create user"));
+        setError(getApiErrorMessage(err, "Failed to create user"));
       } finally {
         setCreateLoading(false);
       }
@@ -454,7 +426,7 @@ function AdminUsers() {
         // Reload users list
         await refreshUsers();
       } catch (err) {
-        setError(extractErrorMessage(err, "Failed to create NHI account"));
+        setError(getApiErrorMessage(err, "Failed to create NHI account"));
       } finally {
         setCreateLoading(false);
       }
@@ -514,7 +486,7 @@ function AdminUsers() {
       closeEditUserModal();
       showActionSuccess("User updated successfully");
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to update user"));
+      setError(getApiErrorMessage(err, "Failed to update user"));
     } finally {
       setEditLoading(false);
     }
@@ -534,7 +506,7 @@ function AdminUsers() {
       );
       await refreshUsers();
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to update user status"));
+      setError(getApiErrorMessage(err, "Failed to update user status"));
     } finally {
       setActionLoading(null);
     }
@@ -559,7 +531,7 @@ function AdminUsers() {
       });
       await refreshUsers();
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to issue password reset"));
+      setError(getApiErrorMessage(err, "Failed to issue password reset"));
     } finally {
       setActionLoading(null);
     }
@@ -575,7 +547,7 @@ function AdminUsers() {
       });
       setUserApiKeys((prev) => ({ ...prev, [userId]: keys }));
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to load API keys"));
+      setError(getApiErrorMessage(err, "Failed to load API keys"));
     } finally {
       setApiKeysLoading(null);
     }
@@ -606,7 +578,7 @@ function AdminUsers() {
         );
       setUserPasskeys((prev) => ({ ...prev, [userId]: passkeys }));
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to load passkeys"));
+      setError(getApiErrorMessage(err, "Failed to load passkeys"));
     } finally {
       setPasskeysLoading(null);
     }
@@ -625,28 +597,29 @@ function AdminUsers() {
       userId,
       scopes: ["api:read"],
     });
+    setCreateApiKeyError(null);
     setShowCreateApiKeyModal(true);
   };
 
   const handleCreateApiKey = async () => {
     if (!createApiKeyFormData.name || !createApiKeyFormData.expiresAt) {
-      setError("Name and expiration date are required");
+      setCreateApiKeyError("Name and expiration date are required");
       return;
     }
     if (createApiKeyFormData.scopes.length === 0) {
-      setError("Select at least one API key permission");
+      setCreateApiKeyError("Select at least one API key permission");
       return;
     }
 
     const expiresAtDate = parseISO8601(createApiKeyFormData.expiresAt);
     if (!expiresAtDate) {
-      setError("Expiration date is invalid");
+      setCreateApiKeyError("Expiration date is invalid");
       return;
     }
 
     try {
       setCreateApiKeyLoading(true);
-      setError(null);
+      setCreateApiKeyError(null);
       const response = await ApiKeysService.createApiKeyApiV1ApiKeysPost({
         requestBody: {
           name: createApiKeyFormData.name,
@@ -662,7 +635,7 @@ function AdminUsers() {
       // Reload the user's API keys
       await loadUserApiKeys(createApiKeyFormData.userId);
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to create API key"));
+      setCreateApiKeyError(getApiErrorMessage(err, "Failed to create API key"));
     } finally {
       setCreateApiKeyLoading(false);
     }
@@ -676,7 +649,7 @@ function AdminUsers() {
       showActionSuccess("API key revoked successfully");
       await loadUserApiKeys(userId);
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to revoke API key"));
+      setError(getApiErrorMessage(err, "Failed to revoke API key"));
     } finally {
       setActionLoading(null);
     }
@@ -695,7 +668,7 @@ function AdminUsers() {
       showActionSuccess("Passkey revoked successfully");
       await loadUserPasskeys(userId);
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to revoke passkey"));
+      setError(getApiErrorMessage(err, "Failed to revoke passkey"));
     } finally {
       setActionLoading(null);
     }
@@ -1647,6 +1620,7 @@ function AdminUsers() {
         }
       >
         <CreateApiKeyModalContent
+          error={createApiKeyError}
           keyName={createApiKeyFormData.name}
           expiresAt={createApiKeyFormData.expiresAt}
           scopes={createApiKeyFormData.scopes}
