@@ -247,6 +247,7 @@ function CasesListPage() {
             filters={filters}
             onFilterChange={setFilters}
             onSearchChange={setSearch}
+            savedFilterQueue="cases"
             retrySearch={searchQuery ? searchedQueue.refetch : undefined}
             enableTagFilters
             onTagClick={handleFilterByTag}

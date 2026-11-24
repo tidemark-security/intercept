@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { Search, X } from "lucide-react";
 import { Button, TextField } from "@tidemark-security/ux";
 import { MAX_QUEUE_SEARCH_LENGTH, normalizeQueueSearch } from "@/utils/queueSearch";
@@ -6,13 +6,15 @@ import { cn } from "@/utils/cn";
 
 const DEBOUNCE_MS = 300;
 
-export function QueueSearchField({ query, onCommit }: {
+export function QueueSearchField({ query, onCommit, inputRef }: {
   query: string;
   onCommit: (query: string) => void;
+  inputRef?: RefObject<HTMLInputElement | null>;
 }) {
   const [edit, setEdit] = useState({ source: query, text: query });
   const [composing, setComposing] = useState(false);
-  const input = useRef<HTMLInputElement>(null);
+  const localInput = useRef<HTMLInputElement>(null);
+  const input = inputRef ?? localInput;
   if (edit.source !== query) {
     setEdit({ source: query, text: normalizeQueueSearch(edit.text) === query ? edit.text : query });
   }

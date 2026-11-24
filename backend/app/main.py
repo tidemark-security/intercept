@@ -39,6 +39,7 @@ from app.api.routes import (
     mitre,
     oidc,
     queue_status,
+    saved_filters,
     search,
     settings as settings_routes,
     soc_metrics,
@@ -310,6 +311,7 @@ api_app.include_router(soc_metrics.router, prefix="/api/v1")
 api_app.include_router(api_keys.router, prefix="/api/v1")
 api_app.include_router(mcp_oauth.consent_router, prefix="/api/v1")
 api_app.include_router(mcp_oauth.management_router, prefix="/api/v1")
+api_app.include_router(saved_filters.router, prefix="/api/v1")
 api_app.include_router(search.router, prefix="/api/v1")
 api_app.include_router(validation.router, prefix="/api/v1")
 api_app.include_router(features.router, prefix="/api/v1")

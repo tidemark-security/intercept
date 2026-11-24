@@ -221,6 +221,7 @@ function TasksListPage() {
             filters={filters}
             onFilterChange={setFilters}
             onSearchChange={setSearch}
+            savedFilterQueue="tasks"
             retrySearch={searchQuery ? searchedQueue.refetch : undefined}
             enableTagFilters
             onTagClick={handleFilterByTag}

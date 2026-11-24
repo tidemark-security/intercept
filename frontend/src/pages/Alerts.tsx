@@ -708,6 +708,7 @@ function Alerts() {
             filters={filters}
             onFilterChange={setFilters}
             onSearchChange={setSearch}
+            savedFilterQueue="alerts"
             retrySearch={searchQuery ? searchedQueue.refetch : undefined}
             sortOptions={ALERT_SORT_OPTIONS}
             currentPage={currentPage}

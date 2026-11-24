@@ -1,5 +1,6 @@
 import type { FilterState } from '@/types/filters';
 import type { SortOption } from '@/components/entities/EntityFilterToolbar';
+import type { SavedFilterQueue } from '@/types/generated/models/SavedFilterQueue';
 import React from 'react';
 
 /**
@@ -58,6 +59,9 @@ export interface EntityListProps<T, F = FilterState> {
   onFilterChange: (filters: F) => void;
   onSearchChange?: (query: string) => void;
   retrySearch?: () => void;
+
+  /** Enable saved filters for this queue. */
+  savedFilterQueue?: SavedFilterQueue;
   
   /** Options for the status filter dropdown */
   statusOptions?: { value: string; label: string }[];

@@ -3674,3 +3674,32 @@ class QueueJobsPage(SQLModel):
     page: int = 1
     size: int = 25
     pages: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Saved queue filters
+# ---------------------------------------------------------------------------
+
+class SavedQueueFilter(SQLModel, table=True):
+    """A named queue filter shared across the deployment or owned by one user."""
+
+    __tablename__ = "saved_queue_filters"  # type: ignore
+    __table_args__ = (
+        CheckConstraint(
+            "queue IN ('alerts', 'cases', 'tasks')",
+            name="ck_saved_queue_filters_queue",
+        ),
+        CheckConstraint(
+            "(scope = 'personal' AND owner_id IS NOT NULL) OR "
+            "(scope = 'organization' AND owner_id IS NULL)",
+            name="ck_saved_queue_filters_scope_owner",
+        ),
+        Index("ix_saved_queue_filters_queue_owner", "queue", "owner_id"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    queue: str = Field(max_length=6)
+    name: str = Field(max_length=100)
+    scope: str = Field(max_length=12)
+    owner_id: UUID | None = Field(default=None, foreign_key="user_accounts.id", ondelete="CASCADE")
+    filters: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))

@@ -171,6 +171,23 @@ describe("useURLFilters tab memory", () => {
     expect(renderQueue("alerts", "/alerts", "another-user").result.current.filters.search).toBe("");
   });
 
+  it("recalculates a relative date range even when applying the same filters again", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-06-08T12:00:00Z"));
+      const { result } = renderQueue("alerts", "/alerts?status=NEW%2CIN_PROGRESS&timeframe=-7d");
+      const savedFilters = result.current.filters;
+      expect(savedFilters.dateRange?.end).toBe("2026-06-08T12:00:00Z");
+
+      vi.setSystemTime(new Date("2026-06-09T12:00:00Z"));
+      act(() => result.current.setFilters(savedFilters));
+      expect(result.current.location.search).toBe("?status=NEW%2CIN_PROGRESS&timeframe=-7d");
+      expect(result.current.filters.dateRange?.end).toBe("2026-06-09T12:00:00Z");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("uses explicit URL filters and pagination without changing the saved selection", () => {
     const alerts = renderQueue("alerts");
     act(() => alerts.result.current.setSearch("phishing"));

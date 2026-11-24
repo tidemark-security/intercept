@@ -183,7 +183,8 @@ export function useURLFilters<T extends AnyFilterState>(
   }, [location, storageKey]);
   const searchParams = useMemo(
     () => new URLSearchParams(location.search || restoredSearch),
-    [location.search, restoredSearch],
+    // Applying a relative date preset again should resolve it at the new time.
+    [location, restoredSearch],
   );
 
   const updateURL = useCallback((search: string) => {
