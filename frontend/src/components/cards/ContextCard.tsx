@@ -9,10 +9,12 @@ import { CopyableTimestamp } from "@/components/data-display/CopyableTimestamp";
 import MarkdownContent from "@/components/data-display/MarkdownContent";
 import { useAlertPanelExpansion } from "@/hooks/useAlertPanelExpansion";
 import type { MatchedContextSection } from "@/types/generated/models/MatchedContextSection";
+import { cn } from "@/utils/cn";
 import { IconWrapper } from "@/utils/IconWrapper";
 
 interface ContextCardProps {
   context?: MatchedContextSection | null;
+  className?: string;
 }
 
 type ContextCriterion = Record<string, string> & {
@@ -37,7 +39,7 @@ function formatContextScope(criteria: ContextCriterion[] | null | undefined) {
   });
 }
 
-export function ContextCard({ context }: ContextCardProps) {
+export function ContextCard({ context, className }: ContextCardProps) {
   const [isExpanded, setIsExpanded] = useAlertPanelExpansion("analyst-context", false);
   const contentId = useId();
   const contextItems = Array.isArray(context?.items) ? context.items : [];
@@ -51,7 +53,10 @@ export function ContextCard({ context }: ContextCardProps) {
   return (
     <section
       aria-label="Analyst Context"
-      className="mt-2 flex w-full min-w-0 flex-col gap-2 border-t border-solid border-neutral-border pt-4"
+      className={cn(
+        "mt-2 flex w-full min-w-0 flex-col gap-2 border-t border-solid border-neutral-border pt-4",
+        className,
+      )}
     >
       <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <div className="flex min-w-0 flex-wrap items-center gap-2">

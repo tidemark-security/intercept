@@ -221,6 +221,7 @@ function TriageTagBadges({ tags, variant }: { tags: string[]; variant: 'neutral'
 
 interface TriageRecommendationCardProps {
   recommendation?: TriageRecommendationRead | null;
+  className?: string;
   onRequest?: () => void;
   onAccept: (options: AcceptRecommendationRequest) => void;
   onReject: (category: RejectionCategory, reason?: string) => void;
@@ -238,6 +239,7 @@ interface TriageRecommendationCardProps {
 
 export function TriageRecommendationCard({
   recommendation,
+  className,
   onRequest,
   onAccept,
   onReject,
@@ -461,6 +463,7 @@ export function TriageRecommendationCard({
         className={cn(
           result && styles.card,
           'mt-2 flex w-full min-w-0 flex-col gap-2 border-t border-solid border-neutral-border pt-4',
+          className,
         )}
       >
         <header className={cn('flex w-full shrink-0 items-center gap-3', !result && 'min-h-8')}>
