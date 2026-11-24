@@ -117,6 +117,8 @@ function Alerts() {
   // UI state for filtering - synced with URL query params
   // Default status to ['NEW', 'IN_PROGRESS'] to show active work for analysts
   const { filters, setFilters, setSearch, currentPage, setCurrentPage } = useURLFilters<FilterState>({
+    queue: "alerts",
+    userId: user?.id,
     defaults: {
       search: "",
       assignee: null,

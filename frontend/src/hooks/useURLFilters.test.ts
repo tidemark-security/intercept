@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { filtersToURLParams, parseFiltersFromURL } from "@/hooks/useURLFilters";
+import { filtersToURLParams, parseFiltersFromURL, useURLFilters } from "@/hooks/useURLFilters";
 import type { FilterState } from "@/types/filters";
 
 describe("useURLFilters helpers", () => {
@@ -106,5 +109,110 @@ describe("useURLFilters helpers", () => {
     expect(params.get("start_date")).toBe("2026-06-01T00:00:00Z");
     expect(params.get("end_date")).toBe("2026-06-08T00:00:00Z");
     expect(params.has("timeframe")).toBe(false);
+  });
+});
+
+describe("useURLFilters tab memory", () => {
+  const defaults: FilterState = {
+    search: "",
+    assignee: null,
+    status: ["NEW", "IN_PROGRESS"],
+    dateRange: null,
+  };
+
+  function renderQueue(queue: "alerts" | "cases" | "tasks", url = `/${queue}`, userId = "analyst") {
+    return renderHook(() => ({
+      ...useURLFilters({ queue, defaults, userId }),
+      location: useLocation(),
+      navigate: useNavigate(),
+    }), {
+      wrapper: ({ children }: { children: ReactNode }) =>
+        createElement(MemoryRouter, { initialEntries: [url] }, children),
+    });
+  }
+
+  beforeEach(() => sessionStorage.clear());
+
+  it("restores the full selection and starts on page one when returning", () => {
+    const selection: FilterState = {
+      ...defaults,
+      search: "login",
+      status: ["CLOSED_FP"],
+      assignee: ["analyst"],
+      includeTags: ["identity", "vpn"],
+      excludeTags: ["noise"],
+      dateRange: { start: "2026-06-01T00:00:00Z", end: "2026-06-08T00:00:00Z", preset: "custom" },
+      sortBy: "priority",
+      sortOrder: "asc",
+    };
+    const first = renderQueue("alerts");
+    act(() => first.result.current.setFilters(selection));
+    act(() => first.result.current.setCurrentPage(3));
+    expect(first.result.current.currentPage).toBe(3);
+    first.unmount();
+
+    const { result } = renderQueue("alerts");
+    expect(result.current.filters).toEqual(selection);
+    expect(result.current.currentPage).toBe(1);
+    expect(result.current.location.search).toBe(`?${filtersToURLParams(selection)}`);
+  });
+
+  it("keeps selections separate by queue and user", () => {
+    const alerts = renderQueue("alerts");
+    act(() => alerts.result.current.setSearch("phishing"));
+    alerts.unmount();
+    const cases = renderQueue("cases");
+    act(() => cases.result.current.setSearch("outbound"));
+    cases.unmount();
+
+    expect(renderQueue("alerts").result.current.filters.search).toBe("phishing");
+    expect(renderQueue("cases").result.current.filters.search).toBe("outbound");
+    expect(renderQueue("tasks").result.current.filters.search).toBe("");
+    expect(renderQueue("alerts", "/alerts", "another-user").result.current.filters.search).toBe("");
+  });
+
+  it("uses explicit URL filters and pagination without changing the saved selection", () => {
+    const alerts = renderQueue("alerts");
+    act(() => alerts.result.current.setSearch("phishing"));
+    alerts.unmount();
+    const { result } = renderQueue("alerts", "/alerts?status=NEW&page=2");
+
+    expect(result.current.filters).toMatchObject({ search: "", status: ["NEW"] });
+    expect(result.current.currentPage).toBe(2);
+    act(() => result.current.navigate("/alerts"));
+    expect(result.current.filters.search).toBe("phishing");
+    expect(result.current.currentPage).toBe(1);
+    act(() => result.current.navigate(-1));
+    expect(result.current.filters).toMatchObject({ search: "", status: ["NEW"] });
+    act(() => result.current.navigate(1));
+    expect(result.current.filters.search).toBe("phishing");
+  });
+
+  it("keeps cleared filters and search cleared on return", () => {
+    const alerts = renderQueue("alerts");
+    act(() => alerts.result.current.setFilters({ ...defaults, status: ["CLOSED_FP"], search: "phishing" }));
+    act(() => alerts.result.current.setFilters({ ...defaults, status: null, search: "phishing" }));
+    act(() => alerts.result.current.setSearch(""));
+    alerts.unmount();
+
+    expect(renderQueue("alerts").result.current.filters).toMatchObject(defaults);
+  });
+
+  it("still updates the URL when session storage is unavailable", () => {
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new DOMException("Storage blocked", "SecurityError");
+    });
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Storage blocked", "SecurityError");
+    });
+    try {
+      const { result } = renderQueue("alerts");
+      act(() => result.current.setSearch("phishing"));
+      expect(result.current.filters.search).toBe("phishing");
+      expect(result.current.location.search).toBe("?search=phishing");
+    } finally {
+      getItem.mockRestore();
+      setItem.mockRestore();
+    }
   });
 });

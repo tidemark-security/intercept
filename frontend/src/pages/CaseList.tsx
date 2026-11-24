@@ -78,6 +78,8 @@ function CasesListPage() {
 
   // UI state for filtering - synced with URL query params
   const { filters, setFilters, setSearch, currentPage, setCurrentPage } = useURLFilters<CaseFilterState>({
+    queue: "cases",
+    userId: user?.id,
     defaults: {
       search: "",
       assignee: null,

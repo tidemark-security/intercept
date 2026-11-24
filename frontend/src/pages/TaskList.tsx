@@ -71,6 +71,8 @@ function TasksListPage() {
 
   // UI state for filtering - synced with URL query params
   const { filters, setFilters, setSearch, currentPage, setCurrentPage } = useURLFilters<TaskFilterState>({
+    queue: "tasks",
+    userId: user?.id,
     defaults: {
       search: "",
       assignee: null,
