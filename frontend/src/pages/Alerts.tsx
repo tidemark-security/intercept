@@ -39,6 +39,7 @@ import { useRejectTriageRecommendation } from "@/hooks/useRejectTriageRecommenda
 import { useEnqueueTriage } from "@/hooks/useEnqueueTriage";
 import { useToast } from "@/contexts/ToastContext";
 import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { useAlertDetailLayout } from "@/hooks/useAlertDetailLayout";
 import { useSession } from "@/contexts/sessionContext";
 import { useURLFilters } from "@/hooks/useURLFilters";
 import { toEntityListQueryFilters } from "@/utils/entityListQueryFilters";
@@ -112,6 +113,7 @@ function Alerts() {
 
   // Get current authenticated user from session context
   const { user, isAuditor } = useSession();
+  const { layout: alertDetailLayout } = useAlertDetailLayout(user?.id);
   const currentUser = user?.username || null;
 
   // UI state for filtering - synced with URL query params
@@ -738,6 +740,7 @@ function Alerts() {
             searchQuery={searchQuery}
             entityDetail={alertDetail ?? null}
             entityType="alert"
+            alertDetailLayout={alertDetailLayout}
             mode={isAlertReadOnly ? 'readonly' : 'editable'}
             selectedEntityId={selectedAlertId}
             currentUser={currentUser}

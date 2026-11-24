@@ -420,6 +420,7 @@ export function UnifiedTimeline(props: UnifiedTimelineProps) {
 
 function UnifiedTimelineInner({
   entityDetail,
+  alertDetailLayout = { triage: "embed", context: "embed" },
   entityType,
   selectedEntityId,
   currentUser,
@@ -1117,9 +1118,14 @@ function UnifiedTimelineInner({
                 const hasTimelineItems = timelineItems.length > 0;
                 const alert = entityType === 'alert' ? entityDetail as AlertReadWithCase : null;
                 const requestTriage = isTriageEnabled && !isEntityClosed && canRequestTriage ? onRequestTriage : undefined;
+                const standalonePanelClassName = cn(
+                  "mt-0 rounded-md border px-4 py-3",
+                  isDarkTheme ? "bg-neutral-0" : "bg-neutral-50",
+                );
                 const triage = alert && (alert.triage_recommendation || requestTriage) ? (
                   <TriageRecommendationCard
                     recommendation={alert.triage_recommendation}
+                    className={alertDetailLayout.triage === "embed" ? undefined : standalonePanelClassName}
                     onRequest={requestTriage}
                     onAccept={onAcceptTriageRecommendation || (() => { })}
                     onReject={onRejectTriageRecommendation || (() => { })}
@@ -1135,7 +1141,10 @@ function UnifiedTimelineInner({
                   />
                 ) : null;
                 const context = alert?.context?.items?.length ? (
-                  <ContextCard context={alert.context} />
+                  <ContextCard
+                    context={alert.context}
+                    className={alertDetailLayout.context === "embed" ? undefined : standalonePanelClassName}
+                  />
                 ) : null;
 
                 return (
@@ -1143,6 +1152,12 @@ function UnifiedTimelineInner({
                     "flex w-full flex-col items-start",
                     timelineViewMode === 'swimlane' && "h-full min-h-0",
                   )}>
+                    {((triage && alertDetailLayout.triage === "before") || (context && alertDetailLayout.context === "before")) && (
+                      <div className="flex w-full flex-col gap-6 px-6 pt-6 mobile:gap-2 mobile:px-2 mobile:pt-2">
+                        {alertDetailLayout.triage === "before" && triage}
+                        {alertDetailLayout.context === "before" && context}
+                      </div>
+                    )}
                     {/* Entity Metadata Card */}
                     <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
                       <EntityMetadataCard
@@ -1150,9 +1165,20 @@ function UnifiedTimelineInner({
                         entityType={entityType}
                         isLoading={isLoading}
                         onUpdateTags={onUpdateTags}
-                        beforeDescription={<>{triage}{context}</>}
+                        beforeDescription={(
+                          <>
+                            {alertDetailLayout.triage === "embed" && triage}
+                            {alertDetailLayout.context === "embed" && context}
+                          </>
+                        )}
                       />
                     </div>
+                    {((triage && alertDetailLayout.triage === "after") || (context && alertDetailLayout.context === "after")) && (
+                      <div className="flex w-full flex-col gap-6 px-6 pt-6 mobile:gap-2 mobile:px-2 mobile:pt-2">
+                        {alertDetailLayout.triage === "after" && triage}
+                        {alertDetailLayout.context === "after" && context}
+                      </div>
+                    )}
 
                     {/* Timeline Items */}
                     <div className={cn(

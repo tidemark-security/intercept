@@ -2325,3 +2325,152 @@ test("MCP consent keeps its capability out of request URLs and posts FastMCP fie
     action: "approve",
   });
 });
+
+test("profile positions triage and context independently on alert details", async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1000 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await installProductionApiMocks(page);
+  await page.route(/\/api\/v1\/alerts\/[12](?:\?|$)/, (route) => {
+    const alert = new URL(route.request().url()).pathname.endsWith("/1") ? sampleAlert : secondAlert;
+    return route.fulfill(jsonResponse({
+      ...alert,
+      context: { items: [{ id: 17, body: "Scheduled maintenance is in progress.", author: "admin" }] },
+      triage_recommendation: {
+        id: alert.id, alert_id: alert.id, created_at: now, created_by: "tidemark_ai",
+        status: "PENDING", disposition: "NEEDS_INVESTIGATION", confidence: 0.8,
+        reasoning_bullets: ["Compare the alert with the maintenance window."],
+      },
+    }));
+  });
+
+  const settings = page.locator("#profile-alert-detail-layout");
+  const triageSetting = settings.getByRole("combobox", { name: "AI Triage Recommendation" });
+  const contextSetting = settings.getByRole("combobox", { name: "Analyst Context" });
+  const openSettings = async () => {
+    await page.goto("/profile");
+    await page.getByRole("button", { name: "Alert Detail Layout", exact: true }).click();
+  };
+  const select = (control: Locator, position: string) => control.selectOption({ label: position });
+  const expectPlacement = async (
+    alert: typeof sampleAlert,
+    triagePosition: "before" | "embed" | "after",
+    contextPosition: "before" | "embed" | "after",
+  ) => {
+    const timeline = page.getByLabel("alert timeline content");
+    const info = timeline.getByRole("heading", { name: alert.title, exact: true }).locator("..");
+    await expect(info.getByRole("region", { name: "Description" })).toBeVisible();
+    const checkPanel = async (name: string, position: "before" | "embed" | "after") => {
+      const panel = timeline.getByRole("region", { name, exact: true });
+      await expect(panel).toHaveCount(1);
+      await expect(panel).toBeVisible();
+      await expect(info.getByRole("region", { name, exact: true })).toHaveCount(position === "embed" ? 1 : 0);
+      await expect(panel).toHaveCSS("box-shadow", "none");
+
+      if (position !== "embed") {
+        await expect(panel).toHaveCSS("border-left-width", "1px");
+        await expect(panel).toHaveCSS("border-right-width", "1px");
+        await expect(panel).toHaveCSS("border-bottom-width", "1px");
+        const neutralBorder = await info.evaluate((element) => getComputedStyle(element).borderLeftColor);
+        await expect(panel).toHaveCSS("border-left-color", neutralBorder);
+        const infoBounds = (await info.boundingBox())!;
+        const panelBounds = (await panel.boundingBox())!;
+        if (position === "before") {
+          expect(panelBounds.y + panelBounds.height).toBeLessThan(infoBounds.y);
+        } else {
+          expect(panelBounds.y).toBeGreaterThan(infoBounds.y + infoBounds.height);
+        }
+      } else {
+        await expect(panel).toHaveCSS("border-left-width", "0px");
+      }
+    };
+    await checkPanel("AI Triage Recommendation", triagePosition);
+    await checkPanel("Analyst Context", contextPosition);
+  };
+  const timeline = page.getByLabel("alert timeline content");
+  const triage = timeline.getByRole("region", { name: "AI Triage Recommendation", exact: true });
+  const context = timeline.getByRole("region", { name: "Analyst Context", exact: true });
+  const checkCollapse = async () => {
+    const panels = [
+      {
+        panel: triage,
+        name: "triage recommendation",
+        details: triage.getByRole("button", { name: /^Reasoning/ }),
+        summary: triage.getByRole("group", { name: "Recommendation preview" }),
+      },
+      {
+        panel: context,
+        name: "analyst context",
+        details: context.getByText("Global", { exact: true }),
+        summary: context.getByText("Scheduled maintenance is in progress.", { exact: true }),
+      },
+    ];
+    for (const { panel, name, details, summary } of panels) {
+      const expand = panel.getByRole("button", { name: `Expand ${name}` });
+      const collapse = panel.getByRole("button", { name: `Collapse ${name}` });
+      await expect(expand).toHaveAttribute("aria-expanded", "false");
+      await expect(details).toBeHidden();
+      await expect(summary).toBeVisible();
+      await expand.click();
+      await expect(collapse).toHaveAttribute("aria-expanded", "true");
+      await expect(details).toBeVisible();
+      await collapse.click();
+      await expect(expand).toHaveAttribute("aria-expanded", "false");
+      await expect(details).toBeHidden();
+      await expect(summary).toBeVisible();
+    }
+  };
+
+  await openSettings();
+  await expect(triageSetting).toHaveValue("embed");
+  await expect(contextSetting).toHaveValue("embed");
+  await select(triageSetting, "Before");
+  await expect(contextSetting).toHaveValue("embed");
+  await select(contextSetting, "After");
+
+  await page.goto(`/alerts/${sampleAlert.human_id}`);
+  await expectPlacement(sampleAlert, "before", "after");
+  await checkCollapse();
+  await page.reload();
+  await expectPlacement(sampleAlert, "before", "after");
+  await page.getByRole("link", { name: new RegExp(secondAlert.title) }).click();
+  await expectPlacement(secondAlert, "before", "after");
+
+  await openSettings();
+  await expect(triageSetting).toHaveValue("before");
+  await expect(contextSetting).toHaveValue("after");
+  await select(triageSetting, "After");
+  await select(contextSetting, "Before");
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto(`/alerts/${sampleAlert.human_id}`);
+  await expectPlacement(sampleAlert, "after", "before");
+  await checkCollapse();
+
+  const otherAccount = await page.context().newPage();
+  await installProductionApiMocks(otherAccount);
+  await otherAccount.route("**/api/v1/auth/session", (route) => route.fulfill(jsonResponse({
+    ...apiResponse("/api/v1/auth/session") as Record<string, unknown>,
+    user: { ...adminUser, id: "second-user-id", username: "another-analyst" },
+  })));
+  await otherAccount.goto("/profile");
+  const otherSettings = otherAccount.locator("#profile-alert-detail-layout");
+  await expect(otherSettings.getByRole("combobox", { name: "AI Triage Recommendation" })).toHaveValue("embed");
+  await expect(otherSettings.getByRole("combobox", { name: "Analyst Context" })).toHaveValue("embed");
+  await otherAccount.close();
+
+  await openSettings();
+  await select(triageSetting, "Before");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/alerts/${sampleAlert.human_id}`);
+  await expectPlacement(sampleAlert, "before", "before");
+  const triageBounds = (await triage.boundingBox())!;
+  const contextBounds = (await context.boundingBox())!;
+  expect(triageBounds.y + triageBounds.height).toBeLessThan(contextBounds.y);
+  await checkCollapse();
+
+  await page.setViewportSize({ width: 1920, height: 1000 });
+  await openSettings();
+  await select(triageSetting, "Embed");
+  await select(contextSetting, "Embed");
+  await page.goto(`/alerts/${sampleAlert.human_id}`);
+  await expectPlacement(sampleAlert, "embed", "embed");
+});
