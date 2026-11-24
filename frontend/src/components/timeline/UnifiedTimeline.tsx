@@ -420,6 +420,7 @@ export function UnifiedTimeline(props: UnifiedTimelineProps) {
 
 function UnifiedTimelineInner({
   entityDetail,
+  alertDetailLayout = { triage: "embed", context: "embed" },
   entityType,
   selectedEntityId,
   currentUser,
@@ -1143,6 +1144,12 @@ function UnifiedTimelineInner({
                     "flex w-full flex-col items-start",
                     timelineViewMode === 'swimlane' && "h-full min-h-0",
                   )}>
+                    {((triage && alertDetailLayout.triage === "before") || (context && alertDetailLayout.context === "before")) && (
+                      <div className="flex w-full flex-col gap-3 px-6 pt-6 mobile:px-2 mobile:pt-2">
+                        {alertDetailLayout.triage === "before" && triage}
+                        {alertDetailLayout.context === "before" && context}
+                      </div>
+                    )}
                     {/* Entity Metadata Card */}
                     <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
                       <EntityMetadataCard
@@ -1150,9 +1157,20 @@ function UnifiedTimelineInner({
                         entityType={entityType}
                         isLoading={isLoading}
                         onUpdateTags={onUpdateTags}
-                        beforeDescription={<>{triage}{context}</>}
+                        beforeDescription={(
+                          <>
+                            {alertDetailLayout.triage === "embed" && triage}
+                            {alertDetailLayout.context === "embed" && context}
+                          </>
+                        )}
                       />
                     </div>
+                    {((triage && alertDetailLayout.triage === "after") || (context && alertDetailLayout.context === "after")) && (
+                      <div className="flex w-full flex-col gap-3 px-6 pt-6 mobile:px-2 mobile:pt-2">
+                        {alertDetailLayout.triage === "after" && triage}
+                        {alertDetailLayout.context === "after" && context}
+                      </div>
+                    )}
 
                     {/* Timeline Items */}
                     <div className={cn(

@@ -27,6 +27,7 @@ import { useTimezonePreference } from "@/contexts/TimezoneContext";
 import { useToast } from "@/contexts/ToastContext";
 import { useSession } from "@/contexts/sessionContext";
 import { useVisualFilterPreference } from "@/contexts/VisualFilterContext";
+import { alertDetailPositions, useAlertDetailLayout, type AlertDetailPosition } from "@/hooks/useAlertDetailLayout";
 import { useBreakpoint } from "@/hooks/useBreakpoint";
 import type { ApiKeyCreateResponse } from "@/types/generated/models/ApiKeyCreateResponse";
 import type { ApiKeyRead } from "@/types/generated/models/ApiKeyRead";
@@ -66,6 +67,12 @@ import {
   Trash2,
 } from "lucide-react";
 import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+
+const alertDetailPositionLabels: Record<AlertDetailPosition, string> = {
+  before: "Before",
+  embed: "Embed",
+  after: "After",
+};
 
 const visualFilterLimits = getVisualFilterLimits();
 
@@ -137,6 +144,7 @@ function ProfileManagement() {
     passkeyAllowed,
     apiKeyAllowed,
   } = useSession();
+  const { layout: alertDetailLayout, setTriage, setContext } = useAlertDetailLayout(user?.id);
   const canManagePassword = passwordLoginAllowed ?? localCredentialManagementAllowed;
   const canUsePasskeys = passkeyAllowed ?? localCredentialManagementAllowed;
   const canCreateApiKeys = apiKeyAllowed ?? localCredentialManagementAllowed;
@@ -183,6 +191,7 @@ function ProfileManagement() {
   const profileSectionNavigationItems = React.useMemo<SectionNavigationItem[]>(
     () => [
       { id: "profile-appearance", label: "Appearance", group: "Preferences" },
+      { id: "profile-alert-detail-layout", label: "Alert Detail Layout", group: "Preferences" },
       { id: "profile-password", label: "Password", group: "Security" },
       { id: "profile-api-keys", label: "API Keys", group: "Security" },
       { id: "profile-mcp-clients", label: "MCP Clients", group: "Security" },
@@ -851,6 +860,38 @@ function ProfileManagement() {
                 </div>
 
               </div>
+              </section>
+
+              <section id="profile-alert-detail-layout" className={profileSectionClassName}>
+                <ProfileSectionHeader
+                  icon={<SlidersHorizontal className="text-[20px] text-subtext-color" />}
+                  title="Alert Detail Layout"
+                />
+                <p className="text-body font-body text-subtext-color">
+                  Choose where each panel appears relative to the alert information card.
+                  These preferences are saved in this browser for your account.
+                </p>
+                <div className="grid w-full max-w-2xl gap-4 sm:grid-cols-2">
+                  {[
+                    { label: "AI Triage Recommendation", value: alertDetailLayout.triage, onChange: setTriage },
+                    { label: "Analyst Context", value: alertDetailLayout.context, onChange: setContext },
+                  ].map(({ label, value, onChange }) => (
+                    <label key={label} className="flex min-w-0 flex-col gap-1">
+                      <span className="text-caption-bold font-caption-bold text-default-font">{label}</span>
+                      <select
+                        className="h-8 w-full rounded-md border border-neutral-border bg-neutral-100 px-3 text-body text-default-font focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus-border"
+                        value={value}
+                        onChange={(event) => onChange(event.target.value)}
+                      >
+                        {alertDetailPositions.map((position) => (
+                          <option key={position} value={position}>
+                            {alertDetailPositionLabels[position]}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
+                </div>
               </section>
             </div>
 

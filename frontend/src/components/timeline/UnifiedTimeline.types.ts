@@ -1,3 +1,4 @@
+import type { AlertDetailLayout } from "@/hooks/useAlertDetailLayout";
 import type { AlertRead } from '@/types/generated/models/AlertRead';
 import type { CaseReadWithAlerts } from '@/types/generated/models/CaseReadWithAlerts';
 import type { TaskRead } from '@/types/generated/models/TaskRead';
@@ -14,6 +15,7 @@ export type UnifiedUser = app__api__routes__admin_auth__UserSummary | any;
 export type UnifiedEntity = AlertRead | CaseReadWithAlerts | TaskRead;
 
 export interface UnifiedTimelineProps {
+  alertDetailLayout?: AlertDetailLayout;
   searchQuery?: string;
   /** 
    * Entity detail data with timeline items

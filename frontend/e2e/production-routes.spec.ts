@@ -2325,3 +2325,95 @@ test("MCP consent keeps its capability out of request URLs and posts FastMCP fie
     action: "approve",
   });
 });
+
+test("profile positions triage and context independently on alert details", async ({ page }) => {
+  await page.setViewportSize({ width: 1920, height: 1000 });
+  await installProductionApiMocks(page);
+  await page.route(/\/api\/v1\/alerts\/[12](?:\?|$)/, (route) => {
+    const alert = new URL(route.request().url()).pathname.endsWith("/1") ? sampleAlert : secondAlert;
+    return route.fulfill(jsonResponse({
+      ...alert,
+      context: { items: [{ id: 17, body: "Scheduled maintenance is in progress.", author: "admin" }] },
+      triage_recommendation: {
+        id: alert.id, alert_id: alert.id, created_at: now, created_by: "tidemark_ai",
+        status: "PENDING", disposition: "NEEDS_INVESTIGATION", confidence: 0.8,
+      },
+    }));
+  });
+
+  const settings = page.locator("#profile-alert-detail-layout");
+  const triageSetting = settings.getByRole("combobox", { name: "AI Triage Recommendation" });
+  const contextSetting = settings.getByRole("combobox", { name: "Analyst Context" });
+  const openSettings = async () => {
+    await page.goto("/profile");
+    await page.getByRole("button", { name: "Alert Detail Layout", exact: true }).click();
+  };
+  const select = (control: Locator, position: string) => control.selectOption({ label: position });
+  const expectPlacement = async (
+    alert: typeof sampleAlert,
+    triagePosition: "before" | "embed" | "after",
+    contextPosition: "before" | "embed" | "after",
+  ) => {
+    const timeline = page.getByLabel("alert timeline content");
+    const info = timeline.getByRole("heading", { name: alert.title, exact: true }).locator("..");
+    await expect(info.getByRole("region", { name: "Description" })).toBeVisible();
+    const checkPanel = async (name: string, position: "before" | "embed" | "after") => {
+      const panel = timeline.getByRole("region", { name, exact: true });
+      await expect(panel).toHaveCount(1);
+      await expect(panel).toBeVisible();
+      await expect(info.getByRole("region", { name, exact: true })).toHaveCount(position === "embed" ? 1 : 0);
+
+      if (position !== "embed") {
+        const infoBounds = (await info.boundingBox())!;
+        const panelBounds = (await panel.boundingBox())!;
+        if (position === "before") {
+          expect(panelBounds.y + panelBounds.height).toBeLessThanOrEqual(infoBounds.y);
+        } else {
+          expect(panelBounds.y).toBeGreaterThanOrEqual(infoBounds.y + infoBounds.height);
+        }
+      }
+    };
+    await checkPanel("AI Triage Recommendation", triagePosition);
+    await checkPanel("Analyst Context", contextPosition);
+  };
+
+  await openSettings();
+  await expect(triageSetting).toHaveValue("embed");
+  await expect(contextSetting).toHaveValue("embed");
+  await select(triageSetting, "Before");
+  await expect(contextSetting).toHaveValue("embed");
+  await select(contextSetting, "After");
+
+  await page.goto(`/alerts/${sampleAlert.human_id}`);
+  await expectPlacement(sampleAlert, "before", "after");
+  await page.reload();
+  await expectPlacement(sampleAlert, "before", "after");
+  await page.getByRole("link", { name: new RegExp(secondAlert.title) }).click();
+  await expectPlacement(secondAlert, "before", "after");
+
+  await openSettings();
+  await expect(triageSetting).toHaveValue("before");
+  await expect(contextSetting).toHaveValue("after");
+  await select(triageSetting, "After");
+  await select(contextSetting, "Before");
+  await page.goto(`/alerts/${sampleAlert.human_id}`);
+  await expectPlacement(sampleAlert, "after", "before");
+
+  const otherAccount = await page.context().newPage();
+  await installProductionApiMocks(otherAccount);
+  await otherAccount.route("**/api/v1/auth/session", (route) => route.fulfill(jsonResponse({
+    ...apiResponse("/api/v1/auth/session") as Record<string, unknown>,
+    user: { ...adminUser, id: "second-user-id", username: "another-analyst" },
+  })));
+  await otherAccount.goto("/profile");
+  const otherSettings = otherAccount.locator("#profile-alert-detail-layout");
+  await expect(otherSettings.getByRole("combobox", { name: "AI Triage Recommendation" })).toHaveValue("embed");
+  await expect(otherSettings.getByRole("combobox", { name: "Analyst Context" })).toHaveValue("embed");
+  await otherAccount.close();
+
+  await openSettings();
+  await select(triageSetting, "Embed");
+  await select(contextSetting, "Embed");
+  await page.goto(`/alerts/${sampleAlert.human_id}`);
+  await expectPlacement(sampleAlert, "embed", "embed");
+});
