@@ -78,6 +78,8 @@ function CasesListPage() {
 
   // UI state for filtering - synced with URL query params
   const { filters, setFilters, setSearch, currentPage, setCurrentPage } = useURLFilters<CaseFilterState>({
+    queue: "cases",
+    userId: user?.id,
     defaults: {
       search: "",
       assignee: null,
@@ -245,6 +247,7 @@ function CasesListPage() {
             filters={filters}
             onFilterChange={setFilters}
             onSearchChange={setSearch}
+            savedFilterQueue="cases"
             retrySearch={searchQuery ? searchedQueue.refetch : undefined}
             enableTagFilters
             onTagClick={handleFilterByTag}

@@ -29,12 +29,15 @@ import { usePortalContainer } from "@/contexts/PortalContainerContext";
 import { SessionContext } from "@/contexts/sessionContext";
 import type { FilterState, SortOrder } from "@/types/filters";
 import type { AlertStatus } from "@/types/generated/models/AlertStatus";
+import type { SavedFilterQueue } from "@/types/generated/models/SavedFilterQueue";
+import type { SavedFilterSnapshot } from "@/types/generated/models/SavedFilterSnapshot";
 import type { app__api__routes__admin_auth__UserSummary } from "@/types/generated/models/app__api__routes__admin_auth__UserSummary";
 import { cn } from "@/utils/cn";
 import { getRelativeTimeLabel } from "@/utils/dateFilters";
 import { ALERT_STATUS_OPTIONS, formatAlertStatusLabel, type StatusOption } from "@/utils/statusLabels";
 import styles from "./EntityFilterToolbar.module.css";
 import { QueueSearchField } from "./QueueSearchField";
+import { SavedQueueFilters } from "./SavedQueueFilters";
 import { normalizeQueueSearch } from "@/utils/queueSearch";
 
 export interface EntityFilterToolbarProps
@@ -42,6 +45,7 @@ export interface EntityFilterToolbarProps
   filters?: FilterState;
   onFilterChange?: (filters: FilterState) => void;
   onSearchChange?: (query: string) => void;
+  savedFilterQueue?: SavedFilterQueue;
   assignees?: app__api__routes__admin_auth__UserSummary[];
   assigneesLoading?: boolean;
   statusOptions?: StatusOption[];
@@ -278,6 +282,7 @@ export function EntityFilterToolbar({
   filters,
   onFilterChange,
   onSearchChange,
+  savedFilterQueue,
   assignees = [],
   assigneesLoading = false,
   statusOptions,
@@ -291,11 +296,14 @@ export function EntityFilterToolbar({
   const [tagSearch, setTagSearch] = React.useState("");
   const [customTag, setCustomTag] = React.useState("");
   const [tagMenuOpen, setTagMenuOpen] = React.useState(false);
+  const [searchVersion, setSearchVersion] = React.useState(0);
+  const searchInput = React.useRef<HTMLInputElement>(null);
   const filtersTrigger = React.useRef<HTMLButtonElement>(null);
   const tagMenu = React.useRef<HTMLDivElement>(null);
 
   const sessionContext = React.useContext(SessionContext);
   const currentUsername = sessionContext?.user?.username ?? null;
+  const currentUserId = sessionContext?.user?.id;
   const portalContainer = usePortalContainer();
 
   const effectiveStatusOptions = statusOptions ?? ALERT_STATUS_OPTIONS;
@@ -306,6 +314,26 @@ export function EntityFilterToolbar({
   const statusGroups = getStatusGroups(effectiveStatusOptions);
   const statusFilterModified = !!filters && !haveSameValues(selectedStatuses, statusGroups.defaultOpen);
   const dateRange = filters?.dateRange;
+
+  const applySavedFilter = (snapshot: SavedFilterSnapshot) => {
+    // A fresh input cancels pending search edits even if the saved query matches the URL.
+    setSearchVersion((version) => version + 1);
+    const statuses = snapshot.status?.length
+      ? snapshot.status
+      : effectiveStatusOptions.map((option) => option.value);
+    onFilterChange?.({
+      search: snapshot.search ?? "",
+      status: statuses as FilterState["status"],
+      assignee: snapshot.assignee ?? null,
+      includeTags: snapshot.include_tags ?? null,
+      excludeTags: snapshot.exclude_tags ?? null,
+      dateRange: snapshot.date_range
+        ? { ...snapshot.date_range, preset: snapshot.date_range.preset ?? undefined }
+        : null,
+      sortBy: snapshot.sort_by ?? null,
+      sortOrder: snapshot.sort_order ?? null,
+    });
+  };
 
   const clearFilters = () => onFilterChange?.({
     ...emptyFilters(),
@@ -712,7 +740,14 @@ export function EntityFilterToolbar({
                 </span>
               </Button>
             </Popover.Trigger>
-            {onSearchChange && <QueueSearchField query={normalizeQueueSearch(filters?.search ?? "")} onCommit={onSearchChange} />}
+            {onSearchChange && (
+              <QueueSearchField
+                key={searchVersion}
+                query={normalizeQueueSearch(filters?.search ?? "")}
+                onCommit={onSearchChange}
+                inputRef={searchInput}
+              />
+            )}
             <SortDropdown filters={filters} options={sortOptions} onChange={handleSortChange} />
           </div>
         </Popover.Anchor>
@@ -732,6 +767,17 @@ export function EntityFilterToolbar({
             className="z-[var(--z-popover)] w-[var(--radix-popover-trigger-width)] max-w-[22rem] max-h-[var(--radix-popover-content-available-height)] overflow-y-auto rounded-md border border-neutral-border bg-neutral-50 p-1 shadow-neutral-200-shadow-medium"
           >
             {filterFields}
+            {savedFilterQueue && currentUserId && filters && onFilterChange && (
+              <SavedQueueFilters
+                key={`${savedFilterQueue}:${currentUserId}`}
+                queue={savedFilterQueue}
+                userId={currentUserId}
+                isAdmin={sessionContext.isAdmin}
+                filters={filters}
+                readSearchInput={() => searchInput.current?.value ?? filters.search}
+                onApply={applySavedFilter}
+              />
+            )}
             <div className="flex items-center justify-between gap-2 border-t border-neutral-border px-2 py-2">
               <Button aria-label="Clear all" variant="neutral-tertiary" onClick={clearFilters} disabled={!filterCount}>Clear all</Button>
               <Popover.Close asChild><Button aria-label="Done">Done</Button></Popover.Close>

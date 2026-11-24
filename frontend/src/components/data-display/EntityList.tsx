@@ -32,6 +32,7 @@ export function EntityList<T, F = FilterState>({
   onFilterChange,
   onSearchChange,
   retrySearch,
+  savedFilterQueue,
   statusOptions,
   sortOptions,
   enableTagFilters = false,
@@ -95,6 +96,7 @@ export function EntityList<T, F = FilterState>({
             filters={filters as unknown as FilterState}
             onFilterChange={onFilterChange as unknown as (filters: FilterState) => void}
             onSearchChange={onSearchChange}
+            savedFilterQueue={savedFilterQueue}
             assignees={users}
             assigneesLoading={usersLoading}
             statusOptions={statusOptions}

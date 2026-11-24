@@ -1,5 +1,5 @@
-import { useSearchParams } from 'react-router-dom';
-import { useCallback, useMemo } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useMemo } from 'react';
 import type { FilterState, CaseFilterState, TaskFilterState } from '@/types/filters';
 import { formatForBackend, parseRelativeTime } from '@/utils/dateFilters';
 
@@ -138,6 +138,8 @@ export function filtersToURLParams(filters: AnyFilterState, page?: number): URLS
 interface UseURLFiltersOptions<T extends AnyFilterState> {
   /** Default filter values when no URL params present */
   defaults: T;
+  queue: 'alerts' | 'cases' | 'tasks';
+  userId: string | undefined;
 }
 
 interface UseURLFiltersResult<T extends AnyFilterState> {
@@ -155,8 +157,8 @@ interface UseURLFiltersResult<T extends AnyFilterState> {
 /**
  * Hook to sync filter state and pagination with URL query parameters.
  * 
- * - On mount: parses URL params and merges with defaults
- * - On filter change: updates URL params and resets page to 1
+ * - On entry: uses explicit URL params or restores the tab's saved queue filters
+ * - On filter change: saves the new filters, updates the URL, and resets page to 1
  * - On page change: updates URL params
  * - Supports back/forward navigation
  * 
@@ -166,9 +168,48 @@ interface UseURLFiltersResult<T extends AnyFilterState> {
 export function useURLFilters<T extends AnyFilterState>(
   options: UseURLFiltersOptions<T>
 ): UseURLFiltersResult<T> {
-  const { defaults } = options;
-  const [searchParams, setSearchParams] = useSearchParams();
-  
+  const { defaults, queue, userId } = options;
+  const location = useLocation();
+  const navigate = useNavigate();
+  const storageKey = userId ? `intercept.queue-filters.${queue}.${userId}` : null;
+
+  const restoredSearch = useMemo(() => {
+    if (location.search || !storageKey) return '';
+    try {
+      return sessionStorage.getItem(storageKey) ?? '';
+    } catch {
+      return '';
+    }
+  }, [location, storageKey]);
+  const searchParams = useMemo(
+    () => new URLSearchParams(location.search || restoredSearch),
+    // Applying a relative date preset again should resolve it at the new time.
+    [location, restoredSearch],
+  );
+
+  const updateURL = useCallback((search: string) => {
+    navigate({ pathname: location.pathname, search, hash: location.hash }, {
+      replace: true,
+      state: location.state,
+    });
+  }, [location, navigate]);
+
+  useEffect(() => {
+    if (restoredSearch) updateURL(restoredSearch);
+  }, [restoredSearch, updateURL]);
+
+  const updateFilters = useCallback((params: URLSearchParams) => {
+    const search = params.toString();
+    if (storageKey) {
+      try {
+        sessionStorage.setItem(storageKey, search);
+      } catch {
+        // Keep URL filtering available when browser storage is blocked.
+      }
+    }
+    updateURL(search);
+  }, [storageKey, updateURL]);
+
   // Parse current URL params into filter state
   const urlFilters = useMemo(() => parseFiltersFromURL(searchParams), [searchParams]);
   
@@ -199,32 +240,27 @@ export function useURLFilters<T extends AnyFilterState>(
 
   // Update URL when filters change (resets page to 1)
   const setFilters = useCallback((newFilters: T) => {
-    const params = filtersToURLParams(newFilters, 1); // Reset to page 1
-    setSearchParams(params, { replace: true });
-  }, [setSearchParams]);
+    updateFilters(filtersToURLParams(newFilters));
+  }, [updateFilters]);
 
   // Update URL when page changes - preserves current URL params, only updates page
   const setCurrentPage = useCallback((page: number) => {
-    setSearchParams(prev => {
-      const params = new URLSearchParams(prev);
-      if (page > 1) {
-        params.set('page', String(page));
-      } else {
-        params.delete('page');
-      }
-      return params;
-    }, { replace: true });
-  }, [setSearchParams]);
+    const params = new URLSearchParams(searchParams);
+    if (page > 1) {
+      params.set('page', String(page));
+    } else {
+      params.delete('page');
+    }
+    updateURL(params.toString());
+  }, [searchParams, updateURL]);
 
   const setSearch = useCallback((query: string) => {
-    setSearchParams((previous) => {
-      const next = new URLSearchParams(previous);
-      if (query) next.set('search', query);
-      else next.delete('search');
-      next.delete('page');
-      return next;
-    }, { replace: true });
-  }, [setSearchParams]);
+    const params = new URLSearchParams(searchParams);
+    if (query) params.set('search', query);
+    else params.delete('search');
+    params.delete('page');
+    updateFilters(params);
+  }, [searchParams, updateFilters]);
 
   return { filters, setFilters, setSearch, currentPage, setCurrentPage };
 }
