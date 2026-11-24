@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.models import UserAccount
+from app.services.audit_service import AuditService
 from app.services.auth_service import auth_service
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
@@ -31,6 +34,16 @@ async def _login(
     return {"Cookie": f"intercept_session={token}"}
 
 
+async def _saved_filter_audit(client: AsyncClient, admin: dict[str, str]) -> list[dict]:
+    response = await client.get(
+        "/api/v1/admin/audit",
+        headers=admin,
+        params={"entity_type": "saved_filter"},
+    )
+    assert response.status_code == 200, response.text
+    return sorted(response.json()["items"], key=lambda event: event["id"])
+
+
 @pytest.mark.asyncio
 async def test_personal_filters_round_trip_for_owner_only(
     client: AsyncClient,
@@ -38,7 +51,8 @@ async def test_personal_filters_round_trip_for_owner_only(
     auditor_user_factory,
     admin_user_factory,
 ) -> None:
-    owner = await _login(client, session_maker, auditor_user_factory())
+    owner_account = auditor_user_factory()
+    owner = await _login(client, session_maker, owner_account)
     other_user = await _login(client, session_maker, admin_user_factory())
     snapshot = {
         "search": "spoofed  login",
@@ -55,7 +69,11 @@ async def test_personal_filters_round_trip_for_owner_only(
         "sort_order": "asc",
     }
     payload = {"queue": "alerts", "scope": "personal", "name": "  My queue  ", "filters": snapshot}
-    response = await client.post(SAVED_FILTERS_PATH, headers=owner, json=payload)
+    response = await client.post(
+        SAVED_FILTERS_PATH,
+        headers={**owner, "X-Request-ID": "filter-create", "User-Agent": "saved-filter-audit-test"},
+        json=payload,
+    )
     assert response.status_code == 201, response.text
     saved = response.json()
     assert saved == {
@@ -75,12 +93,33 @@ async def test_personal_filters_round_trip_for_owner_only(
     rename = await client.patch(item, headers=other_user, json={"name": "Renamed"})
     assert rename.status_code == 404
     assert (await client.delete(item, headers=other_user)).status_code == 404
+    no_op = await client.patch(item, headers=owner, json={"name": " My queue "})
+    assert no_op.json() == saved
     rename = await client.patch(item, headers=owner, json={"name": "My follow-up queue"})
     assert rename.status_code == 200, rename.text
     assert rename.json() == {**saved, "name": "My follow-up queue"}
     assert (await client.delete(item, headers=owner)).status_code == 204
     owner_list = await client.get(SAVED_FILTERS_PATH, headers=owner, params={"queue": "alerts"})
     assert owner_list.json() == []
+
+    created, renamed, deleted = await _saved_filter_audit(client, other_user)
+    assert [event["event_type"] for event in (created, renamed, deleted)] == [
+        "saved_filter.created",
+        "saved_filter.renamed",
+        "saved_filter.deleted",
+    ]
+    assert all(event["entity_id"] == saved["id"] for event in (created, renamed, deleted))
+    assert all(event["performed_by"] == owner_account.username for event in (created, renamed, deleted))
+    assert created["correlation_id"] == "filter-create"
+    assert created["user_agent"] == "saved-filter-audit-test"
+    before = {"name": "My queue", "queue": "alerts", "scope": "personal"}
+    after = {**before, "name": "My follow-up queue"}
+    assert created["old_value"] is None
+    assert json.loads(created["new_value"]) == before
+    assert json.loads(renamed["old_value"]) == before
+    assert json.loads(renamed["new_value"]) == after
+    assert json.loads(deleted["old_value"]) == after
+    assert deleted["new_value"] is None
 
 
 @pytest.mark.asyncio
@@ -91,8 +130,10 @@ async def test_org_filters_shared_with_members_and_managed_by_admins(
     admin_user_factory,
 ) -> None:
     analyst = await _login(client, session_maker, analyst_user_factory())
-    author = await _login(client, session_maker, admin_user_factory())
-    another_admin = await _login(client, session_maker, admin_user_factory())
+    author_account = admin_user_factory()
+    manager_account = admin_user_factory()
+    author = await _login(client, session_maker, author_account)
+    another_admin = await _login(client, session_maker, manager_account)
     payload = {
         "queue": "tasks",
         "scope": "organization",
@@ -119,6 +160,60 @@ async def test_org_filters_shared_with_members_and_managed_by_admins(
     assert (await client.delete(item, headers=another_admin)).status_code == 204
     member_list = await client.get(SAVED_FILTERS_PATH, headers=analyst, params={"queue": "tasks"})
     assert member_list.json() == []
+
+    created, renamed, deleted = await _saved_filter_audit(client, another_admin)
+    assert [event["event_type"] for event in (created, renamed, deleted)] == [
+        "saved_filter.created",
+        "saved_filter.renamed",
+        "saved_filter.deleted",
+    ]
+    assert all(event["entity_id"] == saved["id"] for event in (created, renamed, deleted))
+    assert created["performed_by"] == author_account.username
+    assert renamed["performed_by"] == deleted["performed_by"] == manager_account.username
+    assert json.loads(created["new_value"]) == {
+        "name": "Shared task queue",
+        "queue": "tasks",
+        "scope": "organization",
+    }
+    assert json.loads(deleted["old_value"]) == {
+        "name": "Shared handoff",
+        "queue": "tasks",
+        "scope": "organization",
+    }
+    event_types = await client.get("/api/v1/admin/audit/event-types", headers=another_admin)
+    assert event_types.status_code == 200, event_types.text
+    assert {event["event_type"] for event in (created, renamed, deleted)} <= set(event_types.json())
+
+
+@pytest.mark.asyncio
+async def test_audit_failure_rolls_back_saved_filter_change(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin = await _login(client, session_maker, admin_user_factory())
+    payload = {"queue": "cases", "scope": "organization", "name": "Original name", "filters": {}}
+    created = await client.post(SAVED_FILTERS_PATH, headers=admin, json=payload)
+    assert created.status_code == 201, created.text
+    original_log_event = AuditService.log_event
+
+    async def fail_after_audit_flush(self, **kwargs):
+        await original_log_event(self, **kwargs)
+        raise RuntimeError("audit write failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(AuditService, "log_event", fail_after_audit_flush)
+        with pytest.raises(RuntimeError, match="audit write failed"):
+            await client.patch(
+                f"{SAVED_FILTERS_PATH}/{created.json()['id']}",
+                headers=admin,
+                json={"name": "Uncommitted name"},
+            )
+
+    response = await client.get(SAVED_FILTERS_PATH, headers=admin, params={"queue": "cases"})
+    assert response.json() == [created.json()]
+    assert [event["event_type"] for event in await _saved_filter_audit(client, admin)] == ["saved_filter.created"]
 
 
 @pytest.mark.asyncio

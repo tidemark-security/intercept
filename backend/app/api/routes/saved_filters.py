@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.request_metadata import build_audit_context
 from app.api.routes.admin_auth import (
     require_admin_user,
     require_authenticated_user,
@@ -52,7 +53,9 @@ async def create_saved_filter(
     """Create a saved filter in the selected scope."""
     if payload.scope == SavedFilterScope.ORGANIZATION:
         await require_admin_user(request, user)
-    return await saved_filter_service.create_saved_filter(db, payload, user.id)
+    return await saved_filter_service.create_saved_filter(
+        db, payload, actor=user, audit_context=build_audit_context(request)
+    )
 
 
 async def _get_saved_filter_for_edit(
@@ -72,17 +75,25 @@ async def _get_saved_filter_for_edit(
 @router.patch("/{filter_id}", operation_id="renameSavedFilter", response_model=SavedFilterRead)
 async def rename_saved_filter(
     payload: SavedFilterRename,
+    request: Request,
     saved_filter: SavedQueueFilter = Depends(_get_saved_filter_for_edit),
     db: AsyncSession = Depends(get_db),
+    user: UserAccount = Depends(require_shared_authentication),
 ) -> SavedFilterRead:
     """Rename a saved filter."""
-    return await saved_filter_service.rename_saved_filter(db, saved_filter, payload.name)
+    return await saved_filter_service.rename_saved_filter(
+        db, saved_filter, payload.name, actor=user, audit_context=build_audit_context(request)
+    )
 
 
 @router.delete("/{filter_id}", operation_id="deleteSavedFilter", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_saved_filter(
+    request: Request,
     saved_filter: SavedQueueFilter = Depends(_get_saved_filter_for_edit),
     db: AsyncSession = Depends(get_db),
+    user: UserAccount = Depends(require_shared_authentication),
 ) -> None:
     """Delete a saved filter."""
-    await saved_filter_service.delete_saved_filter(db, saved_filter)
+    await saved_filter_service.delete_saved_filter(
+        db, saved_filter, actor=user, audit_context=build_audit_context(request)
+    )

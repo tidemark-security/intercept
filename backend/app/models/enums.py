@@ -390,6 +390,9 @@ class AuditEventType(str, Enum):
     SETTINGS_CREATED = "settings.created"
     SETTINGS_UPDATED = "settings.updated"
     SETTINGS_DELETED = "settings.deleted"
+    SAVED_FILTER_CREATED = "saved_filter.created"
+    SAVED_FILTER_RENAMED = "saved_filter.renamed"
+    SAVED_FILTER_DELETED = "saved_filter.deleted"
 
 
 class UploadStatus(str, Enum):
