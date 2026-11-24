@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -29,6 +29,7 @@ vi.mock("@/types/generated/services/AdminService", () => ({
 vi.mock("@/types/generated/services/ApiKeysService", () => ({
   ApiKeysService: {
     listApiKeysApiV1ApiKeysGet: vi.fn(),
+    createApiKeyApiV1ApiKeysPost: vi.fn(),
   },
 }));
 
@@ -114,6 +115,23 @@ describe("AdminUsers API key create visibility", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /new key/i })).toBeInTheDocument();
     });
+  });
+
+  it("keeps a rejected key submission visible in the admin drawer", async () => {
+    const user = userEvent.setup();
+    const message = "Expiration date cannot exceed 90 days";
+    vi.mocked(ApiKeysService.createApiKeyApiV1ApiKeysPost).mockRejectedValueOnce(new Error(message));
+    renderPage();
+
+    const row = (await screen.findByText("svc.integration")).closest("tr")!;
+    await user.click(row.querySelector("button")!);
+    await user.click(await screen.findByRole("button", { name: /new key/i }));
+    const drawer = within(await screen.findByRole("dialog"));
+    await user.type(drawer.getByPlaceholderText("CI/CD Pipeline"), "Langflow");
+    await user.click(drawer.getByRole("button", { name: /create key/i }));
+
+    expect(await drawer.findByRole("alert")).toHaveTextContent(message);
+    expect(drawer.getByPlaceholderText("CI/CD Pipeline")).toHaveValue("Langflow");
   });
 
   it("creates the initial NHI key with an explicit least-privilege scope", async () => {

@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { getApiErrorMessage } from "@/services/apiRequestError";
 import { ApiError } from "@/types/generated/core/ApiError";
 import { ApiKeysService } from "@/types/generated/services/ApiKeysService";
 import { AuthenticationService } from "@/types/generated/services/AuthenticationService";
@@ -165,6 +166,7 @@ function ProfileManagement() {
   const [apiKeys, setApiKeys] = React.useState<ApiKeyRead[]>([]);
   const [isLoadingApiKeys, setIsLoadingApiKeys] = React.useState(false);
   const [isCreatingApiKey, setIsCreatingApiKey] = React.useState(false);
+  const [createApiKeyError, setCreateApiKeyError] = React.useState<string | null>(null);
   const [showCreateApiKeyModal, setShowCreateApiKeyModal] = React.useState(false);
   const [apiKeyNameInput, setApiKeyNameInput] = React.useState("");
   const [apiKeyExpiresAtInput, setApiKeyExpiresAtInput] = React.useState("");
@@ -312,6 +314,7 @@ function ProfileManagement() {
       normalizeDatetimeLocalValue(formatForDatetimeLocal(defaultExpiry), "display"),
     );
     setApiKeyScopes(["api:read"]);
+    setCreateApiKeyError(null);
     setShowCreateApiKeyModal(true);
   };
 
@@ -330,24 +333,25 @@ function ProfileManagement() {
 
   const handleCreateApiKey = async () => {
     if (!canCreateApiKeys) {
-      showToast("Not allowed", "Local API key creation is disabled for this account", "error");
+      setCreateApiKeyError("Local API key creation is disabled for this account");
       return;
     }
     if (!apiKeyNameInput.trim() || !apiKeyExpiresAtInput) {
-      showToast("Validation Error", "Name and expiration date are required", "error");
+      setCreateApiKeyError("Name and expiration date are required");
       return;
     }
     if (apiKeyScopes.length === 0) {
-      showToast("Validation Error", "Select at least one API key permission", "error");
+      setCreateApiKeyError("Select at least one API key permission");
       return;
     }
 
     const expiresAtDate = parseISO8601(apiKeyExpiresAtInput);
     if (!expiresAtDate) {
-      showToast("Validation Error", "Expiration date is invalid", "error");
+      setCreateApiKeyError("Expiration date is invalid");
       return;
     }
 
+    setCreateApiKeyError(null);
     setIsCreatingApiKey(true);
     try {
       const response = await ApiKeysService.createApiKeyApiV1ApiKeysPost({
@@ -363,11 +367,7 @@ function ProfileManagement() {
       closeCreateApiKeyModal();
       await loadApiKeys();
     } catch (error) {
-      if (error instanceof ApiError) {
-        showToast("Error", error.body?.message || "Failed to create API key", "error");
-      } else {
-        showToast("Error", "Failed to create API key", "error");
-      }
+      setCreateApiKeyError(getApiErrorMessage(error, "Failed to create API key"));
     } finally {
       setIsCreatingApiKey(false);
     }
@@ -1268,6 +1268,7 @@ function ProfileManagement() {
         }
       >
         <CreateApiKeyModalContent
+          error={createApiKeyError}
           keyName={apiKeyNameInput}
           expiresAt={apiKeyExpiresAtInput}
           scopes={apiKeyScopes}

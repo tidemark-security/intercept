@@ -40,7 +40,7 @@ export function FormDrawer({
       >
         <div
           className={cn(
-            "flex h-full w-full flex-col items-center gap-6 bg-page-background p-4",
+            "flex h-full w-full flex-col items-center gap-6 p-4",
             contentClassName,
           )}
         >

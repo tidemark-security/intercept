@@ -1,5 +1,4 @@
 import { Bell, CheckSquare, Folder } from "lucide-react";
-import { ApiError } from "@/types/generated/core/ApiError";
 import { AlertsService } from "@/types/generated/services/AlertsService";
 import { CasesService } from "@/types/generated/services/CasesService";
 import { TasksService } from "@/types/generated/services/TasksService";
@@ -49,13 +48,3 @@ export const bulkEntityLabels = {
   case: { plural: "cases", Icon: Folder },
   task: { plural: "tasks", Icon: CheckSquare },
 };
-
-export function getApiErrorMessage(error: Error, fallback: string): string {
-  if (error instanceof ApiError && error.body && typeof error.body === "object") {
-    const { detail, message } = error.body;
-    if (typeof detail === "string") return detail;
-    if (detail && typeof detail.message === "string") return detail.message;
-    if (typeof message === "string") return message;
-  }
-  return error.message || fallback;
-}
