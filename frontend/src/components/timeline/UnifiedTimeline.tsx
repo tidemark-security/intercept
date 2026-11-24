@@ -1119,7 +1119,7 @@ function UnifiedTimelineInner({
                 const alert = entityType === 'alert' ? entityDetail as AlertReadWithCase : null;
                 const requestTriage = isTriageEnabled && !isEntityClosed && canRequestTriage ? onRequestTriage : undefined;
                 const standalonePanelClassName = cn(
-                  "mt-0 rounded-md border px-4 py-3 shadow-md",
+                  "mt-0 rounded-md border px-4 py-3",
                   isDarkTheme ? "bg-neutral-0" : "bg-neutral-50",
                 );
                 const triage = alert && (alert.triage_recommendation || requestTriage) ? (

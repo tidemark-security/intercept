@@ -2364,12 +2364,14 @@ test("profile positions triage and context independently on alert details", asyn
       await expect(panel).toHaveCount(1);
       await expect(panel).toBeVisible();
       await expect(info.getByRole("region", { name, exact: true })).toHaveCount(position === "embed" ? 1 : 0);
+      await expect(panel).toHaveCSS("box-shadow", "none");
 
       if (position !== "embed") {
         await expect(panel).toHaveCSS("border-left-width", "1px");
         await expect(panel).toHaveCSS("border-right-width", "1px");
         await expect(panel).toHaveCSS("border-bottom-width", "1px");
-        await expect(panel).not.toHaveCSS("box-shadow", "none");
+        const neutralBorder = await info.evaluate((element) => getComputedStyle(element).borderLeftColor);
+        await expect(panel).toHaveCSS("border-left-color", neutralBorder);
         const infoBounds = (await info.boundingBox())!;
         const panelBounds = (await panel.boundingBox())!;
         if (position === "before") {
@@ -2379,7 +2381,6 @@ test("profile positions triage and context independently on alert details", asyn
         }
       } else {
         await expect(panel).toHaveCSS("border-left-width", "0px");
-        await expect(panel).toHaveCSS("box-shadow", "none");
       }
     };
     await checkPanel("AI Triage Recommendation", triagePosition);
