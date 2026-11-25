@@ -150,6 +150,7 @@ function apiResponse(pathname: string): unknown {
 
   if (pathname === "/api/v1/auth/passkeys") return [];
   if (pathname === "/api/v1/api-keys") return [];
+  if (pathname === "/api/v1/saved-filters") return [];
   if (pathname === "/api/v1/features") return {};
   if (pathname === "/api/v1/settings/attachment-limits") {
     return {
