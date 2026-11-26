@@ -449,7 +449,7 @@ const ActivityItemRoot = React.forwardRef<
                     }}
                   />
                   {/* Hide edit button for grouped items */}
-                  {!isGrouped && (
+                  {!isGrouped && onEdit && (
                     <IconButton 
                       size="small" 
                       icon={<Pencil />}

@@ -8,6 +8,8 @@ import { AlertCard } from '@/components/timeline/AlertCard';
 import { AlertCardContent } from '@/components/timeline/AlertCardContent';
 import { TaskCardContent } from '@/components/timeline/TaskCardContent';
 import { CaseCardContent } from '@/components/timeline/CaseCardContent';
+import { AIAgentActivityCard } from '@/components/timeline/AIAgentActivityCard';
+import { CardActionsMenu } from '@/components/timeline/CardActionsMenu';
 import { Priority } from '@/components/misc/Priority';
 import { State } from '@/components/misc/State';
 import { TimelineDescriptionBlock } from '@/components/timeline/TimelineDescriptionBlock';
@@ -35,7 +37,7 @@ import {
   getTimelineItemLabel,
 } from '@/utils/timelineMapping';
 import { compareTimelineItems, getTimelineItems } from '@/utils/timelineHelpers';
-import { isAlertItem, isDeletedItem, isNoteItem, isTaskItem } from '@/types/timeline';
+import { isAIAgentItem, isAlertItem, isDeletedItem, isNoteItem, isTaskItem } from '@/types/timeline';
 import type { CaseItem } from '@/types/generated/models/CaseItem';
 import { convertNumericToAlertId, convertNumericToHumanId } from '@/utils/caseHelpers';
 import {
@@ -694,6 +696,17 @@ export function TimelineItemRenderer({
       );
     }
 
+    if (isAIAgentItem(item)) {
+      return (
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <span className="text-caption font-caption text-subtext-color">
+            {formatTimestampForCompact(item.timestamp || item.created_at || null)}
+          </span>
+          <AIAgentActivityCard item={item} />
+        </div>
+      );
+    }
+
     const compactCardConfig = createTimelineCard(item, {
       size: 'small',
       alertId: entityId,
@@ -982,6 +995,18 @@ export function TimelineItemRenderer({
     const timelineCurrentItem = currentItem as TimelineItem;
     const itemKey = timelineCurrentItem.id || `item-${cardIndex}`;
 
+    if (isAIAgentItem(timelineCurrentItem)) {
+      const actions = isGrouped && timelineCurrentItem.id && timelineCurrentItem.created_by ? (
+        <CardActionsMenu
+          itemId={timelineCurrentItem.id}
+          onFlag={onFlag}
+          onHighlight={onHighlight}
+          onDelete={onDelete}
+        />
+      ) : null;
+      return <AIAgentActivityCard key={itemKey} item={timelineCurrentItem} embedded={compactPreview} actions={actions} />;
+    }
+
     if (timelineCurrentItem.type === 'note') {
       return renderNoteCard(timelineCurrentItem, {
         entityId,
@@ -1205,6 +1230,10 @@ export function TimelineItemRenderer({
       return null;
     }
 
+    if (isAIAgentItem(timelineReply)) {
+      return <AIAgentActivityCard item={timelineReply} embedded={compactPreview} />;
+    }
+
     if (timelineReply.type === 'note') {
       return (
         <div className="flex w-full flex-col items-start gap-3">
@@ -1385,7 +1414,7 @@ export function TimelineItemRenderer({
         const isReplyDeleted = isDeletedItem(reply);
         const ReplyItemIcon = isReplyDeleted
           ? getTimelineItemIcon(reply.original_type || 'note')
-          : isAutomationNote(reply)
+          : isAutomationNote(reply) || isAIAgentItem(reply)
             ? Bot
             : ReplyIcon;
         const replyAction = isReplyDeleted
@@ -1434,7 +1463,7 @@ export function TimelineItemRenderer({
             onFlag={isReplyReadOnly ? undefined : onFlag}
             onHighlight={isReplyReadOnly ? undefined : onHighlight}
             onDelete={isReplyReadOnly ? undefined : onDelete}
-            onEdit={isReplyReadOnly ? undefined : onEdit}
+            onEdit={isReplyReadOnly || isAIAgentItem(reply) ? undefined : onEdit}
             onReply={onReply}
           />
         );
@@ -1469,7 +1498,7 @@ export function TimelineItemRenderer({
       onFlag={onFlag}
       onHighlight={onHighlight}
       onDelete={onDelete}
-      onEdit={onEdit}
+      onEdit={isAIAgentItem(item) ? undefined : onEdit}
       onReply={onReply}
       // Group-level actions (Option 1)
       isGrouped={isGrouped}

@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { AIAgentItem } from './AIAgentItem';
 import type { AlertItem } from './AlertItem';
 import type { AttachmentItem } from './AttachmentItem';
 import type { CaseAlertClosureUpdate } from './CaseAlertClosureUpdate';
@@ -33,7 +34,7 @@ export type CaseUpdate = {
     priority?: (Priority | null);
     assignee?: (string | null);
     tags?: (Array<string> | null);
-    timeline_items?: (Record<string, (DeletedItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AlertItem | AttachmentItem | CaseItem | EmailItem | ForensicArtifactItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | RegistryChangeItem | SystemItem | TaskItem | TTPItem)> | null);
+    timeline_items?: (Record<string, (DeletedItem | AIAgentItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AlertItem | AttachmentItem | CaseItem | EmailItem | ForensicArtifactItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | RegistryChangeItem | SystemItem | TaskItem | TTPItem)> | null);
     /**
      * Migration-only override for the case closure timestamp
      */

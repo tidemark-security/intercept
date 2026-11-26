@@ -37,6 +37,59 @@ describe('TimelineItemRenderer enrichments', () => {
     window.localStorage.clear();
   });
 
+  it('shows the harness and activity in a compact row and expands recorded details', () => {
+    const item: TimelineItem = {
+      id: 'agent-command',
+      type: 'ai_agent',
+      activity: 'shell_command',
+      harness: 'codex_cli',
+      agent_name: 'Workspace assistant',
+      tool_name: 'exec_command',
+      command_line: 'git status --short',
+      outcome: 'succeeded',
+      exit_code: 0,
+      endpoint: 'test-endpoint',
+    };
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="case" />
+    );
+
+    expect(screen.getByText('Codex CLI')).toBeInTheDocument();
+    expect(screen.getByText('Shell command')).toBeInTheDocument();
+    expect(screen.getByText('git status --short')).toBeInTheDocument();
+    expect(screen.queryByText('Workspace assistant')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand AI agent activity', expanded: false }));
+    expect(screen.getByText('Workspace assistant')).toBeVisible();
+    expect(screen.getByText('exec_command')).toBeVisible();
+    expect(screen.getByText('test-endpoint')).toBeVisible();
+    expect(screen.getByText('0')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse AI agent activity', expanded: true }));
+    expect(screen.queryByText('test-endpoint')).not.toBeInTheDocument();
+  });
+
+  it('renders a file event with incomplete attribution inside a reply', () => {
+    const item: TimelineItem = {
+      id: 'parent-note',
+      type: 'note',
+      description: 'Endpoint review',
+      replies: {
+        'agent-file': {
+          id: 'agent-file',
+          type: 'ai_agent',
+          activity: 'file_read',
+          file_path: 'src/main.py',
+        },
+      },
+    };
+    renderWithProviders(
+      <TimelineItemRenderer item={item} index={0} total={1} entityId={38} entityType="alert" />
+    );
+
+    expect(screen.getByText('Unknown harness')).toBeVisible();
+    expect(screen.getByText('File read')).toBeVisible();
+    expect(screen.getByText('src/main.py')).toBeVisible();
+  });
+
   it('loads and saves linked entity collapse state in localStorage', () => {
     saveLinkedEntityCollapseState({ 'alert:123': true, 'task:TSK-0000042': false }, window.localStorage);
 

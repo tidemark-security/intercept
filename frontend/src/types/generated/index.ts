@@ -19,6 +19,7 @@ export type { AdminResetPasswordRequest } from './models/AdminResetPasswordReque
 export type { AdminResetPasswordResponse } from './models/AdminResetPasswordResponse';
 export type { AdminUpdateStatusRequest } from './models/AdminUpdateStatusRequest';
 export type { AdminUpdateUserRequest } from './models/AdminUpdateUserRequest';
+export type { AIAgentItem } from './models/AIAgentItem';
 export type { AIChatMetricsResponse } from './models/AIChatMetricsResponse';
 export type { AIChatMetricsSummary } from './models/AIChatMetricsSummary';
 export type { AIChatWeeklyTrend } from './models/AIChatWeeklyTrend';
