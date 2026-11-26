@@ -7,6 +7,8 @@ import { Badge } from '@/components/data-display/Badge';
 import { AlertCardContent } from '@/components/timeline/AlertCardContent';
 import { TaskCardContent } from '@/components/timeline/TaskCardContent';
 import { CaseCardContent } from '@/components/timeline/CaseCardContent';
+import { AIAgentActivityCard } from '@/components/timeline/AIAgentActivityCard';
+import { CardActionsMenu } from '@/components/timeline/CardActionsMenu';
 import { Priority } from '@/components/misc/Priority';
 import { State } from '@/components/misc/State';
 import { TimelineDescriptionBlock } from '@/components/timeline/TimelineDescriptionBlock';
@@ -35,7 +37,7 @@ import {
   getTimelineItemLabel,
 } from '@/utils/timelineMapping';
 import { compareTimelineItems, getTimelineItems } from '@/utils/timelineHelpers';
-import { isAlertItem, isDeletedItem, isNoteItem, isTaskItem } from '@/types/timeline';
+import { isAIAgentItem, isAlertItem, isDeletedItem, isNoteItem, isTaskItem } from '@/types/timeline';
 import type { CaseItem } from '@/types/generated/models/CaseItem';
 import { convertNumericToAlertId, convertNumericToHumanId } from '@/utils/caseHelpers';
 import {
@@ -707,6 +709,17 @@ export function TimelineItemRenderer({
       );
     }
 
+    if (isAIAgentItem(item)) {
+      return (
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <span className="text-caption font-caption text-subtext-color">
+            {formatTimestampForCompact(item.timestamp || item.created_at || null)}
+          </span>
+          <AIAgentActivityCard item={item} />
+        </div>
+      );
+    }
+
     const compactCardConfig = createTimelineCard(item, {
       size: 'small',
       alertId: entityId,
@@ -1046,6 +1059,18 @@ export function TimelineItemRenderer({
     const timelineCurrentItem = currentItem as TimelineItem;
     const itemKey = timelineCurrentItem.id || `item-${cardIndex}`;
 
+    if (isAIAgentItem(timelineCurrentItem)) {
+      const actions = isGrouped && timelineCurrentItem.id && timelineCurrentItem.created_by ? (
+        <CardActionsMenu
+          itemId={timelineCurrentItem.id}
+          onFlag={onFlag}
+          onHighlight={onHighlight}
+          onDelete={onDelete}
+        />
+      ) : null;
+      return <AIAgentActivityCard key={itemKey} item={timelineCurrentItem} embedded={compactPreview} actions={actions} />;
+    }
+
     if (timelineCurrentItem.type === 'note') {
       return renderNoteCard(timelineCurrentItem, {
         entityId,
@@ -1155,6 +1180,10 @@ export function TimelineItemRenderer({
 
     if (timelineReply.type === '_deleted') {
       return null;
+    }
+
+    if (isAIAgentItem(timelineReply)) {
+      return <AIAgentActivityCard item={timelineReply} embedded={compactPreview} />;
     }
 
     if (timelineReply.type === 'note') {
@@ -1306,7 +1335,7 @@ export function TimelineItemRenderer({
         const replyActivity = getNoteActivity(reply);
         const ReplyItemIcon = isReplyDeleted
           ? getTimelineItemIcon(reply.original_type || 'note')
-          : replyActivity?.icon ?? ReplyIcon;
+          : isAIAgentItem(reply) ? getTimelineItemIcon('ai_agent') : replyActivity?.icon ?? ReplyIcon;
         const replyAction = isReplyDeleted
           ? getDeletedItemAction(reply)
           : replyActivity ? undefined : `${getTimelineItemAction(reply.type || 'note')} ${getTimelineItemLabel(reply.type || 'note')}`;
@@ -1355,7 +1384,7 @@ export function TimelineItemRenderer({
             onFlag={isReplyReadOnly ? undefined : onFlag}
             onHighlight={isReplyReadOnly ? undefined : onHighlight}
             onDelete={isReplyReadOnly ? undefined : onDelete}
-            onEdit={isReplyReadOnly ? undefined : onEdit}
+            onEdit={isReplyReadOnly || isAIAgentItem(reply) ? undefined : onEdit}
             onReply={onReply}
           />
         );
@@ -1390,7 +1419,7 @@ export function TimelineItemRenderer({
       onFlag={onFlag}
       onHighlight={onHighlight}
       onDelete={onDelete}
-      onEdit={onEdit}
+      onEdit={isAIAgentItem(item) ? undefined : onEdit}
       onReply={onReply}
       // Group-level actions (Option 1)
       isGrouped={isGrouped}
