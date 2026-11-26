@@ -23,4 +23,14 @@ export type ProcessTreeNode = {
     user_account?: (string | null);
     started_at?: (string | null);
     status?: ('running' | 'exited' | null);
+    is_alert_source?: boolean;
+    verdict?: ('benign' | 'suspicious' | 'malicious' | null);
+    verdict_reason?: (string | null);
+    image_path?: (string | null);
+    integrity_level?: (string | null);
+    signer?: (string | null);
+    is_signed?: (boolean | null);
+    sha256?: (string | null);
+    network_connections?: (number | null);
+    file_writes?: (number | null);
 };

@@ -680,6 +680,16 @@ class ProcessTreeNode(SQLModel):
     user_account: Optional[str] = None
     started_at: Optional[AwareDatetime] = None
     status: Optional[Literal["running", "exited"]] = None
+    is_alert_source: bool = False
+    verdict: Optional[Literal["benign", "suspicious", "malicious"]] = None
+    verdict_reason: Optional[str] = None
+    image_path: Optional[str] = None
+    integrity_level: Optional[str] = None
+    signer: Optional[str] = None
+    is_signed: Optional[bool] = None
+    sha256: Optional[str] = None
+    network_connections: Optional[StrictInt] = Field(default=None, ge=0)
+    file_writes: Optional[StrictInt] = Field(default=None, ge=0)
 
     @field_validator("id", "parent_id", "process_name")
     @classmethod
@@ -698,7 +708,7 @@ class ProcessTreeItem(ItemBase):
         description="Timestamp when the process snapshot was captured",
     )
     hostname: Optional[str] = None
-    processes: List[ProcessTreeNode] = Field(min_length=1)
+    processes: List[ProcessTreeNode]
 
     @field_validator("processes")
     @classmethod

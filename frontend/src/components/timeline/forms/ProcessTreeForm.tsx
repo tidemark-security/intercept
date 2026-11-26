@@ -15,8 +15,8 @@ function readProcesses(value: string): ProcessTreeNode[] {
   } catch {
     throw new Error('Enter valid JSON.');
   }
-  if (!Array.isArray(processes) || processes.length === 0) {
-    throw new Error('Expected a JSON array with at least one process.');
+  if (!Array.isArray(processes)) {
+    throw new Error('Expected a JSON array of processes.');
   }
   const ids = new Set<string>();
   for (const [index, process] of processes.entries()) {
@@ -28,13 +28,29 @@ function readProcesses(value: string): ProcessTreeNode[] {
     if (ids.has(process.id)) {
       throw new Error(`Process ${index + 1} repeats an instance ID.`);
     }
-    for (const field of ['parent_id', 'command_line', 'user_account', 'started_at']) {
+    for (const field of [
+      'parent_id', 'command_line', 'user_account', 'started_at',
+      'verdict_reason', 'image_path', 'integrity_level', 'signer', 'sha256',
+    ]) {
       if (process[field] != null && typeof process[field] !== 'string') {
         throw new Error(`Process ${index + 1} needs a text value for ${field}.`);
       }
     }
     if (process.status != null && process.status !== 'running' && process.status !== 'exited') {
       throw new Error(`Process ${index + 1} has an invalid status. Use running or exited.`);
+    }
+    if (process.verdict != null && !['benign', 'suspicious', 'malicious'].includes(process.verdict)) {
+      throw new Error(`Process ${index + 1} has an invalid verdict. Use benign, suspicious, or malicious.`);
+    }
+    for (const field of ['is_alert_source', 'is_signed']) {
+      if (process[field] != null && typeof process[field] !== 'boolean') {
+        throw new Error(`Process ${index + 1} needs a boolean value for ${field}.`);
+      }
+    }
+    for (const field of ['network_connections', 'file_writes']) {
+      if (process[field] != null && (!Number.isInteger(process[field]) || process[field] < 0)) {
+        throw new Error(`Process ${index + 1} needs a non-negative integer for ${field}.`);
+      }
     }
     ids.add(process.id);
   }
@@ -104,7 +120,7 @@ export function ProcessTreeForm({ initialData }: { initialData?: ProcessTreeItem
       </TextField>
       <TextArea
         label="Processes (JSON)"
-        helpText="Each entry needs an id, process_name, and numeric process_id. Set parent_id to the parent’s id. Omit it for a root."
+        helpText="Each entry needs an id, process_name, and numeric process_id. Set parent_id to the parent’s id and is_alert_source to true for the alert process."
         className="w-full"
       >
         <TextArea.Input

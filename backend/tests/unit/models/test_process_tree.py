@@ -21,16 +21,28 @@ def test_accepts_child_before_parent_and_repeated_pids_across_roots():
     assert snapshot.model_dump(mode="json")["processes"][0]["parent_id"] == "root"
 
 
+def test_keeps_empty_capture_and_optional_telemetry_distinct():
+    assert ProcessTreeItem(processes=[]).processes == []
+    capture = ProcessTreeItem(processes=[
+        {**node("alert"), "is_alert_source": True, "verdict": "suspicious", "network_connections": 0},
+        node("other"),
+    ])
+    source, other = capture.processes
+    assert source.is_alert_source and source.verdict == "suspicious"
+    assert source.network_connections == 0 and other.network_connections is None
+    assert other.verdict is None
+
+
 @pytest.mark.parametrize(
     ("processes", "error"),
     [
-        ([], "at least 1"),
         ([node("root"), node("root")], "must be unique"),
         ([node("child", "missing")], "missing from the snapshot"),
         ([node("root", "root")], "contains a cycle"),
         ([node("first", "second"), node("second", "first")], "contains a cycle"),
         ([{**node("root"), "process_id": "1"}], "valid integer"),
         ([{**node("root"), "started_at": "2026-11-26T09:42:13"}], "timezone"),
+        ([{**node("root"), "file_writes": -1}], "greater than or equal to 0"),
     ],
 )
 def test_rejects_invalid_process_snapshots(processes, error):

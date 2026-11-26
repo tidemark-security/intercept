@@ -32,7 +32,18 @@ async def test_process_tree_round_trip(client: AsyncClient, session_maker, analy
         "hostname": "WS-014",
         "processes": [
             {"id": "services", "process_name": "services.exe", "process_id": 624},
-            {"id": "spool", "parent_id": "services", "process_name": "spoolsv.exe", "process_id": 1560},
+            {
+                "id": "spool",
+                "parent_id": "services",
+                "process_name": "spoolsv.exe",
+                "process_id": 1560,
+                "is_alert_source": True,
+                "verdict": "suspicious",
+                "verdict_reason": "Flagged by the endpoint sensor",
+                "file_writes": 2,
+                "network_connections": 0,
+                "is_signed": False,
+            },
             {"id": "desktop", "process_name": "explorer.exe", "process_id": 4120},
         ],
     }
@@ -42,6 +53,10 @@ async def test_process_tree_round_trip(client: AsyncClient, session_maker, analy
     (created_item,) = created.json()["timeline_items"].values()
     item_id = created_item["id"]
     assert created_item["processes"][1]["parent_id"] == "services"
+    assert created_item["processes"][1]["is_alert_source"] is True
+    assert created_item["processes"][1]["verdict"] == "suspicious"
+    assert created_item["processes"][1]["file_writes"] == 2
+    assert created_item["processes"][1]["network_connections"] == 0
     assert created_item["timestamp"] == "2026-11-26T09:42:18Z"
 
     rejected = await client.put(
