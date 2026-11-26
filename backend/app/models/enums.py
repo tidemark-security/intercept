@@ -392,6 +392,7 @@ class AuditEventType(str, Enum):
     SETTINGS_DELETED = "settings.deleted"
     SAVED_FILTER_CREATED = "saved_filter.created"
     SAVED_FILTER_RENAMED = "saved_filter.renamed"
+    SAVED_FILTER_NAVIGATION_UPDATED = "saved_filter.navigation_updated"
     SAVED_FILTER_DELETED = "saved_filter.deleted"
 
 

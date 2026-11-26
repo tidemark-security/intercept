@@ -8,13 +8,18 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import case as sql_case
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col
 
 from app.core.entity_ids import ALERT_PREFIX, CASE_PREFIX, TASK_PREFIX, format_entity_id
 from app.models.enums import AlertStatus, CaseStatus, TaskStatus, Priority
-from app.models.models import Alert, Case, Task
+from app.models.models import Alert, Case, SavedQueueFilter, Task
+from app.models.saved_filter_schemas import SavedFilterRead
+from app.models.search_schemas import EntityType
+from app.services.assignee_filter_utils import append_assignee_filter
+from app.services.search_service import search_service
+from app.services.tag_filter_utils import append_tag_filters
 
 
 _DASHBOARD_ITEM_METADATA = {
@@ -67,6 +72,53 @@ async def _count_entities(
     """Count entities matching the supplied SQL criteria."""
     result = await db.execute(select(func.count(model.id)).where(*criteria))
     return result.scalar() or 0
+
+
+async def _alert_badge_counts(db: AsyncSession, *criteria: Any) -> dict[str, int]:
+    """Use the same open and unassigned rules for the main and pinned Alerts links."""
+    result = await db.execute(
+        select(func.count(Alert.id), func.count(Alert.id).filter(col(Alert.assignee).is_(None)))
+        .where(col(Alert.status).in_(_OPEN_ITEM_STATUSES[Alert]), *criteria)
+    )
+    open_count, unassigned_count = result.one()
+    return {"open": open_count, "unassigned": unassigned_count}
+
+
+async def _pinned_alert_badges(db: AsyncSession) -> list[dict[str, Any]]:
+    pinned = (await db.scalars(
+        select(SavedQueueFilter)
+        .where(col(SavedQueueFilter.navigation_icon).is_not(None))
+        .order_by(SavedQueueFilter.name, SavedQueueFilter.id)
+    )).all()
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    badges = []
+    for entry in pinned:
+        saved = SavedFilterRead.model_validate(entry)
+        filters = saved.filters
+        criteria: list[Any] = []
+        if filters.status:
+            criteria.append(col(Alert.status).in_([AlertStatus(value) for value in filters.status]))
+        append_assignee_filter(criteria, col(Alert.assignee), filters.assignee)
+        append_tag_filters(criteria, Alert.tags, filters.include_tags, filters.exclude_tags)
+        if filters.date_range is not None:
+            start, end = filters.date_range.resolve_bounds(now)
+            if start is not None:
+                criteria.append(Alert.created_at >= start)
+            if end is not None:
+                criteria.append(Alert.created_at <= end)
+        counts = {"open": 0, "unassigned": 0}
+        if filters.search:
+            # Resolve exact, content or fuzzy matches in the full saved scope
+            # before intersecting those results with the open badge statuses.
+            predicates, total = await search_service.queue_match_predicates(
+                db, filters.search, EntityType.ALERT, criteria,
+            )
+            if total:
+                counts = await _alert_badge_counts(db, *criteria, or_(*predicates))
+        else:
+            counts = await _alert_badge_counts(db, *criteria)
+        badges.append({"filter": saved, "counts": counts})
+    return badges
 
 
 async def _fetch_dashboard_items(
@@ -128,29 +180,14 @@ class DashboardStats:
 class DashboardService:
     """Service for dashboard statistics."""
 
-    async def get_sidebar_badge_counts(self, db: AsyncSession) -> Dict[str, Dict[str, int]]:
+    async def get_sidebar_badge_counts(self, db: AsyncSession) -> dict[str, Any]:
         """Get open and unassigned counts for sidebar badges."""
-        alert_open_statuses = [
-            AlertStatus.NEW,
-            AlertStatus.IN_PROGRESS,
-        ]
         case_open_statuses = [CaseStatus.NEW, CaseStatus.IN_PROGRESS]
         task_open_statuses = [TaskStatus.TODO, TaskStatus.IN_PROGRESS]
 
         return {
-            "alerts": {
-                "open": await _count_entities(
-                    db,
-                    Alert,
-                    col(Alert.status).in_(alert_open_statuses),
-                ),
-                "unassigned": await _count_entities(
-                    db,
-                    Alert,
-                    col(Alert.status).in_(alert_open_statuses),
-                    Alert.assignee.is_(None),
-                ),
-            },
+            "alerts": await _alert_badge_counts(db),
+            "pinned_alert_filters": await _pinned_alert_badges(db),
             "cases": {
                 "open": await _count_entities(
                     db,

@@ -17,6 +17,7 @@ from app.core.database import get_db
 from app.models.models import SavedQueueFilter, UserAccount
 from app.models.saved_filter_schemas import (
     SavedFilterCreate,
+    SavedFilterNavigationUpdate,
     SavedFilterQueue,
     SavedFilterRead,
     SavedFilterRename,
@@ -83,6 +84,28 @@ async def rename_saved_filter(
     """Rename a saved filter."""
     return await saved_filter_service.rename_saved_filter(
         db, saved_filter, payload.name, actor=user, audit_context=build_audit_context(request)
+    )
+
+
+@router.put("/{filter_id}/navigation", operation_id="setSavedFilterNavigation", response_model=SavedFilterRead)
+async def set_saved_filter_navigation(
+    filter_id: UUID,
+    payload: SavedFilterNavigationUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: UserAccount = Depends(require_shared_authentication),
+) -> SavedFilterRead:
+    """Pin, update the icon, or unpin an organization-wide alert filter."""
+    await require_admin_user(request, user)
+    saved_filter = await saved_filter_service.get_visible_saved_filter_for_update(db, filter_id, user.id)
+    if (
+        saved_filter is None
+        or saved_filter.scope != SavedFilterScope.ORGANIZATION
+        or saved_filter.queue != SavedFilterQueue.ALERTS
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization alert filter not found")
+    return await saved_filter_service.set_saved_filter_navigation(
+        db, saved_filter, payload.icon_name, actor=user, audit_context=build_audit_context(request)
     )
 
 

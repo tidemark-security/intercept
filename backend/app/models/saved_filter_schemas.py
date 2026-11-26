@@ -70,6 +70,19 @@ class SavedFilterDateRange(BaseModel):
             raise ValueError("Start date must be before end date")
         return self
 
+    def resolve_bounds(self, now: datetime) -> tuple[datetime | None, datetime | None]:
+        """Resolve rolling presets at count time."""
+        if self.preset == "now":
+            return now, now
+        match = _RELATIVE_PRESET.fullmatch(self.preset or "")
+        if match:
+            amount, unit = match.groups()
+            return now - timedelta(minutes=int(amount) * _MINUTES_PER_UNIT[unit]), now
+        return (
+            parse_datetime_filter(self.start, parameter="start date"),
+            parse_datetime_filter(self.end, parameter="end date"),
+        )
+
 
 class SavedFilterSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -111,3 +124,10 @@ class SavedFilterRead(SavedFilterCreate):
     model_config = ConfigDict(from_attributes=True, extra="forbid")
 
     id: UUID
+    navigation_icon: str | None = None
+
+
+class SavedFilterNavigationUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    icon_name: Annotated[str, StringConstraints(max_length=100, pattern=r"^[A-Za-z][A-Za-z0-9]*$")] | None

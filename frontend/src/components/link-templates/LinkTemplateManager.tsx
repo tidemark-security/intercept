@@ -3,12 +3,12 @@ import { Button } from "@/components/buttons/Button";
 import { IconButton } from "@/components/buttons/IconButton";
 import { Table } from "@/components/data-display/Table";
 import { TextField } from "@/components/forms/TextField";
+import { SharedIconPicker } from "@/components/forms/SharedIconPicker";
 import { DropdownMenu } from "@/components/overlays/DropdownMenu";
 import { FormDrawer } from "@/components/overlays";
 import { useToast } from "@/contexts/ToastContext";
 import {
   FALLBACK_LINK_TEMPLATE_ICON,
-  getAvailableIconNames,
   getIconComponent,
   normalizeLinkTemplateIconName,
 } from "@/utils/iconMapping";
@@ -223,35 +223,12 @@ export function LinkTemplateManager<TTemplate extends ManagedLinkTemplate>({
 }: LinkTemplateManagerProps<TTemplate>) {
   const { showToast } = useToast();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
-  const iconDropdownRef = React.useRef<HTMLDivElement>(null);
   const [isModalOpen, setIsModalOpen] = React.useState(false);
   const [editingTemplate, setEditingTemplate] = React.useState<TTemplate | null>(null);
   const [draft, setDraft] = React.useState<TemplateDraft>(EMPTY_DRAFT);
   const [fieldNamesInput, setFieldNamesInput] = React.useState("");
   const [conditionsInput, setConditionsInput] = React.useState("");
-  const [iconSearchTerm, setIconSearchTerm] = React.useState("");
-  const [showIconDropdown, setShowIconDropdown] = React.useState(false);
   const [pendingAction, setPendingAction] = React.useState<string | null>(null);
-
-  const allIconNames = React.useMemo(() => getAvailableIconNames(), []);
-  const filteredIcons = React.useMemo(
-    () => allIconNames.filter((name) => name.toLowerCase().includes(iconSearchTerm.toLowerCase())),
-    [allIconNames, iconSearchTerm],
-  );
-
-  React.useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (iconDropdownRef.current && !iconDropdownRef.current.contains(event.target as Node)) {
-        setShowIconDropdown(false);
-        setIconSearchTerm("");
-      }
-    };
-
-    if (showIconDropdown) {
-      document.addEventListener("mousedown", handleClickOutside);
-    }
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [showIconDropdown]);
 
   const sortedTemplates = React.useMemo(
     () => [...templates].sort((a, b) => (a.display_order ?? 100) - (b.display_order ?? 100) || a.name.localeCompare(b.name)),
@@ -263,8 +240,6 @@ export function LinkTemplateManager<TTemplate extends ManagedLinkTemplate>({
     setDraft({ ...EMPTY_DRAFT });
     setFieldNamesInput("");
     setConditionsInput("");
-    setShowIconDropdown(false);
-    setIconSearchTerm("");
     setIsModalOpen(true);
   };
 
@@ -274,8 +249,6 @@ export function LinkTemplateManager<TTemplate extends ManagedLinkTemplate>({
     setDraft(nextDraft);
     setFieldNamesInput(valuesToCsv(nextDraft.field_names));
     setConditionsInput(nextDraft.conditions ? JSON.stringify(nextDraft.conditions, null, 2) : "");
-    setShowIconDropdown(false);
-    setIconSearchTerm("");
     setIsModalOpen(true);
   };
 
@@ -285,8 +258,6 @@ export function LinkTemplateManager<TTemplate extends ManagedLinkTemplate>({
     setDraft({ ...EMPTY_DRAFT });
     setFieldNamesInput("");
     setConditionsInput("");
-    setShowIconDropdown(false);
-    setIconSearchTerm("");
   };
 
   const submitForm = async () => {
@@ -592,51 +563,11 @@ export function LinkTemplateManager<TTemplate extends ManagedLinkTemplate>({
                 />
               </TextField>
 
-              <div className="flex w-full flex-col gap-2 tablet:col-span-2">
-                <label className="text-body-bold font-body-bold text-default-font">Icon</label>
-                <div className="relative" ref={iconDropdownRef}>
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 rounded-md border border-solid border-neutral-border bg-default-background px-3 py-2 text-left hover:border-neutral-400"
-                    onClick={() => setShowIconDropdown((value) => !value)}
-                  >
-                    <span className="text-[20px] text-neutral-700">{getIconComponent(draft.icon_name)}</span>
-                    <span className="flex-1 text-body font-body text-default-font">{draft.icon_name}</span>
-                  </button>
-
-                  {showIconDropdown ? (
-                    <div className="absolute z-10 mt-1 w-full rounded-md border border-solid border-neutral-border bg-default-background shadow-lg">
-                      <div className="p-2">
-                        <TextField className="h-auto w-full">
-                          <TextField.Input
-                            placeholder="Search icons..."
-                            value={iconSearchTerm}
-                            onChange={(event) => setIconSearchTerm(event.target.value)}
-                            onClick={(event) => event.stopPropagation()}
-                          />
-                        </TextField>
-                      </div>
-                      <div className="max-h-64 overflow-y-auto">
-                        {filteredIcons.map((iconName) => (
-                          <button
-                            key={iconName}
-                            type="button"
-                            className="flex w-full items-center gap-3 px-4 py-2 text-left hover:bg-neutral-100"
-                            onClick={() => {
-                              setDraftValue("icon_name", iconName);
-                              setShowIconDropdown(false);
-                              setIconSearchTerm("");
-                            }}
-                          >
-                            <span className="text-[20px] text-neutral-700">{getIconComponent(iconName)}</span>
-                            <span className="text-body font-body text-default-font">{iconName}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
+              <SharedIconPicker
+                className="tablet:col-span-2"
+                value={draft.icon_name}
+                onChange={(iconName) => setDraftValue("icon_name", iconName)}
+              />
 
               <TextField className="h-auto w-full flex-none tablet:col-span-2" label="Tooltip Template">
                 <TextField.Input

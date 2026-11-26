@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { Fragment, useState, useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
 import Logo from "@/assets/TMS-logo-green.svg?react";
 
@@ -13,6 +13,8 @@ import { useTheme } from "@/contexts/ThemeContext";
 import { useTimezonePreference } from "@/contexts/TimezoneContext";
 import { useSidebarBadgeCounts } from "@/hooks/useDashboard";
 import { preloadRoute } from "@/routes/routePages";
+import { alertFilterHref } from "@/utils/savedQueueFilters";
+import { getIconComponent } from "@/utils/iconMapping";
 import { cn } from "@/utils/cn";
 import type { SidebarBadgeCount } from "@/types/generated/models/SidebarBadgeCount";
 import { IconWrapper, ToggleGroup, Tooltip } from "@tidemark-security/ux";
@@ -192,7 +194,7 @@ function SidebarLink({
         aria-label={label}
         aria-current={selected ? "page" : undefined}
         className={sidebarItemClassName(mobile, className)}
-        {...routeIntentProps(to)}
+        {...routeIntentProps(to.split("?")[0])}
       >
         <SidebarItemIcon icon={icon} selected={selected} />
       </Link>
@@ -275,26 +277,46 @@ function SidebarNavLabel({ label, counts }: SidebarNavLabelProps) {
 }
 
 function SidebarQueueLinks({ mobile = false }: { mobile?: boolean }) {
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const { isAdmin } = useSession();
   const { data: sidebarBadgeCounts } = useSidebarBadgeCounts();
   const items = navigationItems.filter((item) => item.key !== "admin" || (isAdmin && !mobile));
+
+  const pinned = sidebarBadgeCounts?.pinned_alert_filters ?? [];
+  const pinId = new URLSearchParams(search).get("saved_filter");
+  const activePin = pathname === "/alerts" || pathname.startsWith("/alerts/")
+    ? pinned.find(({ filter }) => filter.id === pinId)
+    : undefined;
 
   return items.map((item) => {
     const Icon = item.icon;
     const counts = item.badgeKey ? sidebarBadgeCounts?.[item.badgeKey] : undefined;
     return (
-      <SidebarLink
-        key={item.key}
-        label={item.label}
-        to={item.to}
-        className={mobile ? item.mobileClassName : undefined}
-        icon={<SidebarIconWithBadge icon={<Icon />} counts={counts} />}
-        selected={item.match(pathname)}
-        mobile={mobile}
-      >
-        <SidebarNavLabel label={item.label} counts={counts} />
-      </SidebarLink>
+      <Fragment key={item.key}>
+        <SidebarLink
+          label={item.label}
+          to={item.to}
+          className={mobile ? item.mobileClassName : undefined}
+          icon={<SidebarIconWithBadge icon={<Icon />} counts={counts} />}
+          selected={item.match(pathname) && !(item.key === "alerts" && activePin)}
+          mobile={mobile}
+        >
+          <SidebarNavLabel label={item.label} counts={counts} />
+        </SidebarLink>
+        {item.key === "alerts" && pinned.map(({ filter, counts }) => filter.navigation_icon && (
+          <SidebarLink
+            key={filter.id}
+            label={filter.name}
+            to={alertFilterHref(filter)}
+            className={mobile ? "shrink-0" : undefined}
+            icon={<SidebarIconWithBadge icon={getIconComponent(filter.navigation_icon)} counts={counts} />}
+            selected={activePin?.filter.id === filter.id}
+            mobile={mobile}
+          >
+            <SidebarNavLabel label={filter.name} counts={counts} />
+          </SidebarLink>
+        ))}
+      </Fragment>
     );
   });
 }

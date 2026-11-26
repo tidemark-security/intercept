@@ -3694,6 +3694,10 @@ class SavedQueueFilter(SQLModel, table=True):
             "(scope = 'organization' AND owner_id IS NULL)",
             name="ck_saved_queue_filters_scope_owner",
         ),
+        CheckConstraint(
+            "navigation_icon IS NULL OR (scope = 'organization' AND queue = 'alerts')",
+            name="ck_saved_queue_filters_navigation",
+        ),
         Index("ix_saved_queue_filters_queue_owner", "queue", "owner_id"),
     )
 
@@ -3703,3 +3707,4 @@ class SavedQueueFilter(SQLModel, table=True):
     scope: str = Field(max_length=12)
     owner_id: UUID | None = Field(default=None, foreign_key="user_accounts.id", ondelete="CASCADE")
     filters: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
+    navigation_icon: str | None = Field(default=None, max_length=100)

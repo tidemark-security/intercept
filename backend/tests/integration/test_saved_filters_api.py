@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models.models import UserAccount
+from app.models.enums import AlertStatus
+from app.models.models import Alert, UserAccount
 from app.services.audit_service import AuditService
 from app.services.auth_service import auth_service
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
@@ -79,6 +82,7 @@ async def test_personal_filters_round_trip_for_owner_only(
     assert saved == {
         **payload,
         "id": saved["id"],
+        "navigation_icon": None,
         "name": "My queue",
         "filters": {**snapshot, "search": "spoofed login"},
     }
@@ -268,3 +272,88 @@ async def test_saved_filter_writes_can_overlap_authenticated_queue_reads(
         assert renamed.status_code == 200, renamed.text
         deleted = await client.delete(item, headers=analyst)
         assert deleted.status_code == 204, deleted.text
+
+
+@pytest.mark.asyncio
+async def test_pinned_alert_filter_counts_for_members_and_admin_only_management(
+    client: AsyncClient,
+    session_maker: async_sessionmaker[AsyncSession],
+    analyst_user_factory,
+    admin_user_factory,
+) -> None:
+    owner = await _login(client, session_maker, admin_user_factory())
+    member = await _login(client, session_maker, analyst_user_factory())
+
+    async def save_filter(**overrides):
+        payload = {"queue": "alerts", "scope": "organization", "name": "Identity", "filters": {}}
+        response = await client.post(SAVED_FILTERS_PATH, headers=owner, json={**payload, **overrides})
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    now = datetime.now(timezone.utc)
+    recent = now - timedelta(minutes=10)
+    async with session_maker() as session:
+        # The test database uses ORM metadata and skips migration-owned search columns.
+        await session.execute(text("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS search_vector tsvector"))
+        session.add_all([
+            Alert(title="Identity review A", status=AlertStatus.NEW, tags=["identity"], created_at=recent),
+            Alert(title="Identity review B", status=AlertStatus.IN_PROGRESS, tags=["identity"], created_at=recent),
+            Alert(title="Identity review assigned", status=AlertStatus.NEW, tags=["identity"], assignee="analyst", created_at=recent),
+            Alert(title="Identity review closed", status=AlertStatus.CLOSED_FP, tags=["identity"], created_at=recent),
+            Alert(title="Identity review ignored", status=AlertStatus.NEW, tags=["identity", "ignored"], created_at=recent),
+            Alert(title="Identity review old", status=AlertStatus.NEW, tags=["identity"], created_at=now - timedelta(days=2)),
+            Alert(title="Endpoint review", status=AlertStatus.NEW, tags=["endpoint"], created_at=recent),
+        ])
+        await session.flush()
+        await session.execute(text("UPDATE alerts SET search_vector = to_tsvector('english', title)"))
+        await session.commit()
+
+    saved = await save_filter(filters={
+        "search": "identity review",
+        "status": ["NEW", "IN_PROGRESS", "CLOSED_FP"],
+        "assignee": ["__unassigned__", "analyst"],
+        "include_tags": ["identity"],
+        "exclude_tags": ["ignored"],
+        "date_range": {"start": "2020-01-01", "end": "2020-01-02", "preset": "-1h"},
+    })
+    personal = await save_filter(scope="personal")
+    cases = await save_filter(queue="cases")
+    path = f"{SAVED_FILTERS_PATH}/{saved['id']}/navigation"
+    icon = {"icon_name": "MSTeamsIcon"}
+    assert (await client.put(path, json=icon)).status_code == 401
+    assert (await client.put(path, headers=member, json=icon)).status_code == 403
+    for invalid_target in (personal, cases):
+        assert (await client.put(
+            f"{SAVED_FILTERS_PATH}/{invalid_target['id']}/navigation", headers=owner, json=icon,
+        )).status_code == 404
+    assert (await client.put(path, headers=owner, json={"icon_name": "<svg>"})).status_code == 422
+
+    response = await client.put(path, headers=owner, json=icon)
+    assert response.status_code == 200, response.text
+    pinned = {**saved, "navigation_icon": "MSTeamsIcon"}
+    assert response.json() == pinned
+    assert (await client.put(path, headers=owner, json=icon)).json() == pinned
+
+    dashboard = "/api/v1/dashboard/sidebar-badge-counts"
+    counts = await client.get(dashboard, headers=member)
+    assert counts.status_code == 200, counts.text
+    assert counts.json()["alerts"] == {"open": 6, "unassigned": 5}
+    assert counts.json()["pinned_alert_filters"] == [
+        {"filter": pinned, "counts": {"open": 3, "unassigned": 2}},
+    ]
+
+    renamed = await client.patch(f"{SAVED_FILTERS_PATH}/{saved['id']}", headers=owner, json={"name": "Identity queue"})
+    assert renamed.json()["navigation_icon"] == "MSTeamsIcon"
+    assert (await client.put(path, headers=owner, json={"icon_name": "Shield"})).json()["navigation_icon"] == "Shield"
+    assert (await client.put(path, headers=owner, json={"icon_name": None})).json()["navigation_icon"] is None
+    assert (await client.get(dashboard, headers=member)).json()["pinned_alert_filters"] == []
+    assert (await client.get(SAVED_FILTERS_PATH, headers=member, params={"queue": "alerts"})).json()[0]["name"] == "Identity queue"
+
+    await client.put(path, headers=owner, json=icon)
+    assert (await client.delete(f"{SAVED_FILTERS_PATH}/{saved['id']}", headers=owner)).status_code == 204
+    assert (await client.get(dashboard, headers=member)).json()["pinned_alert_filters"] == []
+    events = await _saved_filter_audit(client, owner)
+    navigation_events = [event for event in events if event["event_type"] == "saved_filter.navigation_updated"]
+    assert len(navigation_events) == 4
+    assert json.loads(navigation_events[0]["new_value"])["navigation_icon"] == "MSTeamsIcon"
+    assert all("identity review" not in (event["new_value"] or "") for event in navigation_events)

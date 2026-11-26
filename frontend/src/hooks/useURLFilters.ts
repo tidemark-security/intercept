@@ -259,6 +259,7 @@ export function useURLFilters<T extends AnyFilterState>(
     if (query) params.set('search', query);
     else params.delete('search');
     params.delete('page');
+    params.delete('saved_filter');
     updateFilters(params);
   }, [searchParams, updateFilters]);
 

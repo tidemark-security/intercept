@@ -88,6 +88,7 @@ const routePaths = [
   "/admin/users",
   "/admin/audit",
   "/admin/link-templates",
+  "/admin/alert-filters",
   "/admin/settings",
   "/admin/queue",
   "/ai-chat",
@@ -2474,4 +2475,89 @@ test("profile positions triage and context independently on alert details", asyn
   await select(contextSetting, "Embed");
   await page.goto(`/alerts/${sampleAlert.human_id}`);
   await expectPlacement(sampleAlert, "embed", "embed");
+});
+
+test("an admin can pin an organization alert filter with a shared icon and scoped badge", async ({ page, browser }) => {
+  await installProductionApiMocks(page);
+  const filter = {
+    id: "89330fd9-d93c-49b0-965d-27ab90ca35a8",
+    name: "Identity queue",
+    queue: "alerts",
+    scope: "organization",
+    filters: { include_tags: ["identity"], status: ["NEW", "IN_PROGRESS"] },
+    navigation_icon: null as string | null,
+  };
+  const personal = { ...filter, id: "personal", name: "Personal queue", scope: "personal" };
+  const dashboardResponse = () => ({
+    alerts: { open: 4, unassigned: 3 },
+    cases: { open: 0, unassigned: 0 },
+    tasks: { open: 0, unassigned: 0 },
+    pinned_alert_filters: filter.navigation_icon ? [{ filter, counts: { open: 2, unassigned: 1 } }] : [],
+  });
+
+  await page.route(/\/api\/v1\/saved-filters\?queue=alerts$/, (route) => route.fulfill(jsonResponse([filter, personal])));
+  await page.route(`**/api/v1/saved-filters/${filter.id}/navigation`, (route) => {
+    expect(route.request().method()).toBe("PUT");
+    filter.navigation_icon = route.request().postDataJSON().icon_name;
+    return route.fulfill(jsonResponse(filter));
+  });
+  await page.route("**/api/v1/dashboard/sidebar-badge-counts", (route) => route.fulfill(jsonResponse(dashboardResponse())));
+  await page.route(/\/api\/v1\/alerts\?/, (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    const scoped = params.getAll("include_tags").includes("identity");
+    const items = scoped ? [sampleAlert] : [sampleAlert, secondAlert];
+    return route.fulfill(jsonResponse({ ...emptyPage, items, total: items.length, pages: 1 }));
+  });
+
+  await page.goto("/admin");
+  await page.getByRole("link", { name: /Organization alert filters/ }).click();
+  await expect(page).toHaveURL(/\/admin\/alert-filters$/);
+  await expect(page.getByText(personal.name)).toHaveCount(0);
+  await page.getByRole("button", { name: `Pin ${filter.name}` }).click();
+  await page.getByRole("button", { name: "Icon Bell" }).click();
+  await page.getByPlaceholder("Search icons...").fill("MSTeamsIcon");
+  await page.getByRole("button", { name: "MSTeamsIcon", exact: true }).click();
+  await page.getByRole("button", { name: "Pin to navigation" }).click();
+  const nav = page.getByRole("navigation");
+  const pin = nav.getByRole("link", { name: filter.name, exact: true });
+  await expect(pin).toHaveText("1");
+  await expect(nav.getByRole("link", { name: "Alerts", exact: true })).toHaveText("3");
+  await expect.poll(() => filter.navigation_icon).toBe("MSTeamsIcon");
+  const scopedRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return url.pathname === "/api/v1/alerts" && url.searchParams.getAll("include_tags").includes("identity");
+  });
+  await pin.click();
+  await scopedRequest;
+  await expect(pin).toHaveAttribute("aria-current", "page");
+  await expect(page.getByText(sampleAlert.title, { exact: true })).toBeVisible();
+  await expect(page.getByText(secondAlert.title, { exact: true })).toHaveCount(0);
+  await page.reload();
+  await expect(pin).toHaveAttribute("aria-current", "page");
+
+  const member = await browser.newContext({ viewport: { width: 390, height: 844 }, baseURL: new URL(page.url()).origin });
+  try {
+    await installProductionApiMocks(member);
+    const session = apiResponse("/api/v1/auth/session") as { user: typeof adminUser };
+    await member.route("**/api/v1/auth/session", (route) => route.fulfill(jsonResponse({
+      ...session, user: { ...session.user, id: "member-id", role: "ANALYST" },
+    })));
+    await member.route("**/api/v1/dashboard/sidebar-badge-counts", (route) => route.fulfill(jsonResponse(dashboardResponse())));
+    const memberPage = await member.newPage();
+    await memberPage.goto("/alerts");
+    const mobilePin = memberPage.getByRole("navigation").getByRole("link", { name: filter.name, exact: true });
+    await expect(mobilePin).toHaveText("1");
+    await expect(mobilePin).toBeInViewport();
+    await memberPage.goto("/admin/alert-filters");
+    await expect(memberPage.getByRole("button", { name: `Edit pin for ${filter.name}` })).toHaveCount(0);
+    await expect(memberPage.getByRole("heading", { name: "Access Denied" })).toBeVisible();
+  } finally {
+    await member.close();
+  }
+
+  await page.goto("/admin/alert-filters");
+  await page.getByRole("button", { name: `Edit pin for ${filter.name}` }).click();
+  await page.getByRole("button", { name: "Unpin", exact: true }).click();
+  await expect(pin).toHaveCount(0);
+  await expect(page.getByRole("button", { name: `Pin ${filter.name}` })).toBeVisible();
 });

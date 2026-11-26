@@ -27,7 +27,10 @@ def _visible_to(user_id: UUID):
 
 def _audit_snapshot(saved_filter: SavedQueueFilter) -> dict[str, str]:
     # Filter criteria can contain sensitive search terms and investigation data.
-    return {"name": saved_filter.name, "queue": saved_filter.queue, "scope": saved_filter.scope}
+    snapshot = {"name": saved_filter.name, "queue": saved_filter.queue, "scope": saved_filter.scope}
+    if saved_filter.navigation_icon is not None:
+        snapshot["navigation_icon"] = saved_filter.navigation_icon
+    return snapshot
 
 
 async def _audit_saved_filter_change(
@@ -122,6 +125,32 @@ async def rename_saved_filter(
         db,
         saved_filter,
         AuditEventType.SAVED_FILTER_RENAMED,
+        actor=actor,
+        context=audit_context,
+        before=before,
+        after=_audit_snapshot(saved_filter),
+    )
+    await db.commit()
+    return result
+
+
+async def set_saved_filter_navigation(
+    db: AsyncSession,
+    saved_filter: SavedQueueFilter,
+    icon_name: str | None,
+    *,
+    actor: UserAccount,
+    audit_context: AuditContext,
+) -> SavedFilterRead:
+    if saved_filter.navigation_icon == icon_name:
+        return SavedFilterRead.model_validate(saved_filter)
+    before = _audit_snapshot(saved_filter)
+    saved_filter.navigation_icon = icon_name
+    result = SavedFilterRead.model_validate(saved_filter)
+    await _audit_saved_filter_change(
+        db,
+        saved_filter,
+        AuditEventType.SAVED_FILTER_NAVIGATION_UPDATED,
         actor=actor,
         context=audit_context,
         before=before,
