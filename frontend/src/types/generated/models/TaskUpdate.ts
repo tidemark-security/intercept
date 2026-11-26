@@ -15,6 +15,7 @@ import type { ObservableItem } from './ObservableItem';
 import type { PICERLStage } from './PICERLStage';
 import type { Priority } from './Priority';
 import type { ProcessItem } from './ProcessItem';
+import type { ProcessTreeItem } from './ProcessTreeItem';
 import type { RegistryChangeItem } from './RegistryChangeItem';
 import type { SystemItem } from './SystemItem';
 import type { TaskStatus } from './TaskStatus';
@@ -33,7 +34,7 @@ export type TaskUpdate = {
     picerl_stage?: (PICERLStage | null);
     case_id?: (number | null);
     source_runbook?: (number | null);
-    timeline_items?: (Record<string, (DeletedItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AttachmentItem | CaseItem | EmailItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | RegistryChangeItem | SystemItem | TTPItem)> | null);
+    timeline_items?: (Record<string, (DeletedItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AttachmentItem | CaseItem | EmailItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | ProcessTreeItem | RegistryChangeItem | SystemItem | TTPItem)> | null);
     tags?: (Array<string> | null);
 };
 

@@ -18,6 +18,7 @@ import type { NoteItem } from './NoteItem';
 import type { ObservableItem } from './ObservableItem';
 import type { Priority } from './Priority';
 import type { ProcessItem } from './ProcessItem';
+import type { ProcessTreeItem } from './ProcessTreeItem';
 import type { RegistryChangeItem } from './RegistryChangeItem';
 import type { SystemItem } from './SystemItem';
 import type { TaskItem } from './TaskItem';
@@ -33,7 +34,7 @@ export type CaseUpdate = {
     priority?: (Priority | null);
     assignee?: (string | null);
     tags?: (Array<string> | null);
-    timeline_items?: (Record<string, (DeletedItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AlertItem | AttachmentItem | CaseItem | EmailItem | ForensicArtifactItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | RegistryChangeItem | SystemItem | TaskItem | TTPItem)> | null);
+    timeline_items?: (Record<string, (DeletedItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AlertItem | AttachmentItem | CaseItem | EmailItem | ForensicArtifactItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | ProcessTreeItem | RegistryChangeItem | SystemItem | TaskItem | TTPItem)> | null);
     /**
      * Migration-only override for the case closure timestamp
      */

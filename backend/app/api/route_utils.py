@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from fastapi import HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.settings_registry import get_local
@@ -171,7 +172,14 @@ def create_timeline_converter(timeline_item_types: Dict[str, Any]):
             }
         
         item_class = timeline_item_types[item_type]
-        return item_class(**timeline_item)
+        try:
+            return item_class(**timeline_item)
+        except ValidationError as error:
+            if item_type != "process_tree":
+                raise
+            issue = error.errors(include_url=False, include_context=False, include_input=False)[0]
+            field = ".".join(str(part) for part in issue["loc"])
+            raise HTTPException(status_code=422, detail=f"{field}: {issue['msg']}") from error
     
     return convert_timeline_item
 

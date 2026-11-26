@@ -36,7 +36,7 @@ interface UseTimelineFormOptions<TFormState, TInitialData> {
   validate?: (state: TFormState) => ValidationResult;
   
   /** Custom error message (optional, defaults to type-based message) */
-  errorMessage?: string;
+  errorMessage?: string | ((error: Error) => string);
 }
 
 /**
@@ -138,7 +138,8 @@ export function useTimelineForm<TFormState extends Record<string, any>, TInitial
       console.error(`Failed to create ${itemType}:`, error);
       showToast(
         "Error",
-        errorMessage || `Failed to create ${itemType}. Please try again.`,
+        (typeof errorMessage === 'function' ? errorMessage(error) : errorMessage) ||
+          `Failed to create ${itemType}. Please try again.`,
         "error"
       );
     },
@@ -153,7 +154,8 @@ export function useTimelineForm<TFormState extends Record<string, any>, TInitial
       console.error(`Failed to update ${itemType}:`, error);
       showToast(
         "Error",
-        errorMessage || `Failed to update ${itemType}. Please try again.`,
+        (typeof errorMessage === 'function' ? errorMessage(error) : errorMessage) ||
+          `Failed to update ${itemType}. Please try again.`,
         "error"
       );
     },

@@ -152,6 +152,8 @@ export type { PresignedUploadRequest } from './models/PresignedUploadRequest';
 export type { PresignedUploadResponse } from './models/PresignedUploadResponse';
 export type { Priority } from './models/Priority';
 export type { ProcessItem } from './models/ProcessItem';
+export type { ProcessTreeItem } from './models/ProcessTreeItem';
+export type { ProcessTreeNode } from './models/ProcessTreeNode';
 export type { Protocol } from './models/Protocol';
 export type { QueueJobRead } from './models/QueueJobRead';
 export type { QueueJobsPage } from './models/QueueJobsPage';

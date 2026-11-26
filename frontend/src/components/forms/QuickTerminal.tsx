@@ -304,7 +304,7 @@ export function QuickTerminal({
                     </>
                   )}
                   {(isItemTypeAvailable("email") || isItemTypeAvailable("forensic_artifact") || 
-                    isItemTypeAvailable("network_traffic") || isItemTypeAvailable("registry_change") || 
+                    isItemTypeAvailable("network_traffic") || isItemTypeAvailable("process_tree") || isItemTypeAvailable("registry_change") ||
                     isItemTypeAvailable("ttp")) && (
                     <DropdownMenu.DropdownDivider />
                   )}
@@ -333,6 +333,15 @@ export function QuickTerminal({
                       showHint={true}
                       label="Network Comms"
                       onClick={() => onMenuItemSelect("network_traffic")}
+                    />
+                  )}
+                  {isItemTypeAvailable("process_tree") && (
+                    <DropdownMenu.DropdownItem
+                      icon={<TIMELINE_ICONS.process_tree />}
+                      hint={SLASH_COMMANDS.find(c => c.type === "process_tree")?.label}
+                      showHint={true}
+                      label="Process Tree"
+                      onClick={() => onMenuItemSelect("process_tree")}
                     />
                   )}
                   {isItemTypeAvailable("registry_change") && (

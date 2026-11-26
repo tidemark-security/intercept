@@ -16,7 +16,7 @@ import {
   isNoteItem, isTaskItem, isObservableItem, isSystemItem,
   isInternalActorItem, isExternalActorItem, isThreatActorItem,
   isEmailItem, isLinkItem, isAttachmentItem, isNetworkTrafficItem,
-  isProcessItem, isRegistryChangeItem, isTTPItem, isForensicArtifactItem
+  isProcessItem, isProcessTreeItem, isRegistryChangeItem, isTTPItem, isForensicArtifactItem
 } from "@/types/timeline";
 import { TimelineFormProvider } from "@/contexts/TimelineFormContext";
 import { NoteForm } from "@/components/timeline/forms/NoteForm";
@@ -29,6 +29,7 @@ import { AddTaskForm } from "@/components/timeline/forms/TaskForm";
 import { AddAttachmentForm } from "@/components/timeline/forms/AttachmentForm";
 import { AddNetworkForm } from "@/components/timeline/forms/NetworkForm";
 import { AddProcessForm } from "@/components/timeline/forms/ProcessForm";
+import { ProcessTreeForm } from "@/components/timeline/forms/ProcessTreeForm";
 import { AddRegistryForm } from "@/components/timeline/forms/RegistryForm";
 import { AddTTPForm } from "@/components/timeline/forms/TTPForm";
 import { AddArtifactForm } from "@/components/timeline/forms/ArtifactForm";
@@ -170,6 +171,11 @@ function renderFormContent(
       return <AddProcessForm 
         initialData={editMode && itemData && isProcessItem(itemData as TimelineItem) ? (itemData as any) : undefined}
       />;
+
+    case "process_tree": {
+      const timelineItem = itemData as TimelineItem | undefined;
+      return <ProcessTreeForm initialData={editMode && timelineItem && isProcessTreeItem(timelineItem) ? timelineItem : undefined} />;
+    }
     
     default:
       return null;

@@ -972,6 +972,7 @@ function UnifiedTimelineInner({
       'email',
       'network_traffic',
       'process',
+      'process_tree',
       'registry_change',
       'ttp',
     ]
@@ -986,6 +987,7 @@ function UnifiedTimelineInner({
         'email',
         'network_traffic',
         'process',
+        'process_tree',
         'registry_change',
         'ttp',
         'forensic_artifact',
@@ -1002,6 +1004,7 @@ function UnifiedTimelineInner({
         'email',
         'network_traffic',
         'process',
+        'process_tree',
         'registry_change',
         'ttp',
         'forensic_artifact',
