@@ -102,7 +102,7 @@ export function AIAgentActivityCard({ item, embedded, actions }: AIAgentActivity
           <Tooltip.Root>
             <Tooltip.Trigger asChild>{toggle}</Tooltip.Trigger>
             <Tooltip.Content side="top" align="end" className="max-w-[min(22rem,calc(100vw-2rem))]">
-              <div className="min-w-0 space-y-1 break-words text-caption font-caption text-default-font">
+              <div className="min-w-0 space-y-1 break-words text-caption font-caption text-black">
                 <div>{expanded ? 'Collapse activity' : [harness, item.agent_name, activity].filter(Boolean).join(' · ')}</div>
                 {!expanded && target ? <code className="line-clamp-4 font-mono">{target}</code> : null}
                 {!expanded && item.tool_name && target !== item.tool_name ? <div>Tool: {item.tool_name}</div> : null}
