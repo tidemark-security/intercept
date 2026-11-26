@@ -33,10 +33,11 @@ async def call(name, **arguments):
 
 
 async def test_describe_exposes_target_specific_types_and_disallows_server_fields():
-    for kind, count in {"case": 17, "alert": 14, "task": 14}.items():
+    for kind, count in {"case": 18, "alert": 15, "task": 15}.items():
         discovery = await call("describe_timeline_item", target_kind=kind)
         types = {entry["item_type"] for entry in discovery["item_types"]}
         assert len(types) == count
+        assert "ai_agent" in types
         assert "deleted" not in types
         assert ("task" in types) == (kind == "case")
 
@@ -46,6 +47,14 @@ async def test_describe_exposes_target_specific_types_and_disallows_server_field
     assert "IP" in fields["$defs"]["ObservableType"]["enum"]
     assert "created_by" not in fields["properties"]
     assert "replies" not in fields["properties"]
+
+    description = await call("describe_timeline_item", target_kind="case", item_type="ai_agent")
+    fields = description["fields"]
+    assert fields["required"] == ["activity"]
+    assert set(fields["properties"]["activity"]["enum"]) == {
+        "tool_call", "file_read", "file_write", "shell_command", "other",
+    }
+    assert "created_by" not in fields["properties"]
 
 
 async def test_preview_is_read_only_and_replies_require_stored_parent(analyst, session_maker):
@@ -155,6 +164,8 @@ async def test_ordinary_types_preview_commit_and_read_back(analyst, session_make
     assert saved["id"] == "typed-item"
     assert saved["type"] == item_type
     assert saved["created_by"] == "analyst"
+    if item_type == "ai_agent":
+        assert {key: saved[key] for key in fields} == fields
 
 
 @pytest.mark.parametrize("kind", ["alert", "task"])
