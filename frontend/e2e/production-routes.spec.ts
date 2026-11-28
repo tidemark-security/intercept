@@ -426,6 +426,8 @@ for (const width of [1440, 390]) {
       await page.goto("/alerts");
       const reports = page.getByRole("link", { name: "Reports", exact: true });
       const home = page.getByRole("link", { name: "Home", exact: true });
+      const reportsContent = page.getByText("SOC operational metrics and performance analysis");
+      await expect(page.getByText(sampleAlert.title)).toBeVisible();
       const originalHome = await home.elementHandle();
       expect(reportsRequested).toBe(false);
 
@@ -435,13 +437,15 @@ for (const width of [1440, 390]) {
 
       await reports.press("Enter");
       await expect(page).toHaveURL(/\/reports$/);
-      await expect(page.getByRole("status", { name: "Loading page" })).toBeVisible();
+      // React may keep the previous page visible while the Reports import is held.
+      await expect(reportsContent).toHaveCount(0);
       await expect(home).toBeVisible();
       await expect(reports).toBeFocused();
-      await expect(reports).toHaveAttribute("aria-current", "page");
+      expect(await home.evaluate((node, original) => node === original, originalHome)).toBe(true);
 
       releaseReports();
-      await expect(page.getByText("SOC operational metrics and performance analysis")).toBeVisible();
+      await expect(reportsContent).toBeVisible();
+      await expect(reports).toHaveAttribute("aria-current", "page");
       await expect(page.getByRole("status", { name: "Loading page" })).toHaveCount(0);
       expect(await home.evaluate((node, original) => node === original, originalHome)).toBe(true);
       await originalHome.dispose();
@@ -2561,7 +2565,8 @@ test("an admin can pin and reorder organization alert filters with live sidebar 
   await expect(pinnedList.getByRole("link", { name: existingPin.name })).toBeVisible();
   await expect(unpinnedList.getByRole("link", { name: filter.name })).toBeVisible();
   await expect(pinnedList.getByRole("button", { name: `Move ${existingPin.name} up` })).toBeDisabled();
-  await page.getByRole("button", { name: `Pin ${filter.name}` }).click();
+  const pinButton = page.getByRole("button", { name: `Pin ${filter.name}` });
+  await pinButton.click();
   const dialog = page.getByRole("dialog", { name: "Pin to navigation" });
   const iconTrigger = dialog.getByRole("button", { name: "Icon Bell" });
   await iconTrigger.click();
@@ -2579,6 +2584,10 @@ test("an admin can pin and reorder organization alert filters with live sidebar 
   await page.keyboard.press("Escape");
   await expect(iconTrigger).toBeFocused();
   await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("dialog", { name: "Choose an icon" })).toBeHidden();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await pinButton.click();
   await iconTrigger.click();
   await page.getByPlaceholder("Search icons...").fill("MSTeamsIcon");
   await page.getByRole("button", { name: "MSTeamsIcon", exact: true }).click();
