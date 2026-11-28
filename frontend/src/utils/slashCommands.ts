@@ -89,6 +89,12 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: "Add a Process",
   },
   {
+    command: "tree",
+    type: "process_tree",
+    label: "/tree",
+    description: "Add a Process Tree",
+  },
+  {
     command: "reg",
     type: "registry_change",
     label: "/reg",

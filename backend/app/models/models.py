@@ -18,7 +18,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import TypeDecorator
-from pydantic import EmailStr, computed_field, field_validator, model_validator
+from pydantic import AwareDatetime, EmailStr, StrictInt, computed_field, field_validator, model_validator
 from app.core.filename_safety import sanitize_attachment_filename
 from app.core.entity_ids import (
     ALERT_PREFIX,
@@ -652,6 +652,70 @@ class ProcessItem(ItemBase):
     exit_code: Optional[int] = None
 
 
+class ProcessTreeNode(SQLModel):
+    """One process instance observed in a snapshot."""
+
+    id: str = Field(min_length=1, description="Process instance ID unique within the snapshot")
+    parent_id: Optional[str] = Field(default=None, description="Parent instance ID within the snapshot")
+    process_name: str = Field(min_length=1)
+    process_id: StrictInt = Field(ge=0, le=4294967295, description="Operating system process ID")
+    command_line: Optional[str] = None
+    user_account: Optional[str] = None
+    started_at: Optional[AwareDatetime] = None
+    status: Optional[Literal["running", "exited"]] = None
+    is_alert_source: bool = False
+    verdict: Optional[Literal["benign", "suspicious", "malicious"]] = None
+    verdict_reason: Optional[str] = None
+    image_path: Optional[str] = None
+    integrity_level: Optional[str] = None
+    signer: Optional[str] = None
+    is_signed: Optional[bool] = None
+    sha256: Optional[str] = None
+    network_connections: Optional[StrictInt] = Field(default=None, ge=0)
+    file_writes: Optional[StrictInt] = Field(default=None, ge=0)
+
+    @field_validator("id", "parent_id", "process_name")
+    @classmethod
+    def reject_blank_values(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not value.strip():
+            raise ValueError("Value must not be blank")
+        return value
+
+
+class ProcessTreeItem(ItemBase):
+    """Process forest captured at the timeline item's timestamp."""
+
+    type: Literal["process_tree"] = "process_tree"  # type: ignore
+    timestamp: AwareDatetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Timestamp when the process snapshot was captured",
+    )
+    hostname: Optional[str] = None
+    processes: List[ProcessTreeNode]
+
+    @field_validator("processes")
+    @classmethod
+    def validate_forest(cls, processes: List[ProcessTreeNode]) -> List[ProcessTreeNode]:
+        parent_by_id = {process.id: process.parent_id for process in processes}
+        if len(parent_by_id) != len(processes):
+            raise ValueError("Process instance IDs must be unique within a snapshot")
+
+        checked: set[str] = set()
+        for process in processes:
+            chain: set[str] = set()
+            node_id: Optional[str] = process.id
+            while node_id is not None and node_id not in checked:
+                if node_id not in parent_by_id:
+                    raise ValueError(f"Parent process {node_id!r} is missing from the snapshot")
+                if node_id in chain:
+                    raise ValueError(f"Process ancestry contains a cycle at {node_id!r}")
+                chain.add(node_id)
+                node_id = parent_by_id[node_id]
+            checked.update(chain)
+
+        return processes
+
+
 class RegistryChangeItem(ItemBase):
     """Timeline item for Windows registry modifications."""
 
@@ -682,6 +746,7 @@ AlertTimelineItem = Union[
     NoteItem,
     ObservableItem,
     ProcessItem,
+    ProcessTreeItem,
     RegistryChangeItem,
     SystemItem,
     TTPItem,
@@ -702,6 +767,7 @@ CaseTimelineItem = Union[
     NoteItem,
     ObservableItem,
     ProcessItem,
+    ProcessTreeItem,
     RegistryChangeItem,
     SystemItem,
     TaskItem,
@@ -721,6 +787,7 @@ TaskTimelineItem = Union[
     NoteItem,
     ObservableItem,
     ProcessItem,
+    ProcessTreeItem,
     RegistryChangeItem,
     SystemItem,
     TTPItem,

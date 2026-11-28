@@ -26,6 +26,7 @@ import { handleAlertItem } from './alertHandler';
 import { handleCaseItem } from './caseHandler';
 import { handleNetworkTrafficItem } from './networkTrafficHandler';
 import { handleProcessItem } from './processHandler';
+import { handleProcessTreeItem } from './processTreeHandler';
 import { handleRegistryChangeItem } from './registryChangeHandler';
 
 // Register all handlers
@@ -45,6 +46,7 @@ registerHandler('alert', handleAlertItem);
 registerHandler('case', handleCaseItem);
 registerHandler('network_traffic', handleNetworkTrafficItem);
 registerHandler('process', handleProcessItem);
+registerHandler('process_tree', handleProcessTreeItem);
 registerHandler('registry_change', handleRegistryChangeItem);
 
 // Export all handlers for testing and direct use

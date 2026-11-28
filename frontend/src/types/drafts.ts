@@ -14,6 +14,7 @@ export type TimelineItemType =
   | "attachment"
   | "network_traffic"
   | "process"
+  | "process_tree"
   | "registry_change"
   | "ttp"
   | "forensic_artifact"

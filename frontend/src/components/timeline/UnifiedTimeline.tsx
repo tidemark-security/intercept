@@ -965,6 +965,7 @@ function UnifiedTimelineInner({
       'email',
       'network_traffic',
       'process',
+      'process_tree',
       'registry_change',
       'ttp',
     ]
@@ -979,6 +980,7 @@ function UnifiedTimelineInner({
         'email',
         'network_traffic',
         'process',
+        'process_tree',
         'registry_change',
         'ttp',
         'forensic_artifact',
@@ -995,6 +997,7 @@ function UnifiedTimelineInner({
         'email',
         'network_traffic',
         'process',
+        'process_tree',
         'registry_change',
         'ttp',
         'forensic_artifact',
@@ -1089,7 +1092,7 @@ function UnifiedTimelineInner({
         )}
       >
         {isLoading ? (
-          <div className="flex w-full h-full items-center justify-center">
+          <div role="status" className="flex w-full h-full items-center justify-center">
             <span className="text-body font-body text-subtext-color">Loading {entityType} details...</span>
           </div>
         ) : error ? (
