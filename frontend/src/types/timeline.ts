@@ -19,6 +19,7 @@ import type { NetworkTrafficItem } from '@/types/generated/models/NetworkTraffic
 import type { NoteItem } from '@/types/generated/models/NoteItem';
 import type { ObservableItem } from '@/types/generated/models/ObservableItem';
 import type { ProcessItem } from '@/types/generated/models/ProcessItem';
+import type { AIAgentItem } from '@/types/generated/models/AIAgentItem';
 import type { RegistryChangeItem } from '@/types/generated/models/RegistryChangeItem';
 import type { TaskItem } from '@/types/generated/models/TaskItem';
 import type { TTPItem } from '@/types/generated/models/TTPItem';
@@ -74,6 +75,7 @@ type TimelineItemBase =
   | NoteItem
   | ObservableItem
   | ProcessItem
+  | AIAgentItem
   | RegistryChangeItem
   | SystemItem
   | TaskItem
@@ -180,6 +182,10 @@ export function isNetworkTrafficItem(item: TimelineItem): item is RecursiveTimel
  */
 export function isProcessItem(item: TimelineItem): item is RecursiveTimelineItem<ProcessItem> {
   return item.type === 'process';
+}
+
+export function isAIAgentItem(item: TimelineItem): item is RecursiveTimelineItem<AIAgentItem> {
+  return item.type === 'ai_agent';
 }
 
 /**

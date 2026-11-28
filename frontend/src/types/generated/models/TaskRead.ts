@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { AIAgentItem } from './AIAgentItem';
 import type { AttachmentItem } from './AttachmentItem';
 import type { CaseItem } from './CaseItem';
 import type { DeletedItem } from './DeletedItem';
@@ -38,7 +39,7 @@ export type TaskRead = {
     linked_at?: (string | null);
     created_at: string;
     updated_at: string;
-    timeline_items?: (Record<string, (DeletedItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AttachmentItem | CaseItem | EmailItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | RegistryChangeItem | SystemItem | TTPItem)> | null);
+    timeline_items?: (Record<string, (DeletedItem | AIAgentItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AttachmentItem | CaseItem | EmailItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | RegistryChangeItem | SystemItem | TTPItem)> | null);
     tags?: (Array<string> | null);
     readonly human_id: string;
 };

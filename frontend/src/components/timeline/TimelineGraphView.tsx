@@ -1382,11 +1382,12 @@ function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, heigh
   const connectorsVisible = graphActions?.connectorsVisible === true;
   const hiddenByFilter = data.hiddenByFilter === true;
   const showItemMutationActions = !data.itemActionsReadOnly;
+  const onEditItem = data.item.type === 'ai_agent' ? undefined : graphActions?.onEditItem;
   const hasItemMutationActions = showItemMutationActions && Boolean(
     graphActions?.onFlagItem ||
     graphActions?.onHighlightItem ||
     graphActions?.onDeleteItem ||
-    graphActions?.onEditItem,
+    onEditItem,
   );
   const connectorClassName = resolvedTheme === 'light'
     ? cn('!h-3.5 !w-3.5 !border !border-solid !border-neutral-1000 !bg-default-background transition-opacity group-hover/graph-node:opacity-100', connectorsVisible ? 'opacity-100' : 'opacity-0')
@@ -1524,13 +1525,13 @@ function TimelineGraphNodeCard({ id, data, selected, isConnectable, width, heigh
                 }}
               />
             ) : null}
-            {showItemMutationActions && graphActions?.onEditItem ? (
+            {showItemMutationActions && onEditItem ? (
               <GraphNodeActionButton
                 label="Edit"
                 icon={<Pencil />}
                 onClick={(event) => {
                   event.stopPropagation();
-                  graphActions.onEditItem?.(data.itemId);
+                  onEditItem(data.itemId);
                 }}
               />
             ) : null}

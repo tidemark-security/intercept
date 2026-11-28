@@ -45,7 +45,7 @@ TimelineItemType = Literal[
     "note", "internal_actor", "external_actor", "threat_actor", "alert",
     "attachment", "case", "email", "forensic_artifact", "link",
     "network_traffic", "observable", "process", "registry_change", "system",
-    "task", "ttp",
+    "task", "ttp", "ai_agent",
 ]
 
 _TARGETS = {
@@ -65,6 +65,10 @@ _CONVERTERS = {kind: create_timeline_converter(models) for kind, models in _TYPE
 _COMMON_FIELDS = {"description", "timestamp", "tags", "flagged", "highlighted", "parent_id"}
 _TYPE_FIELDS = {
     "note": (),
+    "ai_agent": (
+        "activity", "harness", "agent_name", "tool_name", "file_path",
+        "command_line", "endpoint", "source_event_id", "outcome", "exit_code",
+    ),
     "internal_actor": (
         "actor_id", "user_id", "name", "title", "org", "contact_phone", "contact_email",
         "manager_id", "is_vip", "is_privileged", "is_high_risk", "is_contractor", "is_service_account",
@@ -92,6 +96,10 @@ _TYPE_FIELDS = {
 }
 _EXAMPLES = {
     "note": {"description": "Reviewed the alert with the incident lead."},
+    "ai_agent": {
+        "activity": "file_read", "harness": "codex_cli",
+        "tool_name": "read_file", "file_path": "README.md",
+    },
     "internal_actor": {"user_id": "analyst@example.com"},
     "external_actor": {"name": "Example Vendor", "org": "Example"},
     "threat_actor": {"name": "Unknown Group", "confidence": 45},
@@ -111,6 +119,7 @@ _EXAMPLES = {
 }
 _REQUIRED_FIELDS = {
     "note": ("description",),
+    "ai_agent": ("activity",),
     "alert": ("alert_id",),
     "case": ("case_id",),
     "email": ("sender", "recipient", "subject"),

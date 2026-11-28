@@ -652,6 +652,25 @@ class ProcessItem(ItemBase):
     exit_code: Optional[int] = None
 
 
+class AIAgentItem(ItemBase):
+    """An observed action attributed to an AI agent or its harness."""
+
+    type: Literal["ai_agent"] = "ai_agent"  # type: ignore
+    activity: Literal["tool_call", "file_read", "file_write", "shell_command", "other"]
+    harness: Optional[str] = Field(
+        default=None,
+        description="Observed harness identifier, e.g. codex_cli or claude_code. Custom identifiers are accepted.",
+    )
+    agent_name: Optional[str] = Field(default=None, description="Name of the agent within the harness")
+    tool_name: Optional[str] = Field(default=None, description="Observed tool, including tools that read or write files or run commands")
+    file_path: Optional[str] = None
+    command_line: Optional[str] = None
+    endpoint: Optional[str] = Field(default=None, description="Endpoint on which the action was observed")
+    source_event_id: Optional[str] = Field(default=None, description="Event identifier in the source telemetry")
+    outcome: Optional[Literal["succeeded", "failed", "blocked"]] = None
+    exit_code: Optional[int] = None
+
+
 class RegistryChangeItem(ItemBase):
     """Timeline item for Windows registry modifications."""
 
@@ -671,6 +690,7 @@ class RegistryChangeItem(ItemBase):
 
 AlertTimelineItem = Union[
     DeletedItem,
+    AIAgentItem,
     InternalActorItem,
     ExternalActorItem,
     ThreatActorItem,
@@ -689,6 +709,7 @@ AlertTimelineItem = Union[
 
 CaseTimelineItem = Union[
     DeletedItem,
+    AIAgentItem,
     InternalActorItem,
     ExternalActorItem,
     ThreatActorItem,
@@ -710,6 +731,7 @@ CaseTimelineItem = Union[
 
 TaskTimelineItem = Union[
     DeletedItem,
+    AIAgentItem,
     InternalActorItem,
     ExternalActorItem,
     ThreatActorItem,
