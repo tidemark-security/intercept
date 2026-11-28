@@ -11,5 +11,7 @@ export type SavedFilterRead = {
     scope: SavedFilterScope;
     filters: SavedFilterSnapshot;
     id: string;
+    navigation_icon?: (string | null);
+    navigation_position?: (number | null);
 };
 

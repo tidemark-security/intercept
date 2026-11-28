@@ -126,6 +126,7 @@ class RealtimeEventType(str, Enum):
     TIMELINE_ITEM_DELETED = "timeline_item_deleted"
     TIMELINE_GRAPH_UPDATED = "timeline_graph_updated"
     ENTITY_UPDATED = "entity_updated"
+    SAVED_FILTER_NAVIGATION_UPDATED = "saved_filter_navigation_updated"
     TRIAGE_QUEUED = "triage_queued"
     TRIAGE_COMPLETED = "triage_completed"
     TRIAGE_REJECTED = "triage_rejected"
@@ -392,6 +393,7 @@ class AuditEventType(str, Enum):
     SETTINGS_DELETED = "settings.deleted"
     SAVED_FILTER_CREATED = "saved_filter.created"
     SAVED_FILTER_RENAMED = "saved_filter.renamed"
+    SAVED_FILTER_NAVIGATION_UPDATED = "saved_filter.navigation_updated"
     SAVED_FILTER_DELETED = "saved_filter.deleted"
 
 

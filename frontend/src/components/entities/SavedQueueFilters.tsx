@@ -1,9 +1,10 @@
 import { useId, useState, type FormEvent } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Bookmark, Pencil, Trash2 } from "lucide-react";
 import { Button, Dialog, TextField } from "@tidemark-security/ux";
 
+import { invalidateSavedQueueFilters, useSavedQueueFilters } from "@/hooks/useSavedQueueFilters";
 import { MIN_SEARCH_QUERY_LENGTH } from "@/components/search/searchUtils";
 import type { FilterState } from "@/types/filters";
 import type { SavedFilterQueue } from "@/types/generated/models/SavedFilterQueue";
@@ -51,10 +52,6 @@ const submitLabels = {
   delete: "Delete filter",
 };
 
-function savedFilterKey(queue: SavedFilterQueue, userId: string) {
-  return ["saved-filters", userId, queue] as const;
-}
-
 function createSnapshot(filters: FilterState, search: string): SavedFilterSnapshot {
   return {
     search,
@@ -68,7 +65,7 @@ function createSnapshot(filters: FilterState, search: string): SavedFilterSnapsh
   };
 }
 
-function SavedFilterDialog({
+export function SavedFilterDialog({
   action,
   queue,
   userId,
@@ -98,7 +95,7 @@ function SavedFilterDialog({
       return await SavedFiltersService.deleteSavedFilter({ filterId: action.filter.id });
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: savedFilterKey(queue, userId) });
+      invalidateSavedQueueFilters(queryClient, queue, userId);
       onClose();
     },
   });
@@ -198,11 +195,7 @@ export function SavedQueueFilters({
   onApply,
 }: SavedQueueFiltersProps) {
   const [action, setAction] = useState<FilterAction | null>(null);
-  const savedFilters = useQuery({
-    queryKey: savedFilterKey(queue, userId),
-    queryFn: () => SavedFiltersService.listSavedFilters({ queue }),
-    staleTime: 0,
-  });
+  const savedFilters = useSavedQueueFilters(queue, userId);
 
   function openSaveDialog() {
     const input = readSearchInput();

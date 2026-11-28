@@ -99,6 +99,7 @@ async def test_sidebar_badge_counts_returns_open_and_unassigned_counts(
     assert response.status_code == 200, response.text
     assert response.json() == {
         "alerts": {"open": 2, "unassigned": 1},
+        "pinned_alert_filters": [],
         "cases": {"open": 2, "unassigned": 1},
         "tasks": {"open": 2, "unassigned": 1},
     }

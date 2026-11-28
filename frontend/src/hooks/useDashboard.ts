@@ -4,6 +4,8 @@ import type { DashboardStatsResponse } from '@/types/generated/models/DashboardS
 import type { RecentItemsResponse } from '@/types/generated/models/RecentItemsResponse';
 import type { SidebarBadgeCountsResponse } from '@/types/generated/models/SidebarBadgeCountsResponse';
 
+export const sidebarBadgeCountsKey = ['dashboard', 'sidebar-badge-counts'] as const;
+
 interface UseDashboardOptions {
   myItems?: boolean;
 }
@@ -39,7 +41,7 @@ export function useDashboard(
  */
 export function useSidebarBadgeCounts(): UseQueryResult<SidebarBadgeCountsResponse, Error> {
   return useQuery({
-    queryKey: ['dashboard', 'sidebar-badge-counts'],
+    queryKey: sidebarBadgeCountsKey,
     queryFn: () => DashboardService.getSidebarBadgeCountsApiV1DashboardSidebarBadgeCountsGet(),
     staleTime: 30 * 1000,
     refetchInterval: 60 * 1000,

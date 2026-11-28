@@ -4,6 +4,7 @@ import { useSession } from './sessionContext';
 import { useToast } from './ToastContext';
 import { getEntityListQueryKey, getEntityQueryKey, queryKeys } from '@/hooks/queryKeys';
 import type { EntityType } from '@/hooks/queryKeys';
+import { invalidateSavedQueueFilters } from '@/hooks/useSavedQueueFilters';
 import { OpenAPI } from '@/types/generated/core/OpenAPI';
 import { convertTaskHumanIdToNumeric } from '@/utils/humanIdHelpers';
 import { getTimelineItemMap } from '@/utils/timelineHelpers';
@@ -112,6 +113,11 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const pendingSubscriptions = useRef<Set<string>>(new Set());
   const mountedRef = useRef(true);
   const currentUsername = user?.username ?? null;
+  const currentUserId = user?.id;
+
+  const refreshPinnedFilters = useCallback(() => {
+    if (currentUserId) void invalidateSavedQueueFilters(queryClient, 'alerts', currentUserId);
+  }, [currentUserId, queryClient]);
 
   const invalidateEntity = useCallback(
     (entityType: string, entityId: number, eventType?: string) => {
@@ -164,6 +170,8 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       console.log('[WS] Connected to', getWsUrl());
       setIsConnected(true);
       reconnectDelayRef.current = INITIAL_RECONNECT_DELAY;
+      // A pin change may have committed while the connection was unavailable.
+      refreshPinnedFilters();
       // Re-send any pending subscriptions
       for (const key of pendingSubscriptions.current) {
         const [entityType, entityId] = key.split(':');
@@ -176,6 +184,10 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         const msg = JSON.parse(event.data);
         if (msg.type === 'event' && msg.payload) {
           const payload = msg.payload as RealtimeEventPayload;
+          if (payload.event_type === 'saved_filter_navigation_updated') {
+            refreshPinnedFilters();
+            return;
+          }
           console.log('[WS] Event received:', payload.entity_type, payload.entity_id, payload.event_type);
           invalidateEntity(payload.entity_type, payload.entity_id, payload.event_type);
 
@@ -226,7 +238,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     ws.onerror = () => {
       // onclose will fire after onerror, triggering reconnect
     };
-  }, [currentUsername, invalidateEntity, showToast]);
+  }, [currentUsername, invalidateEntity, refreshPinnedFilters, showToast]);
 
   // Connect when authenticated, disconnect when not
   useEffect(() => {

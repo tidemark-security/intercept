@@ -37,6 +37,7 @@ export const adminPages = {
   "/admin": lazyPage(() => import("../pages/Admin")),
   "/admin/audit": lazyPage(() => import("../pages/AdminAuditTrail")),
   "/admin/users": lazyPage(() => import("../pages/AdminUsers")),
+  "/admin/alert-filters": lazyPage(() => import("../pages/AdminAlertFilters")),
   "/admin/link-templates": lazyPage(() => import("../pages/AdminLinkTemplates")),
   "/admin/settings": lazyPage(() => import("../pages/AdminSettings")),
   "/admin/queue": lazyPage(() => import("../pages/AdminQueueStatus")),

@@ -12,6 +12,7 @@ from datetime import datetime
 from app.core.database import get_db
 from app.services.dashboard_service import dashboard_service
 from app.models.models import UserAccount
+from app.models.saved_filter_schemas import SavedFilterRead
 from app.models.enums import Priority
 from app.api.routes.admin_auth import require_authenticated_user
 
@@ -39,12 +40,18 @@ class SidebarBadgeCount(BaseModel):
     unassigned: int
 
 
+class PinnedAlertFilterBadge(BaseModel):
+    filter: SavedFilterRead
+    counts: SidebarBadgeCount
+
+
 class SidebarBadgeCountsResponse(BaseModel):
     """Response model for sidebar badge counts."""
 
     alerts: SidebarBadgeCount
     cases: SidebarBadgeCount
     tasks: SidebarBadgeCount
+    pinned_alert_filters: list[PinnedAlertFilterBadge]
 
 
 class RecentItem(BaseModel):

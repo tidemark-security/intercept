@@ -34,6 +34,7 @@ import type { SavedFilterSnapshot } from "@/types/generated/models/SavedFilterSn
 import type { app__api__routes__admin_auth__UserSummary } from "@/types/generated/models/app__api__routes__admin_auth__UserSummary";
 import { cn } from "@/utils/cn";
 import { getRelativeTimeLabel } from "@/utils/dateFilters";
+import { savedFilterToState } from "@/utils/savedQueueFilters";
 import { ALERT_STATUS_OPTIONS, formatAlertStatusLabel, type StatusOption } from "@/utils/statusLabels";
 import styles from "./EntityFilterToolbar.module.css";
 import { QueueSearchField } from "./QueueSearchField";
@@ -318,21 +319,7 @@ export function EntityFilterToolbar({
   const applySavedFilter = (snapshot: SavedFilterSnapshot) => {
     // A fresh input cancels pending search edits even if the saved query matches the URL.
     setSearchVersion((version) => version + 1);
-    const statuses = snapshot.status?.length
-      ? snapshot.status
-      : effectiveStatusOptions.map((option) => option.value);
-    onFilterChange?.({
-      search: snapshot.search ?? "",
-      status: statuses as FilterState["status"],
-      assignee: snapshot.assignee ?? null,
-      includeTags: snapshot.include_tags ?? null,
-      excludeTags: snapshot.exclude_tags ?? null,
-      dateRange: snapshot.date_range
-        ? { ...snapshot.date_range, preset: snapshot.date_range.preset ?? undefined }
-        : null,
-      sortBy: snapshot.sort_by ?? null,
-      sortOrder: snapshot.sort_order ?? null,
-    });
+    onFilterChange?.(savedFilterToState(snapshot, effectiveStatusOptions.map((option) => option.value)));
   };
 
   const clearFilters = () => onFilterChange?.({

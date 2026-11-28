@@ -3,6 +3,8 @@
 /* tslint:disable */
 /* eslint-disable */
 import type { SavedFilterCreate } from '../models/SavedFilterCreate';
+import type { SavedFilterNavigationOrder } from '../models/SavedFilterNavigationOrder';
+import type { SavedFilterNavigationUpdate } from '../models/SavedFilterNavigationUpdate';
 import type { SavedFilterQueue } from '../models/SavedFilterQueue';
 import type { SavedFilterRead } from '../models/SavedFilterRead';
 import type { SavedFilterRename } from '../models/SavedFilterRename';
@@ -96,6 +98,53 @@ export class SavedFiltersService {
             path: {
                 'filter_id': filterId,
             },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Set Saved Filter Navigation
+     * Pin, update the icon, or unpin an organization-wide alert filter.
+     * @returns SavedFilterRead Successful Response
+     * @throws ApiError
+     */
+    public static setSavedFilterNavigation({
+        filterId,
+        requestBody,
+    }: {
+        filterId: string,
+        requestBody: SavedFilterNavigationUpdate,
+    }): CancelablePromise<SavedFilterRead> {
+        return __request(OpenAPI, {
+            method: 'PUT',
+            url: '/api/v1/saved-filters/{filter_id}/navigation',
+            path: {
+                'filter_id': filterId,
+            },
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Set Saved Filter Navigation Order
+     * Set the navigation order of all pinned organization alert filters.
+     * @returns void
+     * @throws ApiError
+     */
+    public static setSavedFilterNavigationOrder({
+        requestBody,
+    }: {
+        requestBody: SavedFilterNavigationOrder,
+    }): CancelablePromise<void> {
+        return __request(OpenAPI, {
+            method: 'PUT',
+            url: '/api/v1/saved-filters/navigation/order',
+            body: requestBody,
+            mediaType: 'application/json',
             errors: {
                 422: `Validation Error`,
             },
