@@ -44,7 +44,7 @@ from app.services.timeline_service import TimelineValidationError, timeline_serv
 TimelineItemType = Literal[
     "note", "internal_actor", "external_actor", "threat_actor", "alert",
     "attachment", "case", "email", "forensic_artifact", "link",
-    "network_traffic", "observable", "process", "registry_change", "system",
+    "network_traffic", "observable", "process", "process_tree", "registry_change", "system",
     "task", "ttp",
 ]
 
@@ -82,6 +82,7 @@ _TYPE_FIELDS = {
     ),
     "observable": ("observable_type", "observable_value"),
     "process": ("process_name", "process_id", "parent_process_id", "command_line", "user_account", "duration", "exit_code"),
+    "process_tree": ("hostname", "processes"),
     "registry_change": ("registry_key", "registry_value", "old_data", "new_data", "operation", "user_account"),
     "system": (
         "hostname", "ip_address", "system_type", "cmdb_id", "is_critical",
@@ -104,6 +105,13 @@ _EXAMPLES = {
     "network_traffic": {"source_ip": "192.0.2.5", "destination_ip": "198.51.100.10"},
     "observable": {"observable_type": "IP", "observable_value": "192.0.2.5"},
     "process": {"process_name": "example.exe", "process_id": 1001},
+    "process_tree": {
+        "hostname": "workstation.example.com",
+        "processes": [
+            {"id": "desktop", "process_name": "desktop.exe", "process_id": 1001},
+            {"id": "report", "parent_id": "desktop", "process_name": "report.exe", "process_id": 1002},
+        ],
+    },
     "registry_change": {"registry_key": r"HKLM\Software\Example", "operation": "MODIFY"},
     "system": {"hostname": "workstation.example.com"},
     "task": {"title": "Review incident evidence", "picerl_stage": "Identification"},
@@ -118,6 +126,7 @@ _REQUIRED_FIELDS = {
     "network_traffic": ("source_ip", "destination_ip"),
     "observable": ("observable_type", "observable_value"),
     "process": ("process_name",),
+    "process_tree": ("processes",),
     "registry_change": ("registry_key",),
     "system": ("hostname",),
     "task": ("title",),
@@ -200,9 +209,12 @@ def _describe_fields(model: type, item_type: TimelineItemType) -> dict:
     }
     if item_type in _ANY_OF:
         fields_schema["anyOf"] = [{"required": [key]} for key in _ANY_OF[item_type]]
-    referenced = {choice["$ref"].rsplit("/", 1)[-1]
-                  for prop in properties.values()
-                  for choice in prop.get("anyOf", [prop]) if "$ref" in choice}
+    referenced = set()
+    for prop in properties.values():
+        for choice in prop.get("anyOf", [prop]):
+            reference = choice.get("$ref") or choice.get("items", {}).get("$ref")
+            if reference:
+                referenced.add(reference.rsplit("/", 1)[-1])
     if referenced:
         fields_schema["$defs"] = {key: schema["$defs"][key] for key in sorted(referenced)}
     return fields_schema

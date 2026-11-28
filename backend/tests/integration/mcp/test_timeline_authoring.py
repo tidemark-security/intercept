@@ -12,7 +12,7 @@ from sqlmodel import select
 from app.mcp import timeline_tools, tools
 from app.mcp.server import mcp
 from app.models.enums import AccountType, UserRole
-from app.models.models import Actor, Alert, Case, Task
+from app.models.models import Actor, Alert, Case, ProcessTreeNode, Task
 
 
 pytestmark = pytest.mark.asyncio
@@ -33,11 +33,12 @@ async def call(name, **arguments):
 
 
 async def test_describe_exposes_target_specific_types_and_disallows_server_fields():
-    for kind, count in {"case": 17, "alert": 14, "task": 14}.items():
+    for kind, count in {"case": 18, "alert": 15, "task": 15}.items():
         discovery = await call("describe_timeline_item", target_kind=kind)
         types = {entry["item_type"] for entry in discovery["item_types"]}
         assert len(types) == count
         assert "deleted" not in types
+        assert "process_tree" in types
         assert ("task" in types) == (kind == "case")
 
     description = await call("describe_timeline_item", target_kind="case", item_type="observable")
@@ -46,6 +47,12 @@ async def test_describe_exposes_target_specific_types_and_disallows_server_field
     assert "IP" in fields["$defs"]["ObservableType"]["enum"]
     assert "created_by" not in fields["properties"]
     assert "replies" not in fields["properties"]
+
+    description = await call("describe_timeline_item", target_kind="case", item_type="process_tree")
+    fields = description["fields"]
+    assert fields["required"] == ["processes"]
+    assert fields["properties"]["processes"]["items"]["$ref"] == "#/$defs/ProcessTreeNode"
+    assert set(fields["$defs"]["ProcessTreeNode"]["required"]) == {"id", "process_name", "process_id"}
 
 
 async def test_preview_is_read_only_and_replies_require_stored_parent(analyst, session_maker):
@@ -144,7 +151,13 @@ async def test_ordinary_types_preview_commit_and_read_back(analyst, session_make
     }
     preview = await call("add_timeline_item", **args)
     assert preview["mode"] == "dry_run"
-    assert preview["fields"] == fields
+    expected_fields = fields
+    if item_type == "process_tree":
+        expected_fields = {
+            **fields,
+            "processes": [ProcessTreeNode.model_validate(node).model_dump(mode="json") for node in fields["processes"]],
+        }
+    assert preview["fields"] == expected_fields
     committed = await call("add_timeline_item", **args, commit=True)
     assert committed["mode"] == "committed"
     persisted = await call(
@@ -155,6 +168,11 @@ async def test_ordinary_types_preview_commit_and_read_back(analyst, session_make
     assert saved["id"] == "typed-item"
     assert saved["type"] == item_type
     assert saved["created_by"] == "analyst"
+    if item_type == "process_tree":
+        assert saved["hostname"] == fields["hostname"]
+        assert [(node["id"], node["parent_id"]) for node in saved["processes"]] == [
+            ("desktop", None), ("report", "desktop"),
+        ]
 
 
 @pytest.mark.parametrize("kind", ["alert", "task"])
