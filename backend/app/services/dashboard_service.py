@@ -14,10 +14,11 @@ from sqlmodel import col
 
 from app.core.entity_ids import ALERT_PREFIX, CASE_PREFIX, TASK_PREFIX, format_entity_id
 from app.models.enums import AlertStatus, CaseStatus, TaskStatus, Priority
-from app.models.models import Alert, Case, SavedQueueFilter, Task
+from app.models.models import Alert, Case, Task
 from app.models.saved_filter_schemas import SavedFilterRead
 from app.models.search_schemas import EntityType
 from app.services.assignee_filter_utils import append_assignee_filter
+from app.services.saved_filter_service import list_pinned_alert_filters
 from app.services.search_service import search_service
 from app.services.tag_filter_utils import append_tag_filters
 
@@ -85,11 +86,7 @@ async def _alert_badge_counts(db: AsyncSession, *criteria: Any) -> dict[str, int
 
 
 async def _pinned_alert_badges(db: AsyncSession) -> list[dict[str, Any]]:
-    pinned = (await db.scalars(
-        select(SavedQueueFilter)
-        .where(col(SavedQueueFilter.navigation_icon).is_not(None))
-        .order_by(SavedQueueFilter.name, SavedQueueFilter.id)
-    )).all()
+    pinned = await list_pinned_alert_filters(db)
     now = datetime.now(timezone.utc).replace(microsecond=0)
     badges = []
     for entry in pinned:

@@ -125,9 +125,16 @@ class SavedFilterRead(SavedFilterCreate):
 
     id: UUID
     navigation_icon: str | None = None
+    navigation_position: int | None = None
 
 
 class SavedFilterNavigationUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     icon_name: Annotated[str, StringConstraints(max_length=100, pattern=r"^[A-Za-z][A-Za-z0-9]*$")] | None
+
+
+class SavedFilterNavigationOrder(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filter_ids: list[UUID]

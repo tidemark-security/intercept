@@ -126,6 +126,7 @@ class RealtimeEventType(str, Enum):
     TIMELINE_ITEM_DELETED = "timeline_item_deleted"
     TIMELINE_GRAPH_UPDATED = "timeline_graph_updated"
     ENTITY_UPDATED = "entity_updated"
+    SAVED_FILTER_NAVIGATION_UPDATED = "saved_filter_navigation_updated"
     TRIAGE_QUEUED = "triage_queued"
     TRIAGE_COMPLETED = "triage_completed"
     TRIAGE_REJECTED = "triage_rejected"

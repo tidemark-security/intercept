@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
+import asyncpg
 import pytest
 from httpx import AsyncClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.models.enums import AlertStatus
 from app.models.models import Alert, UserAccount
 from app.services.audit_service import AuditService
 from app.services.auth_service import auth_service
+from app.services.realtime_service import CHANNEL
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -83,6 +86,7 @@ async def test_personal_filters_round_trip_for_owner_only(
         **payload,
         "id": saved["id"],
         "navigation_icon": None,
+        "navigation_position": None,
         "name": "My queue",
         "filters": {**snapshot, "search": "spoofed login"},
     }
@@ -330,7 +334,7 @@ async def test_pinned_alert_filter_counts_for_members_and_admin_only_management(
 
     response = await client.put(path, headers=owner, json=icon)
     assert response.status_code == 200, response.text
-    pinned = {**saved, "navigation_icon": "MSTeamsIcon"}
+    pinned = {**saved, "navigation_icon": "MSTeamsIcon", "navigation_position": 0}
     assert response.json() == pinned
     assert (await client.put(path, headers=owner, json=icon)).json() == pinned
 
@@ -357,3 +361,91 @@ async def test_pinned_alert_filter_counts_for_members_and_admin_only_management(
     assert len(navigation_events) == 4
     assert json.loads(navigation_events[0]["new_value"])["navigation_icon"] == "MSTeamsIcon"
     assert all("identity review" not in (event["new_value"] or "") for event in navigation_events)
+
+
+@pytest.mark.asyncio
+async def test_pinned_alert_order_is_shared_and_notified_on_commit(
+    client: AsyncClient,
+    async_engine: AsyncEngine,
+    session_maker: async_sessionmaker[AsyncSession],
+    admin_user_factory,
+    analyst_user_factory,
+) -> None:
+    admin_account = admin_user_factory()
+    admin = await _login(client, session_maker, admin_account)
+    member = await _login(client, session_maker, analyst_user_factory())
+    order_path = f"{SAVED_FILTERS_PATH}/navigation/order"
+    dashboard = "/api/v1/dashboard/sidebar-badge-counts"
+
+    async def create_filter(name: str) -> str:
+        response = await client.post(SAVED_FILTERS_PATH, headers=admin, json={
+            "queue": "alerts", "scope": "organization", "name": name, "filters": {},
+        })
+        assert response.status_code == 201, response.text
+        return response.json()["id"]
+
+    async def set_icon(filter_id: str, icon: str | None) -> dict:
+        response = await client.put(
+            f"{SAVED_FILTERS_PATH}/{filter_id}/navigation", headers=admin, json={"icon_name": icon},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    async def sidebar_order() -> list[str]:
+        response = await client.get(dashboard, headers=member)
+        assert response.status_code == 200, response.text
+        return [entry["filter"]["id"] for entry in response.json()["pinned_alert_filters"]]
+
+    dsn = async_engine.url.set(drivername="postgresql").render_as_string(hide_password=False)
+    connection = await asyncpg.connect(dsn)
+    events: asyncio.Queue[dict] = asyncio.Queue()
+
+    def capture_event(_connection, _pid, _channel, payload):
+        events.put_nowait(json.loads(payload))
+
+    async def expect_update() -> None:
+        assert await asyncio.wait_for(events.get(), 5) == {
+            "entity_type": "saved_filter_navigation",
+            "entity_id": 0,
+            "event_type": "saved_filter_navigation_updated",
+            "performed_by": admin_account.username,
+        }
+
+    try:
+        await connection.add_listener(CHANNEL, capture_event)
+        first = await create_filter("Zulu")
+        second = await create_filter("Alpha")
+        assert (await set_icon(first, "Bell"))["navigation_position"] == 0
+        await expect_update()
+        assert (await set_icon(second, "Shield"))["navigation_position"] == 1
+        await expect_update()
+        assert await sidebar_order() == [first, second]
+
+        order = {"filter_ids": [second, first]}
+        assert (await client.put(order_path, json=order)).status_code == 401
+        assert (await client.put(order_path, headers=member, json=order)).status_code == 403
+        for stale_ids in ([first], [first, first]):
+            assert (await client.put(order_path, headers=admin, json={"filter_ids": stale_ids})).status_code == 409
+
+        response = await client.put(order_path, headers=admin, json=order)
+        assert response.status_code == 204, response.text
+        await expect_update()
+        assert await sidebar_order() == [second, first]
+        filters = await client.get(SAVED_FILTERS_PATH, headers=member, params={"queue": "alerts"})
+        assert {entry["id"]: entry["navigation_position"] for entry in filters.json()} == {first: 1, second: 0}
+
+        assert (await client.put(order_path, headers=admin, json=order)).status_code == 204
+        assert (await set_icon(second, "Briefcase"))["navigation_position"] == 0
+        await expect_update()
+        assert (await set_icon(second, None))["navigation_position"] is None
+        await expect_update()
+        assert await sidebar_order() == [first]
+
+        response = await client.delete(f"{SAVED_FILTERS_PATH}/{first}", headers=admin)
+        assert response.status_code == 204, response.text
+        await expect_update()
+        assert await sidebar_order() == []
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(events.get(), 0.1)
+    finally:
+        await connection.close()

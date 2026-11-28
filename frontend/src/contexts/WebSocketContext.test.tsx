@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const { mockSession, showToast } = vi.hoisted(() => ({
   mockSession: {
     status: 'authenticated',
-    user: { username: 'glenn' },
+    user: { id: 'user-id', username: 'glenn' },
   },
   showToast: vi.fn(),
 }));
@@ -96,13 +96,41 @@ describe('WebSocketProvider', () => {
     MockWebSocket.instances = [];
     (globalThis as any).WebSocket = MockWebSocket;
     mockSession.status = 'authenticated';
-    mockSession.user = { username: 'glenn' };
+    mockSession.user = { id: 'user-id', username: 'glenn' };
     showToast.mockClear();
   });
 
   afterEach(() => {
     globalThis.WebSocket = originalWebSocket;
     vi.restoreAllMocks();
+  });
+
+  it('refreshes pinned alert filters on connect and when another user changes the navigation', async () => {
+    const queryClient = new QueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    render(createWrappedUi(<div />, queryClient));
+
+    const expectedQueries = [
+      [{ queryKey: ['saved-filters', 'user-id', 'alerts'] }],
+      [{ queryKey: ['dashboard', 'sidebar-badge-counts'] }],
+    ];
+    await waitFor(() => expect(MockWebSocket.instances).toHaveLength(1));
+    const socket = MockWebSocket.instances[0];
+    act(() => socket.open());
+    expect(invalidateSpy.mock.calls).toEqual(expectedQueries);
+    invalidateSpy.mockClear();
+
+    act(() => socket.receive({
+      type: 'event',
+      payload: {
+        entity_type: 'saved_filter_navigation',
+        entity_id: 0,
+        event_type: 'saved_filter_navigation_updated',
+        performed_by: 'another-admin',
+      },
+    }));
+    expect(invalidateSpy.mock.calls).toEqual(expectedQueries);
+    expect(showToast).not.toHaveBeenCalled();
   });
 
   it('invalidates only graph query for timeline_graph_updated events', async () => {

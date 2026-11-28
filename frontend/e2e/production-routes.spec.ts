@@ -1,4 +1,4 @@
-import { expect, test, type BrowserContext, type Locator, type Page, type Route } from "@playwright/test";
+import { expect, test, type BrowserContext, type Locator, type Page, type Route, type WebSocketRoute } from "@playwright/test";
 import type { RecommendationStatus } from "../src/types/generated/models/RecommendationStatus";
 
 const now = "2026-01-01T00:00:00.000Z";
@@ -254,8 +254,9 @@ function apiResponse(pathname: string): unknown {
   return {};
 }
 
-async function installProductionApiMocks(target: Page | BrowserContext) {
-  await target.addInitScript(() => {
+async function installProductionApiMocks(target: Page | BrowserContext, mockWebSocket = true) {
+  await target.addInitScript((enabled) => {
+    if (!enabled) return;
     class SmokeWebSocket {
       static readonly CONNECTING = 0;
       static readonly OPEN = 1;
@@ -280,7 +281,7 @@ async function installProductionApiMocks(target: Page | BrowserContext) {
     }
 
     window.WebSocket = SmokeWebSocket as unknown as typeof WebSocket;
-  });
+  }, mockWebSocket);
 
   await target.route("**/api/**", async (route: Route) => {
     const url = new URL(route.request().url());
@@ -2477,7 +2478,7 @@ test("profile positions triage and context independently on alert details", asyn
   await expectPlacement(sampleAlert, "embed", "embed");
 });
 
-test("an admin can pin an organization alert filter with a shared icon and scoped badge", async ({ page, browser }) => {
+test("an admin can pin and reorder organization alert filters with live sidebar updates", async ({ page, context }) => {
   await installProductionApiMocks(page);
   const filter = {
     id: "89330fd9-d93c-49b0-965d-27ab90ca35a8",
@@ -2486,20 +2487,45 @@ test("an admin can pin an organization alert filter with a shared icon and scope
     scope: "organization",
     filters: { include_tags: ["identity"], status: ["NEW", "IN_PROGRESS"] },
     navigation_icon: null as string | null,
+    navigation_position: null as number | null,
+  };
+  const existingPin = {
+    ...filter,
+    id: "65b68b30-bac7-4bc2-a87c-f034b170cbaa",
+    name: "Malware queue",
+    navigation_icon: "Shield",
+    navigation_position: 0,
   };
   const personal = { ...filter, id: "personal", name: "Personal queue", scope: "personal" };
+  let memberSocket: WebSocketRoute | undefined;
+  const notifyMember = () => memberSocket?.send(JSON.stringify({
+    type: "event",
+    payload: { entity_type: "saved_filter_navigation", entity_id: 0, event_type: "saved_filter_navigation_updated" },
+  }));
   const dashboardResponse = () => ({
     alerts: { open: 4, unassigned: 3 },
     cases: { open: 0, unassigned: 0 },
     tasks: { open: 0, unassigned: 0 },
-    pinned_alert_filters: filter.navigation_icon ? [{ filter, counts: { open: 2, unassigned: 1 } }] : [],
+    pinned_alert_filters: [existingPin, filter]
+      .filter((entry) => entry.navigation_position !== null)
+      .sort((a, b) => a.navigation_position! - b.navigation_position!)
+      .map((entry) => ({ filter: entry, counts: { open: 2, unassigned: 1 } })),
   });
 
-  await page.route(/\/api\/v1\/saved-filters\?queue=alerts$/, (route) => route.fulfill(jsonResponse([filter, personal])));
+  await page.route(/\/api\/v1\/saved-filters\?queue=alerts$/, (route) => route.fulfill(jsonResponse([filter, existingPin, personal])));
   await page.route(`**/api/v1/saved-filters/${filter.id}/navigation`, (route) => {
     expect(route.request().method()).toBe("PUT");
     filter.navigation_icon = route.request().postDataJSON().icon_name;
+    filter.navigation_position = filter.navigation_icon ? 1 : null;
+    notifyMember();
     return route.fulfill(jsonResponse(filter));
+  });
+  await page.route("**/api/v1/saved-filters/navigation/order", (route) => {
+    expect(route.request().postDataJSON()).toEqual({ filter_ids: [filter.id, existingPin.id] });
+    filter.navigation_position = 0;
+    existingPin.navigation_position = 1;
+    notifyMember();
+    return route.fulfill({ status: 204 });
   });
   await page.route("**/api/v1/dashboard/sidebar-badge-counts", (route) => route.fulfill(jsonResponse(dashboardResponse())));
   await page.route(/\/api\/v1\/alerts\?/, (route) => {
@@ -2509,20 +2535,71 @@ test("an admin can pin an organization alert filter with a shared icon and scope
     return route.fulfill(jsonResponse({ ...emptyPage, items, total: items.length, pages: 1 }));
   });
 
+  const memberPage = await context.newPage();
+  await memberPage.setViewportSize({ width: 390, height: 844 });
+  await installProductionApiMocks(memberPage, false);
+  await memberPage.routeWebSocket("**/api/v1/ws", (ws) => { memberSocket = ws; });
+  const session = apiResponse("/api/v1/auth/session") as { user: typeof adminUser };
+  await memberPage.route("**/api/v1/auth/session", (route) => route.fulfill(jsonResponse({
+    ...session, user: { ...session.user, id: "member-id", role: "ANALYST" },
+  })));
+  await memberPage.route("**/api/v1/dashboard/sidebar-badge-counts", (route) => route.fulfill(jsonResponse(dashboardResponse())));
+  await memberPage.goto("/alerts");
+  await expect.poll(() => Boolean(memberSocket)).toBe(true);
+  const memberNav = memberPage.getByRole("navigation");
+  const mobilePin = memberNav.getByRole("link", { name: filter.name, exact: true });
+  await expect(memberNav.getByRole("link", { name: existingPin.name, exact: true })).toBeVisible();
+  await expect(mobilePin).toHaveCount(0);
+  await page.bringToFront();
+
   await page.goto("/admin");
   await page.getByRole("link", { name: /Organization alert filters/ }).click();
   await expect(page).toHaveURL(/\/admin\/alert-filters$/);
   await expect(page.getByText(personal.name)).toHaveCount(0);
+  const pinnedList = page.getByRole("list", { name: "Pinned filters" });
+  const unpinnedList = page.getByRole("list", { name: "Unpinned filters" });
+  await expect(pinnedList.getByRole("link", { name: existingPin.name })).toBeVisible();
+  await expect(unpinnedList.getByRole("link", { name: filter.name })).toBeVisible();
+  await expect(pinnedList.getByRole("button", { name: `Move ${existingPin.name} up` })).toBeDisabled();
   await page.getByRole("button", { name: `Pin ${filter.name}` }).click();
-  await page.getByRole("button", { name: "Icon Bell" }).click();
+  const dialog = page.getByRole("dialog", { name: "Pin to navigation" });
+  const iconTrigger = dialog.getByRole("button", { name: "Icon Bell" });
+  await iconTrigger.click();
+  const iconOption = dialog.getByRole("button", { name: "AArrowDown", exact: true });
+  await expect.poll(async () => {
+    const bounds = await dialog.boundingBox();
+    if (!bounds) return false;
+    return iconOption.evaluate((option, dialogBounds) => {
+      const { x, y, width, height } = option.getBoundingClientRect();
+      const centerY = y + height / 2;
+      const outsideDialog = centerY < dialogBounds.y || centerY > dialogBounds.y + dialogBounds.height;
+      return outsideDialog && option.contains(document.elementFromPoint(x + width / 2, centerY));
+    }, bounds);
+  }, { message: "An icon outside the dialog bounds can receive pointer input" }).toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(iconTrigger).toBeFocused();
+  await expect(dialog).toBeVisible();
+  await iconTrigger.click();
   await page.getByPlaceholder("Search icons...").fill("MSTeamsIcon");
   await page.getByRole("button", { name: "MSTeamsIcon", exact: true }).click();
   await page.getByRole("button", { name: "Pin to navigation" }).click();
   const nav = page.getByRole("navigation");
   const pin = nav.getByRole("link", { name: filter.name, exact: true });
   await expect(pin).toHaveText("1");
+  await expect(mobilePin).toHaveText("1");
+  await expect(mobilePin).toBeInViewport();
   await expect(nav.getByRole("link", { name: "Alerts", exact: true })).toHaveText("3");
   await expect.poll(() => filter.navigation_icon).toBe("MSTeamsIcon");
+  await expect(unpinnedList).toHaveCount(0);
+  const pinNames = /^(Identity queue|Malware queue)$/;
+  const sidebarPins = nav.getByRole("link", { name: pinNames });
+  const memberPins = memberNav.getByRole("link", { name: pinNames });
+  await expect(pinnedList.getByRole("link").first()).toHaveAccessibleName(existingPin.name);
+  await expect(sidebarPins.first()).toHaveAccessibleName(existingPin.name);
+  await pinnedList.getByRole("button", { name: `Move ${filter.name} up` }).click();
+  await expect(pinnedList.getByRole("link").first()).toHaveAccessibleName(filter.name);
+  await expect(sidebarPins.first()).toHaveAccessibleName(filter.name);
+  await expect(memberPins.first()).toHaveAccessibleName(filter.name);
   const scopedRequest = page.waitForRequest((request) => {
     const url = new URL(request.url());
     return url.pathname === "/api/v1/alerts" && url.searchParams.getAll("include_tags").includes("identity");
@@ -2535,29 +2612,14 @@ test("an admin can pin an organization alert filter with a shared icon and scope
   await page.reload();
   await expect(pin).toHaveAttribute("aria-current", "page");
 
-  const member = await browser.newContext({ viewport: { width: 390, height: 844 }, baseURL: new URL(page.url()).origin });
-  try {
-    await installProductionApiMocks(member);
-    const session = apiResponse("/api/v1/auth/session") as { user: typeof adminUser };
-    await member.route("**/api/v1/auth/session", (route) => route.fulfill(jsonResponse({
-      ...session, user: { ...session.user, id: "member-id", role: "ANALYST" },
-    })));
-    await member.route("**/api/v1/dashboard/sidebar-badge-counts", (route) => route.fulfill(jsonResponse(dashboardResponse())));
-    const memberPage = await member.newPage();
-    await memberPage.goto("/alerts");
-    const mobilePin = memberPage.getByRole("navigation").getByRole("link", { name: filter.name, exact: true });
-    await expect(mobilePin).toHaveText("1");
-    await expect(mobilePin).toBeInViewport();
-    await memberPage.goto("/admin/alert-filters");
-    await expect(memberPage.getByRole("button", { name: `Edit pin for ${filter.name}` })).toHaveCount(0);
-    await expect(memberPage.getByRole("heading", { name: "Access Denied" })).toBeVisible();
-  } finally {
-    await member.close();
-  }
-
   await page.goto("/admin/alert-filters");
   await page.getByRole("button", { name: `Edit pin for ${filter.name}` }).click();
   await page.getByRole("button", { name: "Unpin", exact: true }).click();
   await expect(pin).toHaveCount(0);
-  await expect(page.getByRole("button", { name: `Pin ${filter.name}` })).toBeVisible();
+  await expect(mobilePin).toHaveCount(0);
+  await expect(unpinnedList.getByRole("button", { name: `Pin ${filter.name}` })).toBeVisible();
+
+  await memberPage.goto("/admin/alert-filters");
+  await expect(memberPage.getByRole("button", { name: `Edit pin for ${existingPin.name}` })).toHaveCount(0);
+  await expect(memberPage.getByRole("heading", { name: "Access Denied" })).toBeVisible();
 });

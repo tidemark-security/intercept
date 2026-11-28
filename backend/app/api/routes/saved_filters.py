@@ -17,6 +17,7 @@ from app.core.database import get_db
 from app.models.models import SavedQueueFilter, UserAccount
 from app.models.saved_filter_schemas import (
     SavedFilterCreate,
+    SavedFilterNavigationOrder,
     SavedFilterNavigationUpdate,
     SavedFilterQueue,
     SavedFilterRead,
@@ -97,16 +98,32 @@ async def set_saved_filter_navigation(
 ) -> SavedFilterRead:
     """Pin, update the icon, or unpin an organization-wide alert filter."""
     await require_admin_user(request, user)
-    saved_filter = await saved_filter_service.get_visible_saved_filter_for_update(db, filter_id, user.id)
-    if (
-        saved_filter is None
-        or saved_filter.scope != SavedFilterScope.ORGANIZATION
-        or saved_filter.queue != SavedFilterQueue.ALERTS
-    ):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization alert filter not found")
-    return await saved_filter_service.set_saved_filter_navigation(
-        db, saved_filter, payload.icon_name, actor=user, audit_context=build_audit_context(request)
+    saved_filter = await saved_filter_service.set_saved_filter_navigation(
+        db, filter_id, payload.icon_name, actor=user, audit_context=build_audit_context(request)
     )
+    if saved_filter is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization alert filter not found")
+    return saved_filter
+
+
+@router.put("/navigation/order", operation_id="setSavedFilterNavigationOrder", status_code=status.HTTP_204_NO_CONTENT)
+async def set_saved_filter_navigation_order(
+    payload: SavedFilterNavigationOrder,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    user: UserAccount = Depends(require_shared_authentication),
+) -> None:
+    """Set the navigation order of all pinned organization alert filters."""
+    await require_admin_user(request, user)
+    try:
+        await saved_filter_service.set_navigation_order(
+            db, payload.filter_ids, actor=user, audit_context=build_audit_context(request)
+        )
+    except saved_filter_service.NavigationOrderConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The pinned filters changed. Refresh the order and try again.",
+        ) from exc
 
 
 @router.delete("/{filter_id}", operation_id="deleteSavedFilter", status_code=status.HTTP_204_NO_CONTENT)

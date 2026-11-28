@@ -15,9 +15,10 @@ export function useSavedQueueFilters(queue: SavedFilterQueue, userId: string) {
   });
 }
 
-export function invalidateSavedQueueFilters(queryClient: QueryClient, queue: SavedFilterQueue, userId: string) {
-  void queryClient.invalidateQueries({ queryKey: savedFilterKey(queue, userId) });
+export async function invalidateSavedQueueFilters(queryClient: QueryClient, queue: SavedFilterQueue, userId: string) {
+  const refreshes = [queryClient.invalidateQueries({ queryKey: savedFilterKey(queue, userId) })];
   if (queue === "alerts") {
-    void queryClient.invalidateQueries({ queryKey: sidebarBadgeCountsKey });
+    refreshes.push(queryClient.invalidateQueries({ queryKey: sidebarBadgeCountsKey }));
   }
+  await Promise.all(refreshes);
 }

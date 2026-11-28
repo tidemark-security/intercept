@@ -12,5 +12,6 @@ export type SavedFilterRead = {
     filters: SavedFilterSnapshot;
     id: string;
     navigation_icon?: (string | null);
+    navigation_position?: (number | null);
 };
 

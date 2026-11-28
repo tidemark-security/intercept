@@ -176,6 +176,7 @@ export type { RunbookTaskDefinition } from './models/RunbookTaskDefinition';
 export type { RunbookTaskOverride } from './models/RunbookTaskOverride';
 export type { SavedFilterCreate } from './models/SavedFilterCreate';
 export type { SavedFilterDateRange } from './models/SavedFilterDateRange';
+export type { SavedFilterNavigationOrder } from './models/SavedFilterNavigationOrder';
 export type { SavedFilterNavigationUpdate } from './models/SavedFilterNavigationUpdate';
 export type { SavedFilterQueue } from './models/SavedFilterQueue';
 export type { SavedFilterRead } from './models/SavedFilterRead';
