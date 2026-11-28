@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -8,9 +9,12 @@ import pytest
 from httpx import AsyncClient
 from sqlmodel import select
 
+from app.core.api_key_scopes import API_WRITE_SCOPE
 from app.core.settings_registry import get_local
-from app.models.enums import MessageRole
-from app.models.models import LangFlowMessage, LangFlowSession
+from app.models.enums import AccountType, MessageRole, UserRole, UserStatus
+from app.models.models import ApiKey, LangFlowMessage, LangFlowSession, UserAccount
+from app.services.api_key_service import api_key_service
+from app.services.langflow_service import LangFlowError
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -293,7 +297,8 @@ async def test_stream_endpoint_creates_messages_via_post(
     assert response.status_code == 200
     assert "event: message" in response.text
     assert "Hello" in response.text
-    assert "event: complete" in response.text
+    assert response.text.count("event: complete") == 1
+    assert "event: error" not in response.text
 
     async with session_maker() as session:
         result = await session.execute(
@@ -308,3 +313,204 @@ async def test_stream_endpoint_creates_messages_via_post(
     assert stored_messages[0].content == "hello stream"
     assert stored_messages[1].role == MessageRole.ASSISTANT
     assert stored_messages[1].content == "Hello world"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("credential_kind", "upstream_tail"),
+    [
+        pytest.param("session", "token", id="disabled-session-user"),
+        pytest.param("api-key", "complete", id="revoked-api-key"),
+    ],
+)
+async def test_held_stream_stops_after_authentication_is_invalidated(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+    credential_kind: str,
+    upstream_tail: str,
+) -> None:
+    import app.api.routes.langflow as langflow_routes
+
+    api_key_id: UUID | None = None
+    if credential_kind == "session":
+        session_cookie, csrf_cookie, _username, user_id = await _login_and_get_auth_cookies(
+            client,
+            session_maker,
+            analyst_user_factory,
+        )
+        request_cookies = {
+            get_local("auth.session.cookie_name"): session_cookie,
+            get_local("auth.csrf.cookie_name"): csrf_cookie,
+        }
+        request_headers = {get_local("auth.csrf.header_name"): csrf_cookie}
+    else:
+        api_key_user = UserAccount(
+            username="held-langflow-api-key-user",
+            role=UserRole.ANALYST,
+            status=UserStatus.ACTIVE,
+            account_type=AccountType.NHI,
+            description="Held LangFlow stream integration test",
+        )
+        async with session_maker() as setup_db:
+            setup_db.add(api_key_user)
+            await setup_db.flush()
+            api_key, raw_api_key = await api_key_service.create_api_key(
+                setup_db,
+                user_id=api_key_user.id,
+                name="Held LangFlow stream key",
+                expires_at=datetime.now(timezone.utc) + timedelta(days=1),
+                scopes={API_WRITE_SCOPE},
+            )
+            await setup_db.commit()
+            user_id = api_key_user.id
+            api_key_id = api_key.id
+        request_cookies = {}
+        request_headers = {"x-api-key": raw_api_key}
+
+    async with session_maker() as setup_db:
+        chat_session = LangFlowSession(
+            flow_id="general_flow",
+            user_id=user_id,
+            title="Held Streaming Chat",
+        )
+        setup_db.add(chat_session)
+        await setup_db.commit()
+        session_id = chat_session.id
+
+    first_chunk_emitted = asyncio.Event()
+    release_upstream = asyncio.Event()
+
+    class HeldLangFlowService:
+        async def stream_message(self, **_kwargs: Any):
+            yield {"event": "token", "data": {"chunk": "before invalidation"}}
+            first_chunk_emitted.set()
+            await release_upstream.wait()
+            if upstream_tail == "token":
+                yield {"event": "token", "data": {"chunk": " after invalidation"}}
+            else:
+                yield {
+                    "event": "add_message",
+                    "data": {
+                        "sender": "Machine",
+                        "text": "before invalidation after invalidation",
+                        "properties": {"state": "complete"},
+                    },
+                }
+
+        async def close(self) -> None:
+            return None
+
+    async def fake_get_langflow_service(_db):
+        return HeldLangFlowService()
+
+    monkeypatch.setattr(langflow_routes, "get_langflow_service", fake_get_langflow_service)
+
+    response_task = asyncio.create_task(
+        client.post(
+            f"/api/v1/langflow/stream/{session_id}",
+            json={"message": "held stream"},
+            cookies=request_cookies,
+            headers=request_headers,
+        )
+    )
+    try:
+        await asyncio.wait_for(first_chunk_emitted.wait(), timeout=2)
+        async with session_maker() as invalidation_db:
+            locked_user = await invalidation_db.get(
+                UserAccount,
+                user_id,
+                populate_existing=True,
+                with_for_update=True,
+            )
+            assert locked_user is not None
+            if credential_kind == "session":
+                locked_user.status = UserStatus.DISABLED
+            else:
+                assert api_key_id is not None
+                locked_key = await invalidation_db.get(
+                    ApiKey,
+                    api_key_id,
+                    populate_existing=True,
+                    with_for_update=True,
+                )
+                assert locked_key is not None
+                locked_key.revoked_at = datetime.now(timezone.utc)
+            await invalidation_db.commit()
+    finally:
+        release_upstream.set()
+
+    response = await asyncio.wait_for(response_task, timeout=3)
+
+    assert response.status_code == 200
+    assert "before invalidation" in response.text
+    assert "after invalidation" not in response.text
+    assert "event: complete" not in response.text
+
+    async with session_maker() as read_db:
+        stored_messages = (
+            await read_db.execute(
+                select(LangFlowMessage)
+                .where(LangFlowMessage.session_id == session_id)
+                .order_by(LangFlowMessage.created_at)
+            )
+        ).scalars().all()
+
+    assert len(stored_messages) == 1
+    assert stored_messages[0].role == MessageRole.USER
+    assert stored_messages[0].content == "held stream"
+
+
+@pytest.mark.asyncio
+async def test_stream_endpoint_emits_error_without_completion(
+    client: AsyncClient,
+    session_maker: Any,
+    analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.routes.langflow as langflow_routes
+
+    session_cookie, csrf_cookie, _username, user_id = await _login_and_get_auth_cookies(
+        client,
+        session_maker,
+        analyst_user_factory,
+    )
+
+    async with session_maker() as session:
+        chat_session = LangFlowSession(
+            flow_id="general_flow",
+            user_id=user_id,
+            title="Failing Streaming Chat",
+        )
+        session.add(chat_session)
+        await session.commit()
+        await session.refresh(chat_session)
+        session_id = chat_session.id
+
+    class FailingLangFlowService:
+        async def stream_message(self, **_kwargs):
+            raise LangFlowError("upstream failed")
+            yield
+
+        async def close(self) -> None:
+            return None
+
+    async def fake_get_langflow_service(_db):
+        return FailingLangFlowService()
+
+    monkeypatch.setattr(langflow_routes, "get_langflow_service", fake_get_langflow_service)
+
+    response = await client.post(
+        f"/api/v1/langflow/stream/{session_id}",
+        json={"message": "hello stream"},
+        cookies={
+            get_local("auth.session.cookie_name"): session_cookie,
+            get_local("auth.csrf.cookie_name"): csrf_cookie,
+        },
+        headers={get_local("auth.csrf.header_name"): csrf_cookie},
+    )
+
+    assert response.status_code == 200
+    assert response.text.count("event: error") == 1
+    assert "event: complete" not in response.text

@@ -1,0 +1,16 @@
+FROM docker.io/pgsty/silo:RELEASE.2026-11-12T00-00-00Z AS silo
+
+FROM registry.access.redhat.com/ubi9/ubi:9.9 AS packages
+COPY --from=silo / /silo-root/
+
+# UBI Micro has no package manager. Update its root using the matching UBI repositories.
+RUN dnf -y --installroot=/silo-root --releasever=9 --setopt=install_weak_deps=False upgrade \
+    && dnf -y --installroot=/silo-root clean all \
+    && rm -rf /silo-root/var/cache/dnf /silo-root/licenses \
+    && rm /silo-root/usr/bin/silo /silo-root/usr/bin/mcli /silo-root/usr/bin/mc \
+          /silo-root/usr/bin/curl /silo-root/usr/bin/docker-entrypoint.sh
+
+FROM silo
+COPY --from=packages /silo-root/ /
+# Retain the publisher's additional trusted-root removals.
+COPY --from=silo /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt

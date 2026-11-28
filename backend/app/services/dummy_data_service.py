@@ -2,6 +2,7 @@
 Service for generating dummy/mock data for development and testing.
 """
 
+import logging
 import random
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -16,25 +17,8 @@ from app.models.models import (
     Case,
     Alert,
     Task,
-    CaseCreate,
     AlertCreate,
     TaskCreate,
-    CaseTimelineItem,
-    AlertTimelineItem,
-    NoteItem,
-    AttachmentItem,
-    ObservableItem,
-    LinkItem,
-    AlertItem,
-    TaskItem,
-    ForensicArtifactItem,
-    TTPItem,
-    SystemItem,
-    EmailItem,
-    NetworkTrafficItem,
-    ProcessItem,
-    RegistryChangeItem,
-    CaseItem,
     _coerce_timeline_item_storage,
 )
 from app.models.enums import (
@@ -46,15 +30,14 @@ from app.models.enums import (
     SystemType,
     Protocol,
 )
-from app.services.case_service import case_service
 from app.services.alert_service import alert_service
+from app.services.alert_triage_apply_service import mark_alert_escalated
+from app.services.tag_filter_utils import DUMMY_DATA_TAG
 from app.services.task_service import task_service
 from app.models.models import AlertTriageRequest
 
 
-# Sentinel tag applied to every entity created by this service.
-# ``clear_all_data`` deletes **only** rows carrying this tag.
-DUMMY_DATA_TAG = "tmi_dummy_data"
+logger = logging.getLogger(__name__)
 
 
 class DummyDataService:
@@ -135,10 +118,6 @@ class DummyDataService:
         "File encryption activity detected on multiple network shares with ransom note deployment",
     ]
 
-    # USERS list is now dynamically fetched from the API
-    # Use DummyDataService._get_random_user() or DummyDataService._get_users_list()
-    # to get user data when needed
-
     @staticmethod
     async def _get_users_list(db: AsyncSession) -> List[str]:
         """Fetch list of usernames from the database."""
@@ -153,12 +132,6 @@ class DummyDataService:
             ]
 
         return [user.username for user in users]
-
-    @staticmethod
-    async def _get_random_user(db: AsyncSession) -> str:
-        """Get a random username from the database."""
-        users = await DummyDataService._get_users_list(db)
-        return random.choice(users)
 
     SYSTEMS = [
         "SRV-WEB-01",
@@ -188,20 +161,6 @@ class DummyDataService:
         "User Behavior Analytics",
         "Endpoint Detection",
         "Threat Intelligence",
-    ]
-
-    CATEGORIES = [
-        "Network Security",
-        "Access Control",
-        "Malware",
-        "Data Protection",
-        "Reconnaissance",
-        "Vulnerability Exploitation",
-        "Web Security",
-        "Phishing",
-        "Data Exfiltration",
-        "Insider Threat",
-        "APT Activity",
     ]
 
     TAGS = [
@@ -238,20 +197,6 @@ class DummyDataService:
     def _random_ip() -> str:
         """Generate a random IP address."""
         return f"{random.randint(1, 255)}.{random.randint(0, 255)}.{random.randint(0, 255)}.{random.randint(1, 254)}"
-
-    @staticmethod
-    def _generate_case_number() -> str:
-        """Generate a unique case number."""
-        year = datetime.now().year
-        num = random.randint(1, 9999)
-        return f"CASE-{year}-{num:04d}"
-
-    @staticmethod
-    def _generate_alert_id() -> str:
-        """Generate a unique alert ID."""
-        year = datetime.now().year
-        num = random.randint(1, 9999)
-        return f"ALT-{year}-{num:04d}"
 
     @staticmethod
     def _generate_reply_note(parent_id: str, reply_index: int, users: List[str], parent_time: datetime) -> Dict[str, Any]:
@@ -737,7 +682,7 @@ class DummyDataService:
         
         task_data = TaskCreate(
             title=random.choice(task_titles),
-            description=f"Task created for case investigation",
+            description="Task created for case investigation",
             priority=random.choice(list(Priority)),
             status=random.choice(list(TaskStatus)),
             assignee=random.choice(users),
@@ -810,7 +755,6 @@ class DummyDataService:
             tracked_alert.timeline_items = DummyDataService._normalize_timeline_items(alert_timeline_items)
             
             await db.commit()
-            await db.refresh(tracked_alert)
             
             # Now triage the alert and escalate to case
             case_title = random.choice(DummyDataService.CASE_TITLES)
@@ -828,19 +772,13 @@ class DummyDataService:
             # Triage the alert - this creates the case
             await alert_service.triage_alert(db, tracked_alert.id, triage_request, created_by)
             tracked_alert = await DummyDataService._get_tracked_alert(db, tracked_alert.id)
-            
-            # Refresh alert to get the case_id
-            await db.refresh(tracked_alert)
-            
-            # Get the created case
+
             assert tracked_alert.case_id is not None, "Alert must have a case_id after escalation"
-            case = await case_service.get_case(db, tracked_alert.case_id)
-            assert case is not None, "Case must exist after triage escalation"
             tracked_case = await DummyDataService._get_tracked_case(db, tracked_alert.case_id)
 
             # Generate timeline items (excluding task type - we'll add those separately)
             timeline_items = DummyDataService._generate_timeline_items_for_case(
-                f"case-{case.id}", users
+                f"case-{tracked_case.id}", users
             )
             
             # Filter out task items (we'll create real tasks instead)
@@ -867,7 +805,6 @@ class DummyDataService:
                 tracked_case.closed_at = tracked_case.updated_at
 
             await db.commit()
-            await db.refresh(tracked_case)
             cases.append(tracked_case)
 
         return cases
@@ -939,7 +876,6 @@ class DummyDataService:
                 )
 
             await db.commit()
-            await db.refresh(tracked_alert)
             alerts.append(tracked_alert)
 
         if include_closure_prone and closure_prone_count > 0:
@@ -1194,26 +1130,9 @@ class DummyDataService:
             tracked_alert.updated_at = tracked_alert.created_at + timedelta(minutes=random.randint(1, 90))
 
             await db.commit()
-            await db.refresh(tracked_alert)
             alerts.append(tracked_alert)
 
         return alerts
-
-    @staticmethod
-    def _generate_indicators() -> List[str]:
-        """Generate realistic threat indicators."""
-        indicator_types = [
-            lambda: DummyDataService._random_ip(),
-            lambda: f"malicious-domain-{random.randint(1, 100)}.com",
-            lambda: f"SHA256:{uuid.uuid4().hex[:32]}",
-            lambda: f"trojan_{random.randint(1, 50)}.exe",
-            lambda: f"TCP:{random.randint(1, 65535)}",
-            lambda: f"suspicious_user_{random.randint(1, 20)}",
-            lambda: f"CVE-2024-{random.randint(1000, 9999)}",
-        ]
-
-        num_indicators = random.randint(1, 5)
-        return [random.choice(indicator_types)() for _ in range(num_indicators)]
 
     @staticmethod
     async def populate_dummy_data(
@@ -1259,8 +1178,8 @@ class DummyDataService:
                     assert alert.id is not None, "Alert must have an ID before linking"
                     tracked_alert = await DummyDataService._get_tracked_alert(db, alert.id)
                     case = random.choice(cases)
-                    tracked_alert.case_id = case.id
-                    tracked_alert.status = AlertStatus.ESCALATED
+                    assert case.id is not None, "Case must have an ID before linking"
+                    mark_alert_escalated(tracked_alert, case_id=case.id)
                     linked_count += 1
 
                 await db.commit()
@@ -1282,20 +1201,17 @@ class DummyDataService:
                 },
             }
 
-        except Exception as e:
+        except Exception:
             await db.rollback()
-            return {
-                "success": False,
-                "message": f"Error populating dummy data: {str(e)}",
-                "data": None,
-            }
+            logger.exception("Failed to populate dummy data")
+            raise
 
     @staticmethod
     async def clear_all_data(db: AsyncSession) -> Dict[str, Any]:
         """Clear dummy-data entities (those tagged with ``tmi_dummy_data``).
 
         Only rows whose ``tags`` JSONB column contains the sentinel tag are
-        removed.  Related audit-log rows are cleaned up first.
+        removed. Audit history is retained.
         """
         try:
             tag_pattern = cast([DUMMY_DATA_TAG], PG_JSONB)
@@ -1304,8 +1220,7 @@ class DummyDataService:
             def _tagged(model: type) -> Any:  # type: ignore[type-arg]
                 return model.tags.contains(tag_pattern)  # type: ignore[union-attr]
 
-            # Delete in proper order due to foreign key constraints
-            # Tasks reference cases, alerts reference cases
+            # Delete in proper order due to foreign key constraints.
             tasks_result = await db.execute(delete(Task).where(_tagged(Task)))
             alerts_result = await db.execute(delete(Alert).where(_tagged(Alert)))
             cases_result = await db.execute(delete(Case).where(_tagged(Case)))
@@ -1320,9 +1235,10 @@ class DummyDataService:
                     "tasks_deleted": tasks_result.rowcount,  # type: ignore[union-attr]
                 },
             }
-        except Exception as e:
+        except Exception:
             await db.rollback()
-            return {"success": False, "message": f"Error clearing data: {str(e)}"}
+            logger.exception("Failed to clear dummy data")
+            raise
 
 
 # Create instance for easy importing

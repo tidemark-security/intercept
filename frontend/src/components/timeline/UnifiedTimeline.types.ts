@@ -1,3 +1,4 @@
+import type { AlertDetailLayout } from "@/hooks/useAlertDetailLayout";
 import type { AlertRead } from '@/types/generated/models/AlertRead';
 import type { CaseReadWithAlerts } from '@/types/generated/models/CaseReadWithAlerts';
 import type { TaskRead } from '@/types/generated/models/TaskRead';
@@ -14,6 +15,8 @@ export type UnifiedUser = app__api__routes__admin_auth__UserSummary | any;
 export type UnifiedEntity = AlertRead | CaseReadWithAlerts | TaskRead;
 
 export interface UnifiedTimelineProps {
+  alertDetailLayout?: AlertDetailLayout;
+  searchQuery?: string;
   /** 
    * Entity detail data with timeline items
    * Null when no entity is selected
@@ -43,9 +46,6 @@ export interface UnifiedTimelineProps {
   
   /** Whether assignment update is in progress */
   isUpdating?: boolean;
-
-  /** Collaboration presence text for the selected entity */
-  presenceText?: string | null;
 
   /** Whether a page-level overlay (dock/modal/dialog) is currently open */
   isOverlayOpen?: boolean;
@@ -201,10 +201,11 @@ export interface UnifiedTimelineProps {
    * Called when user clicks Retry on a failed recommendation card
    */
   onRetryTriage?: () => void;
+  onRerunTriage?: (expectedCreatedAt: string) => void;
   
   /**
    * Handler for requesting AI triage when no recommendation exists
-   * Called when user clicks Request AI Triage button
+   * Called when the user clicks Start on the AI Triage Available card
    */
   onRequestTriage?: () => void;
   

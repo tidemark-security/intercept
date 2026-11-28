@@ -1,26 +1,21 @@
-FROM docker.io/library/postgres:18
+FROM golang:1.27.4-trixie AS gosu
 
-ARG PGVECTOR_VERSION=0.8.1
+WORKDIR /src
 
-# Install pg_cron extension and build dependencies to compile/install pgvector
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# The upstream PostgreSQL image bundles gosu compiled with an older Go release.
+RUN git clone --depth 1 --branch 1.20 https://github.com/tianon/gosu.git . \
+    && go get golang.org/x/sys@v0.50.0 \
+    && CGO_ENABLED=0 go build -mod=mod -trimpath -o /gosu .
+
+FROM docker.io/library/postgres:18.7-trixie
+
+COPY --from=gosu /gosu /usr/local/bin/gosu
+
+# Install the PostgreSQL 18 extensions from the image's PGDG repository.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     postgresql-18-cron \
-    git \
-    build-essential \
-    ca-certificates \
-    postgresql-server-dev-18 \
+    postgresql-18-pgvector \
     && rm -rf /var/lib/apt/lists/*
-
-# Build and install pgvector
-RUN set -eux; \
-    git clone --depth 1 --branch v${PGVECTOR_VERSION} https://github.com/pgvector/pgvector.git /tmp/pgvector; \
-    cd /tmp/pgvector; \
-    make; \
-    make install; \
-    rm -rf /tmp/pgvector
-
-# Remove build dependencies to keep the image small
-RUN apt-get purge -y --auto-remove git build-essential ca-certificates || true
 
 # Note: extension initialization is performed by init.sql mounted via dev/docker-compose.yml
 # or inlined via configs in docs/quickstart/docker-compose.yml

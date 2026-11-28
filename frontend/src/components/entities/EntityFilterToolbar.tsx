@@ -1,48 +1,52 @@
 "use client";
 
 import React from "react";
+import * as Popover from "@radix-ui/react-popover";
 import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
-  Calendar,
   Check,
   CheckSquare,
+  ChevronDown,
   FileText,
+  ListFilter,
   Minus,
   Plus,
-  RotateCcw,
   Search,
   Square,
   Tag as TagIcon,
-  User,
   X,
 } from "lucide-react";
 
-import { Toolbar, ToolbarButton } from "@/components/toolbar";
-import { Button } from "@/components/buttons/Button";
+import { Button } from "@tidemark-security/ux";
+import { ToolbarButton } from "@/components/toolbar";
+import { AssigneeSelector } from "@/components/forms/AssigneeSelector";
+import { DateRangePicker } from "@/components/forms/DateRangePicker";
 import { TextField } from "@/components/forms/TextField";
 import { DropdownMenu } from "@/components/overlays/DropdownMenu";
-import { Accordion } from "@/components/misc/Accordion";
+import { usePortalContainer } from "@/contexts/PortalContainerContext";
+import { SessionContext } from "@/contexts/sessionContext";
 import type { FilterState, SortOrder } from "@/types/filters";
 import type { AlertStatus } from "@/types/generated/models/AlertStatus";
+import type { SavedFilterQueue } from "@/types/generated/models/SavedFilterQueue";
+import type { SavedFilterSnapshot } from "@/types/generated/models/SavedFilterSnapshot";
 import type { app__api__routes__admin_auth__UserSummary } from "@/types/generated/models/app__api__routes__admin_auth__UserSummary";
 import { cn } from "@/utils/cn";
-import {
-  formatForBackend,
-  formatForDisplay,
-  getRelativeTimeLabel,
-  getUserTimezone,
-  isValidDateRange,
-  parseISO8601,
-  parseRelativeTime,
-} from "@/utils/dateFilters";
+import { getRelativeTimeLabel } from "@/utils/dateFilters";
+import { savedFilterToState } from "@/utils/savedQueueFilters";
 import { ALERT_STATUS_OPTIONS, formatAlertStatusLabel, type StatusOption } from "@/utils/statusLabels";
+import styles from "./EntityFilterToolbar.module.css";
+import { QueueSearchField } from "./QueueSearchField";
+import { SavedQueueFilters } from "./SavedQueueFilters";
+import { normalizeQueueSearch } from "@/utils/queueSearch";
 
 export interface EntityFilterToolbarProps
   extends React.HTMLAttributes<HTMLDivElement> {
   filters?: FilterState;
   onFilterChange?: (filters: FilterState) => void;
+  onSearchChange?: (query: string) => void;
+  savedFilterQueue?: SavedFilterQueue;
   assignees?: app__api__routes__admin_auth__UserSummary[];
   assigneesLoading?: boolean;
   statusOptions?: StatusOption[];
@@ -53,6 +57,14 @@ export interface EntityFilterToolbarProps
 }
 
 type TagMode = "include" | "exclude";
+
+interface ActiveFilterChip {
+  key: string;
+  label: string;
+  removeLabel: string;
+  tone?: TagMode;
+  onRemove: () => void;
+}
 
 export interface SortOption {
   value: string;
@@ -93,7 +105,7 @@ function statusButtonLabel(
   statusOptions: StatusOption[],
 ) {
   const selected = filters?.status ?? [];
-  if (selected.length === 0) return "Status";
+  if (selected.length === 0) return "Any status";
 
   const labelFor = (status: string) =>
     statusOptions.find((option) => option.value === status)?.label ??
@@ -112,30 +124,6 @@ function compactStatusLabel(
   if (selected.length === 0) return "Any";
   if (selected.length === 1) return statusButtonLabel(filters, statusOptions);
   return `${selected.length} statuses`;
-}
-
-function compactAssigneeLabel(
-  filters: FilterState | undefined,
-  users: app__api__routes__admin_auth__UserSummary[],
-) {
-  const selected = filters?.assignee ?? [];
-  if (selected.length === 0) return "Any";
-  if (selected.length === 1) {
-    if (selected[0] === "__unassigned__") return "Unassigned";
-    return (
-      users.find((user) => user.username === selected[0])?.username ??
-      selected[0]
-    );
-  }
-  return `${selected.length} assignees`;
-}
-
-function compactTimeLabel(value: FilterState["dateRange"]) {
-  if (!value) return "All time";
-  if (value.preset && value.preset !== "custom") {
-    return getRelativeTimeLabel(value.preset);
-  }
-  return "Custom";
 }
 
 function compactTagLabel(includeTags: string[], excludeTags: string[]) {
@@ -197,30 +185,24 @@ function getStatusGroups(statusOptions: StatusOption[]) {
   };
 }
 
-function statusFilterDiffersFromDefault(
-  filters: FilterState | undefined,
-  statusOptions: StatusOption[],
-) {
-  const defaultStatuses = getStatusGroups(statusOptions).defaultOpen;
-  const selectedStatuses = (filters?.status ?? []) as string[];
-
-  return !haveSameValues(selectedStatuses, defaultStatuses);
-}
-
 function FilterValueChip({
-  tone,
+  tone = "include",
+  removeLabel,
   children,
   onRemove,
 }: {
-  tone: "include" | "exclude";
-  children: React.ReactNode;
-  onRemove: () => void;
+  tone?: "include" | "exclude";
+  removeLabel: string;
+  children: string;
+  onRemove: React.MouseEventHandler<HTMLButtonElement>;
 }) {
   return (
     <button
       type="button"
+      aria-label={removeLabel}
+      title={removeLabel}
       className={cn(
-        "flex h-6 max-w-full items-center gap-1 rounded-md border px-2 text-caption font-caption transition-colors",
+        "flex h-6 min-w-0 max-w-full items-center gap-1 rounded-md border px-2 text-caption font-caption transition-colors focus-visible:outline focus-visible:outline-1 focus-visible:-outline-offset-1 focus-visible:outline-focus-border",
         tone === "include"
           ? "border-brand-primary/60 bg-brand-primary/10 text-default-font hover:bg-brand-primary/15"
           : "border-error-600/60 bg-error-600/10 text-default-font hover:bg-error-600/15",
@@ -228,313 +210,8 @@ function FilterValueChip({
       onClick={onRemove}
     >
       <span className="min-w-0 truncate">{children}</span>
-      <X className="shrink-0 text-[12px]" />
+      <X aria-hidden="true" className="size-3 shrink-0" />
     </button>
-  );
-}
-
-function AssigneeFilterDropdown({
-  filters,
-  users,
-  isLoadingUsers,
-  onChange,
-}: {
-  filters?: FilterState;
-  users: app__api__routes__admin_auth__UserSummary[];
-  isLoadingUsers: boolean;
-  onChange: (assignees: string[] | null) => void;
-}) {
-  const [searchQuery, setSearchQuery] = React.useState("");
-  const selected = filters?.assignee ?? [];
-  const filteredUsers = React.useMemo(() => {
-    const query = searchQuery.toLowerCase();
-    if (!query) return users;
-    return users.filter(
-      (user) =>
-        user.username.toLowerCase().includes(query) ||
-        user.email?.toLowerCase().includes(query),
-    );
-  }, [searchQuery, users]);
-
-  const toggleAssignee = (username: string) => {
-    const next = selected.includes(username)
-      ? selected.filter((assignee) => assignee !== username)
-      : [...selected, username];
-    onChange(next.length ? next : null);
-  };
-
-  return (
-    <DropdownMenu.Root
-      modal={false}
-      onOpenChange={(open) => !open && setSearchQuery("")}
-    >
-      <DropdownMenu.Trigger asChild>
-        <ToolbarButton
-          icon={<User />}
-          label="Assignee"
-          value={compactAssigneeLabel(filters, users)}
-          chevron
-          active={selected.length > 0}
-        />
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Content
-        side="bottom"
-        align="start"
-        sideOffset={6}
-        className="max-h-[400px] min-w-[260px] overflow-y-auto"
-      >
-        {users.length > 0 ? (
-          <div className="w-full border-b border-neutral-border px-2 py-2">
-            <TextField
-              className="h-8 w-full"
-              variant="filled"
-              label=""
-              helpText=""
-              icon={<Search />}
-            >
-              <TextField.Input
-                placeholder="Search users..."
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                onKeyDown={(event) => event.stopPropagation()}
-              />
-            </TextField>
-          </div>
-        ) : null}
-        <DropdownMenu.DropdownItem
-          icon={selected.includes("__unassigned__") ? <CheckSquare /> : <Square />}
-          label="Unassigned"
-          onClick={() => toggleAssignee("__unassigned__")}
-          onSelect={(event) => event.preventDefault()}
-        />
-        {users.length > 0 ? <DropdownMenu.DropdownDivider /> : null}
-        {isLoadingUsers ? (
-          <DropdownMenu.DropdownItem icon={null} label="Loading users..." />
-        ) : filteredUsers.length ? (
-          filteredUsers.map((user) => (
-            <DropdownMenu.DropdownItem
-              key={user.userId}
-              icon={selected.includes(user.username) ? <CheckSquare /> : <Square />}
-              label={user.username}
-              hint={user.email}
-              onClick={() => toggleAssignee(user.username)}
-              onSelect={(event) => event.preventDefault()}
-            />
-          ))
-        ) : (
-          <DropdownMenu.DropdownItem
-            icon={null}
-            label={searchQuery ? "No users found" : "No users available"}
-          />
-        )}
-        {users.length > 0 ? (
-          <>
-            <DropdownMenu.DropdownDivider />
-            <DropdownMenu.DropdownItem
-              icon={null}
-              label="Clear selection"
-              onClick={() => onChange(null)}
-            />
-          </>
-        ) : null}
-      </DropdownMenu.Content>
-    </DropdownMenu.Root>
-  );
-}
-
-function TimeFilterDropdown({
-  value,
-  onChange,
-}: {
-  value: FilterState["dateRange"];
-  onChange: (value: FilterState["dateRange"]) => void;
-}) {
-  const [customStart, setCustomStart] = React.useState("");
-  const [customEnd, setCustomEnd] = React.useState("");
-  const [dateError, setDateError] = React.useState<string | null>(null);
-  const [isOpen, setIsOpen] = React.useState(false);
-  const userTimezone = React.useMemo(() => getUserTimezone(), []);
-  const presets = ["-15m", "-1h", "-24h", "-7d", "-30d", "-90d"];
-
-  const resetCustomState = () => {
-    setCustomStart("");
-    setCustomEnd("");
-    setDateError(null);
-  };
-
-  const handlePresetClick = (relativeExpression: string | null) => {
-    if (relativeExpression === null) {
-      onChange(null);
-      setIsOpen(false);
-      resetCustomState();
-      return;
-    }
-
-    const range = parseRelativeTime(relativeExpression);
-    if (!range) return;
-
-    onChange({
-      start: formatForBackend(range.start),
-      end: formatForBackend(range.end),
-      preset: relativeExpression,
-    });
-    setIsOpen(false);
-    resetCustomState();
-  };
-
-  const handleCustomApply = () => {
-    setDateError(null);
-    if (!customStart || !customEnd) {
-      setDateError("Please enter both start and end dates");
-      return;
-    }
-
-    const relativeStart = parseRelativeTime(customStart);
-    const startDate = relativeStart ? relativeStart.start : parseISO8601(customStart);
-    const relativeEnd = parseRelativeTime(customEnd);
-    const endDate = relativeEnd ? relativeEnd.end : parseISO8601(customEnd);
-
-    if (!startDate) {
-      setDateError("Invalid start date format. Use YYYY-MM-DD HH:mm:ss or -7d");
-      return;
-    }
-    if (!endDate) {
-      setDateError("Invalid end date format. Use YYYY-MM-DD HH:mm:ss or now");
-      return;
-    }
-    if (!isValidDateRange(startDate, endDate)) {
-      setDateError("End date must be after start date");
-      return;
-    }
-
-    onChange({
-      start: formatForBackend(startDate),
-      end: formatForBackend(endDate),
-      preset: "custom",
-    });
-    setIsOpen(false);
-    resetCustomState();
-  };
-
-  const customRangeLabel = React.useMemo(() => {
-    if (!value || value.preset !== "custom") return "";
-    const start = parseISO8601(value.start);
-    const end = parseISO8601(value.end);
-    if (!start || !end) return "Custom range";
-    return `${formatForDisplay(start)} - ${formatForDisplay(end)}`;
-  }, [value]);
-
-  return (
-    <DropdownMenu.Root open={isOpen} onOpenChange={setIsOpen}>
-      <DropdownMenu.Trigger asChild>
-        <ToolbarButton
-          icon={<Calendar />}
-          label="Time"
-          value={compactTimeLabel(value)}
-          chevron
-          active={!!value}
-          title={customRangeLabel || undefined}
-        />
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Content
-        className="w-[320px] items-stretch p-0"
-        side="bottom"
-        align="start"
-        sideOffset={6}
-      >
-        <Accordion
-          trigger={
-            <div className="flex w-full items-center justify-start gap-2 px-3 py-3">
-              <span className="grow text-left text-body-bold font-body-bold text-default-font">
-                Presets
-              </span>
-              <Accordion.Chevron />
-            </div>
-          }
-          defaultOpen
-        >
-          <div className="flex w-full flex-col border-t border-neutral-border">
-            {presets.map((expr) => (
-              <button
-                type="button"
-                key={expr}
-                className="flex w-full cursor-pointer items-center gap-2 bg-neutral-50 px-3 py-2 text-left hover:bg-neutral-100"
-                onClick={() => handlePresetClick(expr)}
-              >
-                <span className="grow text-body font-body text-default-font">
-                  {getRelativeTimeLabel(expr)}
-                </span>
-              </button>
-            ))}
-            <button
-              type="button"
-              className="flex w-full cursor-pointer items-center gap-2 bg-neutral-50 px-3 py-2 text-left hover:bg-neutral-100"
-              onClick={() => handlePresetClick(null)}
-            >
-              <span className="grow text-body font-body text-default-font">
-                All time
-              </span>
-            </button>
-          </div>
-        </Accordion>
-        <div className="h-px w-full bg-neutral-border" />
-        <Accordion
-          trigger={
-            <div className="flex w-full items-center justify-start gap-2 px-3 py-3">
-              <span className="grow text-left text-body-bold font-body-bold text-default-font">
-                Custom Range
-              </span>
-              <Accordion.Chevron />
-            </div>
-          }
-        >
-          <div className="flex w-full flex-col gap-3 border-t border-neutral-border bg-neutral-50 px-3 py-3">
-            <span className="text-caption font-caption text-subtext-color">
-              Times shown in your local timezone ({userTimezone})
-            </span>
-            <TextField
-              className="h-auto w-full"
-              label="Start date"
-              helpText={dateError || ""}
-              error={!!dateError}
-            >
-              <TextField.Input
-                className="h-8 w-full"
-                type="text"
-                value={customStart}
-                onChange={(event) => {
-                  setCustomStart(event.target.value);
-                  setDateError(null);
-                }}
-                onKeyDown={(event) => event.stopPropagation()}
-                placeholder="YYYY-MM-DD HH:mm or -7d"
-              />
-            </TextField>
-            <TextField className="h-auto w-full" label="End date" helpText="">
-              <TextField.Input
-                className="h-8 w-full"
-                type="text"
-                value={customEnd}
-                onChange={(event) => {
-                  setCustomEnd(event.target.value);
-                  setDateError(null);
-                }}
-                onKeyDown={(event) => event.stopPropagation()}
-                placeholder="YYYY-MM-DD HH:mm or now"
-              />
-            </TextField>
-            <Button
-              className="h-6 w-full"
-              size="small"
-              onClick={handleCustomApply}
-              disabled={!customStart || !customEnd}
-            >
-              Apply
-            </Button>
-          </div>
-        </Accordion>
-      </DropdownMenu.Content>
-    </DropdownMenu.Root>
   );
 }
 
@@ -549,21 +226,27 @@ function SortDropdown({
 }) {
   const selectedSortBy = filters?.sortBy ?? options[0]?.value;
   const selectedSortOrder = filters?.sortOrder ?? "desc";
+  const label = compactSortLabel(filters, options);
+  const modified = sortFilterDiffersFromDefault(filters, options);
 
   if (!options.length) return null;
 
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
-        <ToolbarButton
+        <Button
           icon={<ArrowUpDown />}
-          label="Sort"
-          value={compactSortLabel(filters, options)}
-          chevron
-          active={sortFilterDiffersFromDefault(filters, options)}
-        />
+          iconRight={<ChevronDown />}
+          variant={modified ? "brand-secondary" : "neutral-secondary"}
+          aria-label={`Sort ${label}`}
+          data-modified-indicator={modified || undefined}
+          title={label}
+          className="min-w-0 max-w-[42%] [&>span:not(:has(svg))]:truncate"
+        >
+          {label}
+        </Button>
       </DropdownMenu.Trigger>
-      <DropdownMenu.Content side="bottom" align="start" sideOffset={6}>
+      <DropdownMenu.Content side="bottom" align="end" sideOffset={6} collisionPadding={8}>
         {options.map((option) => (
           <React.Fragment key={option.value}>
             <DropdownMenu.DropdownItem
@@ -599,6 +282,8 @@ export function EntityFilterToolbar({
   className,
   filters,
   onFilterChange,
+  onSearchChange,
+  savedFilterQueue,
   assignees = [],
   assigneesLoading = false,
   statusOptions,
@@ -611,14 +296,39 @@ export function EntityFilterToolbar({
   const [tagMode, setTagMode] = React.useState<TagMode>("include");
   const [tagSearch, setTagSearch] = React.useState("");
   const [customTag, setCustomTag] = React.useState("");
+  const [tagMenuOpen, setTagMenuOpen] = React.useState(false);
+  const [searchVersion, setSearchVersion] = React.useState(0);
+  const searchInput = React.useRef<HTMLInputElement>(null);
+  const filtersTrigger = React.useRef<HTMLButtonElement>(null);
+  const tagMenu = React.useRef<HTMLDivElement>(null);
+
+  const sessionContext = React.useContext(SessionContext);
+  const currentUsername = sessionContext?.user?.username ?? null;
+  const currentUserId = sessionContext?.user?.id;
+  const portalContainer = usePortalContainer();
 
   const effectiveStatusOptions = statusOptions ?? ALERT_STATUS_OPTIONS;
   const includeTags = normalizeTags(filters?.includeTags);
   const excludeTags = normalizeTags(filters?.excludeTags);
-  const statusFilterModified = statusFilterDiffersFromDefault(
-    filters,
-    effectiveStatusOptions,
-  );
+  const selectedAssignees = filters?.assignee ?? [];
+  const selectedStatuses = filters?.status ?? [];
+  const statusGroups = getStatusGroups(effectiveStatusOptions);
+  const statusFilterModified = !!filters && !haveSameValues(selectedStatuses, statusGroups.defaultOpen);
+  const dateRange = filters?.dateRange;
+
+  const applySavedFilter = (snapshot: SavedFilterSnapshot) => {
+    // A fresh input cancels pending search edits even if the saved query matches the URL.
+    setSearchVersion((version) => version + 1);
+    onFilterChange?.(savedFilterToState(snapshot, effectiveStatusOptions.map((option) => option.value)));
+  };
+
+  const clearFilters = () => onFilterChange?.({
+    ...emptyFilters(),
+    search: filters?.search ?? "",
+    // The URL-backed queues use their default open statuses when status is unset.
+    ...(filters?.sortBy != null ? { sortBy: filters.sortBy } : {}),
+    ...(filters?.sortOrder != null ? { sortOrder: filters.sortOrder } : {}),
+  });
 
   const updateFilter = <K extends keyof FilterState>(
     key: K,
@@ -637,6 +347,46 @@ export function EntityFilterToolbar({
       tags.length ? tags : null,
     );
   };
+
+  const activeFilters: ActiveFilterChip[] = selectedAssignees.map((assignee) => {
+    const label = assignee === "__unassigned__" ? "Unassigned" : assignee;
+    return {
+      key: `assignee:${assignee}`,
+      label,
+      removeLabel: `Remove assignee ${label}`,
+      onRemove: () => {
+        const remaining = selectedAssignees.filter((value) => value !== assignee);
+        updateFilter("assignee", remaining.length ? remaining : null);
+      },
+    };
+  });
+  if (statusFilterModified) {
+    const label = statusButtonLabel(filters, effectiveStatusOptions);
+    activeFilters.push({
+      key: "status", label, removeLabel: `Restore default statuses (currently ${label})`,
+      onRemove: () => updateFilter("status", statusGroups.defaultOpen as FilterState["status"]),
+    });
+  }
+  if (dateRange) {
+    const label = dateRange.preset && dateRange.preset !== "custom"
+      ? getRelativeTimeLabel(dateRange.preset) : "Custom range";
+    activeFilters.push({
+      key: "time", label, removeLabel: `Remove time filter: ${label}`,
+      onRemove: () => updateFilter("dateRange", null),
+    });
+  }
+  if (showTagFilters) {
+    for (const [mode, tags] of [["include", includeTags], ["exclude", excludeTags]] as const) {
+      activeFilters.push(...tags.map((tag) => ({
+        key: `${mode}:${tag}`,
+        label: `${mode === "include" ? "+" : "−"} ${tag}`,
+        removeLabel: `Remove ${mode} tag ${tag}`,
+        tone: mode,
+        onRemove: () => updateTags(mode, removeTag(tags, tag)),
+      })));
+    }
+  }
+  const filterCount = activeFilters.length;
 
   const handleTagAdd = (mode: TagMode, tag: string) => {
     const current = mode === "include" ? includeTags : excludeTags;
@@ -703,27 +453,31 @@ export function EntityFilterToolbar({
     if (!tagSearch.trim()) return true;
     return tag.tag.toLowerCase().includes(tagSearch.toLowerCase());
   });
-  const selectedStatuses = (filters?.status ?? []) as string[];
-  const statusGroups = getStatusGroups(effectiveStatusOptions);
   const statusGroupItems = [
     { label: "All", statuses: statusGroups.all },
     { label: "All Open", statuses: statusGroups.open },
     { label: "All Closed", statuses: statusGroups.closed },
   ].filter((item) => item.statuses.length > 0);
 
-  return (
-    <div className={cn("flex w-full flex-col gap-3", className)} {...otherProps}>
-      <Toolbar>
-        <AssigneeFilterDropdown
-          filters={filters}
+  const filterFields = (
+      <div className="divide-y divide-neutral-border">
+        <AssigneeSelector
+          presentation="toolbar"
+          className={styles.filterRow}
+          mode="filter"
+          currentUser={currentUsername}
+          selectedAssignees={filters?.assignee ?? null}
           users={assignees}
           isLoadingUsers={assigneesLoading}
-          onChange={(assignees) => updateFilter("assignee", assignees)}
+          onSelectionChange={(nextAssignees) =>
+            updateFilter("assignee", nextAssignees)
+          }
         />
 
         <DropdownMenu.Root>
           <DropdownMenu.Trigger asChild>
             <ToolbarButton
+              className={styles.filterRow}
               icon={<FileText />}
               label="Status"
               value={compactStatusLabel(filters, effectiveStatusOptions)}
@@ -760,21 +514,18 @@ export function EntityFilterToolbar({
           </DropdownMenu.Content>
         </DropdownMenu.Root>
 
-        <TimeFilterDropdown
+        <DateRangePicker
+          presentation="toolbar"
+          className={styles.filterRow}
           value={filters?.dateRange ?? null}
           onChange={(value) => updateFilter("dateRange", value)}
         />
 
-        <SortDropdown
-          filters={filters}
-          options={sortOptions}
-          onChange={handleSortChange}
-        />
-
         {showTagFilters ? (
-          <DropdownMenu.Root modal={false}>
+          <DropdownMenu.Root modal={false} open={tagMenuOpen} onOpenChange={setTagMenuOpen}>
           <DropdownMenu.Trigger asChild>
             <ToolbarButton
+              className={styles.filterRow}
               icon={<TagIcon />}
               label="Tags"
               value={compactTagLabel(includeTags, excludeTags)}
@@ -783,6 +534,7 @@ export function EntityFilterToolbar({
             />
           </DropdownMenu.Trigger>
           <DropdownMenu.Content
+            ref={tagMenu}
             side="bottom"
             align="end"
             sideOffset={8}
@@ -906,6 +658,7 @@ export function EntityFilterToolbar({
                       <FilterValueChip
                         key={tag}
                         tone="include"
+                        removeLabel={`Remove include tag ${tag}`}
                         onRemove={() => updateTags("include", removeTag(includeTags, tag))}
                       >
                         {tag}
@@ -929,6 +682,7 @@ export function EntityFilterToolbar({
                       <FilterValueChip
                         key={tag}
                         tone="exclude"
+                        removeLabel={`Remove exclude tag ${tag}`}
                         onRemove={() => updateTags("exclude", removeTag(excludeTags, tag))}
                       >
                         {tag}
@@ -946,13 +700,109 @@ export function EntityFilterToolbar({
           </DropdownMenu.Root>
         ) : null}
 
-        <ToolbarButton
-          icon={<RotateCcw />}
-          label="Reset"
-          value="Clear all"
-          onClick={() => onFilterChange?.(emptyFilters())}
-        />
-      </Toolbar>
+      </div>
+  );
+
+  return (
+    <div className={cn("flex w-full flex-col gap-2", className)} {...otherProps}>
+      <Popover.Root>
+        <Popover.Anchor asChild>
+          <div className="flex w-full items-center justify-between gap-2">
+            <Popover.Trigger asChild>
+              <Button
+                ref={filtersTrigger}
+                aria-label={filterCount ? `Filters, ${filterCount} active` : "Filters"}
+                icon={<ListFilter />}
+                iconRight={<ChevronDown />}
+                variant="brand-secondary"
+                className="shrink-0"
+              >
+                <span className="flex items-center gap-2">
+                  Filters
+                  {filterCount > 0 && (
+                    <span aria-hidden="true" className="inline-flex min-w-4 items-center justify-center rounded-full bg-brand-primary px-1 text-caption-bold font-caption-bold text-black">
+                      {filterCount}
+                    </span>
+                  )}
+                </span>
+              </Button>
+            </Popover.Trigger>
+            {onSearchChange && (
+              <QueueSearchField
+                key={searchVersion}
+                query={normalizeQueueSearch(filters?.search ?? "")}
+                onCommit={onSearchChange}
+                inputRef={searchInput}
+              />
+            )}
+            <SortDropdown filters={filters} options={sortOptions} onChange={handleSortChange} />
+          </div>
+        </Popover.Anchor>
+        <Popover.Portal container={portalContainer}>
+          <Popover.Content
+            aria-label="Queue filters"
+            align="start"
+            sideOffset={6}
+            collisionPadding={8}
+            onEscapeKeyDown={(event) => {
+              // Handle the portaled tag menu before the parent popover dismisses.
+              if (event.target instanceof Node && tagMenu.current?.contains(event.target)) {
+                event.preventDefault();
+                setTagMenuOpen(false);
+              }
+            }}
+            className="z-[var(--z-popover)] w-[var(--radix-popover-trigger-width)] max-w-[22rem] max-h-[var(--radix-popover-content-available-height)] overflow-y-auto rounded-md border border-neutral-border bg-neutral-50 p-1 shadow-neutral-200-shadow-medium"
+          >
+            {filterFields}
+            {savedFilterQueue && currentUserId && filters && onFilterChange && (
+              <SavedQueueFilters
+                key={`${savedFilterQueue}:${currentUserId}`}
+                queue={savedFilterQueue}
+                userId={currentUserId}
+                isAdmin={sessionContext.isAdmin}
+                filters={filters}
+                readSearchInput={() => searchInput.current?.value ?? filters.search}
+                onApply={applySavedFilter}
+              />
+            )}
+            <div className="flex items-center justify-between gap-2 border-t border-neutral-border px-2 py-2">
+              <Button aria-label="Clear all" variant="neutral-tertiary" onClick={clearFilters} disabled={!filterCount}>Clear all</Button>
+              <Popover.Close asChild><Button aria-label="Done">Done</Button></Popover.Close>
+            </div>
+          </Popover.Content>
+        </Popover.Portal>
+      </Popover.Root>
+      {filterCount > 0 && (
+        <div className="flex min-w-0 items-start gap-1.5">
+          <div role="group" aria-label="Active filters" className="flex max-h-24 min-w-0 flex-wrap items-center gap-1.5 overflow-y-auto">
+            {activeFilters.map(({ key, label, removeLabel, tone, onRemove }) => (
+              <FilterValueChip
+                key={key}
+                tone={tone}
+                removeLabel={removeLabel}
+                onRemove={(event) => {
+                  const chip = event.currentTarget;
+                  const neighbor = chip.nextElementSibling ?? chip.previousElementSibling;
+                  const nextFocus = neighbor instanceof HTMLButtonElement ? neighbor : filtersTrigger.current;
+                  nextFocus?.focus();
+                  onRemove();
+                }}
+              >
+                {label}
+              </FilterValueChip>
+            ))}
+          </div>
+          <Button
+            aria-label="Clear"
+            size="small"
+            variant="neutral-tertiary"
+            className="shrink-0"
+            onClick={() => { filtersTrigger.current?.focus(); clearFilters(); }}
+          >
+            Clear
+          </Button>
+        </div>
+      )}
       {actions ? <div className="w-full">{actions}</div> : null}
     </div>
   );

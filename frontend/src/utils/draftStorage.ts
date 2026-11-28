@@ -35,7 +35,7 @@ export function saveDraft(draft: DraftData): void {
   } catch (error) {
     if (error instanceof Error && error.name === "QuotaExceededError") {
       console.error("localStorage quota exceeded", error);
-      throw new Error("Storage quota exceeded - please submit or clear existing drafts");
+      throw new Error("Storage quota exceeded - please submit or clear existing drafts", { cause: error });
     }
     console.error("Failed to save draft", error);
     throw error;

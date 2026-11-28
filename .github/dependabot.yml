@@ -7,7 +7,23 @@ updates:
     open-pull-requests-limit: 10
 
   - package-ecosystem: "npm"
-    directory: "/frontend"
+    directories:
+      - "/frontend"
+      - "/backend/scripts/mermaid-validator"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+
+  - package-ecosystem: "docker"
+    directories:
+      - "/backend"
+      - "/frontend"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "docker-compose"
+    directories:
+      - "/dev"
+      - "/docs/quickstart"
+    schedule:
+      interval: "weekly"

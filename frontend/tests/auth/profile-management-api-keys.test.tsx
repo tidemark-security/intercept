@@ -1,7 +1,8 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "../../src/types/generated/core/ApiError";
 import ProfileManagement from "../../src/pages/ProfileManagement";
 import { ApiKeysService } from "../../src/types/generated/services/ApiKeysService";
 import { AuthenticationService } from "../../src/types/generated/services/AuthenticationService";
@@ -73,6 +74,7 @@ describe("ProfileManagement API keys", () => {
         name: "primary-key",
         prefix: "ik_live_abc",
         expires_at: "2030-01-01T00:00:00Z",
+        scopes: ["api:read"],
         last_used_at: null,
         revoked_at: null,
         created_at: "2026-01-01T00:00:00Z",
@@ -99,6 +101,7 @@ describe("ProfileManagement API keys", () => {
       name: "new-key",
       prefix: "ik_live_xyz",
       expires_at: "2030-02-01T00:00:00Z",
+      scopes: ["api:read"],
       last_used_at: null,
       revoked_at: null,
       created_at: "2026-02-01T00:00:00Z",
@@ -119,7 +122,30 @@ describe("ProfileManagement API keys", () => {
     const createCallArg = vi.mocked(ApiKeysService.createApiKeyApiV1ApiKeysPost).mock.calls[0]?.[0];
     expect(createCallArg?.requestBody.name).toBe("new-key");
     expect(createCallArg?.requestBody.expires_at).toBeTruthy();
+    expect(createCallArg?.requestBody.scopes).toEqual(["api:read"]);
     expect(createCallArg?.requestBody).not.toHaveProperty("user_id");
+  });
+
+  it("shows the backend expiration limit in the open drawer and keeps the entered name", async () => {
+    const message = "Expiration date cannot exceed 90 days";
+    const url = "/api/v1/api-keys";
+    vi.mocked(ApiKeysService.createApiKeyApiV1ApiKeysPost).mockRejectedValueOnce(
+      new ApiError(
+        { method: "POST", url },
+        { url, ok: false, status: 400, statusText: "Bad Request", body: { detail: { message, fields: [] } } },
+        "Bad Request",
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /create new api key/i }));
+    const drawer = within(await screen.findByRole("dialog"));
+    await user.type(drawer.getByPlaceholderText("Automation Key"), "Langflow");
+    await user.click(drawer.getByRole("button", { name: /create key/i }));
+
+    expect(await drawer.findByRole("alert")).toHaveTextContent(message);
+    expect(drawer.getByPlaceholderText("Automation Key")).toHaveValue("Langflow");
   });
 
   it("revokes an existing own API key", async () => {

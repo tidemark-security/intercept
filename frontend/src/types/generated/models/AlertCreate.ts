@@ -9,7 +9,7 @@ import type { Priority } from './Priority';
 export type AlertCreate = {
     title: string;
     description?: (string | null);
-    priority?: (Priority | null);
+    priority?: Priority;
     source?: (string | null);
     /**
      * Migration-only override for the alert creation timestamp

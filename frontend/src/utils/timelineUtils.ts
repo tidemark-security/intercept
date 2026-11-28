@@ -56,6 +56,16 @@ export function findTimelineItem(
  * @returns New array with the updated item
  */
 export function updateTimelineItemById(
+  items: TimelineItemMap,
+  itemId: string,
+  updates: Partial<TimelineItem>
+): TimelineItemMap;
+export function updateTimelineItemById(
+  items: TimelineItemCollection,
+  itemId: string,
+  updates: Partial<TimelineItem>
+): TimelineItemCollection;
+export function updateTimelineItemById(
   items: TimelineItemCollection,
   itemId: string,
   updates: Partial<TimelineItem>
@@ -111,6 +121,8 @@ export function updateTimelineItemById(
  * @param itemId ID of the item to remove
  * @returns New array without the removed item
  */
+export function removeTimelineItemById(items: TimelineItemMap, itemId: string): TimelineItemMap;
+export function removeTimelineItemById(items: TimelineItemCollection, itemId: string): TimelineItemCollection;
 export function removeTimelineItemById(
   items: TimelineItemCollection,
   itemId: string

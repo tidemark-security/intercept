@@ -4,7 +4,8 @@ import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { useSession } from "../contexts/sessionContext";
 import { DashboardCard } from "@/components/cards/DashboardCard";
 
-import { AlertCircle, Activity, Link2, ScrollText, Settings, Users } from 'lucide-react';
+import { AlertCircle, Activity, Bookmark, Link2, ScrollText, Settings, Users } from 'lucide-react';
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 interface AdminCard {
   title: string;
   description: string;
@@ -24,6 +25,12 @@ const adminCards: AdminCard[] = [
     description: "Configure contextual action links for timeline items",
     icon: <Link2 />,
     link: "/admin/link-templates",
+  },
+  {
+    title: "Organization alert filters",
+    description: "Manage shared alert filters and pin them to navigation",
+    icon: <Bookmark />,
+    link: "/admin/alert-filters",
   },
   {
     title: "Configuration Settings",
@@ -46,6 +53,7 @@ const adminCards: AdminCard[] = [
 ];
 
 function Admin() {
+  useDocumentTitle("Admin");
   const { user: currentUser } = useSession();
   const isAdmin = currentUser?.role === "ADMIN";
 

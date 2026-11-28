@@ -1,35 +1,55 @@
-"""MCP tool function definitions.
+"""MCP adapters for entity context, discovery and recommendation authoring."""
 
-This module contains the 7 intentional MCP tools:
-1. get_summary - Bounded context retrieval
-2. list_work - Global work discovery
-3. find_related - Similarity search
-4. record_triage_decision - Triage recommendations
-5. add_timeline_item - Timeline note appending
-6. get_item - Full content retrieval
-7. validate_mermaid - Mermaid syntax validation
-
-Tool implementations added per User Stories (Phase 3-8).
-"""
+from collections.abc import Awaitable
+from typing import Any, Dict, TypeVar
+from uuid import UUID
 
 from fastapi import HTTPException
-from datetime import datetime
-from typing import Dict, Any
+from fastmcp.server.dependencies import get_http_request
 
-from app.core.database import async_session_factory
-from app.models.enums import UserRole
 from app.api.timestamp_overrides import normalize_created_at_override
+from app.core.database import async_session_factory
+from app.mcp.principal import get_current_mcp_principal
+from app.mcp.search_tools import search_bounds
+from app.models.enums import UserRole
 from app.services import mcp_service
-
-# Import FastMCP dependency to access HTTP request for authenticated user
-try:
-    from fastmcp.server.dependencies import get_http_request
-except ImportError:
-    get_http_request = None
-
+from app.services.date_filter_utils import parse_utc_datetime
+from app.services.mcp_errors import (
+    McpConflictError,
+    McpNotFoundError,
+    McpServiceError,
+    McpTimeoutError,
+    McpUnavailableError,
+    McpValidationError,
+)
+from app.services.triage_recommendation_service import TRIAGE_RUN_HEADER
 
 _PRUNED = object()
 _PRESERVE_EMPTY_CONTAINER_KEYS = {"items", "resources", "errors"}
+_ServiceResult = TypeVar("_ServiceResult")
+_MCP_SERVICE_ERROR_STATUS_CODES: dict[type[McpServiceError], int] = {
+    McpValidationError: 400,
+    McpNotFoundError: 404,
+    McpConflictError: 409,
+    McpUnavailableError: 503,
+    McpTimeoutError: 504,
+}
+
+
+async def _run_service_call(awaitable: Awaitable[_ServiceResult]) -> _ServiceResult:
+    """Translate safe business failures at the HTTP-facing tool seam."""
+    try:
+        return await awaitable
+    except McpServiceError as exc:
+        status_code = next(
+            (
+                code
+                for error_type, code in _MCP_SERVICE_ERROR_STATUS_CODES.items()
+                if isinstance(exc, error_type)
+            ),
+            400,
+        )
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 def _prune_llm_payload(value: Any, *, preserve_empty: bool = False) -> Any:
@@ -56,12 +76,11 @@ def _prune_llm_payload(value: Any, *, preserve_empty: bool = False) -> Any:
         return _PRUNED
 
     if isinstance(value, list):
-        pruned_list = [
-            pruned_child
-            for child in value
-            for pruned_child in [_prune_llm_payload(child)]
-            if pruned_child is not _PRUNED
-        ]
+        pruned_list = []
+        for child in value:
+            pruned_child = _prune_llm_payload(child)
+            if pruned_child is not _PRUNED:
+                pruned_list.append(pruned_child)
         if pruned_list or preserve_empty:
             return pruned_list
         return _PRUNED
@@ -70,19 +89,10 @@ def _prune_llm_payload(value: Any, *, preserve_empty: bool = False) -> Any:
 
 
 def _get_authenticated_user() -> Any | None:
-    """Get the authenticated user from the MCP request context.
+    """Get the freshly reloaded user bound by native FastMCP middleware."""
 
-    The MCPApiKeyAuthMiddleware stores the authenticated user in scope["mcp_user"].
-    We access it via the Starlette request object.
-    """
-    if get_http_request is None:
-        return None
-
-    try:
-        request = get_http_request()
-        return request.scope.get("mcp_user")
-    except Exception:
-        return None
+    principal = get_current_mcp_principal()
+    return principal.user if principal is not None else None
 
 
 def _get_authenticated_username() -> str:
@@ -116,7 +126,18 @@ def _require_mcp_non_auditor_user() -> str:
     return _require_mcp_non_auditor_user_object().username
 
 
-# Phase 3 (User Story 1): get_summary implementation ✅
+def _get_triage_run_id() -> UUID | None:
+    try:
+        request = get_http_request()
+    except RuntimeError:
+        return None
+    raw_id = request.headers.get(TRIAGE_RUN_HEADER) if request is not None else None
+    if raw_id is None:
+        return None
+    try:
+        return UUID(raw_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="Invalid AI triage run ID") from error
 
 
 async def get_summary_tool(
@@ -125,23 +146,40 @@ async def get_summary_tool(
     max_timeline_items: int = 25,
     max_observables: int = 20,
     since: str | None = None,
+    preview_chars: int = 1024,
+    timeline_offset: int = 0,
+    compact: bool = False,
+    include_enrichments: bool = True,
 ) -> Dict[str, Any]:
-    """Get bounded context summary for an alert/case/task.
-
-    Phase 3 (User Story 1): get_summary implementation
-    """
+    """Get a bounded context summary for an alert, case, or task."""
+    run_id = _get_triage_run_id() if kind == "alert" else None
+    principal_id = _require_mcp_non_auditor_user_object().id if run_id is not None else None
     async with async_session_factory() as db:
-        result = await mcp_service.get_summary(
-            db=db,
-            kind=kind,
-            id_str=id,
-            max_timeline_items=max_timeline_items,
-            max_observables=max_observables,
-            since=since,
+        result = await _run_service_call(
+            mcp_service.get_summary(
+                db=db,
+                kind=kind,
+                id_str=id,
+                max_timeline_items=max_timeline_items,
+                max_observables=max_observables,
+                since=since,
+                preview_chars=preview_chars,
+                timeline_offset=timeline_offset,
+                include_enrichments=include_enrichments,
+                triage_run_id=run_id,
+                principal_id=principal_id,
+            )
         )
-        payload = result.model_dump(mode="json")
-        pruned_payload = _prune_llm_payload(payload, preserve_empty=True)
-        return pruned_payload if isinstance(pruned_payload, dict) else payload
+        payload = result.model_dump(
+            mode="json",
+            exclude=None if include_enrichments else {"timeline": {"items": {"__all__": {"enrichments"}}}},
+        )
+        response = _prune_llm_payload(payload, preserve_empty=True) if compact else payload
+        if run_id is not None:
+            # Send the same serialized context we keep in the run snapshot.
+            response["context"] = payload["context"]
+            await db.commit()
+        return response
 
 
 async def list_work_tool(
@@ -155,22 +193,21 @@ async def list_work_tool(
     limit: int = 50,
     cursor: str | None = None,
 ) -> Dict[str, Any]:
-    """List alerts/cases/tasks with filtering.
-
-    Phase 5 (User Story 3): list_work implementation
-    """
+    """List alerts, cases, or tasks with filtering."""
     async with async_session_factory() as db:
-        result = await mcp_service.list_work(
-            db=db,
-            kind=kind,
-            statuses=statuses,
-            priorities=priorities,
-            assignees=assignees,
-            contains=contains,
-            time_range_start=time_range_start,
-            time_range_end=time_range_end,
-            limit=limit,
-            cursor=cursor,
+        result = await _run_service_call(
+            mcp_service.list_work(
+                db=db,
+                kind=kind,
+                statuses=statuses,
+                priorities=priorities,
+                assignees=assignees,
+                contains=contains,
+                time_range_start=time_range_start,
+                time_range_end=time_range_end,
+                limit=limit,
+                cursor=cursor,
+            )
         )
         return result.model_dump()
 
@@ -179,19 +216,25 @@ async def find_related_tool(
     seed_kind: str,
     seed_id: str,
     max_matches: int = 10,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> Dict[str, Any]:
-    """Find related/similar alerts/cases/tasks.
-
-    Phase 6 (User Story 4): find_related implementation
-    """
+    """Find similar alerts in the requested candidate creation window."""
+    start, end = search_bounds(start_date, end_date)
     async with async_session_factory() as db:
-        result = await mcp_service.find_related(
-            db=db,
-            seed_kind=seed_kind,
-            seed_id_str=seed_id,
-            max_matches=max_matches,
+        result = await _run_service_call(
+            mcp_service.find_related(
+                db=db,
+                seed_kind=seed_kind,
+                seed_id_str=seed_id,
+                max_matches=max_matches,
+                start_date=start,
+                end_date=end,
+            )
         )
-        return result.model_dump()
+        return result.model_dump(
+            exclude={"reason", "next_tool"} if result.reason is None else None,
+        )
 
 
 async def record_triage_decision_tool(
@@ -209,31 +252,33 @@ async def record_triage_decision_tool(
     request_escalate_to_case: bool = False,
     commit: bool = False,
 ) -> Dict[str, Any]:
-    """Record AI triage recommendation for an alert.
-
-    Phase 4 (User Story 2): record_triage_decision implementation
-    """
+    """Record an AI triage recommendation for an alert."""
+    run_id = _get_triage_run_id() if commit else None
     username = (
         _require_mcp_non_auditor_user() if commit else _get_authenticated_username()
     )
 
     async with async_session_factory() as db:
-        result = await mcp_service.record_triage_decision(
-            db=db,
-            alert_id_str=alert_id,
-            disposition=disposition,
-            confidence=confidence,
-            reasoning_bullets=reasoning_bullets,
-            recommended_actions=recommended_actions,
-            recommended_case_runbook_id=recommended_case_runbook_id,
-            suggested_status=suggested_status,
-            suggested_priority=suggested_priority,
-            suggested_assignee=suggested_assignee,
-            suggested_tags_add=suggested_tags_add,
-            suggested_tags_remove=suggested_tags_remove,
-            request_escalate_to_case=request_escalate_to_case,
-            commit=commit,
-            created_by=username,
+        result = await _run_service_call(
+            mcp_service.record_triage_decision(
+                db=db,
+                alert_id_str=alert_id,
+                disposition=disposition,
+                confidence=confidence,
+                reasoning_bullets=reasoning_bullets,
+                recommended_actions=recommended_actions,
+                recommended_case_runbook_id=recommended_case_runbook_id,
+                suggested_status=suggested_status,
+                suggested_priority=suggested_priority,
+                suggested_assignee=suggested_assignee,
+                suggested_tags_add=suggested_tags_add,
+                suggested_tags_remove=suggested_tags_remove,
+                request_escalate_to_case=request_escalate_to_case,
+                commit=commit,
+                created_by=username,
+                triage_run_id=run_id,
+                principal_id=_require_mcp_non_auditor_user_object().id if run_id is not None else None,
+            )
         )
         return result.model_dump()
 
@@ -244,14 +289,18 @@ async def search_case_runbooks_tool(
 ) -> Dict[str, Any]:
     """Search published Case Runbooks for triage recommendation planning."""
     async with async_session_factory() as db:
-        result = await mcp_service.search_case_runbooks(db=db, query=query, limit=limit)
+        result = await _run_service_call(
+            mcp_service.search_case_runbooks(db=db, query=query, limit=limit)
+        )
         return result.model_dump()
 
 
 async def get_case_runbook_tool(id: str) -> Dict[str, Any]:
     """Get lean detail for a published Case Runbook."""
     async with async_session_factory() as db:
-        result = await mcp_service.get_case_runbook(db=db, id_str=id)
+        result = await _run_service_call(
+            mcp_service.get_case_runbook(db=db, id_str=id)
+        )
         return result.model_dump()
 
 
@@ -264,19 +313,24 @@ async def add_timeline_item_tool(
     created_at: str | None = None,
     migration: bool = False,
 ) -> Dict[str, Any]:
-    """Add timeline note to alert/case/task.
-
-    Phase 7 (User Story 5): add_timeline_item implementation
-    """
-    user = _require_mcp_non_auditor_user_object() if commit or migration or created_at is not None else _get_authenticated_user()
+    """Add a timeline note to an alert, case, or task."""
+    requires_write_authorization = commit or migration or created_at is not None
+    user = (
+        _require_mcp_non_auditor_user_object()
+        if requires_write_authorization
+        else _get_authenticated_user()
+    )
     username = user.username if user and hasattr(user, "username") else "System"
 
     parsed_created_at = None
     if created_at is not None:
         try:
-            parsed_created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            parsed_created_at = parse_utc_datetime(created_at)
         except ValueError:
-            raise HTTPException(status_code=422, detail="created_at must be a valid ISO-8601 datetime")
+            raise HTTPException(
+                status_code=422,
+                detail="created_at must be a valid ISO-8601 datetime",
+            ) from None
 
     created_at_override = normalize_created_at_override(
         current_user=user,
@@ -285,15 +339,17 @@ async def add_timeline_item_tool(
     )
 
     async with async_session_factory() as db:
-        result = await mcp_service.add_timeline_item(
-            db=db,
-            target_kind=target_kind,
-            target_id_str=target_id,
-            item_id=item_id,
-            body=body,
-            commit=commit,
-            created_by=username,
-            created_at=created_at_override,
+        result = await _run_service_call(
+            mcp_service.add_timeline_item(
+                db=db,
+                target_kind=target_kind,
+                target_id_str=target_id,
+                item_id=item_id,
+                body=body,
+                commit=commit,
+                created_by=username,
+                created_at=created_at_override,
+            )
         )
         return result.model_dump()
 
@@ -303,27 +359,28 @@ async def get_item_tool(
     parent_entity_id: str,
     item_id: str,
     mode: str = "full",
-    max_chars: int = 4000,
+    max_chars: int = 16000,
     cursor: str | None = None,
+    content_format: str = "text",
 ) -> Dict[str, Any]:
-    """Get full content of truncated timeline item.
-
-    Phase 8 (User Story 6): get_item implementation
-    """
+    """Get the full content of a truncated timeline item."""
     async with async_session_factory() as db:
-        result = await mcp_service.get_item(
-            db=db,
-            parent_entity_type=parent_entity_type,
-            parent_entity_id=parent_entity_id,
-            item_id=item_id,
-            mode=mode,
-            max_chars=max_chars,
-            cursor=cursor,
+        result = await _run_service_call(
+            mcp_service.get_item(
+                db=db,
+                parent_entity_type=parent_entity_type,
+                parent_entity_id=parent_entity_id,
+                item_id=item_id,
+                mode=mode,
+                max_chars=max_chars,
+                content_format=content_format,
+                cursor=cursor,
+            )
         )
         return result.model_dump()
 
 
 async def validate_mermaid_tool(diagram: str) -> Dict[str, Any]:
     """Validate Mermaid syntax using the local Mermaid CLI."""
-    result = await mcp_service.validate_mermaid(diagram=diagram)
+    result = await _run_service_call(mcp_service.validate_mermaid(diagram=diagram))
     return result.model_dump()

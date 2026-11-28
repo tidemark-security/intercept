@@ -7,6 +7,7 @@ import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS, QUERY_REFETCH_INTERVALS_WS 
 import { useWebSocket } from '@/contexts/WebSocketContext';
 
 interface UseAlertsOptions {
+  enabled?: boolean;
   status?: AlertStatus[] | null;
   assignee?: string[] | null;
   caseId?: number | null;
@@ -32,6 +33,7 @@ export function useAlerts(
   options: UseAlertsOptions = {}
 ): UseQueryResult<Page_AlertRead_, Error> {
   const {
+    enabled = true,
     status = null,
     assignee = null,
     caseId = null,
@@ -52,6 +54,7 @@ export function useAlerts(
   const { isConnected } = useWebSocket();
 
   return useQuery({
+    enabled,
     queryKey: ['alerts', { status, assignee, caseId, priority, source, includeTags, excludeTags, hasCase, startDate, endDate, search, sortBy, sortOrder, page, size }],
     queryFn: () =>
       AlertsService.getAlertsApiV1AlertsGet({

@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.settings_registry import SETTINGS_REGISTRY, _coerce
+from app.core.settings_registry import SETTINGS_REGISTRY, coerce_setting_value
+from app.services.task_names import WORKER_TASK_NAMES
 from app.services.worker_task_runtime_config import (
+    KNOWN_WORKER_TASK_NAMES,
     WorkerTaskRuntimeConfig,
     WorkerTaskRuntimeSnapshot,
     load_worker_task_runtime_snapshot,
 )
+
+
+def test_runtime_config_uses_canonical_worker_task_names() -> None:
+    assert KNOWN_WORKER_TASK_NAMES is WORKER_TASK_NAMES
 
 
 class StubSettings:
@@ -26,8 +32,16 @@ class EnvAwareStubSettings(StubSettings):
         if defn is not None:
             raw = os.getenv(defn.env_var)
             if raw is not None:
-                return _coerce(raw, defn.value_type)
+                return coerce_setting_value(raw, defn.value_type)
         return await super().get(key, default)
+
+
+class FailingSettings:
+    def __init__(self, error: Exception):
+        self.error = error
+
+    async def get(self, key: str, default: object = None) -> object:
+        raise self.error
 
 
 @pytest.mark.asyncio
@@ -69,6 +83,26 @@ async def test_worker_task_runtime_config_keeps_last_good_snapshot_on_invalid_va
     assert changed is False
     assert config.snapshot == last_good
     assert config.last_error is not None
+
+
+@pytest.mark.asyncio
+async def test_worker_task_runtime_config_keeps_last_good_snapshot_when_database_is_unavailable() -> None:
+    last_good = WorkerTaskRuntimeSnapshot(default_execution_timeout_seconds=222)
+    config = WorkerTaskRuntimeConfig(initial_snapshot=last_good)
+
+    changed = await config.refresh(FailingSettings(ConnectionError("database unavailable")))
+
+    assert changed is False
+    assert config.snapshot == last_good
+    assert config.last_error is not None
+
+
+@pytest.mark.asyncio
+async def test_worker_task_runtime_config_does_not_hide_programming_errors() -> None:
+    config = WorkerTaskRuntimeConfig()
+
+    with pytest.raises(TypeError, match="settings integration bug"):
+        await config.refresh(FailingSettings(TypeError("settings integration bug")))
 
 
 @pytest.mark.asyncio

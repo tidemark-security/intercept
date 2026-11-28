@@ -110,10 +110,16 @@ export function useSearchPage(
     const pageParam = searchParams.get('page');
     return pageParam ? Math.max(0, parseInt(pageParam, 10) - 1) : 0;
   });
-  const [dateRange, setDateRange] = useState<{ start: string | null; end: string | null }>({
-    start: searchParams.get('start') || sessionDateRange?.start || null,
-    end: searchParams.get('end') || sessionDateRange?.end || null,
+  const [dateRange, setDateRange] = useState<{ start: string | null; end: string | null }>(() => {
+    if (searchParams.get('all_time') === 'true') {
+      return { start: null, end: null };
+    }
+    return {
+      start: searchParams.get('start') || sessionDateRange?.start || null,
+      end: searchParams.get('end') || sessionDateRange?.end || null,
+    };
   });
+  const allTime = !dateRange.start && !dateRange.end;
   const [selectedTags, setSelectedTagsState] = useState<string[]>(() =>
     searchParams.getAll('tag').filter((tag) => tag.trim().length > 0)
   );
@@ -135,10 +141,11 @@ export function useSearchPage(
     if (page > 0) params.set('page', String(page + 1));
     if (dateRange.start) params.set('start', dateRange.start);
     if (dateRange.end) params.set('end', dateRange.end);
+    if (allTime) params.set('all_time', 'true');
     selectedTags.forEach((tag) => params.append('tag', tag));
     
     setSearchParams(params, { replace: true });
-  }, [debouncedQuery, entityType, page, dateRange, selectedTags, setSearchParams]);
+  }, [debouncedQuery, entityType, page, dateRange, allTime, selectedTags, setSearchParams]);
 
   // Reset page when entity type changes
   useEffect(() => {
@@ -199,6 +206,7 @@ export function useSearchPage(
         limit: pageSize,
         startDate: dateRange.start,
         endDate: dateRange.end,
+        allTime,
         tags: selectedTags.length > 0 ? selectedTags : null,
       }),
     enabled: canSearch,

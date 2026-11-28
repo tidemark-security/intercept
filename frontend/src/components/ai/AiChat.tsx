@@ -707,6 +707,8 @@ export function AiChat({
         {onClose && (
           <IconButton
             icon={<X />}
+            aria-label="Close AI Assistant"
+            title="Close AI Assistant"
             onClick={onClose}
           />
         )}

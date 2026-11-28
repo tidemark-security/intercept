@@ -109,73 +109,21 @@ vi.mock("@tidemark-security/ux", async () => {
     },
   };
 
-  const SidebarRailWithLabels = Object.assign(
-    ({
-      header,
-      children,
-      footer,
-    }: {
-      header?: React.ReactNode;
-      children: React.ReactNode;
-      footer?: React.ReactNode;
-    }) => (
-      <nav aria-label="Desktop sidebar">
-        <div>{header}</div>
-        <div>{children}</div>
-        <div>{footer}</div>
-      </nav>
-    ),
-    {
-      NavItem: React.forwardRef<
-        HTMLDivElement,
-        React.HTMLAttributes<HTMLDivElement> & {
-          icon?: React.ReactNode;
-          mobile?: boolean;
-          selected?: boolean;
-        }
-      >(({ children, icon, mobile: _mobile, selected: _selected, ...props }, ref) => (
-        <SidebarNavItemMock ref={ref} icon={icon} {...props}>
-          {children}
-        </SidebarNavItemMock>
-      )),
-    },
+  const SidebarRailWithLabels = ({
+    header,
+    children,
+    footer,
+  }: {
+    header?: React.ReactNode;
+    children: React.ReactNode;
+    footer?: React.ReactNode;
+  }) => (
+    <nav aria-label="Desktop sidebar">
+      <div>{header}</div>
+      <div>{children}</div>
+      <div>{footer}</div>
+    </nav>
   );
-
-  const SidebarNavItemMock = React.forwardRef<
-    HTMLDivElement,
-    React.HTMLAttributes<HTMLDivElement> & { icon?: React.ReactNode }
-  >(({ children, icon, onBlur, onFocus, onMouseEnter, onMouseLeave, ...props }, ref) => {
-    const [tooltipOpen, setTooltipOpen] = React.useState(false);
-    return (
-      <>
-        <div
-          ref={ref}
-          data-testid="sidebar-nav-item"
-          {...props}
-          onBlur={(event) => {
-            onBlur?.(event);
-            setTooltipOpen(false);
-          }}
-          onFocus={(event) => {
-            onFocus?.(event);
-            setTooltipOpen(true);
-          }}
-          onMouseEnter={(event) => {
-            onMouseEnter?.(event);
-            setTooltipOpen(true);
-          }}
-          onMouseLeave={(event) => {
-            onMouseLeave?.(event);
-            setTooltipOpen(false);
-          }}
-        >
-          {icon}
-          <span>{children}</span>
-        </div>
-        {tooltipOpen ? <div role="tooltip">{children}</div> : null}
-      </>
-    );
-  });
 
   const DropdownMenu = {
     Root: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -204,6 +152,7 @@ vi.mock("@tidemark-security/ux", async () => {
       classes.filter(Boolean).join(" "),
     DropdownMenu,
     SidebarRailWithLabels,
+    IconWrapper: (props: React.HTMLAttributes<HTMLSpanElement>) => <span {...props} />,
     ToggleGroup,
     Tooltip,
     useTheme: () => ({
@@ -214,7 +163,6 @@ vi.mock("@tidemark-security/ux", async () => {
       timezonePreference: "local",
       setTimezonePreference: vi.fn(),
     }),
-    useViewTransitionNavigate: () => vi.fn(),
   };
 });
 
@@ -249,27 +197,30 @@ describe("DesktopSidebar", () => {
     mockUseSidebarBadgeCounts.mockReturnValue({ data: undefined });
   });
 
-  it("does not render duplicate visible labels before a collapsed item is active", () => {
+  it("exposes each page destination as a single named native link", () => {
     renderDesktopSidebar();
 
-    for (const label of [
-      "Search",
-      "Home",
-      "Alerts",
-      "Cases",
-      "Tasks",
-      "AI Chat",
-      "Reports",
-      "Context",
-      "Runbooks",
-      "Admin",
-      "Timezone (Local)",
-      "Profile",
-      "Logout",
-    ]) {
-      expect(screen.queryAllByText(label)).toHaveLength(1);
+    const destinations = {
+      "Tidemark home": "/",
+      Search: "/search",
+      Home: "/",
+      Alerts: "/alerts",
+      Cases: "/cases",
+      Tasks: "/tasks",
+      "AI Chat": "/ai-chat",
+      Reports: "/reports",
+      Context: "/context-entries",
+      Runbooks: "/case-runbooks",
+      Admin: "/admin",
+      Profile: "/profile",
+      Logout: "/logout",
+    };
+
+    for (const [label, href] of Object.entries(destinations)) {
+      expect(screen.getByRole("link", { name: label })).toHaveAttribute("href", href);
     }
 
+    expect(screen.getByRole("button", { name: "Timezone (Local)" })).toBeInTheDocument();
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
 
@@ -291,7 +242,7 @@ describe("DesktopSidebar", () => {
       "Profile",
       "Logout",
     ]) {
-      const item = screen.getByLabelText(label);
+      const item = screen.getByLabelText(label, { exact: true });
 
       fireEvent.mouseEnter(item);
       expect(within(screen.getByRole("tooltip")).getByText(label)).toBeVisible();
@@ -305,37 +256,37 @@ describe("DesktopSidebar", () => {
     }
   });
 
-  it("renders open notification badges for work queue navigation items", () => {
+  it("renders unassigned notification badges for work queue navigation items", () => {
     mockUseSidebarBadgeCounts.mockReturnValue({
       data: {
         alerts: { open: 7, unassigned: 2 },
         cases: { open: 3, unassigned: 1 },
-        tasks: { open: 108, unassigned: 0 },
+        tasks: { open: 150, unassigned: 108 },
       },
     });
 
     renderDesktopSidebar();
 
     const alertsItem = screen.getByLabelText("Alerts");
-    expect(within(alertsItem).getByText("7")).toBeVisible();
+    expect(within(alertsItem).getByText("2")).toBeVisible();
 
     const casesItem = screen.getByLabelText("Cases");
-    expect(within(casesItem).getByText("3")).toBeVisible();
+    expect(within(casesItem).getByText("1")).toBeVisible();
 
     const tasksItem = screen.getByLabelText("Tasks");
     expect(within(tasksItem).getByText("99+")).toBeVisible();
 
     expect(within(alertsItem).queryByText("O")).not.toBeInTheDocument();
     expect(within(alertsItem).queryByText("U")).not.toBeInTheDocument();
-    expect(within(alertsItem).queryByText("2")).not.toBeInTheDocument();
-    expect(within(screen.getByLabelText("AI Chat")).queryByText("7")).not.toBeInTheDocument();
+    expect(within(alertsItem).queryByText("7")).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText("AI Chat")).queryByText("2")).not.toBeInTheDocument();
   });
 
-  it("does not render notification badges when there are no open items", () => {
+  it("does not render notification badges when nothing is unassigned", () => {
     mockUseSidebarBadgeCounts.mockReturnValue({
       data: {
-        alerts: { open: 0, unassigned: 2 },
-        cases: { open: 0, unassigned: 1 },
+        alerts: { open: 2, unassigned: 0 },
+        cases: { open: 1, unassigned: 0 },
         tasks: { open: 0, unassigned: 0 },
       },
     });

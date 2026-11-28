@@ -13,6 +13,7 @@ export interface TagsManagerProps {
   className?: string;
   inline?: boolean;
   readonly?: boolean;
+  reserveTagRow?: boolean;
 }
 
 export function TagsManager({
@@ -23,6 +24,7 @@ export function TagsManager({
   className,
   inline = false,
   readonly = false,
+  reserveTagRow = false,
 }: TagsManagerProps) {
   const [inputValue, setInputValue] = useState('');
   const effectivePlaceholder = placeholder || (inline ? '+ Add tags...' : 'Enter tags and press Enter');
@@ -100,8 +102,8 @@ export function TagsManager({
           </Tooltip.Provider>
         </TextField>
       ) : null}
-      {tags.length > 0 ? (
-        <div className="flex w-full flex-wrap items-center gap-2">
+      {tags.length > 0 || reserveTagRow ? (
+        <div className="flex min-h-6 w-full flex-wrap items-center gap-2">
           {tags.map(renderTag)}
         </div>
       ) : null}

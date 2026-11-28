@@ -11,7 +11,7 @@ export type AlertUpdate = {
     title?: (string | null);
     description?: (string | null);
     status?: (AlertStatus | null);
-    priority?: (Priority | null);
+    priority?: Priority;
     source?: (string | null);
     assignee?: (string | null);
     tags?: (Array<string> | null);

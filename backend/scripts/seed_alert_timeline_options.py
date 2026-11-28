@@ -32,7 +32,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Iterable
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker  # type: ignore[attr-defined]
 
@@ -41,6 +41,7 @@ sys.path.insert(0, str(backend_path))
 
 from app.api.route_utils import create_timeline_converter, get_timeline_item_types
 from app.core.database import engine
+from app.core.entity_ids import ALERT_PREFIX, CASE_PREFIX, format_entity_id
 from app.models.models import Alert, AlertCreate, AlertTimelineItem, Case
 from app.services.alert_service import alert_service
 
@@ -220,7 +221,6 @@ async def create_reference_case(session: AsyncSession, created_by: str, alert_id
     )
     session.add(case)
     await session.commit()
-    await session.refresh(case)
     return case
 
 
@@ -264,8 +264,8 @@ async def seed_alert_timeline_options(args: argparse.Namespace) -> int:
         print("=" * 72)
         print("Alert Timeline Option Seed Complete")
         print("=" * 72)
-        print(f"Alert ID: ALT-{alert.id:07d}")
-        print(f"Reference case: CAS-{reference_case.id:07d}")
+        print(f"Alert ID: {format_entity_id(alert.id, ALERT_PREFIX)}")
+        print(f"Reference case: {format_entity_id(reference_case.id, CASE_PREFIX)}")
         print(f"Items added in this run: {len(seeded_types)}")
         print(f"Total timeline items now on alert: {len(final_alert.timeline_items or [])}")
         print()
@@ -278,7 +278,6 @@ async def seed_alert_timeline_options(args: argparse.Namespace) -> int:
         print()
         print("Open the alert in the UI and inspect the timeline for rendering coverage.")
 
-    await engine.dispose()
     return 0
 
 
@@ -289,8 +288,9 @@ async def main() -> int:
         return await seed_alert_timeline_options(args)
     except Exception as exc:
         print(f"Failed to seed alert timeline options: {exc}")
-        await engine.dispose()
         return 1
+    finally:
+        await engine.dispose()
 
 
 if __name__ == "__main__":

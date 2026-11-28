@@ -1,7 +1,5 @@
 import httpx
 import pytest
-import sys
-import types
 
 from app.services.enrichment.providers.servicenow import servicenow_provider
 
@@ -12,6 +10,9 @@ class StubSettings:
 
     async def get(self, key: str, default: object = None) -> object:
         return self._values.get(key, default)
+
+    async def get_many(self, defaults: dict[str, object]) -> dict[str, object]:
+        return {key: self._values.get(key, default) for key, default in defaults.items()}
 
 
 class FakeResponse:
@@ -161,37 +162,19 @@ async def test_enrich_fetches_servicenow_user(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.asyncio
-async def test_enrich_supports_pysnow_oauth_password_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FakeOAuthClient:
-        generated: list[tuple[str, str]] = []
-        token: dict[str, object] | None = None
+async def test_enrich_supports_oauth_password_grant(monkeypatch: pytest.MonkeyPatch) -> None:
+    class OAuthHTTPClient(FakeAsyncClient):
+        async def post(self, url, *, auth, data):
+            assert url == "https://example.service-now.com/oauth_token.do"
+            assert auth == ("oauth-client", "oauth-secret")
+            assert data == {"grant_type": "password", "username": "svc_user", "password": "svc_pass"}
+            return FakeResponse(200, {"access_token": "oauth-access-token"})
 
-        def __init__(self, **kwargs):
-            assert kwargs == {
-                "host": "example.service-now.com",
-                "use_ssl": True,
-                "client_id": "oauth-client",
-                "client_secret": "oauth-secret",
-            }
+        async def get(self, url, params=None):
+            assert self.headers == {"Authorization": "Bearer oauth-access-token"}
+            return await super().get(url, params)
 
-        def generate_token(self, user: str, password: str) -> dict[str, object]:
-            self.generated.append((user, password))
-            return {
-                "token_type": "Bearer",
-                "refresh_token": "refresh-token",
-                "access_token": "oauth-access-token",
-                "scope": "useraccount",
-                "expires_in": 3600,
-                "expires_at": 1234567890,
-            }
-
-        def set_token(self, token: dict[str, object]) -> None:
-            self.token = token
-
-    FakeAsyncClient.requests = []
-    fake_pysnow = types.SimpleNamespace(OAuthClient=FakeOAuthClient)
-    monkeypatch.setitem(sys.modules, "pysnow", fake_pysnow)
-    monkeypatch.setattr("app.services.enrichment.providers.servicenow.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("app.services.enrichment.providers.servicenow.httpx.AsyncClient", OAuthHTTPClient)
     provider = servicenow_provider.__class__()
 
     result = await provider.enrich(
@@ -209,7 +192,6 @@ async def test_enrich_supports_pysnow_oauth_password_client(monkeypatch: pytest.
     )
 
     assert result.cache_key == "user:alice@example.com"
-    assert FakeOAuthClient.generated == [("svc_user", "svc_pass")]
 
 
 @pytest.mark.asyncio
@@ -402,3 +384,80 @@ async def test_get_settings_clamps_bulk_sync_bounds() -> None:
     assert cfg is not None
     assert cfg["page_size"] == 1000
     assert cfg["max_records"] == 50000
+
+
+@pytest.mark.asyncio
+async def test_bulk_sync_skips_only_malformed_provider_records(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class MixedRecordAsyncClient(FakeAsyncClient):
+        async def get(
+            self,
+            url: str,
+            params: dict[str, object] | None = None,
+        ):
+            assert url.endswith("/api/now/table/sys_user")
+            return FakeResponse(
+                200,
+                {
+                    "result": [
+                        {
+                            "sys_id": "sensitive-malformed-servicenow-record",
+                            "email": ["not-a-scalar"],
+                        },
+                        {
+                            "sys_id": "sn-user-valid",
+                            "email": "valid@example.com",
+                            "name": "Valid User",
+                        },
+                    ]
+                },
+            )
+
+    monkeypatch.setattr(
+        "app.services.enrichment.providers.servicenow.httpx.AsyncClient",
+        MixedRecordAsyncClient,
+    )
+    provider = servicenow_provider.__class__()
+
+    results = await provider.bulk_sync(
+        db=None,  # type: ignore[arg-type]
+        settings=_settings(
+            **{
+                "enrichment.servicenow.page_size": 2,
+                "enrichment.servicenow.max_records": 2,
+            }
+        ),  # type: ignore[arg-type]
+    )
+
+    assert [result.cache_key for result in results] == ["user:valid@example.com"]
+    assert (
+        "ServiceNow bulk sync skipped malformed user records (count=1)"
+        in caplog.messages
+    )
+    assert "sensitive-malformed-servicenow-record" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [RuntimeError, TypeError, AttributeError])
+async def test_bulk_sync_propagates_unexpected_record_processing_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
+) -> None:
+    monkeypatch.setattr(
+        "app.services.enrichment.providers.servicenow.httpx.AsyncClient",
+        FakeAsyncClient,
+    )
+    provider = servicenow_provider.__class__()
+
+    def raise_defect(*args, **kwargs):
+        raise error_type("record processing defect")
+
+    monkeypatch.setattr(provider, "_build_result", raise_defect)
+
+    with pytest.raises(error_type, match="record processing defect"):
+        await provider.bulk_sync(
+            db=None,  # type: ignore[arg-type]
+            settings=_settings(),  # type: ignore[arg-type]
+        )

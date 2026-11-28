@@ -5,7 +5,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.email_evidence_service import (
+    EmailEvidenceParseError,
     build_email_timeline_item,
     is_email_evidence_file,
     parse_email_evidence,
@@ -88,4 +91,43 @@ def test_parse_msg_extracts_email_timeline_fields(monkeypatch) -> None:
     )
     assert item.created_by == "analyst"
     assert item.timestamp.year == 2026
+    assert closed == [True]
+
+
+def test_parse_msg_closes_message_when_field_extraction_fails(monkeypatch) -> None:
+    closed: list[bool] = []
+
+    class BrokenMessage:
+        sender = "sender@example.com"
+        to = "recipient@example.com"
+        cc = None
+        bcc = None
+        subject = "Broken message"
+        message_id = None
+        messageId = None
+        date = None
+
+        def __init__(self, _path: str) -> None:
+            pass
+
+        @property
+        def body(self) -> str:
+            raise RuntimeError("body extraction failed")
+
+        def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "extract_msg",
+        SimpleNamespace(Message=BrokenMessage),
+    )
+
+    with pytest.raises(EmailEvidenceParseError, match="Unable to parse MSG"):
+        parse_email_evidence(
+            b"broken msg bytes",
+            "message.msg",
+            "application/vnd.ms-outlook",
+        )
+
     assert closed == [True]

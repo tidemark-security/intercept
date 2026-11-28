@@ -25,7 +25,7 @@ jobs:
         working-directory: backend
         run: |
           pip install pip-audit
-          pip-audit -r requirements.txt
+          pip-audit -r requirements-test.txt
 
   frontend-production-smoke:
     name: Frontend Production Smoke
@@ -54,7 +54,7 @@ jobs:
 
       - name: Install frontend test dependencies
         working-directory: frontend
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Start built frontend image
         run: docker run --detach --name intercept-frontend-smoke --publish 8080:8080 intercept-frontend:ci
@@ -75,12 +75,13 @@ jobs:
         env:
           BASE_URL: http://127.0.0.1:8080
         run: |
+          playwright_version=$(node -p "require('@playwright/test/package.json').version")
           docker run --rm \
             --network host \
             -e BASE_URL \
             -v "$PWD:/work" \
             -w /work \
-            mcr.microsoft.com/playwright:v1.59.1-noble \
+            "mcr.microsoft.com/playwright:v${playwright_version}-noble" \
             npm run test:production-smoke
 
       - name: Show frontend container logs on failure

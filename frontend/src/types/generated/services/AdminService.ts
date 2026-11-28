@@ -5,6 +5,8 @@
 import type { AccountType } from '../models/AccountType';
 import type { AdminCreateNHIRequest } from '../models/AdminCreateNHIRequest';
 import type { AdminCreateNHIResponse } from '../models/AdminCreateNHIResponse';
+import type { AdminCreateOIDCUserRequest } from '../models/AdminCreateOIDCUserRequest';
+import type { AdminCreateOIDCUserResponse } from '../models/AdminCreateOIDCUserResponse';
 import type { AdminCreateUserRequest } from '../models/AdminCreateUserRequest';
 import type { AdminCreateUserResponse } from '../models/AdminCreateUserResponse';
 import type { AdminPasskeyRead } from '../models/AdminPasskeyRead';
@@ -90,6 +92,27 @@ export class AdminService {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/api/v1/admin/auth/users',
+            body: requestBody,
+            mediaType: 'application/json',
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Pre-provision an OIDC user account
+     * Admin endpoint to provision a human account bound to an exact OIDC identity
+     * @returns AdminCreateOIDCUserResponse Successful Response
+     * @throws ApiError
+     */
+    public static createOidcUserApiV1AdminAuthUsersOidcPost({
+        requestBody,
+    }: {
+        requestBody: AdminCreateOIDCUserRequest,
+    }): CancelablePromise<AdminCreateOIDCUserResponse> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/admin/auth/users/oidc',
             body: requestBody,
             mediaType: 'application/json',
             errors: {

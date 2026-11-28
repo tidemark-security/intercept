@@ -169,6 +169,9 @@ export function GlobalSearch({ open, onOpenChange, initialTags = EMPTY_INITIAL_T
     if (dateRange?.end) {
       params.set('end', dateRange.end);
     }
+    if (!dateRange?.start && !dateRange?.end) {
+      params.set('all_time', 'true');
+    }
     selectedTags.forEach((tag) => params.append('tag', tag));
     handleClose();
     navigate(`/search?${params.toString()}`);

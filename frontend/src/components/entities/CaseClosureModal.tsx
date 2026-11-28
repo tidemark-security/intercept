@@ -6,9 +6,8 @@ import { Dialog } from "@/components/overlays/Dialog";
 import { Badge } from "@/components/data-display/Badge";
 import { Button } from "@/components/buttons/Button";
 import { Select } from "@/components/forms/Select";
-import { Tag } from "@/components/data-display/Tag";
-import { TagsManager } from "@/components/forms/TagsManager";
-import { useFeatureFlags } from "@/hooks/useFeatureFlags";
+import { SuggestedTagsField } from "@/components/forms/SuggestedTagsField";
+import { AlertStatusIcon } from "@/components/entities/AlertStatusIcon";
 import { cn } from "@/utils/cn";
 import { CLOSED_ALERT_STATUS_OPTIONS } from "@/utils/statusLabels";
 import { Checkbox } from "@tidemark-security/ux";
@@ -17,24 +16,7 @@ import type { AlertStatus } from "@/types/generated/models/AlertStatus";
 import type { ClosedAlertStatus } from "@/utils/statusLabels";
 import type { LinkedAlertResolutionUpdate } from "@/hooks/useResolveLinkedAlerts";
 
-import { Bell, Check, CheckCircle, CheckSquare, Copy, HelpCircle, X, XCircle } from "lucide-react";
-
-const CLOSURE_STATUS_OPTIONS: Array<{ value: ClosedAlertStatus; label: string; icon: React.ReactNode }> = [
-  { ...CLOSED_ALERT_STATUS_OPTIONS[0], icon: <Check className="h-4 w-4" /> },
-  { ...CLOSED_ALERT_STATUS_OPTIONS[1], icon: <CheckCircle className="h-4 w-4" /> },
-  { ...CLOSED_ALERT_STATUS_OPTIONS[2], icon: <XCircle className="h-4 w-4" /> },
-  { ...CLOSED_ALERT_STATUS_OPTIONS[3], icon: <HelpCircle className="h-4 w-4" /> },
-  { ...CLOSED_ALERT_STATUS_OPTIONS[4], icon: <Copy className="h-4 w-4" /> },
-];
-
-const SUGGESTED_TAGS = [
-  "Resolved",
-  "False Positive",
-  "True Positive",
-  "Escalated",
-  "No Action Required",
-  "Duplicate",
-];
+import { Bell, Check, CheckCircle, CheckSquare, X } from "lucide-react";
 
 interface LinkedAlertItem {
   id: number;
@@ -62,7 +44,7 @@ function isClosedAlertStatus(status: AlertStatus): status is ClosedAlertStatus {
 }
 
 function getClosureStatusLabel(status: AlertStatus): string {
-  return CLOSURE_STATUS_OPTIONS.find((option) => option.value === status)?.label ?? status;
+  return CLOSED_ALERT_STATUS_OPTIONS.find((option) => option.value === status)?.label ?? status;
 }
 
 export function CaseClosureModal({
@@ -76,10 +58,6 @@ export function CaseClosureModal({
 }: CaseClosureModalProps) {
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === "dark";
-  const { data: featureFlags } = useFeatureFlags();
-  const suggestedTags = featureFlags?.case_closure_recommended_tags?.length
-    ? featureFlags.case_closure_recommended_tags
-    : SUGGESTED_TAGS;
 
   const [selectedAlertIds, setSelectedAlertIds] = React.useState<Set<number>>(new Set());
   const [alertStatuses, setAlertStatuses] = React.useState<Partial<Record<number, ClosedAlertStatus>>>({});
@@ -114,15 +92,6 @@ export function CaseClosureModal({
   const someOpenSelected = selectedOpenCount > 0 && selectedOpenCount < openAlertIds.length;
   const openAlertsMissingStatus = openAlertIds.some((id) => !alertStatuses[id]);
   const canClose = openAlertIds.length === 0 || !openAlertsMissingStatus;
-
-  const toggleTag = (tag: string) => {
-    setSelectedTags((prev) => {
-      if (prev.includes(tag)) {
-        return prev.filter((item) => item !== tag);
-      }
-      return [...prev, tag];
-    });
-  };
 
   const handleSelectAllOpen = (selected: boolean) => {
     setSelectedAlertIds(() => new Set(selected ? openAlertIds : []));
@@ -236,10 +205,10 @@ export function CaseClosureModal({
                           onValueChange={(value: string) => handleBulkStatusChange(value as ClosedAlertStatus)}
                           disabled={selectedOpenCount === 0 || isSubmitting}
                         >
-                          {CLOSURE_STATUS_OPTIONS.map((option) => (
+                          {CLOSED_ALERT_STATUS_OPTIONS.map((option) => (
                             <Select.Item key={option.value} value={option.value}>
                               <span className="flex items-center gap-2">
-                                {option.icon}
+                                <AlertStatusIcon status={option.value} />
                                 <span className="whitespace-nowrap">{option.label}</span>
                               </span>
                             </Select.Item>
@@ -288,10 +257,10 @@ export function CaseClosureModal({
                               onValueChange={(value: string) => handleAlertStatusChange(alert.id, value as ClosedAlertStatus)}
                               disabled={isSubmitting}
                             >
-                              {CLOSURE_STATUS_OPTIONS.map((option) => (
+                              {CLOSED_ALERT_STATUS_OPTIONS.map((option) => (
                                 <Select.Item key={option.value} value={option.value}>
                                   <span className="flex items-center gap-2">
-                                    {option.icon}
+                                    <AlertStatusIcon status={option.value} />
                                     <span className="whitespace-nowrap">{option.label}</span>
                                   </span>
                                 </Select.Item>
@@ -310,29 +279,7 @@ export function CaseClosureModal({
           <div className="flex w-full flex-col items-start gap-3">
             <span className="text-caption-bold font-caption-bold text-subtext-color">CLOSURE TAGS</span>
 
-            <div className="flex w-full flex-col items-start gap-3 rounded-md border border-solid border-neutral-border bg-neutral-50 px-3 py-3">
-              <div className="flex w-full flex-col items-start gap-2">
-                <span className="text-caption font-caption text-subtext-color">Suggested tags</span>
-                <div className="flex w-full flex-wrap items-center gap-2">
-                  {suggestedTags.map((tag) => (
-                    <button key={tag} type="button" className="cursor-pointer" onClick={() => toggleTag(tag)}>
-                      <Tag tagText={tag} showDelete={false} searchable={false} />
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex h-px w-full flex-none bg-neutral-border" />
-
-              <div className="flex w-full flex-col items-start gap-2">
-                <TagsManager
-                  tags={selectedTags}
-                  onTagsChange={setSelectedTags}
-                  label="Tags"
-                  placeholder="Add closure tags"
-                />
-              </div>
-            </div>
+            <SuggestedTagsField tags={selectedTags} onTagsChange={setSelectedTags} placeholder="Add closure tags" />
           </div>
 
           <div className="flex w-full flex-col items-start gap-3">

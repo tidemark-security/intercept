@@ -1,8 +1,7 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
-import { useLocation } from "react-router-dom";
-import { useViewTransitionNavigate } from "@/hooks/useViewTransitionNavigate";
+import React, { Fragment, useState, useEffect } from "react";
+import { Link, useLocation } from "react-router-dom";
 import Logo from "@/assets/TMS-logo-green.svg?react";
 
 import { DropdownMenu } from "@/components/overlays/DropdownMenu";
@@ -13,9 +12,12 @@ import { useSession } from "@/contexts/sessionContext";
 import { useTheme } from "@/contexts/ThemeContext";
 import { useTimezonePreference } from "@/contexts/TimezoneContext";
 import { useSidebarBadgeCounts } from "@/hooks/useDashboard";
+import { preloadRoute } from "@/routes/routePages";
+import { alertFilterHref } from "@/utils/savedQueueFilters";
+import { getIconComponent } from "@/utils/iconMapping";
 import { cn } from "@/utils/cn";
 import type { SidebarBadgeCount } from "@/types/generated/models/SidebarBadgeCount";
-import { ToggleGroup } from "@tidemark-security/ux";
+import { IconWrapper, ToggleGroup, Tooltip } from "@tidemark-security/ux";
 
 import {
   BarChart2,
@@ -42,8 +44,8 @@ type NavigationItem = {
   key: string;
   label: string;
   icon: React.ComponentType;
-  to?: string;
-  match?: (path: string) => boolean;
+  to: string;
+  match: (path: string) => boolean;
   mobileClassName?: string;
   badgeKey?: "alerts" | "cases" | "tasks";
 };
@@ -118,23 +120,106 @@ const navigationItems: NavigationItem[] = [
   },
 ];
 
-type SidebarNavItemProps = React.ComponentProps<
-  typeof SidebarRailWithLabels.NavItem
-> & {
+type SidebarItemProps = {
   label: string;
+  icon: React.ReactNode;
+  mobile?: boolean;
+  className?: string;
 };
 
-function SidebarNavItem({
-  label,
-  children,
-  ...navItemProps
-}: SidebarNavItemProps) {
-  return (
-    <SidebarRailWithLabels.NavItem aria-label={label} {...navItemProps}>
-      {children}
-    </SidebarRailWithLabels.NavItem>
+function sidebarItemClassName(mobile?: boolean, className?: string) {
+  return cn(
+    "group relative flex h-12 w-full items-center justify-center rounded-md p-2 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus-border",
+    mobile && "w-12 p-1",
+    className,
   );
 }
+
+function SidebarItemIcon({ icon, selected }: { icon: React.ReactNode; selected?: boolean }) {
+  return (
+    <IconWrapper
+      aria-hidden="true"
+      className={cn(
+        "text-heading-2 font-heading-2",
+        selected ? "text-accent-1-400" : "text-brand-primary group-hover:text-brand-200 group-active:text-brand-200",
+      )}
+    >
+      {icon}
+    </IconWrapper>
+  );
+}
+
+function SidebarItemTooltip({ label, mobile, children }: {
+  label: React.ReactNode;
+  mobile?: boolean;
+  children: React.ReactElement;
+}) {
+  return (
+    <Tooltip.Provider>
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
+        <Tooltip.Content side={mobile ? "top" : "right"} align="center" sideOffset={4} className="z-[9999]">
+          <div className="text-caption font-caption text-black">{label}</div>
+        </Tooltip.Content>
+      </Tooltip.Root>
+    </Tooltip.Provider>
+  );
+}
+
+function routeIntentProps(to: string) {
+  return {
+    onFocus: () => { void preloadRoute(to); },
+    onPointerEnter: (event: React.PointerEvent) => {
+      if (event.pointerType !== "touch") void preloadRoute(to);
+    },
+  };
+}
+
+// The UX rail's NavItem renders a div. Use a router link as the tooltip trigger
+// so keyboard, context-menu and modified clicks get native link behavior.
+function SidebarLink({
+  label,
+  icon,
+  to,
+  selected,
+  mobile,
+  className,
+  children,
+}: SidebarItemProps & { to: string; selected?: boolean; children?: React.ReactNode }) {
+  return (
+    <SidebarItemTooltip label={children ?? label} mobile={mobile}>
+      <Link
+        to={to}
+        viewTransition
+        aria-label={label}
+        aria-current={selected ? "page" : undefined}
+        className={sidebarItemClassName(mobile, className)}
+        {...routeIntentProps(to.split("?")[0])}
+      >
+        <SidebarItemIcon icon={icon} selected={selected} />
+      </Link>
+    </SidebarItemTooltip>
+  );
+}
+
+const SidebarMenuButton = React.forwardRef<
+  HTMLButtonElement,
+  SidebarItemProps & React.ButtonHTMLAttributes<HTMLButtonElement>
+>(function SidebarMenuButton({ label, icon, mobile, className, ...props }, ref) {
+  return (
+    <SidebarItemTooltip label={label} mobile={mobile}>
+      <button
+        ref={ref}
+        type="button"
+        aria-label={label}
+        className={sidebarItemClassName(mobile, className)}
+        {...props}
+      >
+        <SidebarItemIcon icon={icon} />
+      </button>
+    </SidebarItemTooltip>
+  );
+});
 
 function formatBadgeCount(count: number) {
   return count > 99 ? "99+" : count.toString();
@@ -145,7 +230,7 @@ type SidebarBadgeGroupProps = {
 };
 
 function SidebarNotificationBadge({ counts }: SidebarBadgeGroupProps) {
-  if (!counts || counts.open <= 0) {
+  if (!counts || counts.unassigned <= 0) {
     return null;
   }
 
@@ -154,7 +239,7 @@ function SidebarNotificationBadge({ counts }: SidebarBadgeGroupProps) {
       className="absolute right-0 top-0 inline-flex h-4 min-w-4 items-center justify-center border border-black bg-accent-2-primary px-1 text-[10px] font-monospace-body leading-none text-white"
       aria-hidden="true"
     >
-      {formatBadgeCount(counts.open)}
+      {formatBadgeCount(counts.unassigned)}
     </span>
   );
 }
@@ -180,7 +265,7 @@ type SidebarNavLabelProps = {
 
 function SidebarNavLabel({ label, counts }: SidebarNavLabelProps) {
   const describedBy = counts
-    ? `${label}: ${counts.open} open`
+    ? `${label}: ${counts.unassigned} unassigned`
     : label;
 
   return (
@@ -191,70 +276,53 @@ function SidebarNavLabel({ label, counts }: SidebarNavLabelProps) {
   );
 }
 
-function useNavigation() {
-  const location = useLocation();
-  const navigate = useViewTransitionNavigate();
+function SidebarQueueLinks({ mobile = false }: { mobile?: boolean }) {
+  const { pathname, search } = useLocation();
   const { isAdmin } = useSession();
+  const { data: sidebarBadgeCounts } = useSidebarBadgeCounts();
+  const items = navigationItems.filter((item) => item.key !== "admin" || (isAdmin && !mobile));
 
-  const visibleNavigationItems = isAdmin
-    ? navigationItems
-    : navigationItems.filter((item) => item.key !== "admin");
-  const mobileNavItems = navigationItems.filter((item) => item.key !== "admin");
+  const pinned = sidebarBadgeCounts?.pinned_alert_filters ?? [];
+  const pinId = new URLSearchParams(search).get("saved_filter");
+  const activePin = pathname === "/alerts" || pathname.startsWith("/alerts/")
+    ? pinned.find(({ filter }) => filter.id === pinId)
+    : undefined;
 
-  const isItemSelected = useCallback(
-    (item: NavigationItem) => {
-      if (item.match) {
-        return item.match(location.pathname);
-      }
-      if (!item.to) {
-        return false;
-      }
-      return location.pathname === item.to;
-    },
-    [location.pathname],
-  );
-
-  const handleNavClick = useCallback(
-    (itemOrPath: NavigationItem | string) => {
-      const path = typeof itemOrPath === 'string' ? itemOrPath : itemOrPath.to;
-      if (!path) return;
-      navigate(path);
-    },
-    [navigate],
-  );
-
-  const handleNavKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>, itemOrPath: NavigationItem | string) => {
-      const path = typeof itemOrPath === 'string' ? itemOrPath : itemOrPath.to;
-      if (!path) return;
-      if (event.key === "Enter" || event.key === " " || event.key === "Space") {
-        event.preventDefault();
-        navigate(path);
-      }
-    },
-    [navigate],
-  );
-
-  return {
-    location,
-    isAdmin,
-    visibleNavigationItems,
-    mobileNavItems,
-    isItemSelected,
-    handleNavClick,
-    handleNavKeyDown,
-  };
+  return items.map((item) => {
+    const Icon = item.icon;
+    const counts = item.badgeKey ? sidebarBadgeCounts?.[item.badgeKey] : undefined;
+    return (
+      <Fragment key={item.key}>
+        <SidebarLink
+          label={item.label}
+          to={item.to}
+          className={mobile ? item.mobileClassName : undefined}
+          icon={<SidebarIconWithBadge icon={<Icon />} counts={counts} />}
+          selected={item.match(pathname) && !(item.key === "alerts" && activePin)}
+          mobile={mobile}
+        >
+          <SidebarNavLabel label={item.label} counts={counts} />
+        </SidebarLink>
+        {item.key === "alerts" && pinned.map(({ filter, counts }) => filter.navigation_icon && (
+          <SidebarLink
+            key={filter.id}
+            label={filter.name}
+            to={alertFilterHref(filter)}
+            className={mobile ? "shrink-0" : undefined}
+            icon={<SidebarIconWithBadge icon={getIconComponent(filter.navigation_icon)} counts={counts} />}
+            selected={activePin?.filter.id === filter.id}
+            mobile={mobile}
+          >
+            <SidebarNavLabel label={filter.name} counts={counts} />
+          </SidebarLink>
+        ))}
+      </Fragment>
+    );
+  });
 }
 
 export function DesktopSidebar() {
-  const {
-    location,
-    visibleNavigationItems,
-    isItemSelected,
-    handleNavClick,
-    handleNavKeyDown,
-  } = useNavigation();
-  const { data: sidebarBadgeCounts } = useSidebarBadgeCounts();
+  const { pathname } = useLocation();
   const { timezonePreference, setTimezonePreference } = useTimezonePreference();
   const { resolvedTheme, setThemePreference } = useTheme();
   const timezoneLabel = `Timezone (${timezonePreference === "utc" ? "UTC" : "Local"})`;
@@ -264,42 +332,31 @@ export function DesktopSidebar() {
       className="mobile:hidden"
       header={
         <>
-          <Logo
-            className="flex-none"
-            width="64"
-            height="64"
-            aria-label="TMS Logo"
-          />
-          <SidebarNavItem
+          <Link
+            to="/"
+            viewTransition
+            aria-label="Tidemark home"
+            className="block flex-none focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus-border"
+            {...routeIntentProps("/")}
+          >
+            <Logo width="64" height="64" aria-hidden="true" focusable="false" />
+          </Link>
+          <SidebarLink
             label="Search"
             icon={<Search />}
-            role="button"
-            tabIndex={0}
-            onClick={() => handleNavClick("/search")}
-            onKeyDown={(event: React.KeyboardEvent<HTMLDivElement>) =>
-              handleNavKeyDown(event, "/search")
-            }
-            selected={
-              location.pathname === "/search" ||
-              location.pathname.startsWith("/search?")
-            }
-          >
-            Search
-          </SidebarNavItem>
+            to="/search"
+            selected={pathname === "/search"}
+          />
         </>
       }
       footer={
         <>
           <DropdownMenu.Root>
             <DropdownMenu.Trigger asChild>
-              <SidebarRailWithLabels.NavItem
-                aria-label={timezoneLabel}
+              <SidebarMenuButton
+                label={timezoneLabel}
                 icon={<Clock />}
-                role="button"
-                tabIndex={0}
-              >
-                {timezoneLabel}
-              </SidebarRailWithLabels.NavItem>
+              />
             </DropdownMenu.Trigger>
             <DropdownMenu.Content side="right" align="end" sideOffset={8}>
               <div className="flex max-w-[256px] flex-col gap-3 px-2 py-2">
@@ -366,120 +423,40 @@ export function DesktopSidebar() {
               </div>
             </DropdownMenu.Content>
           </DropdownMenu.Root>
-          <SidebarNavItem
+          <SidebarLink
             label="Profile"
             icon={<User />}
-            role="button"
-            tabIndex={0}
-            onClick={() => handleNavClick("/profile")}
-            onKeyDown={(event: React.KeyboardEvent<HTMLDivElement>) =>
-              handleNavKeyDown(event, "/profile")
-            }
-          >
-            Profile
-          </SidebarNavItem>
-          <SidebarNavItem
+            to="/profile"
+            selected={pathname === "/profile"}
+          />
+          <SidebarLink
             label="Logout"
             icon={<Lock />}
-            role="button"
-            tabIndex={0}
-            onClick={() => handleNavClick("/logout")}
-            onKeyDown={(event: React.KeyboardEvent<HTMLDivElement>) =>
-              handleNavKeyDown(event, "/logout")
-            }
-          >
-            Logout
-          </SidebarNavItem>
+            to="/logout"
+          />
         </>
       }
     >
-      {visibleNavigationItems.map((item) => {
-        const Icon = item.icon;
-        const selected = isItemSelected(item);
-        const counts = item.badgeKey ? sidebarBadgeCounts?.[item.badgeKey] : undefined;
-        return (
-          <SidebarNavItem
-            key={item.key}
-            label={item.label}
-            className="relative"
-            icon={<SidebarIconWithBadge icon={<Icon />} counts={counts} />}
-            selected={selected}
-            aria-current={selected ? "page" : undefined}
-            role={item.to ? "button" : undefined}
-            tabIndex={item.to ? 0 : undefined}
-            onClick={item.to ? () => handleNavClick(item) : undefined}
-            onKeyDown={
-              item.to
-                ? (event: React.KeyboardEvent<HTMLDivElement>) =>
-                  handleNavKeyDown(event, item)
-                : undefined
-            }
-          >
-            <SidebarNavLabel label={item.label} counts={counts} />
-          </SidebarNavItem>
-        );
-      })}
+      <SidebarQueueLinks />
     </SidebarRailWithLabels>
   );
 }
 
 export function MobileSidebar() {
-  const {
-    isAdmin,
-    mobileNavItems,
-    isItemSelected,
-    handleNavClick,
-    handleNavKeyDown,
-  } = useNavigation();
-  const { data: sidebarBadgeCounts } = useSidebarBadgeCounts();
+  const { isAdmin } = useSession();
 
   return (
     <SidebarRailWithLabels
       className="hidden mobile:flex mobile:flex-none mobile:z-50"
-      header={
-        <div className="flex flex-col items-center justify-center gap-2"></div>
-      }
-      footer={
-        <>
-          <SidebarRailWithLabels.NavItem mobile={true} />
-          <SidebarRailWithLabels.NavItem mobile={true} />
-        </>
-      }
       mobile={true}
     >
-      {mobileNavItems.map((item) => {
-        const Icon = item.icon;
-        const selected = isItemSelected(item);
-        const counts = item.badgeKey ? sidebarBadgeCounts?.[item.badgeKey] : undefined;
-        return (
-          <SidebarRailWithLabels.NavItem
-            key={item.key}
-            className={cn(item.mobileClassName, "relative")}
-            icon={<SidebarIconWithBadge icon={<Icon />} counts={counts} />}
-            selected={selected}
-            mobile={true}
-            aria-current={selected ? "page" : undefined}
-            role={item.to ? "button" : undefined}
-            tabIndex={item.to ? 0 : undefined}
-            onClick={item.to ? () => handleNavClick(item) : undefined}
-            onKeyDown={
-              item.to
-                ? (event: React.KeyboardEvent<HTMLDivElement>) =>
-                  handleNavKeyDown(event, item)
-                : undefined
-            }
-          >
-            <SidebarNavLabel label={item.label} counts={counts} />
-          </SidebarRailWithLabels.NavItem>
-        );
-      })}
+      <SidebarQueueLinks mobile />
       <DropdownMenu.Root>
         <DropdownMenu.Trigger asChild>
-          <SidebarRailWithLabels.NavItem icon={<Menu />} mobile={true}>
-            Item
-          </SidebarRailWithLabels.NavItem>
+          <SidebarMenuButton label="More navigation" icon={<Menu />} mobile />
         </DropdownMenu.Trigger>
         <DropdownMenu.Content side="bottom" align="start" sideOffset={4}>
+          <DropdownMenu.DropdownItem icon={<Search />} label="Search" to="/search" {...routeIntentProps("/search")} />
           {isAdmin ? (
             <>
               <DropdownMenu.DropdownItem
@@ -487,6 +464,7 @@ export function MobileSidebar() {
                 hint=""
                 label="Admin"
                 to="/admin"
+                {...routeIntentProps("/admin")}
               />
               <div className="flex h-px w-full flex-none flex-col items-center gap-2 bg-neutral-border" />
             </>
@@ -496,6 +474,7 @@ export function MobileSidebar() {
             hint=""
             label="Profile"
             to="/profile"
+            {...routeIntentProps("/profile")}
           />
           <DropdownMenu.DropdownItem
             icon={<Lock />}

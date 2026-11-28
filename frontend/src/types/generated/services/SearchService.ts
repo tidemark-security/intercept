@@ -4,6 +4,7 @@
 /* eslint-disable */
 import type { EntityType } from '../models/EntityType';
 import type { PaginatedSearchResponse } from '../models/PaginatedSearchResponse';
+import type { QueueSearchResponse } from '../models/QueueSearchResponse';
 import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
 import { request as __request } from '../core/request';
@@ -25,6 +26,7 @@ export class SearchService {
         limit = 20,
         startDate,
         endDate,
+        allTime = false,
         tags,
     }: {
         /**
@@ -52,6 +54,10 @@ export class SearchService {
          */
         endDate?: (string | null),
         /**
+         * Search all dates without the default 30-day window. Cannot be combined with date bounds.
+         */
+        allTime?: boolean,
+        /**
          * Tag filter values. Can be specified multiple times. Matches top-level and timeline item tags (OR semantics).
          */
         tags?: (Array<string> | null),
@@ -66,6 +72,7 @@ export class SearchService {
                 'limit': limit,
                 'start_date': startDate,
                 'end_date': endDate,
+                'all_time': allTime,
                 'tags': tags,
             },
             errors: {
@@ -73,6 +80,66 @@ export class SearchService {
                 401: `Not authenticated`,
                 422: `Validation Error`,
                 500: `Internal server error`,
+            },
+        });
+    }
+    /**
+     * Search within an entity queue
+     * Return matching rows with queue filters and ordering, without global defaults.
+     * @returns QueueSearchResponse Successful Response
+     * @throws ApiError
+     */
+    public static queueSearchApiV1SearchQueueGet({
+        q,
+        entityType,
+        status,
+        assignee,
+        includeTags,
+        excludeTags,
+        startDate,
+        endDate,
+        sortBy = 'created_at',
+        sortOrder = 'desc',
+        skip,
+        limit = 50,
+    }: {
+        /**
+         * Search text (2–200 characters)
+         */
+        q: string,
+        entityType: EntityType,
+        status?: (Array<string> | null),
+        assignee?: (Array<string> | null),
+        includeTags?: (Array<string> | null),
+        excludeTags?: (Array<string> | null),
+        startDate?: (string | null),
+        endDate?: (string | null),
+        sortBy?: 'created_at' | 'updated_at' | 'priority' | 'status',
+        sortOrder?: 'asc' | 'desc',
+        skip?: number,
+        limit?: number,
+    }): CancelablePromise<QueueSearchResponse> {
+        return __request(OpenAPI, {
+            method: 'GET',
+            url: '/api/v1/search/queue',
+            query: {
+                'q': q,
+                'entity_type': entityType,
+                'status': status,
+                'assignee': assignee,
+                'include_tags': includeTags,
+                'exclude_tags': excludeTags,
+                'start_date': startDate,
+                'end_date': endDate,
+                'sort_by': sortBy,
+                'sort_order': sortOrder,
+                'skip': skip,
+                'limit': limit,
+            },
+            errors: {
+                400: `Bad Request`,
+                401: `Not authenticated`,
+                422: `Validation Error`,
             },
         });
     }

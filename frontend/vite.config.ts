@@ -5,7 +5,7 @@ import { existsSync } from "node:fs"
 import { resolve } from "node:path"
 
 const manualChunkGroups = {
-  react: ["react", "react-dom", "react-router-dom"],
+  react: ["react", "react-dom", "react-router", "react-router-dom"],
   radix: [
     "@radix-ui/react-checkbox",
     "@radix-ui/react-collapsible",
@@ -26,9 +26,12 @@ const manualChunkGroups = {
   codemirror: ["@codemirror/", "@lezer/", "codemirror"],
 } as const
 
-const localUxWorkspace = resolve(__dirname, "../../ux")
+const frontendRoot = import.meta.dirname
+const localUxWorkspace = resolve(frontendRoot, "../../ux")
 const dockerUxWorkspace = "/ux"
 const isVitest = process.env.VITEST === "true" || process.env.NODE_ENV === "test"
+const publicOrigin = process.env.VITE_PUBLIC_ORIGIN
+const publicHost = publicOrigin ? new URL(publicOrigin).hostname : undefined
 const uxWorkspace = !isVitest && existsSync(resolve(dockerUxWorkspace, "package.json"))
   ? dockerUxWorkspace
   : !isVitest && existsSync(resolve(localUxWorkspace, "package.json"))
@@ -89,20 +92,18 @@ export default defineConfig({
     analyzePlugin(),
   ],
   resolve: {
+    // Resolve linked UX imports against the app's React, router, and Radix stacks.
+    dedupe: [
+      "react",
+      "react-dom",
+      "react-router",
+      "react-router-dom",
+      "@radix-ui/react-dismissable-layer",
+      "@radix-ui/react-focus-scope",
+    ],
     alias: [
       ...uxAliases,
-      { find: "@", replacement: resolve(__dirname, "./src") },
-      // Force UX file: linked package to use TMI's copies of React/router
-      // to avoid dual-instance issues in tests
-      { find: "react", replacement: resolve(__dirname, "node_modules/react") },
-      { find: "react-dom", replacement: resolve(__dirname, "node_modules/react-dom") },
-      { find: "react/jsx-runtime", replacement: resolve(__dirname, "node_modules/react/jsx-runtime") },
-      {
-        find: "react/jsx-dev-runtime",
-        replacement: resolve(__dirname, "node_modules/react/jsx-dev-runtime"),
-      },
-      { find: "react-router", replacement: resolve(__dirname, "node_modules/react-router") },
-      { find: "react-router-dom", replacement: resolve(__dirname, "node_modules/react-router-dom") },
+      { find: "@", replacement: resolve(frontendRoot, "./src") },
     ],
   },
   optimizeDeps: {
@@ -111,8 +112,16 @@ export default defineConfig({
     exclude: ["@tidemark-security/ux"],
   },
   server: {
+    allowedHosts: publicHost ? [publicHost] : undefined,
+    proxy: {
+      "/api": {
+        target: process.env.VITE_API_PROXY_TARGET || "http://localhost:8000",
+        changeOrigin: true,
+        ws: true,
+      },
+    },
     fs: {
-      allow: [resolve(__dirname), localUxWorkspace, dockerUxWorkspace],
+      allow: [frontendRoot, localUxWorkspace, dockerUxWorkspace],
     },
     watch: {
       usePolling: process.env.VITE_USE_POLLING === "true",

@@ -18,15 +18,19 @@ import logging
 import os
 from contextlib import contextmanager
 from typing import Generator
-from urllib.parse import urlparse, urlunparse
 
 import psycopg2
+from sqlalchemy.engine import URL, make_url
 
 logger = logging.getLogger("db_migrations.cron_utils")
 
 
-def _get_cron_database_url() -> str:
-    """Derive a psycopg2 connection URL for the pg_cron database.
+class CronJobManagementError(RuntimeError):
+    """Raised when a required pg_cron mutation cannot be verified."""
+
+
+def _get_cron_database_url() -> URL:
+    """Derive the connection URL for the pg_cron database.
 
     Takes DATABASE_URL (which targets intercept_case_db) and swaps the
     database name to the cron database. The cron database can be overridden
@@ -43,28 +47,15 @@ def _get_cron_database_url() -> str:
             "@localhost:5432/intercept_case_db"
         )
 
-    # Convert asyncpg URL to psycopg2
-    sync_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
-
     cron_database = os.environ.get("PGCRON_DATABASE", "postgres")
-
-    parsed = urlparse(sync_url)
-    cron_url = urlunparse(parsed._replace(path=f"/{cron_database}"))
-    return cron_url
+    return make_url(database_url).set(database=cron_database)
 
 
 @contextmanager
 def _cron_connection() -> Generator[psycopg2.extensions.connection, None, None]:
     """Context manager for a connection to the pg_cron database."""
     url = _get_cron_database_url()
-    parsed = urlparse(url)
-    conn = psycopg2.connect(
-        host=parsed.hostname,
-        port=parsed.port or 5432,
-        user=parsed.username,
-        password=parsed.password,
-        dbname=parsed.path.lstrip("/"),
-    )
+    conn = psycopg2.connect(**url.translate_connect_args(username="user", database="dbname"))
     conn.autocommit = True
     try:
         yield conn
@@ -96,6 +87,8 @@ def schedule_cron_job(
     schedule: str,
     command: str,
     database: str = "intercept_case_db",
+    *,
+    strict: bool = False,
 ) -> None:
     """Schedule a pg_cron job (idempotent — upserts by name).
 
@@ -109,10 +102,16 @@ def schedule_cron_job(
         schedule: Cron expression (e.g. '1,16,31,46 * * * *').
         command: SQL command to execute.
         database: Target database for the job. Defaults to intercept_case_db.
+        strict: Fail unless the requested job is observably active with the
+            exact schedule, command, and target database.
     """
     try:
         with _cron_connection() as conn:
             if not _pg_cron_available(conn):
+                if strict:
+                    raise CronJobManagementError(
+                        f"pg_cron is required to schedule job '{name}'"
+                    )
                 logger.warning(
                     "pg_cron not available — skipping job '%s'. "
                     "Install pg_cron and GRANT USAGE ON SCHEMA cron to enable.",
@@ -133,11 +132,36 @@ def schedule_cron_job(
                     "UPDATE cron.job SET database = %s WHERE jobname = %s",
                     (database, name),
                 )
+                if strict:
+                    cursor.execute(
+                        "SELECT schedule, command, database, active "
+                        "FROM cron.job WHERE jobname = %s",
+                        (name,),
+                    )
+                    configured = cursor.fetchone()
+                    expected = (schedule, command, database, True)
+                    if configured != expected:
+                        raise CronJobManagementError(
+                            f"pg_cron job '{name}' was not configured exactly"
+                        )
                 logger.info("Scheduled pg_cron job '%s' [%s]", name, schedule)
             finally:
                 cursor.close()
 
-    except psycopg2.Error as e:
+    except (psycopg2.Error, CronJobManagementError) as e:
+        if strict:
+            try:
+                unschedule_cron_job(name, strict=True)
+            except (psycopg2.Error, CronJobManagementError):
+                logger.exception(
+                    "Failed to remove partially configured pg_cron job '%s'",
+                    name,
+                )
+            if isinstance(e, CronJobManagementError):
+                raise
+            raise CronJobManagementError(
+                f"Failed to schedule pg_cron job '{name}'"
+            ) from e
         logger.warning(
             "Failed to schedule pg_cron job '%s': %s. "
             "This is non-fatal — schedule manually if needed.",
@@ -146,15 +170,30 @@ def schedule_cron_job(
         )
 
 
-def unschedule_cron_job(name: str) -> None:
+def unschedule_cron_job(name: str, *, strict: bool = False) -> None:
     """Remove a pg_cron job by name (idempotent — no-op if not found).
 
     Args:
         name: The job name to remove.
+        strict: Fail unless an installed pg_cron job is observably absent. Use
+            this before dropping objects referenced by a scheduled command.
     """
     try:
         with _cron_connection() as conn:
             if not _pg_cron_available(conn):
+                if strict:
+                    cursor = conn.cursor()
+                    try:
+                        cursor.execute(
+                            "SELECT 1 FROM pg_extension WHERE extname = 'pg_cron'"
+                        )
+                        if cursor.fetchone() is not None:
+                            raise CronJobManagementError(
+                                "Cannot verify removal of pg_cron job "
+                                f"'{name}'"
+                            )
+                    finally:
+                        cursor.close()
                 logger.warning(
                     "pg_cron not available — skipping unschedule of '%s'.",
                     name,
@@ -176,10 +215,23 @@ def unschedule_cron_job(name: str) -> None:
                         "pg_cron job '%s' not found — nothing to unschedule",
                         name,
                     )
+                if strict:
+                    cursor.execute(
+                        "SELECT 1 FROM cron.job WHERE jobname = %s",
+                        (name,),
+                    )
+                    if cursor.fetchone() is not None:
+                        raise CronJobManagementError(
+                            f"pg_cron job '{name}' remains scheduled"
+                        )
             finally:
                 cursor.close()
 
     except psycopg2.Error as e:
+        if strict:
+            raise CronJobManagementError(
+                f"Failed to unschedule pg_cron job '{name}'"
+            ) from e
         logger.warning(
             "Failed to unschedule pg_cron job '%s': %s. "
             "This is non-fatal — remove manually if needed.",

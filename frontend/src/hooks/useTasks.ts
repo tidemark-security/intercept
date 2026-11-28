@@ -6,10 +6,11 @@ import { QUERY_STALE_TIMES, QUERY_REFETCH_INTERVALS, QUERY_REFETCH_INTERVALS_WS 
 import { useWebSocket } from '@/contexts/WebSocketContext';
 
 export interface UseTasksParams {
+  enabled?: boolean;
   page?: number;
   size?: number;
   status?: TaskStatus[] | null;
-  assignee?: string | null;
+  assignee?: string[] | null;
   caseId?: number | null;
   includeTags?: string[] | null;
   excludeTags?: string[] | null;
@@ -29,12 +30,13 @@ export interface UseTasksParams {
  *   page: 1,
  *   size: 50,
  *   status: ['TODO', 'IN_PROGRESS'],
- *   assignee: 'john.doe',
+ *   assignee: ['john.doe'],
  *   search: 'urgent'
  * });
  * ```
  */
 export function useTasks({
+  enabled = true,
   page = 1,
   size = 50,
   status = null,
@@ -51,6 +53,7 @@ export function useTasks({
   const { isConnected } = useWebSocket();
 
   return useQuery<Page_TaskRead_, Error>({
+    enabled,
     queryKey: ['tasks', { page, size, status, assignee, caseId, includeTags, excludeTags, search, startDate, endDate, sortBy, sortOrder }],
     queryFn: async () => {
       const response = await TasksService.getTasksApiV1TasksGet({

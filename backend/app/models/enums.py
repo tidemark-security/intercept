@@ -126,7 +126,10 @@ class RealtimeEventType(str, Enum):
     TIMELINE_ITEM_DELETED = "timeline_item_deleted"
     TIMELINE_GRAPH_UPDATED = "timeline_graph_updated"
     ENTITY_UPDATED = "entity_updated"
+    SAVED_FILTER_NAVIGATION_UPDATED = "saved_filter_navigation_updated"
+    TRIAGE_QUEUED = "triage_queued"
     TRIAGE_COMPLETED = "triage_completed"
+    TRIAGE_REJECTED = "triage_rejected"
 
 
 class ContextCriterionType(str, Enum):
@@ -359,6 +362,8 @@ class AuditEventType(str, Enum):
     AUTH_OIDC_LOGIN_FAILURE = "auth.oidc.login.failure"
     AUTH_OIDC_ACCOUNT_LINKED = "auth.oidc.account_linked"
     AUTH_OIDC_ACCOUNT_PROVISIONED = "auth.oidc.account_provisioned"
+    AUTH_OIDC_ACCOUNT_PREPROVISIONED = "auth.oidc.account_preprovisioned"
+    AUTH_OIDC_ROLE_CHANGED = "auth.oidc.role_changed"
     AUTH_PASSWORD_CHANGED = "auth.password_changed"
     AUTH_ADMIN_USER_CREATED = "auth.admin.user_created"
     AUTH_ADMIN_USER_STATUS_CHANGED = "auth.admin.user_status_changed"
@@ -386,6 +391,10 @@ class AuditEventType(str, Enum):
     SETTINGS_CREATED = "settings.created"
     SETTINGS_UPDATED = "settings.updated"
     SETTINGS_DELETED = "settings.deleted"
+    SAVED_FILTER_CREATED = "saved_filter.created"
+    SAVED_FILTER_RENAMED = "saved_filter.renamed"
+    SAVED_FILTER_NAVIGATION_UPDATED = "saved_filter.navigation_updated"
+    SAVED_FILTER_DELETED = "saved_filter.deleted"
 
 
 class UploadStatus(str, Enum):
@@ -424,6 +433,20 @@ class MessageRole(str, Enum):
     USER = "USER"
     ASSISTANT = "ASSISTANT"
     SYSTEM = "SYSTEM"
+
+
+class TimelineActivityKind(str, Enum):
+    STATUS_CHANGED = "status_changed"
+    CLOSED_AS_DUPLICATE = "closed_as_duplicate"
+    ASSIGNEE_CHANGED = "assignee_changed"
+    LINKED_TO_CASE = "linked_to_case"
+    ALERT_RESOLVED = "alert_resolved"
+    CLOSED_WITH_CASE = "closed_with_case"
+    RUNBOOK_APPLIED = "runbook_applied"
+    RECOMMENDATION_APPLIED = "recommendation_applied"
+    AUTOMATION_STARTED = "automation_started"
+    AUTOMATION_COMPLETED = "automation_completed"
+    AUTOMATION_FAILED = "automation_failed"
 
 
 class AccountType(str, Enum):

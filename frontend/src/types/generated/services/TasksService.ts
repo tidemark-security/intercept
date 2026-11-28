@@ -3,10 +3,12 @@
 /* tslint:disable */
 /* eslint-disable */
 import type { AttachmentStatusUpdate } from '../models/AttachmentStatusUpdate';
+import type { BulkUpdateResult } from '../models/BulkUpdateResult';
 import type { Page_TaskRead_ } from '../models/Page_TaskRead_';
 import type { PresignedDownloadResponse } from '../models/PresignedDownloadResponse';
 import type { PresignedUploadRequest } from '../models/PresignedUploadRequest';
 import type { PresignedUploadResponse } from '../models/PresignedUploadResponse';
+import type { TaskBulkUpdate } from '../models/TaskBulkUpdate';
 import type { TaskCreate } from '../models/TaskCreate';
 import type { TaskRead } from '../models/TaskRead';
 import type { TaskStatus } from '../models/TaskStatus';
@@ -61,8 +63,6 @@ export class TasksService {
      * @throws ApiError
      */
     public static getTasksApiV1TasksGet({
-        skip,
-        limit = 100,
         status,
         assignee,
         caseId,
@@ -76,13 +76,14 @@ export class TasksService {
         page = 1,
         size = 50,
     }: {
-        skip?: number,
-        limit?: number,
         /**
          * Filter by multiple task statuses
          */
         status?: (Array<TaskStatus> | null),
-        assignee?: (string | null),
+        /**
+         * Match any selected username or __unassigned__
+         */
+        assignee?: (Array<string> | null),
         /**
          * Filter by case ID
          */
@@ -128,8 +129,6 @@ export class TasksService {
             method: 'GET',
             url: '/api/v1/tasks',
             query: {
-                'skip': skip,
-                'limit': limit,
                 'status': status,
                 'assignee': assignee,
                 'case_id': caseId,
@@ -161,7 +160,7 @@ export class TasksService {
         taskId,
         includeLinkedTimelines = false,
     }: {
-        taskId: number,
+        taskId: (number | string),
         /**
          * Include timeline items from linked cases and alerts as nested source_timeline_items
          */
@@ -193,7 +192,7 @@ export class TasksService {
         taskId,
         requestBody,
     }: {
-        taskId: number,
+        taskId: (number | string),
         requestBody: TaskUpdate,
     }): CancelablePromise<TaskRead> {
         return __request(OpenAPI, {
@@ -218,7 +217,7 @@ export class TasksService {
     public static deleteTaskApiV1TasksTaskIdDelete({
         taskId,
     }: {
-        taskId: number,
+        taskId: (number | string),
     }): CancelablePromise<any> {
         return __request(OpenAPI, {
             method: 'DELETE',
@@ -226,6 +225,27 @@ export class TasksService {
             path: {
                 'task_id': taskId,
             },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Bulk Task Action
+     * Apply a batch update to selected tasks.
+     * @returns BulkUpdateResult Successful Response
+     * @throws ApiError
+     */
+    public static bulkTaskActionApiV1TasksBulkActionsPost({
+        requestBody,
+    }: {
+        requestBody: TaskBulkUpdate,
+    }): CancelablePromise<BulkUpdateResult> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/tasks/bulk-actions',
+            body: requestBody,
+            mediaType: 'application/json',
             errors: {
                 422: `Validation Error`,
             },
@@ -240,7 +260,7 @@ export class TasksService {
     public static getTimelineGraphApiV1TasksTaskIdTimelineGraphGet({
         taskId,
     }: {
-        taskId: number,
+        taskId: (number | string),
     }): CancelablePromise<TimelineGraphRead> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -263,7 +283,7 @@ export class TasksService {
         taskId,
         requestBody,
     }: {
-        taskId: number,
+        taskId: (number | string),
         requestBody: TimelineGraphPatch,
     }): CancelablePromise<TimelineGraphRead> {
         return __request(OpenAPI, {
@@ -290,7 +310,7 @@ export class TasksService {
         requestBody,
         migration = false,
     }: {
-        taskId: number,
+        taskId: (number | string),
         requestBody: Record<string, any>,
         /**
          * Allow authorized NHI migration clients to provide created_at
@@ -324,7 +344,7 @@ export class TasksService {
         itemId,
         requestBody,
     }: {
-        taskId: number,
+        taskId: (number | string),
         itemId: string,
         requestBody: Record<string, any>,
     }): CancelablePromise<TaskRead> {
@@ -352,7 +372,7 @@ export class TasksService {
         taskId,
         itemId,
     }: {
-        taskId: number,
+        taskId: (number | string),
         itemId: string,
     }): CancelablePromise<TaskRead> {
         return __request(OpenAPI, {
@@ -377,7 +397,7 @@ export class TasksService {
         taskId,
         requestBody,
     }: {
-        taskId: number,
+        taskId: (number | string),
         requestBody: PresignedUploadRequest,
     }): CancelablePromise<PresignedUploadResponse> {
         return __request(OpenAPI, {
@@ -404,7 +424,7 @@ export class TasksService {
         itemId,
         requestBody,
     }: {
-        taskId: number,
+        taskId: (number | string),
         itemId: string,
         requestBody: AttachmentStatusUpdate,
     }): CancelablePromise<TaskRead> {
@@ -433,7 +453,7 @@ export class TasksService {
         itemId,
         download = false,
     }: {
-        taskId: number,
+        taskId: (number | string),
         itemId: string,
         /**
          * Generate a forced-download URL

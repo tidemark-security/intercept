@@ -59,10 +59,10 @@ async def test_langflow_connection_endpoint_returns_both_successful_checks(
         "langflow.alert_triage_flow_id": "tmi_alert_triage",
     }
 
-    async def fake_get_typed_value(self, key: str, default=None):
+    async def fake_get(self, key: str, default=None):
         return configured_values.get(key, default)
 
-    monkeypatch.setattr(SettingsService, "get_typed_value", fake_get_typed_value)
+    monkeypatch.setattr(SettingsService, "get", fake_get)
 
     class FakeLangFlowService:
         async def run_connectivity_check(self) -> LangFlowCheckResult:
@@ -160,10 +160,10 @@ async def test_langflow_connection_endpoint_reports_partial_failure(
         "langflow.alert_triage_flow_id": "tmi_alert_triage",
     }
 
-    async def fake_get_typed_value(self, key: str, default=None):
+    async def fake_get(self, key: str, default=None):
         return configured_values.get(key, default)
 
-    monkeypatch.setattr(SettingsService, "get_typed_value", fake_get_typed_value)
+    monkeypatch.setattr(SettingsService, "get", fake_get)
 
     class FakeLangFlowService:
         async def run_connectivity_check(self) -> LangFlowCheckResult:

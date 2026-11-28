@@ -11,6 +11,30 @@ import MermaidRenderer from '@/components/data-display/MermaidRenderer';
 import { FullscreenViewer } from '@/components/overlays/FullscreenViewer';
 import { useFullscreenViewer } from '@/hooks/useFullscreenViewer';
 import { LinkBadge } from '@/components/data-display/LinkBadge';
+import type { ElementContent, Root } from 'hast';
+import { SearchHighlight } from '@/components/search/SearchHighlight';
+import { QueueSearchText } from '@/components/search/QueueSearchHighlight';
+import { splitQueueSearchText, useQueueSearchPattern } from '@/components/search/queueSearchMatches';
+
+// This transformation runs after sanitization and creates text nodes, never raw HTML.
+function rehypeQueueSearchHighlight(pattern: RegExp | null) {
+  function decorate(node: ElementContent): ElementContent[] {
+    if (node.type === 'element' && node.tagName !== 'code' && node.tagName !== 'pre') {
+      node.children = node.children.flatMap(decorate);
+    }
+    if (node.type !== 'text') return [node];
+    const parts = splitQueueSearchText(node.value, pattern);
+    return parts?.map(({ text, match }): ElementContent => match
+      ? { type: 'element', tagName: 'mark', properties: {}, children: [{ type: 'text', value: text }] }
+      : { type: 'text', value: text }) ?? [node];
+  }
+
+  return (tree: Root) => {
+    if (!pattern) return;
+    tree.children = tree.children.flatMap((node): Root['children'] =>
+      node.type === 'element' || node.type === 'text' ? decorate(node) : [node]);
+  };
+}
 const CODE_SNIPPET_LINES = 15;
 
 interface ExpandableCodeBlockProps {
@@ -102,6 +126,7 @@ interface MarkdownContentProps {
   content: string;
   className?: string;
   isStreamingFromAi?: boolean;
+  showFullCodeBlocks?: boolean;
   linkStyle?: 'badge' | 'inline';
 }
 
@@ -109,9 +134,11 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
   content,
   className,
   isStreamingFromAi = false,
+  showFullCodeBlocks = false,
   linkStyle = 'badge',
 }) => {
   const { resolvedTheme } = useTheme();
+  const searchPattern = useQueueSearchPattern();
   const isDarkTheme = resolvedTheme === 'dark';
 
   if (!content || content.trim() === '') {
@@ -149,8 +176,9 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
     <div className={cn("text-default-font w-full min-w-0 leading-[1.6] [overflow-wrap:anywhere]", className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[[rehypeSanitize, sanitizeConfig]]}
+        rehypePlugins={[[rehypeSanitize, sanitizeConfig], [rehypeQueueSearchHighlight, searchPattern]]}
         components={{
+          mark: ({ children }) => <SearchHighlight>{children}</SearchHighlight>,
           h1: ({ children }) => <h1 className="text-[30px] leading-[36px] font-semibold mb-2 mt-2 first:mt-0 text-default-font" style={{ fontFamily: '"Saira Condensed", sans-serif' }}>{children}</h1>,
           h2: ({ children }) => <h2 className="text-[20px] leading-[24px] font-semibold mb-2 mt-2 first:mt-0 text-default-font" style={{ fontFamily: '"Saira Condensed", sans-serif' }}>{children}</h2>,
           h3: ({ children }) => <h3 className="text-[16px] leading-[20px] font-semibold mb-2 mt-2 first:mt-0 text-default-font" style={{ fontFamily: '"Saira Condensed", sans-serif' }}>{children}</h3>,
@@ -210,6 +238,9 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
               {children}
             </blockquote>
           ),
+          pre: ({ children, className: preClassName }) => (
+            <pre className={cn("whitespace-pre-wrap [overflow-wrap:anywhere]", preClassName)}>{children}</pre>
+          ),
           code: (props: any) => {
             const { node, inline, className, children, ...rest } = props;
             const match = /language-(\w+)/.exec(className || '');
@@ -226,7 +257,7 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
                   )}
                   {...rest}
                 >
-                  {children}
+                  <QueueSearchText>{children}</QueueSearchText>
                 </code>
               );
             }
@@ -237,6 +268,10 @@ const MarkdownContent: React.FC<MarkdownContentProps> = ({
 
             if (language === 'mermaid') {
               return <MermaidRenderer code={codeString} isStreaming={isStreamingFromAi} />;
+            }
+
+            if (showFullCodeBlocks) {
+              return <CodeBlock language={language} code={codeString} resolvedTheme={resolvedTheme} />;
             }
 
             return <ExpandableCodeBlock language={language} code={codeString} resolvedTheme={resolvedTheme} />;
@@ -302,6 +337,7 @@ export default React.memo(MarkdownContent, (prevProps, nextProps) => {
   return (
     prevProps.content === nextProps.content &&
     prevProps.className === nextProps.className &&
-    prevProps.isStreamingFromAi === nextProps.isStreamingFromAi
+    prevProps.isStreamingFromAi === nextProps.isStreamingFromAi &&
+    prevProps.showFullCodeBlocks === nextProps.showFullCodeBlocks
   );
 });

@@ -1,6 +1,7 @@
-import { ReactNode, useEffect } from "react";
+import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useSession } from "@/contexts/sessionContext";
+import { SessionCheckStatus } from "./SessionCheckStatus";
 
 interface ProtectedRouteProps {
   children: ReactNode;
@@ -19,11 +20,10 @@ export function ProtectedRoute({ children, requiredRole }: ProtectedRouteProps) 
   const { status, user, mustChangePassword } = useSession();
   const location = useLocation();
 
-  // If still checking authentication (initial load or manual login), show loading spinner
-  if (status === "initializing" || status === "authenticating") {
+  if (status === "initializing" || status === "unavailable" || status === "authenticating") {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-default-background">
-        <div className="text-lg text-brand-primary">Loading...</div>
+        <SessionCheckStatus />
       </div>
     );
   }
@@ -41,7 +41,7 @@ export function ProtectedRoute({ children, requiredRole }: ProtectedRouteProps) 
   // If role is required and user doesn't have it, redirect to home or show unauthorized
   if (requiredRole && user.role !== requiredRole) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-default-background">
+      <div className="flex h-full w-full items-center justify-center bg-default-background">
         <div className="text-center">
           <h1 className="text-2xl font-bold mb-4 text-error-600">Access Denied</h1>
           <p className="text-subtext-color">

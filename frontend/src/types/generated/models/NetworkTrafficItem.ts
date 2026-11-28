@@ -11,7 +11,7 @@ export type NetworkTrafficItem = {
     /**
      * Unique identifier for timeline item
      */
-    id?: string;
+    id?: (string | null);
     type?: string;
     /**
      * Free text description of the timeline item
@@ -28,7 +28,7 @@ export type NetworkTrafficItem = {
     /**
      * User who created this timeline item
      */
-    created_by?: string;
+    created_by?: (string | null);
     tags?: (Array<string> | null);
     /**
      * Whether this item is flagged as significant

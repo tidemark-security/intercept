@@ -8,11 +8,17 @@ from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from app.core.client_address import client_address_resolver
+from app.core.request_context import get_correlation_id
+from app.core.api_key_scopes import API_WRITE_SCOPE
+from app.core.authorization_lock import AuthorizationConcurrencyError
 from app.core.settings_registry import get_local
 from app.services.api_key_service import (
     ApiKeyExpiredError,
     ApiKeyNotFoundError,
+    ApiKeyPolicyError,
     ApiKeyRevokedError,
+    ApiKeyScopeError,
     UserInactiveError,
     api_key_service,
 )
@@ -108,31 +114,31 @@ class CSRFMiddleware:
             return False
 
         session_factory = self.session_factory_provider()
-        client_host = None
-        if scope.get("client"):
-            client_host = scope["client"][0]
-
         audit_context = AuditContext(
-            ip_address=client_host,
+            ip_address=client_address_resolver.resolve_scope(scope),
             user_agent=headers.get("user-agent"),
-            correlation_id=headers.get("x-request-id"),
+            correlation_id=get_correlation_id(headers),
         )
 
         try:
             async with session_factory() as db:
-                result = await api_key_service.validate_api_key(
+                await api_key_service.validate_api_key(
                     db,
                     raw_key=api_key,
+                    required_scopes={API_WRITE_SCOPE},
                     context=audit_context,
+                    skip_locked=True,
                 )
                 await db.commit()
         except (
+            AuthorizationConcurrencyError,
             ApiKeyExpiredError,
             ApiKeyNotFoundError,
+            ApiKeyPolicyError,
             ApiKeyRevokedError,
+            ApiKeyScopeError,
             UserInactiveError,
         ):
             return False
 
-        scope[API_KEY_AUTH_RESULT_SCOPE_KEY] = result
         return True

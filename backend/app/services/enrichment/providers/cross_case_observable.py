@@ -1,68 +1,24 @@
 from __future__ import annotations
 
-import ipaddress
-import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.enrichment.base import EnrichmentProvider, EnrichmentResult
+from app.services.observable_correlation import MATCH_SQL, correlation_field_records
+from app.services.search_service import IOC_CANDIDATE_SQL
+from app.core.entity_ids import KIND_TO_PREFIX, format_entity_id
+from app.services.enrichment.base import (
+    EnrichmentProvider,
+    EnrichmentProviderError,
+    EnrichmentResult,
+)
+from app.services.enrichment.providers.ip_eligibility import normalize_public_ip_address
 from app.services.settings_service import SettingsService
 
 
 DEFAULT_MAX_LOOKBACK_DAYS = 180
-
-MATCH_SQL = """
-    (
-        jsonb_extract_path_text(timeline_match.item, 'type') = 'observable'
-        AND upper(coalesce(jsonb_extract_path_text(timeline_match.item, 'observable_type'), '')) = :observable_type
-        AND lower(coalesce(jsonb_extract_path_text(timeline_match.item, 'observable_value'), '')) = :observable_value
-    )
-    OR EXISTS (
-        SELECT 1
-        FROM jsonb_to_recordset(CAST(:field_mappings AS jsonb)) AS field_mapping(item_type text, field_name text)
-        WHERE jsonb_extract_path_text(timeline_match.item, 'type') = field_mapping.item_type
-          AND lower(coalesce(jsonb_extract_path_text(timeline_match.item, field_mapping.field_name), '')) = :observable_value
-    )
-"""
-
-CORRELATION_FIELD_MAPPINGS: dict[str, list[tuple[str, str]]] = {
-    "IP": [
-        ("system", "ip_address"),
-        ("network_traffic", "source_ip"),
-        ("network_traffic", "destination_ip"),
-    ],
-    "EMAIL": [
-        ("internal_actor", "contact_email"),
-        ("external_actor", "contact_email"),
-        ("threat_actor", "contact_email"),
-        ("email", "sender"),
-        ("email", "recipient"),
-    ],
-    "URL": [
-        ("attachment", "url"),
-        ("ttp", "url"),
-        ("link", "url"),
-        ("forensic_artifact", "url"),
-    ],
-    "DOMAIN": [
-        ("system", "hostname"),
-    ],
-    "HASH": [
-        ("attachment", "file_hash"),
-        ("forensic_artifact", "hash"),
-    ],
-    "FILENAME": [
-        ("attachment", "file_name"),
-        ("process", "process_name"),
-    ],
-    "PROCESS_NAME": [
-        ("process", "process_name"),
-    ],
-}
-
 
 class CrossCaseObservableProvider(EnrichmentProvider):
     provider_id = "cross_case_observable"
@@ -78,7 +34,9 @@ class CrossCaseObservableProvider(EnrichmentProvider):
     def build_cache_key(self, item: Dict[str, Any]) -> str:
         observables = self._observables(item)
         if not observables:
-            raise ValueError("No observable available for cross-case correlation")
+            raise EnrichmentProviderError(
+                "No observable available for cross-case correlation"
+            )
         return "|".join(f"{observable_type}:{observable_value}" for observable_type, observable_value in observables)
 
     async def enrich(
@@ -92,7 +50,9 @@ class CrossCaseObservableProvider(EnrichmentProvider):
     ) -> EnrichmentResult:
         observables = self._observables(item)
         if not observables:
-            raise ValueError("No observable available for cross-case correlation")
+            raise EnrichmentProviderError(
+                "No observable available for cross-case correlation"
+            )
 
         max_lookback_days = await self._max_lookback_days(settings)
         lookback_started_at = datetime.now(timezone.utc) - timedelta(days=max_lookback_days)
@@ -139,7 +99,6 @@ class CrossCaseObservableProvider(EnrichmentProvider):
         lookback_started_at: datetime,
         max_lookback_days: int,
     ) -> dict[str, Any]:
-        prefilter_sql, match_sql, match_params = self._build_match_sql(observable_type)
         query = text(f"""
             WITH candidate_entities AS (
                 SELECT
@@ -154,7 +113,7 @@ class CrossCaseObservableProvider(EnrichmentProvider):
                 FROM alerts
                 WHERE updated_at >= :lookback_started_at
                   AND NOT (:entity_type = 'alert' AND id = :entity_id)
-                  AND ({prefilter_sql})
+                  AND ({IOC_CANDIDATE_SQL})
                 UNION ALL
                 SELECT
                     'case' AS entity_type,
@@ -168,7 +127,7 @@ class CrossCaseObservableProvider(EnrichmentProvider):
                 FROM cases
                 WHERE updated_at >= :lookback_started_at
                   AND NOT (:entity_type = 'case' AND id = :entity_id)
-                  AND ({prefilter_sql})
+                  AND ({IOC_CANDIDATE_SQL})
                 UNION ALL
                 SELECT
                     'task' AS entity_type,
@@ -182,7 +141,7 @@ class CrossCaseObservableProvider(EnrichmentProvider):
                 FROM tasks
                 WHERE updated_at >= :lookback_started_at
                   AND NOT (:entity_type = 'task' AND id = :entity_id)
-                  AND ({prefilter_sql})
+                  AND ({IOC_CANDIDATE_SQL})
             ),
             matches AS (
                 SELECT
@@ -202,7 +161,7 @@ class CrossCaseObservableProvider(EnrichmentProvider):
                             ELSE '{{}}'::jsonb
                         END
                     ) AS timeline_match(key, item)
-                    WHERE {match_sql}
+                    WHERE ({MATCH_SQL})
                 )
                 OR EXISTS (
                     SELECT 1
@@ -212,7 +171,7 @@ class CrossCaseObservableProvider(EnrichmentProvider):
                             ELSE '[]'::jsonb
                         END
                     ) AS timeline_match(item)
-                    WHERE {match_sql}
+                    WHERE ({MATCH_SQL})
                 )
             ),
             counted AS (
@@ -234,7 +193,8 @@ class CrossCaseObservableProvider(EnrichmentProvider):
                 "observable_type": observable_type,
                 "observable_value": observable_value,
                 "lookback_started_at": lookback_started_at,
-                **match_params,
+                "ioc_candidate": observable_value,
+                "field_mappings": correlation_field_records(observable_type),
             },
         )
         rows = result.mappings().all()
@@ -249,28 +209,6 @@ class CrossCaseObservableProvider(EnrichmentProvider):
             "match_count": total,
             "matches": matches,
         }
-
-    def _build_match_sql(self, observable_type: str) -> tuple[str, str, dict[str, Any]]:
-        field_mappings = CORRELATION_FIELD_MAPPINGS.get(observable_type, [])
-        candidate_types = sorted({"observable", *(item_type for item_type, _ in field_mappings)})
-        field_mapping_records = [
-            {"item_type": item_type, "field_name": field_name}
-            for item_type, field_name in field_mappings
-        ]
-        params: dict[str, Any] = {
-            "field_mappings": json.dumps(field_mapping_records),
-        }
-        prefilter_parts: list[str] = []
-        for index, item_type in enumerate(candidate_types):
-            object_path_param = f"candidate_object_path_{index}"
-            array_path_param = f"candidate_array_path_{index}"
-            encoded_item_type = json.dumps(item_type)
-            prefilter_parts.append(f"timeline_items @? CAST(:{object_path_param} AS jsonpath)")
-            prefilter_parts.append(f"timeline_items @? CAST(:{array_path_param} AS jsonpath)")
-            params[object_path_param] = f"$.* ? (@.type == {encoded_item_type})"
-            params[array_path_param] = f"$[*] ? (@.type == {encoded_item_type})"
-
-        return " OR ".join(prefilter_parts), f"({MATCH_SQL})", params
 
     async def _max_lookback_days(self, settings: SettingsService) -> int:
         try:
@@ -302,7 +240,7 @@ class CrossCaseObservableProvider(EnrichmentProvider):
         observables: list[tuple[str, str]] = []
         seen: set[tuple[str, str]] = set()
         for observable_type, observable_value in raw_candidates:
-            if observable_type == "IP" and not self._is_public_ip(observable_value):
+            if observable_type == "IP" and normalize_public_ip_address(observable_value) is None:
                 continue
             candidate = (observable_type, observable_value)
             if candidate in seen:
@@ -311,28 +249,14 @@ class CrossCaseObservableProvider(EnrichmentProvider):
             observables.append(candidate)
         return observables
 
-    def _is_public_ip(self, value: str) -> bool:
-        try:
-            parsed = ipaddress.ip_address(value)
-        except ValueError:
-            return False
-        return not (
-            parsed.is_private
-            or parsed.is_loopback
-            or parsed.is_multicast
-            or parsed.is_reserved
-            or parsed.is_unspecified
-        )
-
     def _format_match(self, row: Any) -> dict[str, Any]:
         entity_type = str(row["entity_type"])
         entity_id = int(row["entity_id"])
-        prefixes = {"alert": "ALT", "case": "CAS", "task": "TSK"}
-        prefix = prefixes.get(entity_type, entity_type.upper())
+        prefix = KIND_TO_PREFIX.get(entity_type, entity_type.upper())
         return {
             "entity_type": entity_type,
             "entity_id": entity_id,
-            "human_id": f"{prefix}-{entity_id:07d}",
+            "human_id": format_entity_id(entity_id, prefix),
             "title": row["title"],
             "status": row["status"],
             "priority": row["priority"],

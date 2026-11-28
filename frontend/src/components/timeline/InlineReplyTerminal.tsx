@@ -117,6 +117,7 @@ export function InlineReplyTerminal({
             'email',
             'network_traffic',
             'process',
+            'process_tree',
             'registry_change',
             'ttp',
           ]}

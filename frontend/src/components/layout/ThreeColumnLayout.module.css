@@ -1,0 +1,74 @@
+.split {
+  --split-rail-width: 6px;
+  --split-gap: 1rem;
+  display: grid;
+  grid-template-columns: var(--split-preview-width, var(--split-left-width)) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  /* Match the UX layout's divider and the gap on each side. */
+  column-gap: calc(2 * var(--split-gap) + var(--split-rail-width));
+}
+
+.split > .left,
+.split > .center {
+  min-width: 0;
+  min-height: 0;
+  transition-property: filter;
+}
+
+.center {
+  position: relative;
+}
+
+.handle {
+  position: absolute;
+  z-index: 1;
+  inset-block: 0;
+  inset-inline-end: calc(100% + var(--split-gap));
+  width: var(--split-rail-width);
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.handle::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 50%;
+  width: 1px;
+  background: rgb(var(--color-neutral-border));
+}
+
+.handle:hover,
+.handle:focus-visible,
+.handle[data-dragging] {
+  background: rgb(var(--color-brand-primary-blush) / 0.25);
+}
+
+.handle[data-dragging]::before {
+  background: rgb(var(--color-brand-primary-blush));
+}
+
+.collapseHint {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-start: 50%;
+  display: grid;
+  place-items: center;
+  width: 1.25rem;
+  height: 2rem;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgb(var(--color-neutral-border));
+  background: rgb(var(--color-neutral-100));
+  opacity: 0;
+  transition: opacity 150ms;
+}
+
+.handle:hover .collapseHint,
+.handle:focus-visible .collapseHint {
+  opacity: 1;
+}
+
+.handle[data-dragging] .collapseHint {
+  opacity: 0;
+}

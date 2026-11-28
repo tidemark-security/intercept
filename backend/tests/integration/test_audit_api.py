@@ -4,9 +4,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.models.models import AuditLog
+from app.models.models import AuditLog, Case, NoteItem
+from app.services.timeline_add_service import add_timeline_item_and_commit
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -28,6 +30,43 @@ async def _login_user(
     session_cookie = response.cookies.get("intercept_session")
     assert session_cookie is not None
     return session_cookie
+
+
+@pytest.mark.asyncio
+async def test_timeline_add_audit_is_committed_by_the_service(
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_maker() as session:
+        case = Case(
+            title="Direct service audit test",
+            created_by="audit_analyst",
+        )
+        session.add(case)
+        await session.commit()
+        await session.refresh(case)
+        assert case.id is not None
+        case_id = case.id
+
+        await add_timeline_item_and_commit(
+            session,
+            entity_id=case_id,
+            entity_type="case",
+            timeline_item=NoteItem(description="Persist this audit row"),
+            performed_by="audit_analyst",
+        )
+
+    async with session_maker() as session:
+        result = await session.execute(
+            select(AuditLog).where(
+                AuditLog.event_type == "timeline.item.added",
+                AuditLog.entity_type == "case",
+                AuditLog.entity_id == str(case_id),
+            )
+        )
+        audit_log = result.scalar_one_or_none()
+
+    assert audit_log is not None
+    assert audit_log.performed_by == "audit_analyst"
 
 
 @pytest.mark.asyncio

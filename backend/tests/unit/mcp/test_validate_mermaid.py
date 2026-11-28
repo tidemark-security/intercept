@@ -5,10 +5,14 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from fastapi import HTTPException
 
-from app.mcp.schemas import ValidateMermaidInput, ValidateMermaidOutput
+from app.mcp.schemas import ValidateMermaidOutput
 from app.services import mcp_service
+from app.services.mcp_errors import (
+    McpTimeoutError,
+    McpUnavailableError,
+    McpValidationError,
+)
 
 
 class _FakeProcess:
@@ -25,16 +29,32 @@ class _FakeProcess:
         self.killed = True
 
 
-def test_validate_mermaid_schema_accepts_expected_fields() -> None:
-    payload = ValidateMermaidInput(diagram="graph TD\nA-->B")
-
-    assert payload.diagram == "graph TD\nA-->B"
-
-
 def test_validate_mermaid_output_defaults_errors_list() -> None:
     result = ValidateMermaidOutput(valid=True, message="ok")
 
     assert result.errors == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "diagram",
+    ["", "x" * 100_001],
+)
+async def test_validate_mermaid_rejects_out_of_bounds_input_before_launch(
+    diagram: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_resolver_call() -> list[str]:
+        raise AssertionError("validator resolution should not run")
+
+    monkeypatch.setattr(
+        mcp_service,
+        "_resolve_mermaid_validator_command",
+        unexpected_resolver_call,
+    )
+
+    with pytest.raises(McpValidationError):
+        await mcp_service.validate_mermaid(diagram)
 
 
 @pytest.mark.asyncio
@@ -87,11 +107,8 @@ async def test_validate_mermaid_returns_invalid_for_parse_errors(monkeypatch: py
 async def test_validate_mermaid_raises_when_node_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mcp_service.shutil, "which", lambda _name: None)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(McpUnavailableError, match="node"):
         await mcp_service.validate_mermaid("graph TD\nA-->B")
-
-    assert exc_info.value.status_code == 503
-    assert "node" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio
@@ -111,10 +128,40 @@ async def test_validate_mermaid_raises_for_operational_cli_failure(monkeypatch: 
     monkeypatch.setattr(Path, "exists", lambda self: str(self) == "/tmp/validate_mermaid_syntax.mjs")
     monkeypatch.setattr(mcp_service.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(McpUnavailableError):
         await mcp_service.validate_mermaid("graph TD\nA-->B")
 
-    assert exc_info.value.status_code == 503
+
+@pytest.mark.asyncio
+async def test_validate_mermaid_does_not_misreport_unknown_cli_failure_as_syntax(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_create_subprocess_exec(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return _FakeProcess(returncode=2, stderr=b"Unexpected validator failure")
+
+    monkeypatch.setattr(
+        mcp_service.shutil,
+        "which",
+        lambda name: "/usr/bin/node" if name == "node" else None,
+    )
+    monkeypatch.setattr(
+        mcp_service,
+        "_MERMAID_VALIDATOR_SCRIPT_CANDIDATES",
+        (Path("/tmp/validate_mermaid_syntax.mjs"),),
+    )
+    monkeypatch.setattr(
+        Path,
+        "exists",
+        lambda self: str(self) == "/tmp/validate_mermaid_syntax.mjs",
+    )
+    monkeypatch.setattr(
+        mcp_service.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+
+    with pytest.raises(McpUnavailableError, match="unexpected parser validator"):
+        await mcp_service.validate_mermaid("graph TD\nA-->B")
 
 
 @pytest.mark.asyncio
@@ -143,7 +190,5 @@ async def test_validate_mermaid_raises_for_timeout(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(mcp_service.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(mcp_service.asyncio, "wait_for", fake_wait_for)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(McpTimeoutError):
         await mcp_service.validate_mermaid("graph TD\nA-->B")
-
-    assert exc_info.value.status_code == 504

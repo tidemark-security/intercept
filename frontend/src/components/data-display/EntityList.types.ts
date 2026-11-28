@@ -1,5 +1,6 @@
 import type { FilterState } from '@/types/filters';
 import type { SortOption } from '@/components/entities/EntityFilterToolbar';
+import type { SavedFilterQueue } from '@/types/generated/models/SavedFilterQueue';
 import React from 'react';
 
 /**
@@ -21,6 +22,9 @@ export interface EntityListProps<T, F = FilterState> {
   
   /** Optional callback when an item is double-clicked */
   onDoubleClick?: (id: number, humanId: string) => void;
+
+  /** Give a double-click time to land before a mouse click opens an overlapping preview. */
+  deferPointerSelection?: boolean;
   
   /** 
    * Function to generate href for each item (enables middle-click/ctrl+click to open in new tab)
@@ -34,13 +38,16 @@ export interface EntityListProps<T, F = FilterState> {
   selectable?: boolean;
 
   /** Currently selected row IDs */
-  selectedIds?: Set<number>;
+  selectedIds?: { has(id: number): boolean; readonly size: number };
 
   /** Callback when one row checkbox changes */
   onSelectionChange?: (id: number, selected: boolean) => void;
 
   /** Callback when the visible page selection changes */
   onSelectVisible?: (selected: boolean, ids: number[]) => void;
+
+  /** Accessible label for the current-page checkbox. */
+  selectVisibleLabel?: string;
 
   /** Optional multi-select or contextual actions rendered in the filter header */
   toolbarActions?: React.ReactNode;
@@ -50,6 +57,11 @@ export interface EntityListProps<T, F = FilterState> {
   
   /** Callback when filters change */
   onFilterChange: (filters: F) => void;
+  onSearchChange?: (query: string) => void;
+  retrySearch?: () => void;
+
+  /** Enable saved filters for this queue. */
+  savedFilterQueue?: SavedFilterQueue;
   
   /** Options for the status filter dropdown */
   statusOptions?: { value: string; label: string }[];

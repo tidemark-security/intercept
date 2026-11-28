@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -20,6 +20,7 @@ vi.mock("@/contexts/sessionContext", () => ({
 
 vi.mock("@/types/generated/services/AdminService", () => ({
   AdminService: {
+    createNhiAccountApiV1AdminAuthUsersNhiPost: vi.fn(),
     listUsersApiV1AdminAuthUsersGet: vi.fn(),
     listUserPasskeysApiV1AdminAuthUsersUserIdPasskeysGet: vi.fn(),
   },
@@ -28,6 +29,7 @@ vi.mock("@/types/generated/services/AdminService", () => ({
 vi.mock("@/types/generated/services/ApiKeysService", () => ({
   ApiKeysService: {
     listApiKeysApiV1ApiKeysGet: vi.fn(),
+    createApiKeyApiV1ApiKeysPost: vi.fn(),
   },
 }));
 
@@ -66,6 +68,22 @@ describe("AdminUsers API key create visibility", () => {
 
     vi.mocked(ApiKeysService.listApiKeysApiV1ApiKeysGet).mockResolvedValue([] as any);
     vi.mocked(
+      AdminService.createNhiAccountApiV1AdminAuthUsersNhiPost,
+    ).mockResolvedValue({
+      userId: "created-nhi-id",
+      username: "svc.least-privilege",
+      role: "ANALYST",
+      apiKey: {
+        id: "created-api-key-id",
+        user_id: "created-nhi-id",
+        name: "production-key",
+        prefix: "tmi_created",
+        key: "tmi_created-secret",
+        expires_at: "2030-01-01T00:00:00Z",
+        scopes: ["api:read"],
+      },
+    } as any);
+    vi.mocked(
       AdminService.listUserPasskeysApiV1AdminAuthUsersUserIdPasskeysGet,
     ).mockResolvedValue([] as any);
   });
@@ -96,6 +114,61 @@ describe("AdminUsers API key create visibility", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /new key/i })).toBeInTheDocument();
+    });
+  });
+
+  it("keeps a rejected key submission visible in the admin drawer", async () => {
+    const user = userEvent.setup();
+    const message = "Expiration date cannot exceed 90 days";
+    vi.mocked(ApiKeysService.createApiKeyApiV1ApiKeysPost).mockRejectedValueOnce(new Error(message));
+    renderPage();
+
+    const row = (await screen.findByText("svc.integration")).closest("tr")!;
+    await user.click(row.querySelector("button")!);
+    await user.click(await screen.findByRole("button", { name: /new key/i }));
+    const drawer = within(await screen.findByRole("dialog"));
+    await user.type(drawer.getByPlaceholderText("CI/CD Pipeline"), "Langflow");
+    await user.click(drawer.getByRole("button", { name: /create key/i }));
+
+    expect(await drawer.findByRole("alert")).toHaveTextContent(message);
+    expect(drawer.getByPlaceholderText("CI/CD Pipeline")).toHaveValue("Langflow");
+  });
+
+  it("creates the initial NHI key with an explicit least-privilege scope", async () => {
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByText("human.user");
+    await user.click(screen.getByRole("button", { name: /add user/i }));
+    await user.click(screen.getByRole("button", { name: /service \(nhi\)/i }));
+
+    expect(screen.getByText("Permissions")).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: "Remove Read API" }),
+    ).toBeChecked();
+
+    await user.type(screen.getByPlaceholderText("svc.integration"), "svc.least-privilege");
+    await user.type(screen.getByPlaceholderText("production-key"), "production-key");
+    const expirationInput = document.querySelector<HTMLInputElement>(
+      'input[type="datetime-local"]',
+    );
+    expect(expirationInput).not.toBeNull();
+    fireEvent.change(expirationInput as HTMLInputElement, {
+      target: { value: "2030-01-01T00:00" },
+    });
+
+    await user.click(
+      screen.getByRole("button", { name: /create service account/i }),
+    );
+
+    await waitFor(() => {
+      expect(
+        AdminService.createNhiAccountApiV1AdminAuthUsersNhiPost,
+      ).toHaveBeenCalledWith({
+        requestBody: expect.objectContaining({
+          initial_api_key_scopes: ["api:read"],
+        }),
+      });
     });
   });
 });

@@ -45,7 +45,13 @@ export type EntityType = 'alert' | 'case' | 'task';
  * ```
  */
 export const queryKeys = {
+  contextEntries: {
+    listBase: () => ['context-entries'] as const,
+    list: (includeExpired: boolean) => ['context-entries', includeExpired] as const,
+  },
   alert: {
+    /** Prefix for invalidating alert details across all alerts. */
+    detailsBase: () => ['alert-detail'] as const,
     /**
      * Query key for a single alert detail
      * @param id - Alert ID
@@ -137,6 +143,10 @@ export const queryKeys = {
     listBase: () => ['tasks'] as const,
   },
 } as const;
+
+export function getQueueSearchQueryKey(entityType: EntityType) {
+  return [...queryKeys[entityType].listBase(), "search"] as const;
+}
 
 /**
  * Helper to get the base query key for an entity type.

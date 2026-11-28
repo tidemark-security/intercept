@@ -1,0 +1,63 @@
+.process-tree-scroll {
+  container-type: inline-size;
+}
+
+.process-tree-table td {
+  vertical-align: top;
+}
+
+.process-tree-table th[data-column="signals"] {
+  width: 3.75rem;
+}
+
+.process-tree-table [data-column="pid"],
+.process-tree-table [data-column="started"],
+.process-tree-table [data-column="user"] {
+  display: none;
+}
+
+@container (min-width: 30rem) {
+  .process-tree-table [data-column="pid"] {
+    display: table-cell;
+    width: 4rem;
+  }
+
+  .process-tree-table .process-tree-inline-pid {
+    display: none;
+  }
+}
+
+@container (min-width: 42rem) {
+  .process-tree-table [data-column="started"] {
+    display: table-cell;
+    width: 7rem;
+  }
+}
+
+@container (min-width: 54rem) {
+  .process-tree-table [data-column="user"] {
+    display: table-cell;
+    width: 8rem;
+  }
+}
+
+.process-tree-viewer {
+  container-type: inline-size;
+}
+
+.process-tree-viewer-layout {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 45%);
+}
+
+@container (min-width: 56rem) {
+  .process-tree-viewer-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(16rem, 24rem);
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .process-tree-viewer-inspector {
+    border-top-width: 0;
+    border-inline-start-width: 1px;
+  }
+}

@@ -1,0 +1,3 @@
+.priorityBackdrop > :global(.bg-page-background) > :global(.pointer-events-none.absolute) {
+  opacity: 0.45;
+}

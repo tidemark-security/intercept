@@ -197,8 +197,15 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
-  build-postgres:
-    name: Build PostgreSQL
+  build-services:
+    name: Build ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: postgres, label: PostgreSQL }
+          - { image: langflow, label: Langflow }
+          - { image: silo, label: Silo }
     needs: [prepare-release]
     runs-on: ubuntu-latest
     steps:
@@ -219,7 +226,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_PREFIX }}/intercept-postgres
+          images: ${{ env.IMAGE_PREFIX }}/intercept-${{ matrix.image }}
           tags: |
             type=semver,pattern={{version}},value=${{ needs.prepare-release.outputs.tag }}
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare-release.outputs.tag }}
@@ -229,13 +236,13 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: ./backend
-          file: ./backend/Dockerfile.postgres
+          file: ./backend/Dockerfile.${{ matrix.image }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=postgres
-          cache-to: type=gha,mode=max,scope=postgres
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
   release:
     name: Create GitHub Release
@@ -244,7 +251,7 @@ jobs:
       - build-backend
       - build-worker
       - build-frontend
-      - build-postgres
+      - build-services
     runs-on: ubuntu-latest
     steps:
       - uses: softprops/action-gh-release@v2

@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { TimelineActivityKind } from './TimelineActivityKind';
 import type { TimelineItemAudit } from './TimelineItemAudit';
 /**
  * Timeline item for notes/comments.
@@ -10,7 +11,7 @@ export type NoteItem = {
     /**
      * Unique identifier for timeline item
      */
-    id?: string;
+    id?: (string | null);
     type?: string;
     /**
      * Free text description of the timeline item
@@ -27,7 +28,7 @@ export type NoteItem = {
     /**
      * User who created this timeline item
      */
-    created_by?: string;
+    created_by?: (string | null);
     tags?: (Array<string> | null);
     /**
      * Whether this item is flagged as significant
@@ -61,5 +62,9 @@ export type NoteItem = {
      * Response-only audit metadata dynamically coalesced from audit logs
      */
     audit?: (TimelineItemAudit | null);
+    /**
+     * Server-assigned activity recorded by this timeline note
+     */
+    readonly activity_kind?: (TimelineActivityKind | null);
 };
 

@@ -17,7 +17,6 @@ import { Toast } from "@/components/feedback/Toast";
 import { ToggleGroup } from "@tidemark-security/ux";
 import { DefaultPageLayout } from "@/components/layout/DefaultPageLayout";
 import { AdminPageLayout } from "../components/layout/AdminPageLayout";
-import { DateTimeManager } from "@/components/forms/DateTimeManager";
 import {
   formatForDatetimeLocal,
   normalizeDatetimeLocalValue,
@@ -35,9 +34,13 @@ import type {
   AdminCreateNHIResponse,
   AdminPasskeyRead,
 } from "../types/generated";
-import { ApiError } from "../types/generated";
+import { getApiErrorMessage } from "@/services/apiRequestError";
 import { useSession } from "../contexts/sessionContext";
 import { useTheme } from "@/contexts/ThemeContext";
+import {
+  allowedApiKeyScopesForRole,
+  type ApiKeyScope,
+} from "@/utils/apiKeyScopes";
 
 import {
   AlertCircle,
@@ -63,6 +66,7 @@ import {
   UserPlus,
   UserX,
 } from "lucide-react";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 interface User {
   id: string;
   username: string;
@@ -89,12 +93,14 @@ interface CreateUserFormData {
   description: string;
   initialApiKeyName: string;
   initialApiKeyExpiresAt: string;
+  initialApiKeyScopes: ApiKeyScope[];
 }
 
 interface CreateApiKeyFormData {
   name: string;
   expiresAt: string;
   userId: string;
+  scopes: ApiKeyScope[];
 }
 
 interface UnifiedCreatedKeyData {
@@ -123,12 +129,14 @@ const INITIAL_CREATE_FORM_DATA: CreateUserFormData = {
   description: "",
   initialApiKeyName: "",
   initialApiKeyExpiresAt: "",
+  initialApiKeyScopes: ["api:read"],
 };
 
 const EMPTY_API_KEY_FORM_DATA: CreateApiKeyFormData = {
   name: "",
   expiresAt: "",
   userId: "",
+  scopes: ["api:read"],
 };
 
 const ALLOWED_ROLES: UserRole[] = ["ANALYST", "ADMIN", "AUDITOR"];
@@ -182,6 +190,7 @@ function mapApiUser(raw: Record<string, unknown>): User {
 }
 
 function AdminUsers() {
+  useDocumentTitle("Users");
   const { user: currentUser } = useSession();
   const { resolvedTheme } = useTheme();
   const queryClient = useQueryClient();
@@ -219,6 +228,7 @@ function AdminUsers() {
     Record<string, AdminPasskeyRead[]>
   >({});
   const [passkeysLoading, setPasskeysLoading] = useState<string | null>(null);
+  const [createApiKeyError, setCreateApiKeyError] = useState<string | null>(null);
   const [showCreateApiKeyModal, setShowCreateApiKeyModal] = useState(false);
   const [createApiKeyFormData, setCreateApiKeyFormData] =
     useState<CreateApiKeyFormData>(EMPTY_API_KEY_FORM_DATA);
@@ -233,35 +243,6 @@ function AdminUsers() {
 
   // Check if current user is admin
   const isAdmin = currentUser?.role === "ADMIN";
-
-  // Helper function to extract error message from API responses
-  const extractErrorMessage = useCallback(
-    (err: any, fallback: string): string => {
-      if (err instanceof ApiError) {
-        // FastAPI HTTPException with detail containing ValidationErrorResponse
-        if (err.body && typeof err.body === "object" && "detail" in err.body) {
-          const detail = err.body.detail;
-          if (
-            typeof detail === "object" &&
-            detail !== null &&
-            "message" in detail
-          ) {
-            return detail.message;
-          }
-        }
-        // Direct message in body
-        if (err.body && typeof err.body === "object" && "message" in err.body) {
-          return err.body.message;
-        }
-      }
-      // Fall back to the error message
-      if (err instanceof Error) {
-        return err.message;
-      }
-      return fallback;
-    },
-    [],
-  );
 
   const {
     data: usersResponse = [],
@@ -285,7 +266,7 @@ function AdminUsers() {
   const activeError =
     error ??
     (usersQueryError
-      ? extractErrorMessage(usersQueryError, "Failed to load users")
+      ? getApiErrorMessage(usersQueryError, "Failed to load users")
       : null);
 
   const refreshUsers = useCallback(async () => {
@@ -312,6 +293,21 @@ function AdminUsers() {
     value: CreateUserFormData[K],
   ) => {
     setCreateFormData((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const updateCreateRole = (role: UserRole) => {
+    setCreateFormData((prev) => {
+      const availableScopes = allowedApiKeyScopesForRole(role);
+      const permittedScopes = prev.initialApiKeyScopes.filter((scope) =>
+        availableScopes.includes(scope),
+      );
+      return {
+        ...prev,
+        role,
+        initialApiKeyScopes:
+          permittedScopes.length > 0 ? permittedScopes : ["api:read"],
+      };
+    });
   };
 
   const updateCreateApiKeyField = <K extends keyof CreateApiKeyFormData>(
@@ -376,7 +372,7 @@ function AdminUsers() {
         // Reload users list
         await refreshUsers();
       } catch (err) {
-        setError(extractErrorMessage(err, "Failed to create user"));
+        setError(getApiErrorMessage(err, "Failed to create user"));
       } finally {
         setCreateLoading(false);
       }
@@ -388,6 +384,10 @@ function AdminUsers() {
       }
       if (!createFormData.initialApiKeyExpiresAt) {
         setError("API key expiration date is required for NHI accounts");
+        return;
+      }
+      if (createFormData.initialApiKeyScopes.length === 0) {
+        setError("Select at least one API key permission");
         return;
       }
 
@@ -413,6 +413,7 @@ function AdminUsers() {
               initial_api_key_name: createFormData.initialApiKeyName,
               initial_api_key_expires_at:
                 initialApiKeyExpiresAtDate.toISOString(),
+              initial_api_key_scopes: createFormData.initialApiKeyScopes,
             },
           });
 
@@ -425,7 +426,7 @@ function AdminUsers() {
         // Reload users list
         await refreshUsers();
       } catch (err) {
-        setError(extractErrorMessage(err, "Failed to create NHI account"));
+        setError(getApiErrorMessage(err, "Failed to create NHI account"));
       } finally {
         setCreateLoading(false);
       }
@@ -444,6 +445,7 @@ function AdminUsers() {
       description: user.description,
       initialApiKeyName: "",
       initialApiKeyExpiresAt: "",
+      initialApiKeyScopes: ["api:read"],
     });
     setError(null);
   };
@@ -484,7 +486,7 @@ function AdminUsers() {
       closeEditUserModal();
       showActionSuccess("User updated successfully");
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to update user"));
+      setError(getApiErrorMessage(err, "Failed to update user"));
     } finally {
       setEditLoading(false);
     }
@@ -504,7 +506,7 @@ function AdminUsers() {
       );
       await refreshUsers();
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to update user status"));
+      setError(getApiErrorMessage(err, "Failed to update user status"));
     } finally {
       setActionLoading(null);
     }
@@ -529,7 +531,7 @@ function AdminUsers() {
       });
       await refreshUsers();
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to issue password reset"));
+      setError(getApiErrorMessage(err, "Failed to issue password reset"));
     } finally {
       setActionLoading(null);
     }
@@ -545,7 +547,7 @@ function AdminUsers() {
       });
       setUserApiKeys((prev) => ({ ...prev, [userId]: keys }));
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to load API keys"));
+      setError(getApiErrorMessage(err, "Failed to load API keys"));
     } finally {
       setApiKeysLoading(null);
     }
@@ -576,7 +578,7 @@ function AdminUsers() {
         );
       setUserPasskeys((prev) => ({ ...prev, [userId]: passkeys }));
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to load passkeys"));
+      setError(getApiErrorMessage(err, "Failed to load passkeys"));
     } finally {
       setPasskeysLoading(null);
     }
@@ -593,30 +595,37 @@ function AdminUsers() {
         "display",
       ),
       userId,
+      scopes: ["api:read"],
     });
+    setCreateApiKeyError(null);
     setShowCreateApiKeyModal(true);
   };
 
   const handleCreateApiKey = async () => {
     if (!createApiKeyFormData.name || !createApiKeyFormData.expiresAt) {
-      setError("Name and expiration date are required");
+      setCreateApiKeyError("Name and expiration date are required");
+      return;
+    }
+    if (createApiKeyFormData.scopes.length === 0) {
+      setCreateApiKeyError("Select at least one API key permission");
       return;
     }
 
     const expiresAtDate = parseISO8601(createApiKeyFormData.expiresAt);
     if (!expiresAtDate) {
-      setError("Expiration date is invalid");
+      setCreateApiKeyError("Expiration date is invalid");
       return;
     }
 
     try {
       setCreateApiKeyLoading(true);
-      setError(null);
+      setCreateApiKeyError(null);
       const response = await ApiKeysService.createApiKeyApiV1ApiKeysPost({
         requestBody: {
           name: createApiKeyFormData.name,
           expires_at: expiresAtDate.toISOString(),
           user_id: createApiKeyFormData.userId,
+          scopes: createApiKeyFormData.scopes,
         },
       });
 
@@ -626,7 +635,7 @@ function AdminUsers() {
       // Reload the user's API keys
       await loadUserApiKeys(createApiKeyFormData.userId);
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to create API key"));
+      setCreateApiKeyError(getApiErrorMessage(err, "Failed to create API key"));
     } finally {
       setCreateApiKeyLoading(false);
     }
@@ -640,7 +649,7 @@ function AdminUsers() {
       showActionSuccess("API key revoked successfully");
       await loadUserApiKeys(userId);
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to revoke API key"));
+      setError(getApiErrorMessage(err, "Failed to revoke API key"));
     } finally {
       setActionLoading(null);
     }
@@ -659,7 +668,7 @@ function AdminUsers() {
       showActionSuccess("Passkey revoked successfully");
       await loadUserPasskeys(userId);
     } catch (err) {
-      setError(extractErrorMessage(err, "Failed to revoke passkey"));
+      setError(getApiErrorMessage(err, "Failed to revoke passkey"));
     } finally {
       setActionLoading(null);
     }
@@ -800,6 +809,7 @@ function AdminUsers() {
       expiresAt={apiKey.expires_at}
       lastUsedAt={apiKey.last_used_at}
       revokedAt={apiKey.revoked_at}
+      scopes={apiKey.scopes}
       isExpired={isApiKeyExpired(apiKey.expires_at)}
       formatDate={formatApiKeyDate}
       onRevoke={() => handleRevokeApiKey(apiKey.id, userId)}
@@ -1229,7 +1239,16 @@ function AdminUsers() {
             >
               Cancel
             </Button>
-            <Button className="flex-1" onClick={handleCreateUser} loading={createLoading}>
+            <Button
+              className="flex-1"
+              onClick={handleCreateUser}
+              loading={createLoading}
+              disabled={
+                createLoading ||
+                (createFormData.accountType === "NHI" &&
+                  createFormData.initialApiKeyScopes.length === 0)
+              }
+            >
               {createFormData.accountType === "HUMAN"
                 ? "Create User"
                 : "Create Service Account"}
@@ -1361,33 +1380,35 @@ function AdminUsers() {
                     Override timestamps
                   </label>
 
-                  <TextField
-                    className="h-auto w-full flex-none"
-                    label="Initial API Key Name"
-                    helpText="A descriptive name for the initial API key"
-                  >
-                    <TextField.Input
-                      placeholder="production-key"
-                      value={createFormData.initialApiKeyName}
-                      onChange={(e) =>
-                        updateCreateFormField(
-                          "initialApiKeyName",
-                          e.target.value,
-                        )
+                  <div className="flex w-full flex-col gap-3">
+                    <span className="text-body-bold font-body-bold text-default-font">
+                      Initial API Key
+                    </span>
+                    <CreateApiKeyModalContent
+                      keyName={createFormData.initialApiKeyName}
+                      expiresAt={createFormData.initialApiKeyExpiresAt}
+                      scopes={createFormData.initialApiKeyScopes}
+                      availableScopes={allowedApiKeyScopesForRole(
+                        createFormData.role,
+                      )}
+                      onKeyNameChange={(value) =>
+                        updateCreateFormField("initialApiKeyName", value)
                       }
+                      onExpiresAtChange={(value) =>
+                        updateCreateFormField("initialApiKeyExpiresAt", value)
+                      }
+                      onScopesChange={(value) =>
+                        updateCreateFormField("initialApiKeyScopes", value)
+                      }
+                      onCancel={closeCreateUserModal}
+                      onSubmit={handleCreateUser}
+                      loading={createLoading}
+                      keyNamePlaceholder="production-key"
+                      showHeader={false}
+                      showFrame={false}
+                      showActions={false}
                     />
-                  </TextField>
-
-                  <DateTimeManager
-                    className="h-auto w-full flex-none"
-                    label="API Key Expiration"
-                    helpText="When the initial API key should expire"
-                    value={createFormData.initialApiKeyExpiresAt}
-                    onChange={(value) =>
-                      updateCreateFormField("initialApiKeyExpiresAt", value)
-                    }
-                    showNowButton={false}
-                  />
+                  </div>
                 </>
               )}
 
@@ -1405,7 +1426,7 @@ function AdminUsers() {
                           ? "brand-primary"
                           : "neutral-secondary"
                       }
-                      onClick={() => updateCreateFormField("role", role)}
+                      onClick={() => updateCreateRole(role)}
                     >
                       {role}
                     </Button>
@@ -1587,17 +1608,28 @@ function AdminUsers() {
             >
               Cancel
             </Button>
-            <Button className="flex-1" onClick={handleCreateApiKey} loading={createApiKeyLoading}>
+            <Button
+              className="flex-1"
+              onClick={handleCreateApiKey}
+              loading={createApiKeyLoading}
+              disabled={createApiKeyFormData.scopes.length === 0}
+            >
               Create Key
             </Button>
           </div>
         }
       >
         <CreateApiKeyModalContent
+          error={createApiKeyError}
           keyName={createApiKeyFormData.name}
           expiresAt={createApiKeyFormData.expiresAt}
+          scopes={createApiKeyFormData.scopes}
+          availableScopes={allowedApiKeyScopesForRole(
+            users.find((user) => user.id === createApiKeyFormData.userId)?.role,
+          )}
           onKeyNameChange={(value) => updateCreateApiKeyField("name", value)}
           onExpiresAtChange={(value) => updateCreateApiKeyField("expiresAt", value)}
+          onScopesChange={(value) => updateCreateApiKeyField("scopes", value)}
           onCancel={closeCreateApiKeyModal}
           onSubmit={handleCreateApiKey}
           loading={createApiKeyLoading}

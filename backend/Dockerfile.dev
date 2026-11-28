@@ -1,30 +1,35 @@
-FROM python:3.11-slim
+FROM node:24.22.3-trixie-slim AS mermaid-validator
+
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* \
+    && npm install --global npm@11.21.3 --no-audit --no-fund
+
+WORKDIR /opt/mermaid-validator
+
+COPY scripts/mermaid-validator/package.json scripts/mermaid-validator/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
+
+COPY scripts/mermaid-validator/validate_mermaid_syntax.mjs ./
+
+FROM python:3.11.18-slim-trixie
 
 WORKDIR /app
 
-ARG NODE_MAJOR=24
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     gcc \
-    gnupg \
     libmagic1 \
+    libstdc++6 \
     postgresql-client \
-    && mkdir -p /etc/apt/keyrings \
-    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
-    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" > /etc/apt/sources.list.d/nodesource.list \
-    && apt-get update && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-COPY scripts/mermaid-validator/package.json /opt/mermaid-validator/package.json
-COPY scripts/mermaid-validator/validate_mermaid_syntax.mjs /opt/mermaid-validator/validate_mermaid_syntax.mjs
-RUN npm install --omit=dev --prefix /opt/mermaid-validator && npm cache clean --force
+COPY --from=mermaid-validator /usr/local/bin/node /usr/local/bin/node
+COPY --from=mermaid-validator /opt/mermaid-validator /opt/mermaid-validator
 
 # Copy requirements first for better layer caching
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade pip==26.3 setuptools==84.2.1 \
+    && python -m pip install --no-cache-dir -r requirements.txt
 
 # Copy and set entrypoint script
 COPY entrypoint.sh /entrypoint.sh

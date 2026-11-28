@@ -8,6 +8,7 @@ import re
 from typing import Any, List, Dict, Set
 from collections import defaultdict
 
+from app.core.validation import EXTRACTION_PATTERNS
 from app.mcp.schemas import ObservableSummary
 
 
@@ -25,10 +26,13 @@ DOMAIN_PATTERN = re.compile(r'\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b')
 MD5_PATTERN = re.compile(r'\b[a-fA-F0-9]{32}\b')
 SHA1_PATTERN = re.compile(r'\b[a-fA-F0-9]{40}\b')
 SHA256_PATTERN = re.compile(r'\b[a-fA-F0-9]{64}\b')
-EMAIL_PATTERN = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
+EMAIL_PATTERN = EXTRACTION_PATTERNS["email"]
 
 
-def extract_observables(timeline_items: Any, max_observables: int = 20) -> List[ObservableSummary]:
+def extract_observables(
+    timeline_items: Any,
+    max_observables: int | None = 20,
+) -> List[ObservableSummary]:
     """Extract and deduplicate observables from timeline items.
     
     Args:
@@ -98,8 +102,7 @@ def extract_observables(timeline_items: Any, max_observables: int = 20) -> List[
     ]
     observables.sort(key=lambda x: x.count, reverse=True)
     
-    # Limit to max_observables
-    return observables[:max_observables]
+    return observables if max_observables is None else observables[:max_observables]
 
 
 def _extract_from_text(text: str, observable_counts: Dict[tuple, int]) -> None:

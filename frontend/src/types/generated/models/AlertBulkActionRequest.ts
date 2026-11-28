@@ -9,7 +9,7 @@ import type { TriageDisposition } from './TriageDisposition';
  */
 export type AlertBulkActionRequest = {
     alert_ids: Array<number>;
-    action: 'update_status' | 'link_case' | 'create_case' | 'close_duplicate' | 'add_tags' | 'assign';
+    action: 'update' | 'update_status' | 'link_case' | 'create_case' | 'close_duplicate' | 'add_tags' | 'assign';
     status?: (AlertStatus | null);
     disposition?: (TriageDisposition | null);
     case_id?: (number | null);

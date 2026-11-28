@@ -26,6 +26,7 @@ export function SearchHighlight({ children }: SearchHighlightProps) {
 
   return (
     <span
+      data-search-highlight
       className={cn(
         isDarkTheme ? SEARCH_HIGHLIGHT_DARK_CLASSES : SEARCH_HIGHLIGHT_LIGHT_CLASSES
       )}

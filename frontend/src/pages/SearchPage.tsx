@@ -28,6 +28,7 @@ import { SearchResultRow } from '@/components/search/SearchResultRow';
 import { ExtendedSearchResultItem, getEntityPath, isSearchQueryValid } from '@/components/search/searchUtils';
 
 import { Bell, CheckSquare, NotebookPen, Search, X } from 'lucide-react';
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 /**
  * Get the icon component for an entity type
  */
@@ -48,6 +49,7 @@ function EntityIcon({ type }: { type: EntityType }) {
  * Main SearchPage component
  */
 export function SearchPage() {
+  useDocumentTitle("Search");
   const navigate = useNavigate();
 
   const {

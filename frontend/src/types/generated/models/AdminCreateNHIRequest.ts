@@ -35,5 +35,9 @@ export type AdminCreateNHIRequest = {
      * Expiration date for the initial API key (required)
      */
     initial_api_key_expires_at: string;
+    /**
+     * Explicit scopes for the initial API key; defaults to read-only
+     */
+    initial_api_key_scopes?: Array<string>;
 };
 

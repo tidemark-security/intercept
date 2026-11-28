@@ -12,7 +12,6 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { DefaultPageLayout } from '@/components/layout/DefaultPageLayout';
 import { ThreeColumnLayout } from '../components/layout/ThreeColumnLayout';
-import { getPersistedWidth } from '../components/layout/ColumnRail';
 import { AiChat } from '../components/ai';
 import { ChatHistoryList } from '@/components/ai/ChatHistoryList';
 import { useBreakpointContext } from '../contexts/BreakpointContext';
@@ -20,6 +19,7 @@ import { useSession } from '../contexts/sessionContext';
 import { useToast } from '@/contexts/ToastContext';
 import type { VisibleColumns } from '../components/layout/ThreeColumnLayout.types';
 import type { LangFlowSession } from '../services/langflowApi';
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 // LocalStorage keys for persistence
 const HISTORY_COLLAPSED_KEY = 'ai-chat-history-collapsed';
@@ -75,6 +75,7 @@ const aiChatColumnConfig = {
 };
 
 export function AIChat() {
+  useDocumentTitle("AI Chat");
   const [searchParams, setSearchParams] = useSearchParams();
   const { breakpoint } = useBreakpointContext();
   const { user, isAdmin } = useSession();
@@ -135,12 +136,6 @@ export function AIChat() {
       localStorage.setItem(HISTORY_COLLAPSED_KEY, String(newValue));
       return newValue;
     });
-  }, []);
-
-  // Handle history width changes
-  const handleHistoryWidthChange = useCallback((width: number) => {
-    setHistoryWidth(width);
-    localStorage.setItem(HISTORY_WIDTH_KEY, String(width));
   }, []);
 
   // Adjust visible columns based on breakpoint and collapsed state
@@ -236,10 +231,12 @@ export function AIChat() {
         onVisibleColumnsChange={setVisibleColumns}
         columnConfig={aiChatColumnConfig}
         showLeftRail={breakpoint !== 'mobile'}
+        leftRailLabel="Resize chat history"
         leftRailCollapsed={historyCollapsed}
         onLeftRailToggle={handleToggleHistory}
         leftColumnWidth={historyWidth}
-        onLeftColumnWidthChange={handleHistoryWidthChange}
+        onLeftColumnWidthChange={setHistoryWidth}
+        leftColumnWidthStorageKey={HISTORY_WIDTH_KEY}
         leftColumn={
           <ChatHistoryList
             selectedSessionId={selectedSessionId}

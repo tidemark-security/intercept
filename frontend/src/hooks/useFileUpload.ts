@@ -72,6 +72,11 @@ export interface FileUploadState {
   itemId: string | null;
 }
 
+export type AttachmentUploadMetadata = Pick<
+  PresignedUploadRequest,
+  'description' | 'timestamp' | 'tags'
+>;
+
 interface UseFileUploadOptions {
   /** Alert ID to upload to (optional if caseId is provided) */
   alertId?: number;
@@ -252,7 +257,10 @@ export function useFileUpload({
   /**
    * Main upload function
    */
-  const uploadFile = useCallback(async (file: File) => {
+  const uploadFile = useCallback(async (
+    file: File,
+    metadata: AttachmentUploadMetadata = {},
+  ) => {
     let currentItemId: string | null = null;
 
     // Reset state
@@ -277,6 +285,7 @@ export function useFileUpload({
         filename: file.name,
         file_size: file.size,
         mime_type: detectedMimeType,
+        ...metadata,
       });
 
       currentItemId = uploadResponse.item_id;

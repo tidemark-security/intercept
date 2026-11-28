@@ -1,4 +1,4 @@
-import { Activity, Bell, Blocks, CheckSquare, Code, Cpu, Database, FileText, Fingerprint, Link, Mail, MessageSquare, MessageSquareText, Microscope, Network, Notebook, NotebookPen, Paperclip, Pen, Share2, Target, Terminal, User, UserX } from 'lucide-react';
+import { Activity, Bell, Blocks, CheckSquare, Code, Cpu, Database, FileText, Fingerprint, GitFork, Link, Mail, MessageSquare, MessageSquareText, Microscope, Network, Notebook, NotebookPen, Paperclip, Pen, Share2, Target, Terminal, User, UserX } from 'lucide-react';
 /**
  * Timeline item type mappings and utilities
  * 
@@ -23,6 +23,7 @@ export type TimelineItemType =
   | 'link'
   | 'ttp'
   | 'process'
+  | 'process_tree'
   | 'network_traffic'
   | 'registry_change'
   | 'forensic_artifact'
@@ -47,6 +48,7 @@ export const TIMELINE_ICONS: Record<TimelineItemType, React.ComponentType<any>> 
   link: Link,
   ttp: Blocks,
   process: Terminal,
+  process_tree: GitFork,
   network_traffic: Network,
   registry_change: Database,
   forensic_artifact: Microscope,
@@ -125,6 +127,11 @@ export const TIMELINE_ITEM_TYPE_CONFIG: Record<TimelineItemType, TimelineItemCon
     icon: TIMELINE_ICONS.process,
     label: 'Process',
     action: 'noted',
+  },
+  process_tree: {
+    icon: TIMELINE_ICONS.process_tree,
+    label: 'Process Tree',
+    action: 'added',
   },
   network_traffic: {
     icon: TIMELINE_ICONS.network_traffic,

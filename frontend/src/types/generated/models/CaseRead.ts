@@ -17,6 +17,7 @@ import type { NoteItem } from './NoteItem';
 import type { ObservableItem } from './ObservableItem';
 import type { Priority } from './Priority';
 import type { ProcessItem } from './ProcessItem';
+import type { ProcessTreeItem } from './ProcessTreeItem';
 import type { RegistryChangeItem } from './RegistryChangeItem';
 import type { SystemItem } from './SystemItem';
 import type { TaskItem } from './TaskItem';
@@ -37,7 +38,7 @@ export type CaseRead = {
     created_at: string;
     updated_at: string;
     closed_at?: (string | null);
-    timeline_items?: (Record<string, (DeletedItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AlertItem | AttachmentItem | CaseItem | EmailItem | ForensicArtifactItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | RegistryChangeItem | SystemItem | TaskItem | TTPItem)> | null);
+    timeline_items?: (Record<string, (DeletedItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AlertItem | AttachmentItem | CaseItem | EmailItem | ForensicArtifactItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | ProcessTreeItem | RegistryChangeItem | SystemItem | TaskItem | TTPItem)> | null);
     readonly human_id: string;
 };
 

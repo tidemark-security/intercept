@@ -25,8 +25,8 @@ import {
   listContextEntries,
   updateContextEntry,
 } from '@/services/contextEntriesApi';
-
-const QUERY_KEY = ['context-entries'] as const;
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
+import { queryKeys } from '@/hooks/queryKeys';
 
 const CRITERION_OPTIONS: { value: ContextCriterionType; label: string; placeholder: string }[] = [
   { value: 'ALERT_SOURCE', label: 'Alert source', placeholder: 'edr-*' },
@@ -102,6 +102,7 @@ function parseIdFilter(value: string | null): Set<number> {
 }
 
 export default function ContextEntries() {
+  useDocumentTitle("Context");
   const { isAuditor } = useSession();
   const { showToast } = useToast();
   const queryClient = useQueryClient();
@@ -116,7 +117,7 @@ export default function ContextEntries() {
   const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
 
   const contextQuery = useQuery({
-    queryKey: [...QUERY_KEY, showExpired],
+    queryKey: queryKeys.contextEntries.list(showExpired),
     queryFn: () => listContextEntries(showExpired),
   });
 
@@ -126,7 +127,10 @@ export default function ContextEntries() {
     setDrawerMode(null);
   };
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: QUERY_KEY });
+  const invalidate = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: queryKeys.contextEntries.listBase() }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.alert.detailsBase() }),
+  ]);
 
   const saveMutation = useMutation({
     mutationFn: (payload: ContextEntryPayload) =>

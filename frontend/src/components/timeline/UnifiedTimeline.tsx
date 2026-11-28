@@ -18,7 +18,6 @@ import { useBreakpointContext } from '@/contexts/BreakpointContext';
 import { useAutoScrollToTimelineItem, groupTimelineItems } from '@/components/timeline/timelineUtils';
 import { useResolvedLinkTemplates } from '@/hooks/useUserLinkTemplates';
 import { TriageRecommendationCard } from '@/components/triage/TriageRecommendationCard';
-import { TriageRequestCard } from '@/components/triage/TriageRequestCard';
 import { PicerlStage } from '@/components/misc/PicerlStage';
 // Import handlers to ensure they're registered
 import '@/components/timeline/eventHandlers';
@@ -26,8 +25,10 @@ import type { UnifiedTimelineProps, UnifiedEntity } from './UnifiedTimeline.type
 import type { TimelineItem } from '@/types/timeline';
 import type { TimelineItemType } from '@/types/drafts';
 import type { AlertRead } from '@/types/generated/models/AlertRead';
+import type { AlertReadWithCase } from '@/types/generated/models/AlertReadWithCase';
 import type { AlertStatus } from '@/types/generated/models/AlertStatus';
 import InterceptLogo from '@/assets/Intercept-Green.svg';
+import { QueueSearchHighlightScope } from '@/components/search/QueueSearchHighlight';
 import InterceptLogoBlack from '@/assets/Intercept-Black.svg';
 import { ContextCard } from '@/components/cards/ContextCard';
 import { EntityMetadataCard } from '@/components/cards/EntityMetadataCard';
@@ -38,7 +39,6 @@ import { findTimelineItem } from "@/utils/timelineUtils";
 import { compareTimelineItems, getTimelineItems } from "@/utils/timelineHelpers";
 import { useTheme } from '@/contexts/ThemeContext';
 import { cn } from '@/utils/cn';
-import { formatPresenceText } from '@/utils/presenceText';
 import { PICERL_STAGES, type PICERLStage } from '@/types/caseRunbooks';
 import { Badge } from '@/components/data-display/Badge';
 import type { TaskRead } from '@/types/generated/models/TaskRead';
@@ -356,6 +356,21 @@ function PICERLSwimlaneView({
     </div>
   );
 }
+
+function TimelinePlaceholder() {
+  const { resolvedTheme } = useTheme();
+  const logoSrc = resolvedTheme === 'dark' ? InterceptLogo : InterceptLogoBlack;
+
+  return (
+    <div
+      data-timeline-placeholder
+      className="flex grow shrink-0 basis-0 flex-col items-center justify-center gap-2 self-stretch rounded-md px-12 py-12"
+    >
+      <img className="flex-none" src={logoSrc} alt="Intercept Logo" />
+    </div>
+  );
+}
+
 /**
  * UnifiedTimeline - Displays entity details, timeline items, and quick terminal
  * 
@@ -387,20 +402,8 @@ function PICERLSwimlaneView({
  * ```
  */
 export function UnifiedTimeline(props: UnifiedTimelineProps) {
-  const { resolvedTheme } = useTheme();
-  const logoSrc = resolvedTheme === 'dark' ? InterceptLogo : InterceptLogoBlack;
-
-  // Don't render if no entity is selected
   if (props.selectedEntityId === null) {
-    return (
-      <div className="flex grow shrink-0 basis-0 flex-col items-center justify-center gap-2 self-stretch rounded-md px-12 py-12">
-        <img
-          className="flex-none"
-          src={logoSrc}
-          alt="Intercept Logo"
-        />
-      </div>
-    );
+    return <TimelinePlaceholder />;
   }
 
   return (
@@ -408,13 +411,16 @@ export function UnifiedTimeline(props: UnifiedTimelineProps) {
       entityId={props.selectedEntityId}
       entityType={props.entityType}
     >
-      <UnifiedTimelineInner {...props} selectedEntityId={props.selectedEntityId} />
+      <QueueSearchHighlightScope query={props.searchQuery ?? ""}>
+        <UnifiedTimelineInner {...props} selectedEntityId={props.selectedEntityId} />
+      </QueueSearchHighlightScope>
     </ReplyProvider>
   );
 }
 
 function UnifiedTimelineInner({
   entityDetail,
+  alertDetailLayout = { triage: "embed", context: "embed" },
   entityType,
   selectedEntityId,
   currentUser,
@@ -423,7 +429,6 @@ function UnifiedTimelineInner({
   users,
   usersLoading,
   isUpdating,
-  presenceText,
   isOverlayOpen = false,
   mode = 'editable',
   onFlagItem,
@@ -462,6 +467,7 @@ function UnifiedTimelineInner({
   isRejectingRecommendation,
   acceptRecommendationError,
   onRetryTriage,
+  onRerunTriage,
   onRequestTriage,
   isEnqueuingTriage,
   isTriageEnabled,
@@ -471,11 +477,6 @@ function UnifiedTimelineInner({
   const isDarkTheme = resolvedTheme === 'dark';
   const isCompactHeader = isMobile || isTablet;
   const presenceViewers = usePresence(entityType, selectedEntityId);
-  const resolvedPresenceText = useMemo(
-    () => presenceText ?? formatPresenceText(presenceViewers, entityType, currentUser),
-    [currentUser, entityType, presenceText, presenceViewers],
-  );
-  const logoSrc = isDarkTheme ? InterceptLogo : InterceptLogoBlack;
 
   // Access reply context
   const { activeReplyParentId, activeReplyDepth, enterReplyMode, exitReplyMode, isInReplyMode } = useReplyMode();
@@ -946,15 +947,7 @@ function UnifiedTimelineInner({
 
   // If no entity selected, show placeholder
   if (!selectedEntityId) {
-    return (
-      <div className="flex grow shrink-0 basis-0 flex-col items-center justify-center gap-2 self-stretch rounded-md px-12 py-12">
-        <img
-          className="flex-none"
-          src={logoSrc}
-          alt="Intercept Logo"
-        />
-      </div>
-    );
+    return <TimelinePlaceholder />;
   }
 
   // Determine available item types based on entity type
@@ -972,6 +965,7 @@ function UnifiedTimelineInner({
       'email',
       'network_traffic',
       'process',
+      'process_tree',
       'registry_change',
       'ttp',
     ]
@@ -986,6 +980,7 @@ function UnifiedTimelineInner({
         'email',
         'network_traffic',
         'process',
+        'process_tree',
         'registry_change',
         'ttp',
         'forensic_artifact',
@@ -1002,10 +997,13 @@ function UnifiedTimelineInner({
         'email',
         'network_traffic',
         'process',
+        'process_tree',
         'registry_change',
         'ttp',
         'forensic_artifact',
       ];
+
+  const isGraphView = supportsGraphView && timelineViewMode === 'graph';
 
   return (
     <div className="flex h-full w-full flex-col items-start">
@@ -1033,7 +1031,7 @@ function UnifiedTimelineInner({
           users={users}
           isLoadingUsers={usersLoading}
           isUpdating={isUpdating}
-          presenceText={resolvedPresenceText}
+          presenceViewers={presenceViewers}
           onAssignToMe={onAssignToMe}
           onAssignToUser={onAssignToUser}
           onUnassign={onUnassign}
@@ -1094,7 +1092,7 @@ function UnifiedTimelineInner({
         )}
       >
         {isLoading ? (
-          <div className="flex w-full h-full items-center justify-center">
+          <div role="status" className="flex w-full h-full items-center justify-center">
             <span className="text-body font-body text-subtext-color">Loading {entityType} details...</span>
           </div>
         ) : error ? (
@@ -1102,7 +1100,7 @@ function UnifiedTimelineInner({
             <span className="text-body font-body text-error-color">Error loading {entityType} details</span>
           </div>
         ) : entityDetail ? (
-          supportsGraphView && timelineViewMode === 'graph' ? (
+          isGraphView ? (
             <TimelineGraphView
               items={sortedTimelineItems}
               selectedType={selectedType}
@@ -1121,50 +1119,48 @@ function UnifiedTimelineInner({
               {(() => {
                 const timelineItems = getTimelineItems(entityDetail);
                 const hasTimelineItems = timelineItems.length > 0;
+                const alert = entityType === 'alert' ? entityDetail as AlertReadWithCase : null;
+                const requestTriage = isTriageEnabled && !isEntityClosed && canRequestTriage ? onRequestTriage : undefined;
+                const standalonePanelClassName = cn(
+                  "mt-0 rounded-md border px-4 py-3",
+                  isDarkTheme ? "bg-neutral-0" : "bg-neutral-50",
+                );
+                const triage = alert && (alert.triage_recommendation || requestTriage) ? (
+                  <TriageRecommendationCard
+                    recommendation={alert.triage_recommendation}
+                    className={alertDetailLayout.triage === "embed" ? undefined : standalonePanelClassName}
+                    onRequest={requestTriage}
+                    onAccept={onAcceptTriageRecommendation || (() => { })}
+                    onReject={onRejectTriageRecommendation || (() => { })}
+                    onRetry={canReviewTriage ? onRetryTriage : undefined}
+                    onRerun={canReviewTriage && isTriageEnabled ? onRerunTriage : undefined}
+                    hasCurrentContext={Boolean(alert.context?.total_count)}
+                    onNavigateToCase={onNavigateToCase}
+                    isAccepting={isAcceptingRecommendation}
+                    isRejecting={isRejectingRecommendation}
+                    acceptError={acceptRecommendationError}
+                    isRetrying={isEnqueuingTriage}
+                    canReview={canReviewTriage}
+                  />
+                ) : null;
+                const context = alert?.context?.items?.length ? (
+                  <ContextCard
+                    context={alert.context}
+                    className={alertDetailLayout.context === "embed" ? undefined : standalonePanelClassName}
+                  />
+                ) : null;
 
                 return (
                   <div className={cn(
                     "flex w-full flex-col items-start",
                     timelineViewMode === 'swimlane' && "h-full min-h-0",
                   )}>
-                    {/* Triage Recommendation Card (Alerts only) */}
-                    {entityType === 'alert' && (entityDetail as AlertRead).triage_recommendation && (
-                      <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
-                        <TriageRecommendationCard
-                          recommendation={(entityDetail as AlertRead).triage_recommendation!}
-                          onAccept={onAcceptTriageRecommendation || (() => { })}
-                          onReject={onRejectTriageRecommendation || (() => { })}
-                          onRetry={canReviewTriage ? onRetryTriage : undefined}
-                          onNavigateToCase={onNavigateToCase}
-                          isAccepting={isAcceptingRecommendation}
-                          isRejecting={isRejectingRecommendation}
-                          acceptError={acceptRecommendationError}
-                          isRetrying={isEnqueuingTriage}
-                          canReview={canReviewTriage}
-                        />
+                    {((triage && alertDetailLayout.triage === "before") || (context && alertDetailLayout.context === "before")) && (
+                      <div className="flex w-full flex-col gap-6 px-6 pt-6 mobile:gap-2 mobile:px-2 mobile:pt-2">
+                        {alertDetailLayout.triage === "before" && triage}
+                        {alertDetailLayout.context === "before" && context}
                       </div>
                     )}
-
-                    {/* Triage Request Card (Alerts only - when no recommendation exists and triage is enabled) */}
-                    {entityType === 'alert' &&
-                      !(entityDetail as AlertRead).triage_recommendation &&
-                      isTriageEnabled &&
-                      !isEntityClosed &&
-                      canRequestTriage && (
-                        <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
-                          <TriageRequestCard
-                            onRequestTriage={onRequestTriage}
-                            isEnqueuing={isEnqueuingTriage}
-                          />
-                        </div>
-                      )}
-
-                    {entityType === 'alert' && Array.isArray((entityDetail as AlertRead).context?.items) && (entityDetail as AlertRead).context!.items!.length > 0 ? (
-                      <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
-                        <ContextCard context={(entityDetail as AlertRead).context} />
-                      </div>
-                    ) : null}
-
                     {/* Entity Metadata Card */}
                     <div className="flex w-full px-6 pt-6 mobile:px-2 mobile:pt-2">
                       <EntityMetadataCard
@@ -1172,8 +1168,20 @@ function UnifiedTimelineInner({
                         entityType={entityType}
                         isLoading={isLoading}
                         onUpdateTags={onUpdateTags}
+                        beforeDescription={(
+                          <>
+                            {alertDetailLayout.triage === "embed" && triage}
+                            {alertDetailLayout.context === "embed" && context}
+                          </>
+                        )}
                       />
                     </div>
+                    {((triage && alertDetailLayout.triage === "after") || (context && alertDetailLayout.context === "after")) && (
+                      <div className="flex w-full flex-col gap-6 px-6 pt-6 mobile:gap-2 mobile:px-2 mobile:pt-2">
+                        {alertDetailLayout.triage === "after" && triage}
+                        {alertDetailLayout.context === "after" && context}
+                      </div>
+                    )}
 
                     {/* Timeline Items */}
                     <div className={cn(

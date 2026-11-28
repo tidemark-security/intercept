@@ -1,15 +1,16 @@
-"""MCP Server with explicit tool registration.
+"""MCP server with an explicit, intentionally limited tool interface."""
 
-Replaces the auto-generated FastMCP.from_fastapi() with intentionally designed tools.
-Part of T013-T014 (Phase 2: MCP Server Skeleton).
-"""
+from collections.abc import Awaitable
+from typing import Annotated, Any, Callable, Literal, TypeVar
 
-from typing import Any
+from pydantic import Field
 
+from fastapi import HTTPException
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from fastmcp.server.auth import AuthProvider
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
-from mcp import McpError
-from mcp.types import ErrorData
+from mcp.shared.exceptions import MCPError
 
 from app.mcp.tools import (
     get_summary_tool,
@@ -18,9 +19,17 @@ from app.mcp.tools import (
     search_case_runbooks_tool,
     get_case_runbook_tool,
     record_triage_decision_tool,
-    add_timeline_item_tool,
     get_item_tool,
     validate_mermaid_tool,
+)
+from app.core.database import async_session_factory
+from app.mcp.principal import MCPPrincipalMiddleware
+from app.mcp.search_tools import find_observable_occurrences, search, search_queue
+from app.mcp.attachment_tools import finish_timeline_attachment
+from app.mcp.timeline_tools import add_timeline_item, describe_timeline_item
+from app.mcp.workflow_tools import (
+    accept_triage_recommendation, escalate_alert_to_case, get_triage_recommendation,
+    reject_triage_recommendation, set_status,
 )
 
 
@@ -38,6 +47,16 @@ _GET_ITEM_MISSING_SCOPE_MESSAGE = (
     "get_item now requires the parent entity scope. Send parent_entity_type "
     "plus parent_entity_id so the server only searches one alert, case, or task."
 )
+_ToolResult = TypeVar("_ToolResult")
+
+
+async def _run_tool(awaitable: Awaitable[_ToolResult]) -> _ToolResult:
+    """Expose only explicitly curated FastAPI errors through the MCP boundary."""
+    try:
+        return await awaitable
+    except HTTPException as exc:
+        message = exc.detail if isinstance(exc.detail, str) else "Tool request rejected"
+        raise ToolError(message) from exc
 
 
 class GetItemContractGuidanceMiddleware(Middleware):
@@ -58,35 +77,33 @@ class GetItemContractGuidanceMiddleware(Middleware):
         )
 
         if old_fields and has_parent_scope:
-            raise McpError(
-                ErrorData(code=-32602, message=_GET_ITEM_MIXED_CONTRACT_MESSAGE)
-            )
+            raise MCPError(code=-32602, message=_GET_ITEM_MIXED_CONTRACT_MESSAGE)
         if old_fields:
-            raise McpError(
-                ErrorData(code=-32602, message=_GET_ITEM_OLD_CONTRACT_MESSAGE)
-            )
+            raise MCPError(code=-32602, message=_GET_ITEM_OLD_CONTRACT_MESSAGE)
         if not has_parent_scope:
-            raise McpError(
-                ErrorData(code=-32602, message=_GET_ITEM_MISSING_SCOPE_MESSAGE)
-            )
+            raise MCPError(code=-32602, message=_GET_ITEM_MISSING_SCOPE_MESSAGE)
 
         return await call_next(context)
 
 
-# Create MCP server instance with explicit tool registration
-mcp = FastMCP("Tidemark Intercept MCP")
+# Keep unexpected implementation, database, and transport details out of MCP
+# protocol errors. Intentional client-facing failures become ToolError values.
+mcp = FastMCP("Tidemark Intercept MCP", mask_error_details=True)
 mcp.add_middleware(GetItemContractGuidanceMiddleware())
 
 
 # Register tools explicitly.
 
-@mcp.tool(annotations={"readOnlyHint": True})
 async def get_summary(
     kind: str,
     id: str,
     max_timeline_items: int = 25,
     max_observables: int = 20,
     since: str | None = None,
+    preview_chars: Annotated[int, Field(ge=100, le=4096)] = 1024,
+    timeline_offset: Annotated[int, Field(ge=0)] = 0,
+    compact: bool = False,
+    include_enrichments: bool = True,
 ) -> dict:
     """Get bounded context summary for an alert, case, or task.
     
@@ -100,14 +117,22 @@ async def get_summary(
     Args:
         kind: Entity type ("alert", "case", "task")
         id: Entity ID (forgiving format: "123", "ALT-000123", etc.)
-        max_timeline_items: Max timeline items to return (1-50, default: 25)
-        max_observables: Max observables to extract (1-50, default: 20)
-        since: ISO-8601 timestamp for incremental refresh (optional)
+        max_timeline_items: Max timeline items to return (1-200, default: 25)
+        max_observables: Max observables to extract (1-200, default: 20)
+        since: ISO-8601 timestamp for incremental refresh. Omitted includes all timeline dates.
+        preview_chars: Characters per timeline preview (100–4096). Use get_item for larger or structured items.
+        timeline_offset: Start at this position in the newest-first timeline. Continue with timeline.next_offset.
+        compact: Remove empty fields recursively for smaller clients. Defaults to preserving them.
+        include_enrichments: Include provider payloads in timeline previews by default. False returns previews with enrichment status only.
     """
-    return await get_summary_tool(kind, id, max_timeline_items, max_observables, since)
+    return await _run_tool(
+        get_summary_tool(
+            kind, id, max_timeline_items, max_observables, since, preview_chars, timeline_offset, compact,
+            include_enrichments=include_enrichments,
+        )
+    )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
 async def list_work(
     kind: str,
     statuses: list[str] | None = None,
@@ -135,30 +160,42 @@ async def list_work(
             - task: TODO, IN_PROGRESS, DONE
         priorities: Filter by priority. Valid values (all kinds): INFO, LOW, MEDIUM, HIGH, CRITICAL, EXTREME
         assignees: Filter by assignee usernames
-        contains: Search in title + description only (NOT timeline notes)
-        time_range_start: Filter by created_at >= (ISO-8601, default: 7 days ago)
+        contains: Queue search across entity and timeline content (2–200 characters). Use search_queue for queue sorting and tag filters.
+        time_range_start: Filter by created_at >= (ISO-8601, default: 7 days before the end or now)
         time_range_end: Filter by created_at <= (ISO-8601)
         limit: Max items to return (1-50, default: 50)
         cursor: Pagination cursor from previous response
     """
-    return await list_work_tool(
-        kind, statuses, priorities, assignees, contains,
-        time_range_start, time_range_end, limit, cursor
+    return await _run_tool(
+        list_work_tool(
+            kind,
+            statuses,
+            priorities,
+            assignees,
+            contains,
+            time_range_start,
+            time_range_end,
+            limit,
+            cursor,
+        )
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
 async def find_related(
     seed_kind: str,
     seed_id: str,
     max_matches: int = 10,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> dict:
-    """Find similar/related alerts, cases, or tasks.
+    """Find similar alerts. Case and task seeds return reason=unsupported_seed_kind and a suggested next tool. For shared IOC evidence across all kinds use find_observable_occurrences.
     
     Returns:
         - matches: List of related items with explainable reasons
         - seed: Original item metadata
         
+    By default similarity candidates span all creation dates. The similar-alert count in get_summary covers 30 days.
+
     Each match includes:
         - kind, id, title, status, priority
         - score: 0.0-1.0 similarity score
@@ -168,11 +205,12 @@ async def find_related(
         seed_kind: Seed entity type ("alert", "case", "task")
         seed_id: Seed entity ID (forgiving format)
         max_matches: Max matches to return (1-20, default: 10)
+        start_date: Inclusive ISO-8601 lower bound on candidate creation time. Defaults to unbounded.
+        end_date: Inclusive ISO-8601 upper bound on candidate creation time. Defaults to unbounded.
     """
-    return await find_related_tool(seed_kind, seed_id, max_matches)
+    return await _run_tool(find_related_tool(seed_kind, seed_id, max_matches, start_date, end_date))
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
 async def search_case_runbooks(
     query: str | None = None,
     limit: int = 10,
@@ -183,20 +221,18 @@ async def search_case_runbooks(
         query: Optional text search. Empty query returns published runbooks by title.
         limit: Max runbooks to return (1-25, default: 10).
     """
-    return await search_case_runbooks_tool(query, limit)
+    return await _run_tool(search_case_runbooks_tool(query, limit))
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
 async def get_case_runbook(id: str) -> dict:
     """Get lean detail for one published Case Runbook.
 
     Args:
         id: Case Runbook ID in forgiving format, e.g. "123" or "RUN-0000123".
     """
-    return await get_case_runbook_tool(id)
+    return await _run_tool(get_case_runbook_tool(id))
 
 
-@mcp.tool()
 async def record_triage_decision(
     alert_id: str,
     disposition: str,
@@ -215,7 +251,7 @@ async def record_triage_decision(
     """Record AI triage recommendation for an alert.
     
     Recommendations start as PENDING until analyst accepts/rejects.
-    New recommendation replaces existing (sets old to SUPERSEDED).
+    A new recommendation replaces the existing per-alert row in place.
     
     Returns:
         - mode: "dry_run" or "committed" or "replaced"
@@ -238,53 +274,33 @@ async def record_triage_decision(
         request_escalate_to_case: Optional/deprecated case creation request. Persisted value is derived from disposition.
         commit: If false, returns dry-run preview only (default: false)
     """
-    return await record_triage_decision_tool(
-        alert_id, disposition, confidence, reasoning_bullets,
-        recommended_actions, recommended_case_runbook_id, suggested_status, suggested_priority, suggested_assignee,
-        suggested_tags_add, suggested_tags_remove, request_escalate_to_case, commit
+    return await _run_tool(
+        record_triage_decision_tool(
+            alert_id,
+            disposition,
+            confidence,
+            reasoning_bullets,
+            recommended_actions,
+            recommended_case_runbook_id,
+            suggested_status,
+            suggested_priority,
+            suggested_assignee,
+            suggested_tags_add,
+            suggested_tags_remove,
+            request_escalate_to_case,
+            commit,
+        )
     )
 
 
-@mcp.tool()
-async def add_timeline_item(
-    target_kind: str,
-    target_id: str,
-    item_id: str,
-    body: str,
-    commit: bool = False,
-    created_at: str | None = None,
-    migration: bool = False,
-) -> dict:
-    """Add timeline note to alert, case, or task.
-    
-    Append-only operation. Idempotent via client-provided item_id.
-    
-    Returns:
-        - mode: "dry_run" or "committed" or "already_exists"
-        - item_id: Unique item identifier
-        - created_at: Timestamp if committed
-        - author: API key user
-        
-    Args:
-        target_kind: Entity type ("alert", "case", "task")
-        target_id: Entity ID (forgiving format)
-        item_id: Client-provided unique ID (for idempotency)
-        body: Note content (max 16,000 chars)
-        commit: If false, returns dry-run preview only (default: false)
-        created_at: Migration-only ISO-8601 creation timestamp.
-        migration: Required when an authorized NHI supplies created_at.
-    """
-    return await add_timeline_item_tool(target_kind, target_id, item_id, body, commit, created_at, migration)
-
-
-@mcp.tool(annotations={"readOnlyHint": True})
 async def get_item(
     parent_entity_type: str,
     parent_entity_id: str,
     item_id: str,
     mode: str = "full",
-    max_chars: int = 4000,
+    max_chars: int = 16000,
     cursor: str | None = None,
+    content_format: Literal["text", "json"] = "text",
 ) -> dict:
     """Get full content of truncated timeline item.
     
@@ -296,22 +312,31 @@ async def get_item(
         - item_id: Item identifier
         - content: Item content (bounded by max_chars)
         - metadata: Type, timestamp, author
-        - next_cursor: Pagination cursor if truncated
+        - full_length_chars: Length of the selected representation before slicing
+        - next_cursor: Forward cursor for mode="full"; tail returns the last page
         
     Args:
         parent_entity_type: Parent entity type ("alert", "case", or "task")
         parent_entity_id: Parent entity ID (forgiving format: "123", "CAS-000123", etc.)
         item_id: Timeline item ID
         mode: Retrieval mode ("full", "head", "tail")
-        max_chars: Max characters to return (100-10000, default: 4000)
-        cursor: Pagination cursor from previous response
+        content_format: text retrieves body or description. json retrieves the complete stored item including typed fields and replies.
+        max_chars: Max characters to return (100-64000, default: 16000)
+        cursor: Use with mode="full" and the same content_format to continue a full or head page.
     """
-    return await get_item_tool(
-        parent_entity_type, parent_entity_id, item_id, mode, max_chars, cursor
+    return await _run_tool(
+        get_item_tool(
+            parent_entity_type,
+            parent_entity_id,
+            item_id,
+            mode,
+            max_chars,
+            cursor,
+            content_format,
+        )
     )
 
 
-@mcp.tool(annotations={"readOnlyHint": True})
 async def validate_mermaid(
     diagram: str,
 ) -> dict:
@@ -325,8 +350,59 @@ async def validate_mermaid(
     Args:
         diagram: Raw Mermaid diagram definition to validate
     """
-    return await validate_mermaid_tool(diagram)
+    return await _run_tool(validate_mermaid_tool(diagram))
 
 
-# Export MCP server instance
-__all__ = ["mcp"]
+_TOOL_REGISTRATIONS: tuple[tuple[Callable[..., Any], dict[str, Any] | None], ...] = (
+    (get_summary, {"readOnlyHint": True}),
+    (list_work, {"readOnlyHint": True}),
+    (find_related, {"readOnlyHint": True}),
+    (search, {"readOnlyHint": True}),
+    (search_queue, {"readOnlyHint": True}),
+    (find_observable_occurrences, {"readOnlyHint": True}),
+    (get_triage_recommendation, {"readOnlyHint": True}),
+    (accept_triage_recommendation, None),
+    (reject_triage_recommendation, None),
+    (escalate_alert_to_case, None),
+    (set_status, None),
+    (search_case_runbooks, {"readOnlyHint": True}),
+    (get_case_runbook, {"readOnlyHint": True}),
+    (record_triage_decision, None),
+    (describe_timeline_item, {"readOnlyHint": True}),
+    (add_timeline_item, None),
+    (finish_timeline_attachment, None),
+    (get_item, {"readOnlyHint": True}),
+    (validate_mermaid, {"readOnlyHint": True}),
+)
+
+
+def _register_tools(server: FastMCP) -> None:
+    for tool_function, annotations in _TOOL_REGISTRATIONS:
+        server.tool(annotations=annotations)(tool_function)
+
+
+_register_tools(mcp)
+
+
+def create_mcp_server(
+    *,
+    auth: AuthProvider,
+    lifespan: Any,
+    session_factory: Callable[..., Any] = async_session_factory,
+) -> FastMCP:
+    """Build the authenticated server before its HTTP application is captured."""
+
+    server = FastMCP(
+        "Tidemark Intercept MCP",
+        auth=auth,
+        lifespan=lifespan,
+        mask_error_details=True,
+    )
+    server.add_middleware(MCPPrincipalMiddleware(session_factory=session_factory))
+    server.add_middleware(GetItemContractGuidanceMiddleware())
+    _register_tools(server)
+    return server
+
+
+# Export the schema-only server plus the runtime factory.
+__all__ = ["create_mcp_server", "mcp"]

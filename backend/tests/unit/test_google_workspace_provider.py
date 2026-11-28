@@ -2,8 +2,16 @@ import json
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from joserfc import jwt
+from joserfc.jwk import import_key
 
-from app.services.enrichment.providers.google_workspace import _normalize_private_key, google_workspace_provider
+from app.services.enrichment.providers.google_workspace import (
+    _build_jwt,
+    _normalize_private_key,
+    google_workspace_provider,
+)
 
 
 class StubSettings:
@@ -12,6 +20,9 @@ class StubSettings:
 
     async def get(self, key: str, default: object = None) -> object:
         return self._values.get(key, default)
+
+    async def get_many(self, defaults: dict[str, object]) -> dict[str, object]:
+        return {key: self._values.get(key, default) for key, default in defaults.items()}
 
 
 class FakeResponse:
@@ -117,6 +128,38 @@ def test_normalize_private_key_handles_json_wrapped_string() -> None:
     assert normalized == "-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----"
 
 
+def test_build_jwt_signs_rs256_service_account_assertion() -> None:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("ascii")
+    public_pem = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
+    token = _build_jwt(
+        {
+            "client_email": "service-account@example.com",
+            "private_key": private_pem,
+            "private_key_id": "key-id-1",
+        },
+        "admin@example.com",
+    )
+    decoded = jwt.decode(
+        token,
+        import_key(public_pem, "RSA"),
+        algorithms=["RS256"],
+    )
+
+    assert decoded.header["alg"] == "RS256"
+    assert decoded.header["kid"] == "key-id-1"
+    assert decoded.claims["iss"] == "service-account@example.com"
+    assert decoded.claims["sub"] == "admin@example.com"
+
+
 @pytest.mark.asyncio
 async def test_enrich_fetches_google_workspace_user(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.services.enrichment.providers.google_workspace.httpx.AsyncClient", FakeAsyncClient)
@@ -194,3 +237,99 @@ async def test_get_settings_falls_back_to_legacy_service_account_json() -> None:
     assert cfg is not None
     assert cfg["service_account"]["client_email"] == "svc@example.com"
     assert cfg["service_account"]["private_key"] == "-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----"
+
+
+@pytest.mark.asyncio
+async def test_bulk_sync_skips_only_malformed_provider_records(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class MixedRecordAsyncClient(FakeAsyncClient):
+        async def get(
+            self,
+            url: str,
+            headers: dict[str, str] | None = None,
+            params: dict[str, object] | None = None,
+        ):
+            assert headers == {"Authorization": "Bearer google-token"}
+            return FakeResponse(
+                200,
+                {
+                    "users": [
+                        {
+                            "id": "sensitive-malformed-google-id",
+                            "primaryEmail": ["not-a-string"],
+                        },
+                        {
+                            "id": "google-user-valid",
+                            "primaryEmail": "valid@example.com",
+                            "name": {"fullName": "Valid User"},
+                            "suspended": False,
+                        },
+                    ]
+                },
+            )
+
+    monkeypatch.setattr(
+        "app.services.enrichment.providers.google_workspace.httpx.AsyncClient",
+        MixedRecordAsyncClient,
+    )
+    monkeypatch.setattr(
+        "app.services.enrichment.providers.google_workspace._build_jwt",
+        lambda service_account, subject_email: "signed-jwt",
+    )
+    provider = google_workspace_provider.__class__()
+
+    results = await provider.bulk_sync(
+        db=None,  # type: ignore[arg-type]
+        settings=StubSettings(
+            {
+                "enrichment.google_workspace.client_email": "svc@example.com",
+                "enrichment.google_workspace.private_key": "key",
+                "enrichment.google_workspace.admin_email": "admin@example.com",
+                "enrichment.google_workspace.domain": "example.com",
+            }
+        ),  # type: ignore[arg-type]
+    )
+
+    assert [result.cache_key for result in results] == ["user:valid@example.com"]
+    assert (
+        "Google Workspace bulk sync skipped malformed user records (count=1)"
+        in caplog.messages
+    )
+    assert "sensitive-malformed-google-id" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [RuntimeError, TypeError, AttributeError])
+async def test_bulk_sync_propagates_unexpected_record_processing_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    error_type: type[Exception],
+) -> None:
+    monkeypatch.setattr(
+        "app.services.enrichment.providers.google_workspace.httpx.AsyncClient",
+        FakeAsyncClient,
+    )
+    monkeypatch.setattr(
+        "app.services.enrichment.providers.google_workspace._build_jwt",
+        lambda service_account, subject_email: "signed-jwt",
+    )
+    provider = google_workspace_provider.__class__()
+
+    def raise_defect(*args, **kwargs):
+        raise error_type("record processing defect")
+
+    monkeypatch.setattr(provider, "_build_result", raise_defect)
+
+    with pytest.raises(error_type, match="record processing defect"):
+        await provider.bulk_sync(
+            db=None,  # type: ignore[arg-type]
+            settings=StubSettings(
+                {
+                    "enrichment.google_workspace.client_email": "svc@example.com",
+                    "enrichment.google_workspace.private_key": "key",
+                    "enrichment.google_workspace.admin_email": "admin@example.com",
+                    "enrichment.google_workspace.domain": "example.com",
+                }
+            ),  # type: ignore[arg-type]
+        )

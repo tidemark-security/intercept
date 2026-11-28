@@ -8,11 +8,10 @@ import { request as __request } from '../core/request';
 export class DefaultService {
     /**
      * Root
-     * Root endpoint.
-     * @returns any Successful Response
+     * @returns string Successful Response
      * @throws ApiError
      */
-    public static rootGet(): CancelablePromise<any> {
+    public static rootGet(): CancelablePromise<Record<string, string>> {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/',
@@ -20,11 +19,10 @@ export class DefaultService {
     }
     /**
      * Health Check
-     * Health check endpoint.
-     * @returns any Successful Response
+     * @returns string Successful Response
      * @throws ApiError
      */
-    public static healthCheckHealthGet(): CancelablePromise<any> {
+    public static healthCheckHealthGet(): CancelablePromise<Record<string, string>> {
         return __request(OpenAPI, {
             method: 'GET',
             url: '/health',
@@ -32,15 +30,14 @@ export class DefaultService {
     }
     /**
      * Options Handler
-     * Handle CORS preflight requests.
-     * @returns any Successful Response
+     * @returns string Successful Response
      * @throws ApiError
      */
     public static optionsHandlerPathOptions({
         path,
     }: {
         path: string,
-    }): CancelablePromise<any> {
+    }): CancelablePromise<Record<string, string>> {
         return __request(OpenAPI, {
             method: 'OPTIONS',
             url: '/{path}',

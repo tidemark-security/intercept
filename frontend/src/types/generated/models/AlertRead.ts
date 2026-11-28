@@ -16,6 +16,7 @@ import type { NoteItem } from './NoteItem';
 import type { ObservableItem } from './ObservableItem';
 import type { Priority } from './Priority';
 import type { ProcessItem } from './ProcessItem';
+import type { ProcessTreeItem } from './ProcessTreeItem';
 import type { RegistryChangeItem } from './RegistryChangeItem';
 import type { SystemItem } from './SystemItem';
 import type { ThreatActorItem } from './ThreatActorItem';
@@ -27,7 +28,7 @@ import type { TTPItem } from './TTPItem';
 export type AlertRead = {
     title: string;
     description?: (string | null);
-    priority?: (Priority | null);
+    priority: Priority;
     source?: (string | null);
     id: number;
     status: AlertStatus;
@@ -38,7 +39,7 @@ export type AlertRead = {
     linked_at?: (string | null);
     created_at: string;
     updated_at: string;
-    timeline_items?: (Record<string, (DeletedItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AttachmentItem | CaseItem | EmailItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | RegistryChangeItem | SystemItem | TTPItem)> | null);
+    timeline_items?: (Record<string, (DeletedItem | InternalActorItem | ExternalActorItem | ThreatActorItem | AttachmentItem | CaseItem | EmailItem | LinkItem | NetworkTrafficItem | NoteItem | ObservableItem | ProcessItem | ProcessTreeItem | RegistryChangeItem | SystemItem | TTPItem)> | null);
     tags?: (Array<string> | null);
     triage_recommendation?: (TriageRecommendationRead | null);
     context?: (MatchedContextSection | null);

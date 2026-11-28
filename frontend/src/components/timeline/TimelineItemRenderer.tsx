@@ -4,7 +4,6 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { ActivityItem } from '@/components/data-display/ActivityItem';
 import { BaseCard } from '@/components/cards/BaseCard';
 import { Badge } from '@/components/data-display/Badge';
-import { AlertCard } from '@/components/timeline/AlertCard';
 import { AlertCardContent } from '@/components/timeline/AlertCardContent';
 import { TaskCardContent } from '@/components/timeline/TaskCardContent';
 import { CaseCardContent } from '@/components/timeline/CaseCardContent';
@@ -26,6 +25,7 @@ import type { AlertRead } from '@/types/generated/models/AlertRead';
 import type { AlertStatus } from '@/types/generated/models/AlertStatus';
 import type { TaskRead } from '@/types/generated/models/TaskRead';
 import type { TaskStatus } from '@/types/generated/models/TaskStatus';
+import type { TimelineActivityKind } from '@/types/generated/models/TimelineActivityKind';
 import type { CaseRead } from '@/types/generated/models/CaseRead';
 import type { CaseStatus } from '@/types/generated/models/CaseStatus';
 import type { Priority as PriorityType } from '@/types/generated/models/Priority';
@@ -49,7 +49,11 @@ import { cn } from '@/utils/cn';
 
 import { IconButton } from '@/components/buttons/IconButton';
 
-import { ArrowRight, Bot, Maximize2, MessageSquareReply as ReplyIcon, Minimize2, Pencil, RefreshCw } from 'lucide-react';
+import {
+  ArrowRight, ArrowRightLeft, Bot, CircleCheck, ClipboardCheck, CopyX, Link2, ListChecks,
+  LockKeyhole, Maximize2, MessageSquareReply as ReplyIcon, Minimize2, Pencil, RefreshCw,
+  UserRound, type LucideIcon,
+} from 'lucide-react';
 import { Tooltip } from '@/components/overlays/Tooltip';
 import {
   isTimelineItemEnrichmentActive,
@@ -59,22 +63,6 @@ import {
 
 const TIMELINE_ITEM_MAX_WIDTH_CLASS = 'max-w-[1024px]';
 
-type TaskTimelineItemWithRunbookMetadata = TimelineItem & {
-  picerl_stage?: TaskRead['picerl_stage'];
-  source_runbook?: number | null;
-  case_id?: number | null;
-  updated_at?: string;
-  source_timeline_items?: TaskRead['timeline_items'];
-};
-
-function getTaskRunbookMetadata(item: TimelineItem): Pick<TaskRead, 'picerl_stage' | 'source_runbook'> {
-  const taskItem = item as TaskTimelineItemWithRunbookMetadata;
-
-  return {
-    picerl_stage: taskItem.picerl_stage ?? null,
-    source_runbook: taskItem.source_runbook ?? null,
-  };
-}
 /**
  * Type guard for CaseItem
  */
@@ -138,23 +126,25 @@ function mergeTags(...tagGroups: string[][]): string[] {
   return merged;
 }
 
-function isAutomationNote(item: TimelineItem): boolean {
-  if (!isNoteItem(item)) {
-    return false;
+const NOTE_ACTIVITIES: Record<TimelineActivityKind, { label: string; icon: LucideIcon }> = {
+  status_changed: { label: 'Status changed', icon: ArrowRightLeft },
+  closed_as_duplicate: { label: 'Closed as duplicate', icon: CopyX },
+  assignee_changed: { label: 'Assignee changed', icon: UserRound },
+  linked_to_case: { label: 'Linked to case', icon: Link2 },
+  alert_resolved: { label: 'Alert resolved', icon: CircleCheck },
+  closed_with_case: { label: 'Closed with case', icon: LockKeyhole },
+  runbook_applied: { label: 'Runbook applied', icon: ListChecks },
+  recommendation_applied: { label: 'Recommendation applied', icon: ClipboardCheck },
+  automation_started: { label: 'Automation started', icon: Bot },
+  automation_completed: { label: 'Automation completed', icon: Bot },
+  automation_failed: { label: 'Automation failed', icon: Bot },
+};
+
+function getNoteActivity(item: TimelineItem) {
+  const kind = isNoteItem(item) ? item.activity_kind : null;
+  if (kind && Object.prototype.hasOwnProperty.call(NOTE_ACTIVITIES, kind)) {
+    return NOTE_ACTIVITIES[kind];
   }
-
-  const creator = item.created_by?.trim().toLowerCase();
-  const tags = getTimelineTags(item).map(tag => tag.toLowerCase());
-
-  return (
-    !creator ||
-    ['api_user', 'automation', 'langflow', 'system', 'tidemark_ai'].includes(creator) ||
-    tags.some(tag => tag.startsWith('automation-') || ['automation', 'bulk-action', 'enrichment', 'status-change', 'system'].includes(tag))
-  );
-}
-
-function getTimelineActorLabel(item: TimelineItem): string {
-  return isAutomationNote(item) ? 'system' : item.created_by || 'System';
 }
 
 function getLinkedEntityDescription(item: TimelineItem): string | undefined {
@@ -370,7 +360,8 @@ function renderNoteCard(
     itemKey?: React.Key;
   }
 ): React.ReactNode {
-  const isAutomation = isAutomationNote(currentItem);
+  const activity = getNoteActivity(currentItem);
+  const ActivityIcon = activity?.icon;
   const currentTags = getTimelineTags(currentItem);
   const noteDescription = hasText(currentItem.description) ? currentItem.description : null;
   const noteCardConfig = createTimelineCard(currentItem, {
@@ -388,15 +379,14 @@ function renderNoteCard(
   ) : null;
 
   clearCardLines(baseCardProps);
-  baseCardProps.title = isAutomation ? 'Automation note' : 'Analyst note';
-  baseCardProps.baseIcon = isAutomation ? <Bot /> : baseCardProps.baseIcon;
+  baseCardProps.title = activity?.label ?? 'Note';
+  if (ActivityIcon) baseCardProps.baseIcon = <ActivityIcon />;
   baseCardProps.size = 'x-large';
   baseCardProps.system = 'default';
   baseCardProps.className = cn(
     baseCardProps.className,
     'min-h-0 w-full',
     TIMELINE_ITEM_MAX_WIDTH_CLASS,
-    !isAutomation && 'border-neutral-1000',
     options.compactPreview && 'max-w-none !border-0 !bg-transparent',
     options.isGrouped && 'flex-1 self-stretch min-w-40',
   );
@@ -463,6 +453,31 @@ function getLinkedEntityState(item: TimelineItem): React.ComponentProps<typeof S
 
 function getLinkedEntityUpdatedAt(item: TimelineItem): string | null {
   return (item as TimelineItem & { updated_at?: string | null }).updated_at || item.created_at || null;
+}
+
+function getLinkedTaskData(item: TimelineItem): TaskRead | null {
+  if (!isTaskItem(item)) return null;
+
+  const task = item as typeof item & { case_id?: number | null; source_timeline_items?: TaskRead['timeline_items'] };
+  return {
+    id: item.task_id || 0,
+    human_id: item.task_human_id || '',
+    title: item.title || item.task_human_id || 'Task',
+    description: getLinkedEntityDescription(item) ?? item.description ?? null,
+    priority: item.priority ?? undefined,
+    status: normalizeTaskStatus(item.status),
+    created_at: item.created_at || '',
+    updated_at: getLinkedEntityUpdatedAt(item) || '',
+    assignee: item.assignee ?? null,
+    due_date: item.due_date ?? null,
+    created_by: item.created_by || 'System',
+    case_id: task.case_id ?? null,
+    linked_at: null,
+    timeline_items: task.source_timeline_items ?? null,
+    tags: getTimelineTags(item),
+    picerl_stage: item.picerl_stage ?? null,
+    source_runbook: item.source_runbook ?? null,
+  };
 }
 
 function renderRefreshEnrichmentAction(
@@ -646,13 +661,11 @@ export function TimelineItemRenderer({
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === 'dark';
 
-  const Icon = getTimelineItemIcon(item.type || 'note');
-  const ActivityIcon = isAutomationNote(item) ? Bot : Icon;
-  
-  const action = `${getTimelineItemAction(item.type || 'note')} ${getTimelineItemLabel(item.type || 'note')}`;
+  const activity = getNoteActivity(item);
+  const ActivityIcon = activity?.icon ?? getTimelineItemIcon(item.type || 'note');
+  const action = activity ? undefined : `${getTimelineItemAction(item.type || 'note')} ${getTimelineItemLabel(item.type || 'note')}`;
 
-  // Determine username based on item type
-  const username = getTimelineActorLabel(item);
+  const username = item.created_by?.trim() || 'System';
 
   // Determine variant based on item type
   const variant = undefined;
@@ -721,9 +734,9 @@ export function TimelineItemRenderer({
     return (
       <div className="flex min-w-0 flex-col gap-1.5">
         <div className="flex min-w-0 items-center gap-2">
-          <Icon className="h-3.5 w-3.5 flex-none text-subtext-color" />
+          <ActivityIcon className="h-3.5 w-3.5 flex-none text-subtext-color" />
           <span className="min-w-0 flex-1 truncate text-caption-bold font-caption-bold uppercase text-subtext-color">
-            {getTimelineItemLabel(item.type || 'note')}
+            {activity?.label ?? getTimelineItemLabel(item.type || 'note')}
           </span>
           <span className="flex-none text-caption font-caption text-subtext-color">
             {formatTimestampForCompact(item.timestamp || item.created_at || null)}
@@ -951,6 +964,57 @@ export function TimelineItemRenderer({
       </TimelineDescriptionBlock>
     );
   };
+
+  const renderLinkedEntityDetails = (
+    currentItem: TimelineItem,
+    cardProps: ReturnType<typeof createTimelineCard>,
+    actionButtons: React.ReactNode,
+    taskData = getLinkedTaskData(currentItem),
+  ): React.ReactNode => {
+    if (!isAlertItem(currentItem) && !isCaseItem(currentItem) && !isTaskItem(currentItem)) return null;
+
+    const identifier = isAlertItem(currentItem)
+      ? currentItem.alert_id ? convertNumericToAlertId(currentItem.alert_id) : 'Alert'
+      : isCaseItem(currentItem)
+        ? convertNumericToHumanId(currentItem.case_id)
+        : currentItem.task_human_id || 'Task';
+    const metadata = {
+      human_id: identifier,
+      title: currentItem.title || identifier,
+      description: getLinkedEntityDescription(currentItem),
+      priority: currentItem.priority ?? undefined,
+      created_at: currentItem.created_at || '',
+      updated_at: getLinkedEntityUpdatedAt(currentItem) || '',
+      assignee: currentItem.assignee,
+    };
+
+    let content: React.ReactNode;
+    if (isAlertItem(currentItem)) {
+      const alertData: Partial<AlertRead> & { title: string } = {
+        ...metadata,
+        id: currentItem.alert_id || 0,
+        status: currentItem.status ?? 'NEW',
+        source: (currentItem as TimelineItem & { source?: string }).source,
+        case_id: (currentItem as TimelineItem & { case_id?: number }).case_id,
+      };
+      content = <AlertCardContent data={alertData} showTags={false} variant="timeline" />;
+    } else if (isCaseItem(currentItem)) {
+      const caseData: Partial<CaseRead> & { title: string } = {
+        ...metadata,
+        id: currentItem.case_id,
+        status: currentItem.status ?? 'NEW',
+        created_by: currentItem.created_by || 'System',
+      };
+      content = <CaseCardContent data={caseData} showTags={false} variant="timeline" />;
+    } else {
+      content = taskData && <TaskCardContent data={taskData} showTags={false} variant="timeline" />;
+    }
+
+    cardProps.size = 'x-large';
+    cardProps.title = buildEntityTitle(identifier, currentItem.title, isDarkTheme);
+    clearCardLines(cardProps, { clearCharacterFlags: isTaskItem(currentItem) });
+    return withEnrichmentBlocks(currentItem, content, renderLinkedEntityFooter(currentItem, actionButtons));
+  };
   
   // Collect all item IDs for group-level actions
   const groupItemIds = isGrouped ? itemsToRender.map(i => i.id || '').filter(Boolean) : [];
@@ -1003,27 +1067,7 @@ export function TimelineItemRenderer({
     });
 
     const isCurrentItemLinked = isLinkedTimelineType(timelineCurrentItem.type);
-    const linkedTaskData: TaskRead | null = isTaskItem(timelineCurrentItem) ? {
-      id: timelineCurrentItem.task_id || 0,
-      human_id: timelineCurrentItem.task_human_id || '',
-      title: timelineCurrentItem.title || timelineCurrentItem.task_human_id || 'Task',
-      description: getLinkedEntityDescription(timelineCurrentItem) ?? timelineCurrentItem.description ?? null,
-      priority: timelineCurrentItem.priority ?? undefined,
-      status: normalizeTaskStatus(timelineCurrentItem.status),
-      created_at: timelineCurrentItem.created_at || '',
-      updated_at:
-        (timelineCurrentItem as TimelineItem & { updated_at?: string }).updated_at ||
-        timelineCurrentItem.created_at ||
-        '',
-      assignee: timelineCurrentItem.assignee ?? null,
-      due_date: timelineCurrentItem.due_date ?? null,
-      created_by: timelineCurrentItem.created_by || 'System',
-      case_id: (timelineCurrentItem as TimelineItem & { case_id?: number | null }).case_id ?? null,
-      linked_at: null,
-      timeline_items: (timelineCurrentItem as TimelineItem & { source_timeline_items?: TaskRead['timeline_items'] }).source_timeline_items ?? null,
-      tags: getTimelineTags(timelineCurrentItem),
-      ...getTaskRunbookMetadata(timelineCurrentItem),
-    } : null;
+    const linkedTaskData = getLinkedTaskData(timelineCurrentItem);
     const linkedTaskEditButton = linkedTaskData && linkedTaskData.id > 0
       ? renderEditLinkedTaskAction(linkedTaskData)
       : null;
@@ -1047,7 +1091,7 @@ export function TimelineItemRenderer({
       entityType,
       actionButtons: refreshEnrichmentButton,
       enableActionMenu: isGrouped,
-      itemId: timelineCurrentItem.id,
+      itemId: timelineCurrentItem.id ?? undefined,
       onFlag,
       onHighlight,
       onDelete,
@@ -1058,29 +1102,25 @@ export function TimelineItemRenderer({
 
     const { children: cardChildren, actionButtons: cardActionButtons, ...baseCardProps } = cardConfig;
 
-    if (isAlertItem(timelineCurrentItem) || isTaskItem(timelineCurrentItem) || isCaseItem(timelineCurrentItem)) {
-      baseCardProps.size = 'x-large';
-    }
-
     baseCardProps.className = cn(
       baseCardProps.className,
       compactPreview && 'min-h-full max-w-none !border-0 !bg-transparent',
       isGrouped && `flex-1 self-stretch${isCurrentItemLinked ? ' min-w-40' : ''}`,
     );
 
-    baseCardProps.enableCopyInteractions = !isAlertItem(timelineCurrentItem) && !isTaskItem(timelineCurrentItem) && !isCaseItem(timelineCurrentItem);
+    baseCardProps.enableCopyInteractions = !isCurrentItemLinked;
 
     const description = timelineCurrentItem.description;
     const shouldRenderInlineDescription = hasText(description);
     const currentTags = getTimelineTags(timelineCurrentItem);
     const shouldRenderTags = currentTags.length > 0;
-    const shouldUseFooter = !isAlertItem(timelineCurrentItem) && !isTaskItem(timelineCurrentItem) && !isCaseItem(timelineCurrentItem) && (shouldRenderInlineDescription || shouldRenderTags || !!cardActionButtons);
+    const shouldUseFooter = !isCurrentItemLinked && (shouldRenderInlineDescription || shouldRenderTags || !!cardActionButtons);
     const descriptionNode = shouldUseFooter ? (
       <TimelineDescriptionBlock actionButtons={cardActionButtons} tags={currentTags} className="mt-auto">
         {shouldRenderInlineDescription ? <MarkdownContent content={description} /> : null}
       </TimelineDescriptionBlock>
     ) : null;
-    let renderedActionButtons = descriptionNode ? undefined : cardActionButtons;
+    const renderedActionButtons = descriptionNode || isCurrentItemLinked ? undefined : cardActionButtons;
 
     const cardBody = cardChildren ? (
       <div className="flex w-full flex-1 flex-col gap-3">
@@ -1088,102 +1128,14 @@ export function TimelineItemRenderer({
       </div>
     ) : null;
 
-    let children: React.ReactNode = withEnrichmentBlocks(timelineCurrentItem, cardBody, descriptionNode);
-
-    if (isAlertItem(timelineCurrentItem)) {
-      baseCardProps.size = 'x-large';
-      const alertId = timelineCurrentItem.alert_id ? convertNumericToAlertId(timelineCurrentItem.alert_id) : 'Alert';
-      baseCardProps.title = buildEntityTitle(alertId, timelineCurrentItem.title, isDarkTheme);
-      clearCardLines(baseCardProps);
-
-      const alertData: Partial<AlertRead> & { title: string } = {
-        id: timelineCurrentItem.alert_id || 0,
-        human_id: timelineCurrentItem.alert_id ? convertNumericToAlertId(timelineCurrentItem.alert_id) : undefined,
-        title:
-          timelineCurrentItem.title ||
-          (timelineCurrentItem.alert_id ? convertNumericToAlertId(timelineCurrentItem.alert_id) : 'Alert'),
-        description: getLinkedEntityDescription(timelineCurrentItem),
-        priority: timelineCurrentItem.priority,
-        status: ((timelineCurrentItem as TimelineItem & { status?: AlertStatus | null }).status ?? 'NEW') as AlertStatus,
-        created_at: timelineCurrentItem.created_at || '',
-        updated_at:
-          (timelineCurrentItem as TimelineItem & { updated_at?: string }).updated_at ||
-          timelineCurrentItem.created_at ||
-          '',
-        assignee: timelineCurrentItem.assignee,
-        source: (timelineCurrentItem as TimelineItem & { source?: string }).source,
-        case_id: (timelineCurrentItem as TimelineItem & { case_id?: number }).case_id,
-      };
-
-      children = withEnrichmentBlocks(timelineCurrentItem, (
-        <div className="w-full pt-2 flex flex-col gap-3">
-          <AlertCardContent data={alertData} showTags={false} variant="timeline" />
-        </div>
-      ), renderLinkedEntityFooter(timelineCurrentItem, cardActionButtons));
-      renderedActionButtons = undefined;
-    } else if (isTaskItem(timelineCurrentItem)) {
-      baseCardProps.size = 'x-large';
-      const taskId = timelineCurrentItem.task_human_id || 'Task';
-      baseCardProps.title = buildEntityTitle(taskId, timelineCurrentItem.title, isDarkTheme);
-      clearCardLines(baseCardProps, { clearCharacterFlags: true });
-
-      const taskData: TaskRead = linkedTaskData ?? {
-        id: timelineCurrentItem.task_id || 0,
-        human_id: timelineCurrentItem.task_human_id || '',
-        title: timelineCurrentItem.title || (timelineCurrentItem.task_human_id || 'Task'),
-        description: getLinkedEntityDescription(timelineCurrentItem),
-        priority: timelineCurrentItem.priority ?? undefined,
-        status: normalizeTaskStatus(timelineCurrentItem.status),
-        created_at: timelineCurrentItem.created_at || '',
-        updated_at:
-          (timelineCurrentItem as TimelineItem & { updated_at?: string }).updated_at ||
-          timelineCurrentItem.created_at ||
-          '',
-        assignee: timelineCurrentItem.assignee ?? null,
-        due_date: timelineCurrentItem.due_date ?? null,
-        created_by: timelineCurrentItem.created_by || 'System',
-        case_id: (timelineCurrentItem as TimelineItem & { case_id?: number | null }).case_id ?? null,
-        linked_at: null,
-        timeline_items: (timelineCurrentItem as TimelineItem & { source_timeline_items?: TaskRead['timeline_items'] }).source_timeline_items ?? null,
-        tags: getTimelineTags(timelineCurrentItem),
-        ...getTaskRunbookMetadata(timelineCurrentItem),
-      };
-
-      children = withEnrichmentBlocks(timelineCurrentItem, (
-        <div className="w-full pt-2 flex flex-col gap-3">
-          <TaskCardContent data={taskData} showTags={false} variant="timeline" />
-        </div>
-      ), renderLinkedEntityFooter(timelineCurrentItem, linkedTaskActions || cardActionButtons));
-      renderedActionButtons = undefined;
-    } else if (isCaseItem(timelineCurrentItem)) {
-      baseCardProps.size = 'x-large';
-      const caseHumanId = convertNumericToHumanId(timelineCurrentItem.case_id);
-      baseCardProps.title = buildEntityTitle(caseHumanId, timelineCurrentItem.title, isDarkTheme);
-      clearCardLines(baseCardProps);
-
-      const caseData: Partial<CaseRead> & { title: string } = {
-        id: timelineCurrentItem.case_id,
-        human_id: caseHumanId,
-        title: timelineCurrentItem.title || caseHumanId,
-        description: getLinkedEntityDescription(timelineCurrentItem),
-        priority: timelineCurrentItem.priority ?? undefined,
-        status: ((timelineCurrentItem as TimelineItem & { status?: CaseStatus | null }).status ?? 'NEW') as CaseStatus,
-        created_at: timelineCurrentItem.created_at || '',
-        updated_at:
-          (timelineCurrentItem as TimelineItem & { updated_at?: string }).updated_at ||
-          timelineCurrentItem.created_at ||
-          '',
-        assignee: timelineCurrentItem.assignee,
-        created_by: timelineCurrentItem.created_by || 'System',
-      };
-
-      children = withEnrichmentBlocks(timelineCurrentItem, (
-        <div className="w-full pt-2 flex flex-col gap-3">
-          <CaseCardContent data={caseData} showTags={false} variant="timeline" />
-        </div>
-      ), renderLinkedEntityFooter(timelineCurrentItem, cardActionButtons));
-      renderedActionButtons = undefined;
-    }
+    const children = isCurrentItemLinked
+      ? renderLinkedEntityDetails(
+        timelineCurrentItem,
+        baseCardProps,
+        linkedTaskData && linkedTaskActions ? linkedTaskActions : cardActionButtons,
+        linkedTaskData,
+      )
+      : withEnrichmentBlocks(timelineCurrentItem, cardBody, descriptionNode);
 
     const baseCardElement = (
       <BaseCard key={itemKey} {...baseCardProps} actionButtons={renderedActionButtons}>
@@ -1191,7 +1143,7 @@ export function TimelineItemRenderer({
       </BaseCard>
     );
 
-    if (isAlertItem(timelineCurrentItem) || isTaskItem(timelineCurrentItem) || isCaseItem(timelineCurrentItem)) {
+    if (isCurrentItemLinked) {
       return renderLinkedEntityCardShell(timelineCurrentItem, baseCardElement, false, itemKey);
     }
 
@@ -1219,7 +1171,8 @@ export function TimelineItemRenderer({
 
     const replyItem = timelineReply as TimelineItem;
 
-    if (isLinkedTimelineType(replyItem.type)) {
+    const isLinkedReply = isLinkedTimelineType(replyItem.type);
+    if (isLinkedReply) {
       const collapsedReplyCard = renderCollapsedLinkedEntityCard(replyItem);
       if (collapsedReplyCard) {
         return (
@@ -1252,19 +1205,15 @@ export function TimelineItemRenderer({
 
     const { children: replyCardChildren, actionButtons: replyCardActionButtons, ...baseReplyCardProps } = replyCardConfig;
 
-    if (isAlertItem(replyItem) || isTaskItem(replyItem) || isCaseItem(replyItem)) {
-      baseReplyCardProps.size = 'x-large';
-    }
+    baseReplyCardProps.enableCopyInteractions = !isLinkedReply;
 
-    baseReplyCardProps.enableCopyInteractions = !isAlertItem(replyItem) && !isTaskItem(replyItem) && !isCaseItem(replyItem);
-
-    const shouldUseFooter = !isAlertItem(replyItem) && !isTaskItem(replyItem) && !isCaseItem(replyItem) && (shouldRenderInlineDescription || replyTags.length > 0 || !!replyCardActionButtons);
+    const shouldUseFooter = !isLinkedReply && (shouldRenderInlineDescription || replyTags.length > 0 || !!replyCardActionButtons);
     const descriptionNode = shouldUseFooter ? (
       <TimelineDescriptionBlock actionButtons={replyCardActionButtons} tags={replyTags} className="mt-auto">
         {shouldRenderInlineDescription ? <MarkdownContent content={replyDescription} /> : null}
       </TimelineDescriptionBlock>
     ) : null;
-    let renderedReplyActionButtons = descriptionNode ? undefined : replyCardActionButtons;
+    const renderedReplyActionButtons = descriptionNode || isLinkedReply ? undefined : replyCardActionButtons;
 
     const replyCardBody = replyCardChildren ? (
       <div className="flex w-full flex-1 flex-col gap-3">
@@ -1272,41 +1221,12 @@ export function TimelineItemRenderer({
       </div>
     ) : null;
 
-    let children: React.ReactNode = withEnrichmentBlocks(replyItem, replyCardBody, descriptionNode);
-
-    if (isAlertItem(replyItem)) {
-      baseReplyCardProps.size = 'x-large';
-      clearCardLines(baseReplyCardProps);
-
-      const replyAlertData: Partial<AlertRead> & { title: string } = {
-        id: replyItem.alert_id || 0,
-        human_id: replyItem.alert_id ? convertNumericToAlertId(replyItem.alert_id) : undefined,
-        title:
-          replyItem.title ||
-          (replyItem.alert_id ? convertNumericToAlertId(replyItem.alert_id) : 'Alert'),
-        description: getLinkedEntityDescription(replyItem),
-        priority: replyItem.priority,
-        status: ((replyItem as TimelineItem & { status?: AlertStatus | null }).status ?? 'NEW') as AlertStatus,
-        created_at: replyItem.created_at || '',
-        updated_at:
-          (replyItem as TimelineItem & { updated_at?: string }).updated_at ||
-          replyItem.created_at ||
-          '',
-        assignee: replyItem.assignee,
-        source: (replyItem as TimelineItem & { source?: string }).source,
-        case_id: (replyItem as TimelineItem & { case_id?: number }).case_id,
-      };
-
-      children = withEnrichmentBlocks(replyItem, (
-        <div className="w-full pt-2 flex flex-col gap-3">
-          <AlertCard alertId={replyItem.alert_id || 0} data={replyAlertData} showTags={false} />
-        </div>
-      ), renderLinkedEntityFooter(replyItem, replyCardActionButtons));
-      renderedReplyActionButtons = undefined;
-    }
+    const children = isLinkedReply
+      ? renderLinkedEntityDetails(replyItem, baseReplyCardProps, replyCardActionButtons)
+      : withEnrichmentBlocks(replyItem, replyCardBody, descriptionNode);
 
     const baseCardElement = <BaseCard {...baseReplyCardProps} actionButtons={renderedReplyActionButtons}>{children}</BaseCard>;
-    const wrappedCardElement = isAlertItem(replyItem) || isTaskItem(replyItem) || isCaseItem(replyItem)
+    const wrappedCardElement = isLinkedReply
       ? renderLinkedEntityCardShell(replyItem, baseCardElement, false)
       : baseCardElement;
 
@@ -1319,7 +1239,7 @@ export function TimelineItemRenderer({
 
   // Build contents for the activity item
   // All items render description as markdown, with cards shown below for non-note types
-  let contents: React.ReactNode = null;
+  let contents: React.ReactNode;
 
   if (isNoteItem(item) && !isGrouped) {
     // Single notes use the same card framing as other timeline item types.
@@ -1383,16 +1303,17 @@ export function TimelineItemRenderer({
     <>
       {flattenedReplies.map((reply: TimelineItem, replyIndex: number) => {
         const isReplyDeleted = isDeletedItem(reply);
+        const replyActivity = getNoteActivity(reply);
         const ReplyItemIcon = isReplyDeleted
           ? getTimelineItemIcon(reply.original_type || 'note')
-          : isAutomationNote(reply)
-            ? Bot
-            : ReplyIcon;
+          : replyActivity?.icon ?? ReplyIcon;
         const replyAction = isReplyDeleted
           ? getDeletedItemAction(reply)
-          : `${getTimelineItemAction(reply.type || 'note')} ${getTimelineItemLabel(reply.type || 'note')}`;
+          : replyActivity ? undefined : `${getTimelineItemAction(reply.type || 'note')} ${getTimelineItemLabel(reply.type || 'note')}`;
         
-        const replyUsername = isReplyDeleted ? reply.deleted_by || 'System' : getTimelineActorLabel(reply);
+        const replyUsername = isReplyDeleted
+          ? reply.deleted_by || 'System'
+          : reply.created_by?.trim() || 'System';
         const isLastReply = replyIndex === flattenedReplies.length - 1;
 
         const replyContents = renderReplyContents(reply);

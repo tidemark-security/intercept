@@ -25,6 +25,7 @@ import { cn } from "@/utils/cn";
 
 import { ArrowDown, ArrowUp, ArrowUpDown, Bell, CheckSquare, Star, NotebookPen, Search, ThumbsDown, ThumbsUp } from 'lucide-react';
 import { IconWrapper } from "@/utils/IconWrapper";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 function TipBanner() {
   const { resolvedTheme } = useTheme();
@@ -114,6 +115,7 @@ function TipBanner() {
 }
 
 function HomeDashboard() {
+  useDocumentTitle("Home");
   const navigate = useNavigate();
   const { user } = useSession();
   const { data: stats, isLoading: statsLoading, error: statsError } = useDashboard({ myItems: true });

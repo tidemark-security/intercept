@@ -62,6 +62,7 @@ import {
   Upload,
   Workflow,
 } from "lucide-react";
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 const DEFAULT_CASE_CLOSURE_RECOMMENDED_TAGS = [
   "Resolved",
@@ -75,6 +76,9 @@ const DEFAULT_CASE_CLOSURE_RECOMMENDED_TAGS = [
 const EMPTY_TAGS: string[] = [];
 
 const LANGFLOW_SETUP_DEFAULT_USERNAME = "tidemark_ai";
+
+const MCP_AUTH_RESTART_DESCRIPTION =
+  "FastMCP selects its OIDC proxy or local OAuth provider when the backend starts. Restart every backend process after changing OIDC or MCP authentication settings.";
 
 const MAXMIND_DATABASES_QUERY_KEY = ["admin", "maxmind", "databases"] as const;
 const ENRICHMENT_PROVIDER_STATUSES_QUERY_KEY = [
@@ -112,6 +116,7 @@ const CUSTOM_KEYS = new Set([
   "storage.max_image_preview_size_mb",
   "storage.max_text_preview_size_mb",
   "langflow.base_url",
+  "langflow.intercept_mcp_url",
   "langflow.api_key",
   "langflow.default_flow_id",
   "langflow.alert_triage_flow_id",
@@ -320,8 +325,6 @@ const deriveBackendApiBaseUrlFromMcpUrl = (
 
     if (normalizedPath.endsWith("/mcp/streamable")) {
       parsed.pathname = normalizedPath.slice(0, -15) || "/";
-    } else if (normalizedPath.endsWith("/mcp/sse")) {
-      parsed.pathname = normalizedPath.slice(0, -8) || "/";
     }
 
     return parsed.toString().replace(/\/$/, "");
@@ -331,6 +334,7 @@ const deriveBackendApiBaseUrlFromMcpUrl = (
 };
 
 function AdminSettings() {
+  useDocumentTitle("Settings");
   const { resolvedTheme } = useTheme();
   const isDarkTheme = resolvedTheme === "dark";
   const breakpoint = useBreakpoint();
@@ -354,7 +358,8 @@ function AdminSettings() {
   const [langflowSetupUsername, setLangflowSetupUsername] = useState(
     LANGFLOW_SETUP_DEFAULT_USERNAME,
   );
-  const [langflowSetupMcpUrl, setLangflowSetupMcpUrl] = useState("");
+  const [langflowSetupMcpUrlOverride, setLangflowSetupMcpUrlOverride] =
+    useState<string | null>(null);
   const [langflowSetupPage, setLangflowSetupPage] = useState<
     "overview" | "configure" | "results"
   >("overview");
@@ -418,16 +423,10 @@ function AdminSettings() {
     (typeof window !== "undefined"
       ? window.location.origin
       : "http://localhost:8000");
-  const defaultLangflowMcpUrl = useMemo(
-    () => deriveLangflowMcpStreamableUrl(backendApiBaseUrl),
-    [backendApiBaseUrl],
-  );
-
-  useEffect(() => {
-    setLangflowSetupMcpUrl((currentValue) =>
-      currentValue.trim() ? currentValue : defaultLangflowMcpUrl,
-    );
-  }, [defaultLangflowMcpUrl]);
+  const defaultLangflowMcpUrl =
+    getSetting("langflow.intercept_mcp_url") ||
+    deriveLangflowMcpStreamableUrl(backendApiBaseUrl);
+  const langflowSetupMcpUrl = langflowSetupMcpUrlOverride ?? defaultLangflowMcpUrl;
 
   const { data: maxMindDatabases = [], isLoading: maxMindDatabasesLoading } =
     useQuery({
@@ -776,7 +775,7 @@ function AdminSettings() {
   const openLangflowSetupModal = () => {
     setLangflowSetupStatus(null);
     setLangflowSetupPage("overview");
-    setLangflowSetupMcpUrl(defaultLangflowMcpUrl);
+    setLangflowSetupMcpUrlOverride(null);
     setShowLangflowSetupModal(true);
   };
 
@@ -1737,6 +1736,13 @@ function AdminSettings() {
                           ? "OIDC sign-in swaps the external token for the app's normal session cookie."
                           : "Enable OIDC to route sign-in through your external identity provider."
                       }
+                      isDarkTheme={isDarkTheme}
+                    />
+
+                    <StatusCallout
+                      variant="warning"
+                      title="Backend restart required"
+                      description={MCP_AUTH_RESTART_DESCRIPTION}
                       isDarkTheme={isDarkTheme}
                     />
 
@@ -3861,13 +3867,13 @@ function AdminSettings() {
                 <TextField
                   className="h-auto w-full flex-none"
                   label="Intercept MCP Streamable HTTP URL"
-                  helpText="This is automatically detected from the backend URL and defaults to /mcp/streamable/. Override it in advanced use cases, but leave it as is if you're not sure."
+                  helpText="Use the /mcp/streamable/ URL that Langflow can reach. Your deployment can provide a default."
                 >
                   <TextField.Input
                     placeholder={defaultLangflowMcpUrl}
                     value={langflowSetupMcpUrl}
                     onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
-                      setLangflowSetupMcpUrl(event.target.value)
+                      setLangflowSetupMcpUrlOverride(event.target.value)
                     }
                   />
                 </TextField>
@@ -4860,6 +4866,14 @@ function AdvancedCategorySection({
 
       {open && (
         <div className="flex flex-col gap-3 pb-4 pl-6">
+          {category === "mcp" && (
+            <StatusCallout
+              variant="warning"
+              title="Backend restart required"
+              description={MCP_AUTH_RESTART_DESCRIPTION}
+              isDarkTheme={isDarkTheme}
+            />
+          )}
           {catSettings.map((s) => (
             <AdvancedSettingRow key={s.key} setting={s} onSave={onSave} />
           ))}

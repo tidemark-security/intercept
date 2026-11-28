@@ -23,6 +23,7 @@ import { useReportsURLState, ReportTabType } from '@/hooks/useReportsURLState';
 import { formatAbsoluteTime, getHourOfDayForPreference } from '@/utils/dateFormatters';
 import { Activity, AlertTriangle, Bell, Bot, CheckCircle, ChevronLeft, ChevronRight, Clock, ExternalLink, MessageSquare, NotebookPen, ThumbsDown, ThumbsUp, TrendingUp, Users } from 'lucide-react';
 import type { ChatFeedbackMessageDetail, MessageFeedback } from '@/types/generated';
+import { useDocumentTitle } from "@/hooks/useDocumentTitle";
 
 type TabType = ReportTabType;
 type AlertGroupBy = 'source' | 'title' | 'tag';
@@ -139,6 +140,7 @@ function parseConfidenceBucketToPercent(bucket: string | null | undefined): numb
 }
 
 function Reports() {
+  useDocumentTitle("Reports");
   const { user } = useSession();
   const { resolvedTheme } = useTheme();
   const { timezonePreference } = useTimezonePreference();

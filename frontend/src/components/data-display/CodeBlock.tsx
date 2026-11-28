@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
 import SyntaxHighlighter from 'react-syntax-highlighter/dist/esm/prism-light';
+import createCodeElement from 'react-syntax-highlighter/dist/esm/create-element';
+import { QueueSearchText } from '@/components/search/QueueSearchHighlight';
+import { useQueueSearchPattern } from '@/components/search/queueSearchMatches';
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Check, Copy } from 'lucide-react';
 
@@ -76,6 +79,13 @@ SyntaxHighlighter.registerLanguage('yaml', yaml);
 
 import { cn } from '@/utils/cn';
 
+// Long enough to overflow any preview width, short enough to keep highlighting cheap.
+export const TRUNCATED_LINE_MAX_CHARS = 500;
+
+export function truncateLongLine(line: string, maxChars = TRUNCATED_LINE_MAX_CHARS): string {
+  return line.length > maxChars ? `${line.slice(0, maxChars)}…` : line;
+}
+
 export interface CodeBlockProps {
   language: string;
   code: string;
@@ -85,6 +95,8 @@ export interface CodeBlockProps {
   className?: string;
   /** When true and maxLines is set, show a "click to expand" footer that toggles inline. */
   collapsible?: boolean;
+  /** Keep each line on one row and cut it off with an ellipsis instead of wrapping. */
+  truncateLongLines?: boolean;
 }
 
 export const CodeBlock: React.FC<CodeBlockProps> = ({
@@ -95,18 +107,23 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
   showLineNumbers = true,
   className,
   collapsible = false,
+  truncateLongLines = false,
 }) => {
   const [isHovered, setIsHovered] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
+  const searchPattern = useQueueSearchPattern();
 
   const totalLines = code.split('\n').length;
   const isTruncated = Boolean(maxLines && totalLines > maxLines);
   const showTruncated = isTruncated && collapsible && !isExpanded;
 
-  const displayCode = maxLines && !isExpanded
+  const visibleCode = maxLines && !isExpanded
     ? code.split('\n').slice(0, maxLines).join('\n')
     : code;
+  const displayCode = truncateLongLines
+    ? visibleCode.split('\n').map((line) => truncateLongLine(line)).join('\n')
+    : visibleCode;
 
   const handleCopy = () => {
     navigator.clipboard.writeText(code)
@@ -144,22 +161,40 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({
       <SyntaxHighlighter
         language={language}
         style={resolvedTheme === "dark" ? oneDark : oneLight}
-        className="w-full min-w-0 max-w-full overflow-x-auto border border-neutral-border !mt-0"
+        className={cn(
+          "w-full min-w-0 max-w-full border border-neutral-border !mt-0",
+          truncateLongLines ? "overflow-x-hidden" : "overflow-x-auto"
+        )}
         customStyle={{ borderRadius: 0 }}
         showLineNumbers={showLineNumbers}
-        wrapLongLines
+        wrapLongLines={!truncateLongLines}
+        wrapLines={truncateLongLines || !!searchPattern}
+        renderer={searchPattern ? ({ rows, stylesheet, useInlineStyles }) => rows.map((node, index) => (
+          <QueueSearchText key={index}>
+            {createCodeElement({ node, stylesheet, useInlineStyles, key: index })}
+          </QueueSearchText>
+        )) : undefined}
         lineProps={{
-          style: {
-            display: 'flex',
-            flexWrap: 'wrap',
-          }
+          style: truncateLongLines
+            ? {
+                display: 'block',
+                whiteSpace: 'pre',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }
+            : {
+                display: 'flex',
+                flexWrap: 'wrap',
+              }
         }}
         codeTagProps={{
-          style: {
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            overflowWrap: 'anywhere',
-          }
+          style: truncateLongLines
+            ? { whiteSpace: 'pre' }
+            : {
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                overflowWrap: 'anywhere',
+              }
         }}
       >
         {displayCode}

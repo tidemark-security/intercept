@@ -1,0 +1,25 @@
+FROM node:24.22.3-trixie-slim AS node-runtime
+FROM ghcr.io/astral-sh/uv:0.13.9 AS uv-runtime
+
+FROM langflowai/langflow:1.13.3
+
+USER root
+
+RUN microdnf update -y && microdnf clean all
+
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=uv-runtime /uv /uvx /usr/local/bin/
+
+RUN /opt/app-root/bin/python3.14 -m pip install --no-cache-dir --upgrade pip==26.3 setuptools==84.2.1 \
+    && uv --no-cache pip install --python /app/.venv/bin/python \
+        certifi==2026.11.20 \
+        lfx==1.13.3 \
+        'lfx-bundles[confluence,pgvector]==1.2.9' \
+        msgpack==1.2.4 \
+        pip==26.3 \
+        setuptools==84.2.1 \
+        soupsieve==4.1.3 \
+        urllib3==2.8.0 \
+    && uv --no-cache pip check --python /app/.venv/bin/python
+
+USER user

@@ -1,4 +1,3 @@
-import { OpenAPI } from '@/types/generated/core/OpenAPI';
 import type {
   CaseRunbookApplyResponse,
   CaseRunbookPayload,
@@ -7,92 +6,79 @@ import type {
   PageCaseRunbookRead,
   RunbookTaskOverride,
 } from '@/types/caseRunbooks';
+import type { CaseRunbookRead as ApiCaseRunbookRead } from '@/types/generated/models/CaseRunbookRead';
+import { CaseRunbooksService } from '@/types/generated/services/CaseRunbooksService';
+import { rethrowApiRequestError } from './apiRequestError';
 
-function getCookieValue(name: string): string | null {
-  if (typeof document === 'undefined') return null;
-  const cookie = document.cookie.split('; ').find((entry) => entry.startsWith(`${name}=`));
-  return cookie ? decodeURIComponent(cookie.slice(name.length + 1)) : null;
+function normalizeCaseRunbook(runbook: ApiCaseRunbookRead): CaseRunbookRead {
+  return {
+    ...runbook,
+    status: runbook.status ?? 'DRAFT',
+    case_tags: runbook.case_tags ?? [],
+    runbook_tasks: (runbook.runbook_tasks ?? []).map((task) => ({
+      ...task,
+      tags: task.tags ?? [],
+    })),
+  };
 }
 
-async function getErrorMessage(response: Response): Promise<string> {
-  const payload = await response.json().catch(() => null);
-  const detail = payload && typeof payload === 'object' && 'detail' in payload ? payload.detail : null;
-  if (typeof detail === 'string') return detail;
-  if (detail && typeof detail === 'object' && 'message' in detail && typeof detail.message === 'string') {
-    return detail.message;
-  }
-  return `Request failed with status ${response.status}`;
+export async function listCaseRunbooks(statuses?: CaseRunbookStatus[], search?: string | null): Promise<PageCaseRunbookRead> {
+  const page = await CaseRunbooksService.listCaseRunbooksApiV1CaseRunbooksGet({
+    status: statuses,
+    search: search || undefined,
+  }).catch(rethrowApiRequestError);
+  return { ...page, items: page.items.map(normalizeCaseRunbook) };
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers);
-  headers.set('Accept', 'application/json');
-  if (init.body) {
-    headers.set('Content-Type', 'application/json');
-  }
-  const csrfToken = getCookieValue('XSRF-TOKEN');
-  if (csrfToken) {
-    headers.set('X-XSRF-TOKEN', csrfToken);
-  }
-
-  const response = await fetch(`${OpenAPI.BASE}${path}`, {
-    ...init,
-    headers,
-    credentials: 'include',
-  });
-
-  if (!response.ok) {
-    throw new Error(await getErrorMessage(response));
-  }
-  return response.json() as Promise<T>;
+export async function createCaseRunbook(payload: CaseRunbookPayload): Promise<CaseRunbookRead> {
+  const runbook = await CaseRunbooksService.createCaseRunbookApiV1CaseRunbooksPost({ requestBody: payload })
+    .catch(rethrowApiRequestError);
+  return normalizeCaseRunbook(runbook);
 }
 
-function statusQuery(statuses?: CaseRunbookStatus[]): string {
-  const params = new URLSearchParams();
-  statuses?.forEach((status) => params.append('status', status));
-  return params.toString();
+export async function updateCaseRunbook(id: number, payload: CaseRunbookPayload): Promise<CaseRunbookRead> {
+  const runbook = await CaseRunbooksService.updateCaseRunbookApiV1CaseRunbooksRunbookIdPut({
+    runbookId: id,
+    requestBody: payload,
+  }).catch(rethrowApiRequestError);
+  return normalizeCaseRunbook(runbook);
 }
 
-export function listCaseRunbooks(statuses?: CaseRunbookStatus[], search?: string | null): Promise<PageCaseRunbookRead> {
-  const query = new URLSearchParams(statusQuery(statuses));
-  if (search) query.set('search', search);
-  const suffix = query.toString() ? `?${query.toString()}` : '';
-  return request<PageCaseRunbookRead>(`/api/v1/case-runbooks${suffix}`);
+export async function publishCaseRunbook(id: number): Promise<CaseRunbookRead> {
+  const runbook = await CaseRunbooksService.publishCaseRunbookApiV1CaseRunbooksRunbookIdPublishPost({ runbookId: id })
+    .catch(rethrowApiRequestError);
+  return normalizeCaseRunbook(runbook);
 }
 
-export function createCaseRunbook(payload: CaseRunbookPayload): Promise<CaseRunbookRead> {
-  return request<CaseRunbookRead>('/api/v1/case-runbooks', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+export async function disableCaseRunbook(id: number): Promise<CaseRunbookRead> {
+  const runbook = await CaseRunbooksService.disableCaseRunbookApiV1CaseRunbooksRunbookIdDisablePost({ runbookId: id })
+    .catch(rethrowApiRequestError);
+  return normalizeCaseRunbook(runbook);
 }
 
-export function updateCaseRunbook(id: number, payload: CaseRunbookPayload): Promise<CaseRunbookRead> {
-  return request<CaseRunbookRead>(`/api/v1/case-runbooks/${id}`, {
-    method: 'PUT',
-    body: JSON.stringify(payload),
-  });
+export async function deleteCaseRunbook(id: number): Promise<CaseRunbookRead> {
+  const runbook = await CaseRunbooksService.deleteCaseRunbookApiV1CaseRunbooksRunbookIdDelete({ runbookId: id })
+    .catch(rethrowApiRequestError);
+  return normalizeCaseRunbook(runbook);
 }
 
-export function publishCaseRunbook(id: number): Promise<CaseRunbookRead> {
-  return request<CaseRunbookRead>(`/api/v1/case-runbooks/${id}/publish`, { method: 'POST' });
-}
-
-export function disableCaseRunbook(id: number): Promise<CaseRunbookRead> {
-  return request<CaseRunbookRead>(`/api/v1/case-runbooks/${id}/disable`, { method: 'POST' });
-}
-
-export function deleteCaseRunbook(id: number): Promise<CaseRunbookRead> {
-  return request<CaseRunbookRead>(`/api/v1/case-runbooks/${id}`, { method: 'DELETE' });
-}
-
-export function applyCaseRunbook(
+export async function applyCaseRunbook(
   caseId: number,
   runbookId: number,
   taskOverrides: RunbookTaskOverride[],
 ): Promise<CaseRunbookApplyResponse> {
-  return request<CaseRunbookApplyResponse>(`/api/v1/case-runbooks/cases/${caseId}/apply/${runbookId}`, {
-    method: 'POST',
-    body: JSON.stringify({ task_overrides: taskOverrides }),
-  });
+  const response = await CaseRunbooksService.applyCaseRunbookApiV1CaseRunbooksCasesCaseIdApplyRunbookIdPost({
+    caseId,
+    runbookId,
+    requestBody: { task_overrides: taskOverrides },
+  }).catch(rethrowApiRequestError);
+
+  return {
+    ...response,
+    duplicate_warnings: (response.duplicate_warnings ?? []).map((warning) => ({
+      ...warning,
+      duplicate: warning.duplicate ?? false,
+      reasons: warning.reasons ?? [],
+    })),
+  };
 }

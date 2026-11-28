@@ -248,6 +248,7 @@ async def test_apply_published_runbook_creates_real_tasks_tags_and_audit_note(
         ]
         assert len(runbook_notes) == 1
         assert runbook_notes[0]["created_by"] == "system"
+        assert runbook_notes[0]["activity_kind"] == "runbook_applied"
         assert "system" in runbook_notes[0]["tags"]
 
         audit_events = (

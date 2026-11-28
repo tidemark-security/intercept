@@ -1,15 +1,33 @@
 import re
 import json
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any, Union, Literal, TypeAlias
+from typing import Optional, List, Dict, Any, Union, Literal, TypeAlias, Generic, TypeVar
 from uuid import UUID, uuid4
 
 from sqlmodel import SQLModel, Field, Relationship, Column
-from sqlalchemy import DateTime, UniqueConstraint, String, Enum as SAEnum, Index, text
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    Enum as SAEnum,
+    Index,
+    Sequence,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import TypeDecorator
-from pydantic import EmailStr, computed_field, field_validator, model_validator
+from pydantic import AwareDatetime, EmailStr, StrictInt, computed_field, field_validator, model_validator
 from app.core.filename_safety import sanitize_attachment_filename
+from app.core.entity_ids import (
+    ALERT_PREFIX,
+    CASE_PREFIX,
+    RUNBOOK_PREFIX,
+    TASK_PREFIX,
+    format_entity_id,
+)
+from app.core.password_policy import validate_password_policy
 from app.models.enums import (
     CaseStatus,
     Priority,
@@ -18,6 +36,7 @@ from app.models.enums import (
     AlertStatus,
     ObservableType,
     TaskStatus,
+    TimelineActivityKind,
     ActorType,
     SystemType,
     Protocol,
@@ -33,9 +52,12 @@ from app.models.enums import (
     TriageDisposition,
     RejectionCategory,
     MessageFeedback,
-    RealtimeEventType,
     ContextCriterionType,
 )
+
+# The v0.6.0 migration owns this sequence. Keep it detached from SQLModel metadata so
+# the filtered baseline schema in migration 001 cannot create it prematurely.
+MCP_OAUTH_GRANT_EPOCH_SEQUENCE = Sequence("mcp_oauth_grant_epoch_seq")
 
 TimelineGraphEntityType = Literal["case", "task"]
 TimelineGraphEdgeMarker = Literal["none", "forward", "reverse", "bidirectional"]
@@ -171,9 +193,6 @@ class TimelineGraphConflictRead(SQLModel):
 
 
 USERNAME_REGEX = re.compile(r"^[a-z0-9._@-]{3,1024}$")
-PASSWORD_POLICY_REGEX = re.compile(
-    r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{12,}$"
-)
 
 
 class InetType(TypeDecorator):
@@ -263,7 +282,7 @@ def _coerce_timeline_item_storage(value: Any, *, depth: int = 0) -> TimelineItem
 class ItemBase(SQLModel):
     """Base class for all timeline items."""
 
-    id: str = Field(default=None, description="Unique identifier for timeline item")
+    id: Optional[str] = Field(default=None, description="Unique identifier for timeline item")
     type: str = Field(description="Type of timeline item")
     description: Optional[str] = Field(default=None, description="Free text description of the timeline item")
     created_at: datetime = Field(
@@ -276,7 +295,7 @@ class ItemBase(SQLModel):
         description="Timestamp when event occurred",
         sa_column=Column(DateTime(timezone=True))
     )
-    created_by: str = Field(default=None, description="User who created this timeline item")
+    created_by: Optional[str] = Field(default=None, description="User who created this timeline item")
     tags: Optional[List[str]] = Field(default_factory=list)
     flagged: bool = Field(default=False, description="Whether this item is flagged as significant")
     highlighted: bool = Field(default=False, description="Whether this item is highlighted for attention")
@@ -343,6 +362,21 @@ class NoteItem(ItemBase):
     """Timeline item for notes/comments."""
 
     type: Literal["note"] = "note"  # type: ignore
+    activity_kind: Optional[TimelineActivityKind] = Field(
+        default=None,
+        description="Server-assigned activity recorded by this timeline note",
+        schema_extra={"json_schema_extra": {"readOnly": True}},
+    )
+
+    @field_validator("activity_kind", mode="before")
+    @classmethod
+    def normalize_activity_kind(cls, value: Any) -> TimelineActivityKind | None:
+        if value is None:
+            return None
+        try:
+            return TimelineActivityKind(value)
+        except (TypeError, ValueError):
+            return None
 
 
 class AttachmentItem(ItemBase):
@@ -415,26 +449,30 @@ class SystemItem(ItemBase):
     is_privileged: bool = Field(default=False, description="System with elevated privileges/access")
 
 
-class InternalActorItem(ItemBase):
-    """Timeline item for tracking internal actors (employees, contractors)."""
+class ActorItemBase(ItemBase):
+    """Fields shared by normalized actor timeline items."""
 
-    type: Literal["internal_actor"] = "internal_actor"  # type: ignore
-    # Normalized reference to Actor table (database PK)
-    # Optional for inbound API requests - if missing, an id is created on first sighting
+    # Optional for inbound API requests; identifying fields are used to create an
+    # actor on first sighting when the normalized database reference is absent.
     actor_id: Optional[int] = None
-    # Optional content hash to pin the timeline entry to a historical view of the actor
+    # Optional content hash pins the timeline entry to a historical actor view.
     snapshot_hash: Optional[str] = None
-    
-    # Internal actor specific fields
-    user_id: Optional[str] = None  # UPN, samaccountname, etc.
-    manager_id: Optional[int] = None  # Reference to another internal actor
-    
-    # Optional denormalized fields for client contract (server normalizes on write)
+
+    # Denormalized response fields (the server normalizes them on write).
     name: Optional[str] = None
     title: Optional[str] = None
     org: Optional[str] = None
     contact_phone: Optional[str] = None
     contact_email: Optional[str] = None
+
+
+class InternalActorItem(ActorItemBase):
+    """Timeline item for tracking internal actors (employees, contractors)."""
+
+    type: Literal["internal_actor"] = "internal_actor"  # type: ignore
+    # Internal actor specific fields
+    user_id: Optional[str] = None  # UPN, samaccountname, etc.
+    manager_id: Optional[int] = None  # Reference to another internal actor
     
     # Actor characterization flags
     is_vip: bool = Field(default=False, description="High-profile individual (executive, board member)")
@@ -454,23 +492,10 @@ class InternalActorItem(ItemBase):
         return self
 
 
-class ExternalActorItem(ItemBase):
+class ExternalActorItem(ActorItemBase):
     """Timeline item for tracking external actors (customers, vendors, partners)."""
 
     type: Literal["external_actor"] = "external_actor"  # type: ignore
-    # Normalized reference to Actor table (database PK)
-    # Optional for inbound API requests - if missing, an id is created on first sighting
-    actor_id: Optional[int] = None
-    # Optional content hash to pin the timeline entry to a historical view of the actor
-    snapshot_hash: Optional[str] = None
-    
-    # Optional denormalized fields for client contract (server normalizes on write)
-    name: Optional[str] = None
-    title: Optional[str] = None
-    org: Optional[str] = None
-    contact_phone: Optional[str] = None
-    contact_email: Optional[str] = None
-
     @model_validator(mode='after')
     def validate_identity(self) -> 'ExternalActorItem':
         """Ensure either actor_id or name is provided for external actors."""
@@ -482,26 +507,13 @@ class ExternalActorItem(ItemBase):
         return self
 
 
-class ThreatActorItem(ItemBase):
+class ThreatActorItem(ActorItemBase):
     """Timeline item for tracking threat actors (malicious external entities)."""
 
     type: Literal["threat_actor"] = "threat_actor"  # type: ignore
-    # Normalized reference to Actor table (database PK)
-    # Optional for inbound API requests - if missing, an id is created on first sighting
-    actor_id: Optional[int] = None
-    # Optional content hash to pin the timeline entry to a historical view of the actor
-    snapshot_hash: Optional[str] = None
-    
     # Threat actor specific fields
     tag_id: Optional[str] = None  # Threat intelligence tag/identifier
     confidence: Optional[int] = None  # 0-100 confidence in identity
-    
-    # Optional denormalized fields for client contract (server normalizes on write)
-    name: Optional[str] = None
-    title: Optional[str] = None
-    org: Optional[str] = None
-    contact_phone: Optional[str] = None
-    contact_email: Optional[str] = None
 
     @model_validator(mode='after')
     def validate_identity(self) -> 'ThreatActorItem':
@@ -531,92 +543,63 @@ class LinkItem(ItemBase):
     url: Optional[str] = None
 
 
-class AlertItem(ItemBase):
+class LinkedTimelineItemBase(ItemBase):
+    """Fields shared by timeline links to first-class entities."""
+
+    title: Optional[str] = None
+    priority: Optional[Priority] = None
+    assignee: Optional[str] = None
+    entity_description: Optional[str] = Field(
+        default=None,
+        description="Description from the linked entity; distinct from the timeline link description",
+    )
+    source_timeline_items: Optional[TimelineItemStorage] = Field(
+        default=None,
+        description=(
+            "Timeline items from the linked entity "
+            "(populated on read with include_linked_timelines=true)"
+        ),
+    )
+
+    @field_validator("source_timeline_items", mode="before")
+    @classmethod
+    def coerce_source_timeline_items(cls, value: Any) -> TimelineItemStorage:
+        return _coerce_timeline_item_storage(value)
+
+
+class AlertItem(LinkedTimelineItemBase):
     """Timeline item for alerts linked to the case."""
 
     type: Literal["alert"] = "alert"  # type: ignore
     # Alert-specific fields
     # Use alert primary key (alerts.id)
     alert_id: Optional[int] = None
-    # Optional denormalized fields for client contract (server normalizes on write)
-    title: Optional[str] = None
     status: Optional[AlertStatus] = None
-    priority: Optional[Priority] = None
-    assignee: Optional[str] = None  # unified field for assignee
-    entity_description: Optional[str] = Field(
-        default=None,
-        description="Description from the linked alert entity; distinct from the timeline link description",
-    )
-    # Optionally embedded timeline items from the linked alert (populated when include_linked_timelines=true)
-    source_timeline_items: Optional[TimelineItemStorage] = Field(
-        default=None,
-        description="Timeline items from the linked alert (populated on read with include_linked_timelines=true)"
-    )
-
-    @field_validator("source_timeline_items", mode="before")
-    @classmethod
-    def coerce_source_timeline_items(cls, value: Any) -> TimelineItemStorage:
-        return _coerce_timeline_item_storage(value)
 
 
-class CaseItem(ItemBase):
+class CaseItem(LinkedTimelineItemBase):
     """Timeline item for linking to another case."""
 
     type: Literal["case"] = "case"  # type: ignore
     # Case-specific fields
     case_id: int
-    # Optional denormalized fields for client contract (server normalizes on write)
-    title: Optional[str] = None
     status: Optional[CaseStatus] = None
-    priority: Optional[Priority] = None
-    assignee: Optional[str] = None  # unified field for assignee
-    entity_description: Optional[str] = Field(
-        default=None,
-        description="Description from the linked case entity; distinct from the timeline link description",
-    )
-    # Optionally embedded timeline items from the linked case (populated when include_linked_timelines=true)
-    source_timeline_items: Optional[TimelineItemStorage] = Field(
-        default=None,
-        description="Timeline items from the linked case (populated on read with include_linked_timelines=true)"
-    )
-
-    @field_validator("source_timeline_items", mode="before")
-    @classmethod
-    def coerce_source_timeline_items(cls, value: Any) -> TimelineItemStorage:
-        return _coerce_timeline_item_storage(value)
 
 
-class TaskItem(ItemBase):
+class TaskItem(LinkedTimelineItemBase):
     """Timeline item for tasks."""
 
     type: Literal["task"] = "task"  # type: ignore
     # Task-specific fields
     task_id: Optional[int] = None
     task_human_id: Optional[str] = None
-    title: Optional[str] = None
     status: Optional[TaskStatus] = None
-    priority: Optional[Priority] = None
-    assignee: Optional[str] = None
-    entity_description: Optional[str] = Field(
-        default=None,
-        description="Description from the linked task entity; distinct from the timeline link description",
-    )
     due_date: Optional[datetime] = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True))
     )
     picerl_stage: Optional[PICERLStage] = None
     source_runbook: Optional[int] = None
-    # Optionally embedded timeline items from the linked task (populated when include_linked_timelines=true)
-    source_timeline_items: Optional[TimelineItemStorage] = Field(
-        default=None,
-        description="Timeline items from the linked task (populated on read with include_linked_timelines=true)"
-    )
-
-    @field_validator("source_timeline_items", mode="before")
-    @classmethod
-    def coerce_source_timeline_items(cls, value: Any) -> TimelineItemStorage:
-        return _coerce_timeline_item_storage(value)
 
 
 class ForensicArtifactItem(ItemBase):
@@ -669,6 +652,70 @@ class ProcessItem(ItemBase):
     exit_code: Optional[int] = None
 
 
+class ProcessTreeNode(SQLModel):
+    """One process instance observed in a snapshot."""
+
+    id: str = Field(min_length=1, description="Process instance ID unique within the snapshot")
+    parent_id: Optional[str] = Field(default=None, description="Parent instance ID within the snapshot")
+    process_name: str = Field(min_length=1)
+    process_id: StrictInt = Field(ge=0, le=4294967295, description="Operating system process ID")
+    command_line: Optional[str] = None
+    user_account: Optional[str] = None
+    started_at: Optional[AwareDatetime] = None
+    status: Optional[Literal["running", "exited"]] = None
+    is_alert_source: bool = False
+    verdict: Optional[Literal["benign", "suspicious", "malicious"]] = None
+    verdict_reason: Optional[str] = None
+    image_path: Optional[str] = None
+    integrity_level: Optional[str] = None
+    signer: Optional[str] = None
+    is_signed: Optional[bool] = None
+    sha256: Optional[str] = None
+    network_connections: Optional[StrictInt] = Field(default=None, ge=0)
+    file_writes: Optional[StrictInt] = Field(default=None, ge=0)
+
+    @field_validator("id", "parent_id", "process_name")
+    @classmethod
+    def reject_blank_values(cls, value: Optional[str]) -> Optional[str]:
+        if value is not None and not value.strip():
+            raise ValueError("Value must not be blank")
+        return value
+
+
+class ProcessTreeItem(ItemBase):
+    """Process forest captured at the timeline item's timestamp."""
+
+    type: Literal["process_tree"] = "process_tree"  # type: ignore
+    timestamp: AwareDatetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Timestamp when the process snapshot was captured",
+    )
+    hostname: Optional[str] = None
+    processes: List[ProcessTreeNode]
+
+    @field_validator("processes")
+    @classmethod
+    def validate_forest(cls, processes: List[ProcessTreeNode]) -> List[ProcessTreeNode]:
+        parent_by_id = {process.id: process.parent_id for process in processes}
+        if len(parent_by_id) != len(processes):
+            raise ValueError("Process instance IDs must be unique within a snapshot")
+
+        checked: set[str] = set()
+        for process in processes:
+            chain: set[str] = set()
+            node_id: Optional[str] = process.id
+            while node_id is not None and node_id not in checked:
+                if node_id not in parent_by_id:
+                    raise ValueError(f"Parent process {node_id!r} is missing from the snapshot")
+                if node_id in chain:
+                    raise ValueError(f"Process ancestry contains a cycle at {node_id!r}")
+                chain.add(node_id)
+                node_id = parent_by_id[node_id]
+            checked.update(chain)
+
+        return processes
+
+
 class RegistryChangeItem(ItemBase):
     """Timeline item for Windows registry modifications."""
 
@@ -699,6 +746,7 @@ AlertTimelineItem = Union[
     NoteItem,
     ObservableItem,
     ProcessItem,
+    ProcessTreeItem,
     RegistryChangeItem,
     SystemItem,
     TTPItem,
@@ -719,6 +767,7 @@ CaseTimelineItem = Union[
     NoteItem,
     ObservableItem,
     ProcessItem,
+    ProcessTreeItem,
     RegistryChangeItem,
     SystemItem,
     TaskItem,
@@ -738,6 +787,7 @@ TaskTimelineItem = Union[
     NoteItem,
     ObservableItem,
     ProcessItem,
+    ProcessTreeItem,
     RegistryChangeItem,
     SystemItem,
     TTPItem,
@@ -881,7 +931,20 @@ class CaseRead(CaseBase):
     @computed_field
     @property
     def human_id(self) -> str:
-        return f"CAS-{self.id:07d}"
+        return format_entity_id(self.id, CASE_PREFIX)
+
+class TimelineAuthoringReceipt(SQLModel, table=True):
+    """Map a parent-scoped client ID to a timeline item generated by MCP."""
+
+    __tablename__ = "timeline_authoring_receipts"
+
+    entity_type: str = Field(primary_key=True)
+    entity_id: int = Field(primary_key=True)
+    client_item_id: str = Field(primary_key=True)
+    item_id: str
+    item_type: str
+    owner_id: UUID
+
 
 class TimelineGraph(SQLModel, table=True):
     """Shared timeline graph layout and link state for cases and tasks."""
@@ -908,7 +971,7 @@ class TimelineGraph(SQLModel, table=True):
 class AlertBase(SQLModel):
     title: str = Field(min_length=1, max_length=500)
     description: Optional[str] = None
-    priority: Optional[Priority] = None
+    priority: Priority
     source: Optional[str] = None  # General source field from frontend
 
 
@@ -920,6 +983,10 @@ class Alert(AlertBase, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     status: AlertStatus = Field(default=AlertStatus.NEW)
+    priority: Priority = Field(
+        default=Priority.MEDIUM,
+        sa_column_kwargs={"server_default": text("'MEDIUM'")},
+    )
 
     # Assignment
     assignee: Optional[str] = Field(default=None, max_length=100)
@@ -969,6 +1036,7 @@ class Alert(AlertBase, table=True):
 
 class AlertCreate(AlertBase):
     """Schema for creating an alert."""
+    priority: Priority = Priority.MEDIUM
     created_at: Optional[datetime] = Field(
         default=None,
         description="Migration-only override for the alert creation timestamp",
@@ -978,10 +1046,11 @@ class AlertCreate(AlertBase):
 class AlertUpdate(SQLModel):
     """Schema for updating an alert."""
 
-    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    title: Optional[str] = Field(None, min_length=1, max_length=500)
     description: Optional[str] = None
     status: Optional[AlertStatus] = None
-    priority: Optional[Priority] = None
+    # The update service uses exclude_unset so omissions preserve the current priority.
+    priority: Priority = Field(default_factory=lambda: Priority.MEDIUM)
     source: Optional[str] = None
     assignee: Optional[str] = Field(None, max_length=100)
     tags: Optional[List[str]] = None
@@ -1016,6 +1085,7 @@ class AlertTriageRequest(SQLModel):
 
 
 AlertBulkAction = Literal[
+    "update",
     "update_status",
     "link_case",
     "create_case",
@@ -1023,6 +1093,35 @@ AlertBulkAction = Literal[
     "add_tags",
     "assign",
 ]
+
+
+BulkStatus = TypeVar("BulkStatus", CaseStatus, TaskStatus)
+
+
+class EntityBulkUpdate(SQLModel, Generic[BulkStatus]):
+    entity_ids: List[int] = Field(min_length=1, max_length=200)
+    status: Optional[BulkStatus] = None
+    assignee: Optional[str] = Field(default=None, max_length=100)
+    tags: Optional[List[str]] = None
+    note: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_changes(self):
+        if not (self.status or self.assignee or self.tags or (self.note or "").strip()):
+            raise ValueError("At least one status, assignee, tag, or note is required")
+        return self
+
+
+class CaseBulkUpdate(EntityBulkUpdate[CaseStatus]):
+    """Apply optional status, assignee, tags and a note to the selected cases."""
+
+
+class TaskBulkUpdate(EntityBulkUpdate[TaskStatus]):
+    """Apply optional status, assignee, tags and a note to the selected tasks."""
+
+
+class BulkUpdateResult(SQLModel):
+    updated_count: int
 
 
 class AlertBulkActionRequest(SQLModel):
@@ -1045,6 +1144,15 @@ class AlertBulkActionRequest(SQLModel):
     def validate_action_payload(self) -> "AlertBulkActionRequest":
         if self.action == "update_status" and self.status is None and self.disposition is None:
             raise ValueError("status or disposition is required for update_status")
+        if self.action == "update" and not (
+            self.status or self.disposition or self.assignee or self.tags or (self.note or "").strip()
+        ):
+            raise ValueError("At least one status, assignee, tag, or note is required for update")
+        if self.action == "update" and (
+            self.status == AlertStatus.CLOSED_DUPLICATE
+            or self.disposition == TriageDisposition.DUPLICATE
+        ):
+            raise ValueError("Use close_duplicate to close alerts as duplicates")
         if (
             self.action == "update_status"
             and (
@@ -1112,7 +1220,24 @@ class AlertRead(AlertBase):
     @computed_field
     @property
     def human_id(self) -> str:
-        return f"ALT-{self.id:07d}"
+        return format_entity_id(self.id, ALERT_PREFIX)
+
+
+class AlertTriageRun(SQLModel, table=True):
+    """The context delivered to Langflow for one managed triage run."""
+
+    __tablename__ = "alert_triage_runs"  # type: ignore
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    alert_id: int = Field(foreign_key="alerts.id", ondelete="CASCADE", index=True)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    summary_principal_id: Optional[UUID] = None
+    context_snapshot: Optional[Dict[str, Any]] = Field(
+        default=None, sa_column=Column(JSONB(none_as_null=True))
+    )
 
 
 # Triage Recommendation model
@@ -1127,6 +1252,7 @@ class TriageRecommendation(SQLModel, table=True):
     # Foreign key to alert (1:1 relationship)
     alert_id: int = Field(foreign_key="alerts.id", unique=True, index=True)
     alert: Optional[Alert] = Relationship(back_populates="triage_recommendation")
+    triage_run_id: Optional[UUID] = None
     
     # Recommendation details
     disposition: TriageDisposition = Field(sa_column=Column(SAEnum(TriageDisposition)))
@@ -1170,8 +1296,17 @@ class TriageRecommendation(SQLModel, table=True):
     applied_context_entries: List[Dict[str, Any]] = Field(
         default_factory=list,
         sa_column=Column(JSONB),
-        description="Analyst-authored context entries matched and supplied to AI triage",
+        description="Analyst context snapshot entries for this recommendation",
     )
+
+    @property
+    def context_snapshot_verified(self) -> bool:
+        return self.triage_run_id is not None and self.status in {
+            RecommendationStatus.PENDING,
+            RecommendationStatus.ACCEPTED,
+            RecommendationStatus.REJECTED,
+            RecommendationStatus.SUPERSEDED,
+        }
 
 
 class TriageRecommendationRead(SQLModel):
@@ -1181,14 +1316,16 @@ class TriageRecommendationRead(SQLModel):
     alert_id: int
     disposition: TriageDisposition
     confidence: float
-    reasoning_bullets: List[str] = []
-    recommended_actions: List[Any] = []  # Supports both legacy str and new {title, description} format
+    reasoning_bullets: List[str] = Field(default_factory=list)
+    recommended_actions: List[Any] = Field(
+        default_factory=list
+    )  # Supports both legacy str and new {title, description} format
     recommended_case_runbook_id: Optional[int] = None
     suggested_status: Optional[AlertStatus] = None
     suggested_priority: Optional[Priority] = None
     suggested_assignee: Optional[str] = None
-    suggested_tags_add: List[str] = []
-    suggested_tags_remove: List[str] = []
+    suggested_tags_add: List[str] = Field(default_factory=list)
+    suggested_tags_remove: List[str] = Field(default_factory=list)
     request_escalate_to_case: bool = False
     created_by: str
     created_at: datetime
@@ -1197,9 +1334,10 @@ class TriageRecommendationRead(SQLModel):
     reviewed_at: Optional[datetime] = None
     rejection_category: Optional[RejectionCategory] = None
     rejection_reason: Optional[str] = None
-    applied_changes: List[Dict[str, Any]] = []
+    applied_changes: List[Dict[str, Any]] = Field(default_factory=list)
     error_message: Optional[str] = None
-    applied_context_entries: List[Dict[str, Any]] = []
+    applied_context_entries: List[Dict[str, Any]] = Field(default_factory=list)
+    context_snapshot_verified: bool = False
 
 
 class RunbookTaskDefinition(SQLModel):
@@ -1237,6 +1375,12 @@ class CaseRunbook(CaseRunbookBase, table=True):
     __table_args__ = (
         Index("ix_case_runbooks_status", "status"),
         Index("ix_case_runbooks_title_normalized", "title_normalized"),
+        Index(
+            "uq_case_runbooks_active_title_normalized",
+            "title_normalized",
+            unique=True,
+            postgresql_where=text("status != 'DELETED' AND title_normalized IS NOT NULL"),
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -1291,7 +1435,7 @@ class CaseRunbookRead(CaseRunbookBase):
     @computed_field
     @property
     def human_id(self) -> str:
-        return f"RUN-{self.id:07d}"
+        return format_entity_id(self.id, RUNBOOK_PREFIX)
 
 
 class CaseRunbookApplyRequest(SQLModel):
@@ -1382,7 +1526,24 @@ class ContextEntryRead(SQLModel):
     expired_at: Optional[datetime] = None
 
 
-class AuditLog(SQLModel, table=True):
+class AuditLogBase(SQLModel):
+    """Fields shared by persisted audit records and their read schema."""
+
+    event_type: str = Field(max_length=200)
+    entity_type: Optional[str] = Field(default=None, max_length=100)
+    entity_id: Optional[str] = Field(default=None, max_length=255)
+    item_id: Optional[str] = Field(default=None, max_length=255)
+    description: Optional[str] = None
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+    performed_by: Optional[str] = Field(default=None, max_length=100)
+    performed_at: datetime
+    ip_address: Optional[str] = Field(default=None, max_length=100)
+    user_agent: Optional[str] = None
+    correlation_id: Optional[str] = Field(default=None, max_length=255)
+
+
+class AuditLog(AuditLogBase, table=True):
     """Unified persisted audit log for all event categories."""
 
     __tablename__ = "audit_logs"  # type: ignore
@@ -1401,39 +1562,16 @@ class AuditLog(SQLModel, table=True):
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    event_type: str = Field(max_length=200)
-    entity_type: Optional[str] = Field(default=None, max_length=100)
-    entity_id: Optional[str] = Field(default=None, max_length=255)
-    item_id: Optional[str] = Field(default=None, max_length=255)
-    description: Optional[str] = None
-    old_value: Optional[str] = None
-    new_value: Optional[str] = None
-    performed_by: Optional[str] = Field(default=None, max_length=100)
     performed_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(DateTime(timezone=True), index=True)
     )
-    ip_address: Optional[str] = Field(default=None, max_length=100)
-    user_agent: Optional[str] = None
-    correlation_id: Optional[str] = Field(default=None, max_length=255)
 
 
-class AuditLogRead(SQLModel):
+class AuditLogRead(AuditLogBase):
     """Schema for reading persisted audit logs."""
 
     id: int
-    event_type: str
-    entity_type: Optional[str] = None
-    entity_id: Optional[str] = None
-    item_id: Optional[str] = None
-    description: Optional[str] = None
-    old_value: Optional[str] = None
-    new_value: Optional[str] = None
-    performed_by: Optional[str] = None
-    performed_at: datetime
-    ip_address: Optional[str] = None
-    user_agent: Optional[str] = None
-    correlation_id: Optional[str] = None
 
     @staticmethod
     def compute_changes(old_value: Optional[str], new_value: Optional[str]) -> List[Dict[str, Any]]:
@@ -1469,13 +1607,14 @@ class AuditLogRead(SQLModel):
 class CaseReadWithAlerts(CaseRead):
     """Case with alerts."""
 
-    alerts: List[AlertRead] = []
+    alerts: List[AlertRead] = Field(default_factory=list)
 
 
 class AlertReadWithCase(AlertRead):
     """Alert with case information."""
 
     case: Optional[CaseRead] = None
+    triage_context_changed: Optional[bool] = None
 
 
 # Task models
@@ -1509,7 +1648,7 @@ class Task(TaskBase, table=True):
     status: TaskStatus = Field(
         default=TaskStatus.TODO,
         sa_column=Column(
-            SAEnum(TaskStatus, name="taskstatus", create_type=False)
+            SAEnum(TaskStatus, name="taskstatus")
         )
     )
 
@@ -1606,7 +1745,7 @@ class TaskRead(TaskBase):
     @computed_field
     @property
     def human_id(self) -> str:
-        return f"TSK-{self.id:07d}"
+        return format_entity_id(self.id, TASK_PREFIX)
 
 
 # Normalized Actor models with versioned snapshots
@@ -1718,6 +1857,13 @@ class UserAccount(UserAccountBase, table=True):
     __tablename__ = "user_accounts"  # type: ignore
     __table_args__ = (
         UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_user_accounts_oidc_identity"),
+        CheckConstraint(
+            "(oidc_issuer IS NULL AND oidc_subject IS NULL) OR "
+            "(oidc_issuer IS NOT NULL AND oidc_subject IS NOT NULL "
+            "AND length(btrim(oidc_issuer, E' \\011\\012\\013\\014\\015')) > 0 "
+            "AND length(btrim(oidc_subject, E' \\011\\012\\013\\014\\015')) > 0)",
+            name="ck_user_accounts_oidc_identity_pair",
+        ),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
@@ -1780,6 +1926,13 @@ class UserAccount(UserAccountBase, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(UTCDateTime()),
     )
+    credentials_invalidated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(UTCDateTime(), nullable=True),
+        description=(
+            "Credentials issued at or before this time are permanently invalid"
+        ),
+    )
     created_by_admin_id: Optional[UUID] = Field(
         default=None,
         foreign_key="user_accounts.id",
@@ -1806,10 +1959,20 @@ class UserAccount(UserAccountBase, table=True):
     @model_validator(mode="after")
     def _validate_account_type_fields(self) -> "UserAccount":
         """Enforce field requirements based on account type."""
-        if self.account_type == AccountType.HUMAN:
-            if self.oidc_subject and not self.oidc_issuer:
-                raise ValueError("oidc_issuer is required when oidc_subject is set")
-        elif self.account_type == AccountType.NHI:
+        issuer_present = self.oidc_issuer is not None
+        subject_present = self.oidc_subject is not None
+        invalid_pair = issuer_present != subject_present
+        if self.oidc_issuer is not None and self.oidc_subject is not None:
+            invalid_pair = (
+                not self.oidc_issuer.strip()
+                or not self.oidc_subject.strip()
+            )
+        if invalid_pair:
+            raise ValueError(
+                "OIDC issuer and subject must be provided together and cannot be blank"
+            )
+
+        if self.account_type == AccountType.NHI:
             if self.email is not None:
                 raise ValueError("email must be null for NHI accounts")
             if self.password_hash is not None:
@@ -1817,68 +1980,6 @@ class UserAccount(UserAccountBase, table=True):
             if self.oidc_subject is not None or self.oidc_issuer is not None:
                 raise ValueError("oidc identity fields must be null for NHI accounts")
         return self
-
-
-class HumanUserAccountBase(UserAccountBase):
-    """Base fields for human user accounts including email."""
-    email: Optional[EmailStr] = Field(
-        default=None,
-        description="Optional unique email used for contact metadata",
-    )
-
-    @field_validator("email", mode="before")
-    @classmethod
-    def _normalize_email(cls, value: Optional[EmailStr]) -> Optional[str]:
-        if value is None:
-            return None
-        return str(value).strip().lower()
-
-
-class UserAccountRead(UserAccountBase):
-    """Read schema for user accounts (both human and NHI)."""
-    id: UUID
-    account_type: AccountType
-    email: Optional[EmailStr] = None
-    oidc_subject: Optional[str] = None
-    oidc_issuer: Optional[str] = None
-    status: UserStatus
-    assignable: bool = False
-    override_timestamps: bool = False
-    must_change_password: bool
-    failed_login_attempts: int
-    lockout_expires_at: Optional[datetime]
-    last_login_at: Optional[datetime]
-    created_at: datetime
-    updated_at: datetime
-
-
-class UserAccountCreate(HumanUserAccountBase):
-    """Schema for creating a human user account."""
-    password: str = Field(min_length=12, description="Plain text password used during provisioning")
-
-    @field_validator("password")
-    @classmethod
-    def _validate_password(cls, value: str) -> str:
-        candidate = value.strip()
-        if not PASSWORD_POLICY_REGEX.match(candidate):
-            raise ValueError(
-                "Password must be at least 12 characters and include upper, lower, number, and symbol"
-            )
-        return candidate
-
-
-class NHIAccountCreate(UserAccountBase):
-    """Schema for creating a Non-Human Identity (NHI) account."""
-    assignable: bool = Field(default=False, description="Whether this NHI can be assigned tasks")
-    override_timestamps: bool = Field(default=False, description="Whether this NHI can override created_at during migration imports")
-    initial_api_key_name: str = Field(
-        min_length=1,
-        max_length=100,
-        description="Name for the initial API key",
-    )
-    initial_api_key_expires_at: datetime = Field(
-        description="Expiration date for the initial API key (required)",
-    )
 
 
 class AuthSessionBase(SQLModel):
@@ -1906,11 +2007,6 @@ class AuthSession(AuthSessionBase, table=True):
     )
 
     user: Optional[UserAccount] = Relationship(back_populates="sessions")
-
-
-class AuthSessionRead(AuthSessionBase):
-    id: UUID
-    revoked_reason: Optional[SessionRevokedReason] = None
 
 
 class PasskeyCredentialBase(SQLModel):
@@ -1962,28 +2058,28 @@ class PasskeyCredential(PasskeyCredentialBase, table=True):
     )
 
 
-class PasskeyCredentialRead(SQLModel):
-    id: UUID
-    user_id: UUID
-    name: str
-    credential_id: str
-    transports: List[str]
-    aaguid: Optional[str]
-    is_backup_eligible: bool
-    is_backed_up: bool
-    last_used_at: Optional[datetime]
-    revoked_at: Optional[datetime]
-    created_at: datetime
-
-
 class WebAuthnChallenge(SQLModel, table=True):
     __tablename__ = "webauthn_challenges"  # type: ignore
+    __table_args__ = (
+        Index(
+            "ix_webauthn_challenges_source_created",
+            "source_fingerprint",
+            "created_at",
+        ),
+        Index(
+            "ix_webauthn_challenges_user_fingerprint_created",
+            "user_fingerprint",
+            "created_at",
+        ),
+    )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
     challenge: str = Field(max_length=512, index=True)
     flow_type: str = Field(max_length=32, index=True)
     user_id: Optional[UUID] = Field(default=None, foreign_key="user_accounts.id", index=True)
     username: Optional[str] = Field(default=None, max_length=64)
+    source_fingerprint: Optional[str] = Field(default=None, max_length=64)
+    user_fingerprint: Optional[str] = Field(default=None, max_length=64)
     expires_at: datetime = Field(sa_column=Column(UTCDateTime(), index=True))
     consumed_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
     created_at: datetime = Field(
@@ -1995,16 +2091,107 @@ class WebAuthnChallenge(SQLModel, table=True):
 
 class OIDCAuthRequest(SQLModel, table=True):
     __tablename__ = "oidc_auth_requests"  # type: ignore
+    __table_args__ = (
+        Index(
+            "ix_oidc_auth_requests_source_created",
+            "source_fingerprint",
+            "created_at",
+        ),
+        Index("ix_oidc_auth_requests_created_at", "created_at"),
+    )
 
     state: str = Field(primary_key=True, max_length=255)
     nonce: str = Field(max_length=255)
     browser_binding_hash: str = Field(max_length=64)
+    source_fingerprint: str = Field(max_length=64)
     redirect_to: str = Field(max_length=2048)
     expires_at: datetime = Field(sa_column=Column(UTCDateTime(), index=True))
     consumed_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
-        sa_column=Column(UTCDateTime()),
+        sa_column=Column(UTCDateTime(), nullable=False),
+    )
+
+
+class PasswordLoginAttempt(SQLModel, table=True):
+    """Bounded durable admission ledger for password-login initiations."""
+
+    __tablename__ = "password_login_attempts"  # type: ignore
+    __table_args__ = (
+        Index(
+            "ix_password_login_attempts_source_created",
+            "source_fingerprint",
+            "created_at",
+        ),
+        Index("ix_password_login_attempts_created_at", "created_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    source_fingerprint: str = Field(max_length=64)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime(), nullable=False),
+    )
+
+
+class PasswordHashWorkLease(SQLModel, table=True):
+    """Short-lived cross-worker reservation for expensive Argon2 work."""
+
+    __tablename__ = "password_hash_work_leases"  # type: ignore
+    __table_args__ = (
+        Index("ix_password_hash_work_leases_expires_at", "expires_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    work_kind: str = Field(max_length=32)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime(), nullable=False),
+    )
+    expires_at: datetime = Field(sa_column=Column(UTCDateTime(), nullable=False))
+
+
+class PasswordLoginFailureCounter(SQLModel, table=True):
+    """Pending password failures isolated from account authorization locks."""
+
+    __tablename__ = "password_login_failure_counters"  # type: ignore
+
+    user_id: UUID = Field(
+        foreign_key="user_accounts.id",
+        primary_key=True,
+    )
+    password_fingerprint: str = Field(max_length=64, primary_key=True)
+    failed_attempts: int = Field(default=0, ge=0)
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime(), nullable=False),
+    )
+
+
+class ApiKeyFailureSample(SQLModel, table=True):
+    """Durable admission ledger for sampled API-key authentication failures."""
+
+    __tablename__ = "api_key_failure_samples"  # type: ignore
+    __table_args__ = (
+        Index(
+            "ix_api_key_failure_samples_source_created",
+            "source_fingerprint",
+            "created_at",
+        ),
+        Index(
+            "ix_api_key_failure_samples_failure_created",
+            "failure_fingerprint",
+            "created_at",
+        ),
+        Index("ix_api_key_failure_samples_created_at", "created_at"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    source_fingerprint: str = Field(max_length=64)
+    failure_fingerprint: str = Field(max_length=64)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime(), nullable=False),
     )
 
 
@@ -2042,10 +2229,6 @@ class AdminResetRequest(AdminResetRequestBase, table=True):
     )
 
 
-class AdminResetRequestRead(AdminResetRequestBase):
-    id: UUID
-
-
 class PasswordChangeRequest(SQLModel):
     current_password: str = Field(min_length=1)
     new_password: str = Field(min_length=12)
@@ -2053,12 +2236,7 @@ class PasswordChangeRequest(SQLModel):
     @field_validator("new_password")
     @classmethod
     def _validate_new_password(cls, value: str) -> str:
-        candidate = value.strip()
-        if not PASSWORD_POLICY_REGEX.match(candidate):
-            raise ValueError(
-                "Password must be at least 12 characters and include upper, lower, number, and symbol"
-            )
-        return candidate
+        return validate_password_policy(value)
 
 
 # ---------------------------------------------------------------------------
@@ -2076,6 +2254,16 @@ class ApiKeyBase(SQLModel):
     expires_at: datetime = Field(
         sa_column=Column(UTCDateTime(), index=True),
         description="Expiration date (required for all API keys)",
+    )
+    scopes: List[str] = Field(
+        default_factory=lambda: [
+            "api:admin",
+            "api:read",
+            "api:write",
+            "mcp:access",
+        ],
+        sa_column=Column(JSONB, nullable=False),
+        description="Explicit permissions granted to this API key",
     )
 
 
@@ -2115,20 +2303,11 @@ class ApiKey(ApiKeyBase, table=True):
 
     user: Optional[UserAccount] = Relationship(back_populates="api_keys")
 
-class ApiKeyCreate(SQLModel):
-    """Schema for creating an API key."""
-    name: str = Field(
-        min_length=1,
-        max_length=100,
-        description="User-defined name for this API key",
-    )
-    expires_at: datetime = Field(
-        description="Expiration date (required)",
-    )
-
-
 class ApiKeyRead(ApiKeyBase):
     """Schema for reading API key metadata (never includes the actual key)."""
+    scopes: List[str] = Field(
+        description="Explicit permissions granted to this API key",
+    )
     id: UUID
     user_id: UUID
     prefix: str
@@ -2142,6 +2321,280 @@ class ApiKeyCreateResponse(ApiKeyRead):
     key: str = Field(
         description="The full API key (only shown once at creation time)",
     )
+
+
+# ---------------------------------------------------------------------------
+# MCP OAuth models & schemas
+# ---------------------------------------------------------------------------
+
+
+class MCPOAuthClient(SQLModel, table=True):
+    """OAuth public client registered for remote MCP access."""
+
+    __tablename__ = "mcp_oauth_clients"  # type: ignore
+    __table_args__ = (
+        Index("ix_mcp_oauth_clients_client_id", "client_id", unique=True),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    client_id: str = Field(sa_column=Column(String(2048), nullable=False))
+    client_name: str = Field(max_length=200)
+    client_uri: Optional[str] = Field(default=None, max_length=2048)
+    logo_uri: Optional[str] = Field(default=None, max_length=2048)
+    redirect_uris: List[str] = Field(default_factory=list, sa_column=Column(JSONB))
+    scope: str = Field(default="mcp:access", max_length=255)
+    grant_types: List[str] = Field(default_factory=list, sa_column=Column(JSONB))
+    response_types: List[str] = Field(default_factory=list, sa_column=Column(JSONB))
+    token_endpoint_auth_method: str = Field(default="none", max_length=64)
+    contacts: List[str] = Field(default_factory=list, sa_column=Column(JSONB))
+    jwks_uri: Optional[str] = Field(default=None, max_length=2048)
+    client_metadata: Dict[str, Any] = Field(default_factory=dict, sa_column=Column("metadata", JSONB))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+    last_seen_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    revoked_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+
+
+class MCPDCRRegistration(SQLModel, table=True):
+    """Durable abuse-control record for one dynamic client registration."""
+
+    __tablename__ = "mcp_oauth_dcr_registrations"  # type: ignore
+    __table_args__ = (
+        Index(
+            "ix_mcp_oauth_dcr_registrations_expiry",
+            "expires_at",
+        ),
+        Index(
+            "ix_mcp_oauth_dcr_registrations_source_created",
+            "source_ip",
+            "created_at",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    client_id: str = Field(
+        sa_column=Column(String(2048), nullable=False, unique=True)
+    )
+    provider_mode: str = Field(max_length=32)
+    source_ip: str = Field(max_length=64)
+    created_at: datetime = Field(sa_column=Column(UTCDateTime(), nullable=False))
+    expires_at: datetime = Field(sa_column=Column(UTCDateTime(), nullable=False))
+    activated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(UTCDateTime()),
+    )
+
+
+class MCPOAuthAuthorizationCapacity(SQLModel, table=True):
+    """Durable reservation for an unauthenticated OAuth authorization flow."""
+
+    __tablename__ = "mcp_oauth_authorization_capacity"  # type: ignore
+    __table_args__ = (
+        Index(
+            "ix_mcp_oauth_authorization_capacity_expiry",
+            "expires_at",
+        ),
+        Index(
+            "ix_mcp_oauth_authorization_capacity_client_expiry",
+            "client_id",
+            "expires_at",
+        ),
+        Index(
+            "ix_mcp_oauth_authorization_capacity_source_expiry",
+            "source_ip",
+            "expires_at",
+        ),
+    )
+
+    reservation_id: str = Field(
+        sa_column=Column(String(128), primary_key=True, nullable=False)
+    )
+    client_id: str = Field(sa_column=Column(String(2048), nullable=False))
+    provider_mode: str = Field(max_length=32)
+    source_ip: str = Field(max_length=64)
+    authorization_epoch: int = Field(
+        sa_column=Column(BigInteger, nullable=False)
+    )
+    created_at: datetime = Field(sa_column=Column(UTCDateTime(), nullable=False))
+    expires_at: datetime = Field(sa_column=Column(UTCDateTime(), nullable=False))
+
+
+class MCPOAuthClientAssertionJTI(SQLModel, table=True):
+    """Durable one-time claim for a FastMCP private_key_jwt assertion."""
+
+    __tablename__ = "mcp_oauth_client_assertion_jtis"  # type: ignore
+    __table_args__ = (
+        Index(
+            "ix_mcp_oauth_client_assertion_jtis_expires_at",
+            "expires_at",
+        ),
+    )
+
+    client_id_hash: str = Field(
+        sa_column=Column(String(64), primary_key=True, nullable=False)
+    )
+    jti_hash: str = Field(
+        sa_column=Column(String(64), primary_key=True, nullable=False)
+    )
+    created_at: datetime = Field(sa_column=Column(UTCDateTime(), nullable=False))
+    expires_at: datetime = Field(sa_column=Column(UTCDateTime(), nullable=False))
+
+
+class MCPOAuthPendingAuthorization(SQLModel, table=True):
+    """Short-lived browser handoff for a local MCP OAuth authorization request."""
+
+    __tablename__ = "mcp_oauth_pending_authorizations"  # type: ignore
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    client_db_id: UUID = Field(foreign_key="mcp_oauth_clients.id", index=True)
+    state: Optional[str] = Field(default=None, max_length=2048)
+    scopes: List[str] = Field(default_factory=list, sa_column=Column(JSONB, nullable=False))
+    code_challenge: str = Field(max_length=256)
+    redirect_uri: str = Field(max_length=2048)
+    redirect_uri_provided_explicitly: bool = Field(default=True)
+    resource: Optional[str] = Field(default=None, max_length=2048)
+    expires_at: datetime = Field(sa_column=Column(UTCDateTime(), index=True))
+    consumed_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+
+
+class MCPOAuthConsent(SQLModel, table=True):
+    """Remembered user authorization for an MCP OAuth client."""
+
+    __tablename__ = "mcp_oauth_consents"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint("user_id", "client_db_id", "scope", name="uq_mcp_oauth_consent_user_client_scope"),
+        Index("ix_mcp_oauth_consents_user", "user_id"),
+        Index(
+            "ix_mcp_oauth_consents_provider_reference",
+            "provider_mode",
+            "provider_reference_hash",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    user_id: UUID = Field(foreign_key="user_accounts.id", index=True)
+    client_db_id: UUID = Field(foreign_key="mcp_oauth_clients.id", index=True)
+    scope: str = Field(default="mcp:access", max_length=255)
+    provider_mode: str = Field(default="local", max_length=32)
+    provider_reference_hash: Optional[str] = Field(default=None, max_length=128)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+    last_authorized_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+    last_authorization_epoch: int = Field(
+        default=0,
+        sa_column=Column(
+            BigInteger,
+            nullable=False,
+            server_default=text("0"),
+        ),
+    )
+    last_used_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    revoked_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    revocation_epoch: Optional[int] = Field(
+        default=None,
+        sa_column=Column(BigInteger),
+    )
+
+
+class MCPOAuthProviderGrantReference(SQLModel, table=True):
+    """Token-free native-provider family reference for one connected client."""
+
+    __tablename__ = "mcp_oauth_provider_grant_references"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint(
+            "provider_reference_hash",
+            name="uq_mcp_oauth_provider_grant_reference_hash",
+        ),
+        Index(
+            "ix_mcp_oauth_provider_grant_references_consent_active",
+            "consent_id",
+            "revoked_at",
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    consent_id: UUID = Field(foreign_key="mcp_oauth_consents.id", index=True)
+    provider_reference_hash: str = Field(max_length=128)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+    last_used_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    revoked_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+
+
+class MCPOAuthAuthorizationCode(SQLModel, table=True):
+    """Short-lived OAuth authorization code for MCP PKCE exchange."""
+
+    __tablename__ = "mcp_oauth_authorization_codes"  # type: ignore
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    code_hash: str = Field(sa_column=Column(String(128), unique=True, index=True))
+    client_db_id: UUID = Field(foreign_key="mcp_oauth_clients.id", index=True)
+    user_id: UUID = Field(foreign_key="user_accounts.id", index=True)
+    redirect_uri: str = Field(max_length=2048)
+    code_challenge: str = Field(max_length=256)
+    code_challenge_method: str = Field(default="S256", max_length=16)
+    scope: str = Field(default="mcp:access", max_length=255)
+    resource: str = Field(max_length=2048)
+    expires_at: datetime = Field(sa_column=Column(UTCDateTime(), index=True))
+    consumed_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+
+
+class MCPOAuthToken(SQLModel, table=True):
+    """Opaque OAuth access or refresh token for remote MCP access."""
+
+    __tablename__ = "mcp_oauth_tokens"  # type: ignore
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True, index=True)
+    token_hash: str = Field(sa_column=Column(String(128), unique=True, index=True))
+    token_type: str = Field(max_length=16)
+    client_db_id: UUID = Field(foreign_key="mcp_oauth_clients.id", index=True)
+    user_id: UUID = Field(foreign_key="user_accounts.id", index=True)
+    scope: str = Field(default="mcp:access", max_length=255)
+    resource: str = Field(max_length=2048)
+    refresh_token_id: Optional[UUID] = Field(default=None, foreign_key="mcp_oauth_tokens.id", index=True)
+    rotated_from_token_id: Optional[UUID] = Field(default=None, foreign_key="mcp_oauth_tokens.id")
+    expires_at: datetime = Field(sa_column=Column(UTCDateTime(), index=True))
+    last_used_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    revoked_at: Optional[datetime] = Field(default=None, sa_column=Column(UTCDateTime()))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(UTCDateTime()),
+    )
+
+
+class MCPOAuthClientRead(SQLModel):
+    """User-facing connected MCP client metadata."""
+
+    id: UUID
+    client_id: str
+    client_name: str
+    client_uri: Optional[str] = None
+    redirect_uris: List[str] = []
+    scope: str
+    created_at: datetime
+    last_authorized_at: datetime
+    last_used_at: Optional[datetime] = None
 
 
 # ---------------------------------------------------------------------------
@@ -2163,6 +2616,18 @@ class PresignedUploadRequest(SQLModel):
     mime_type: str = Field(
         ...,
         description="Client-reported MIME type (validated server-side)"
+    )
+    description: Optional[str] = Field(
+        default=None,
+        description="Free text description to store with the attachment",
+    )
+    timestamp: Optional[datetime] = Field(
+        default=None,
+        description="Timestamp when the attachment was created or collected",
+    )
+    tags: Optional[List[str]] = Field(
+        default=None,
+        description="Tags to store with the attachment",
     )
     
     @field_validator('filename')
@@ -2214,8 +2679,8 @@ class PresignedDownloadResponse(SQLModel):
 
 
 # Link Template Models
-class LinkTemplateBase(SQLModel):
-    """Base model for link templates."""
+class LinkTemplateDefinition(SQLModel):
+    """Portable definition shared by public and personal link templates."""
     
     template_id: str = Field(
         index=True,
@@ -2238,24 +2703,20 @@ class LinkTemplateBase(SQLModel):
     )
     field_names: Optional[List[str]] = Field(
         default=None,
-        sa_column=Column(JSONB),
         description="Array of field names this template applies to"
     )
     conditions: Optional[Dict[str, Any]] = Field(
         default=None,
-        sa_column=Column(JSONB),
         description="Object of field/value pairs that must match"
     )
     surface_scopes: List[LinkTemplateSurface] = Field(
         default_factory=_default_link_template_surfaces,
         min_length=1,
         max_length=1,
-        sa_column=Column(JSONB),
         description="Single surface where this template can render",
     )
     entity_types: Optional[List[LinkTemplateEntityType]] = Field(
         default=None,
-        sa_column=Column(JSONB),
         description="Entity types this template applies to; empty means all entity types",
     )
     enabled: bool = Field(
@@ -2293,12 +2754,38 @@ class LinkTemplateBase(SQLModel):
         return _normalize_link_template_entity_types(value)
 
 
+class LinkTemplateBase(LinkTemplateDefinition):
+    """Base schema for public link templates."""
+
+
 class LinkTemplate(LinkTemplateBase, table=True):
     """Link template configuration stored in database."""
     
     __tablename__ = "link_templates"  # type: ignore
     
     id: Optional[int] = Field(default=None, primary_key=True)
+    field_names: Optional[List[str]] = Field(
+        default=None,
+        sa_column=Column(JSONB),
+        description="Array of field names this template applies to",
+    )
+    conditions: Optional[Dict[str, Any]] = Field(
+        default=None,
+        sa_column=Column(JSONB),
+        description="Object of field/value pairs that must match",
+    )
+    surface_scopes: List[LinkTemplateSurface] = Field(
+        default_factory=_default_link_template_surfaces,
+        min_length=1,
+        max_length=1,
+        sa_column=Column(JSONB),
+        description="Single surface where this template can render",
+    )
+    entity_types: Optional[List[LinkTemplateEntityType]] = Field(
+        default=None,
+        sa_column=Column(JSONB),
+        description="Entity types this template applies to; empty means all entity types",
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(UTCDateTime)
@@ -2370,21 +2857,20 @@ class LinkTemplateRead(LinkTemplateBase):
     updated_at: datetime
 
 
-class PersonalLinkTemplateBase(SQLModel):
-    """Base model for user-owned personal link templates."""
+class PersonalLinkTemplateBase(LinkTemplateDefinition):
+    """Base schema for user-owned personal link templates."""
 
-    template_id: str = Field(
-        index=True,
-        max_length=100,
-        description="Unique identifier for this template type",
+
+class PersonalLinkTemplate(PersonalLinkTemplateBase, table=True):
+    """User-owned private link template configuration."""
+
+    __tablename__ = "personal_link_templates"  # type: ignore
+    __table_args__ = (
+        UniqueConstraint("user_id", "template_id", name="uq_personal_link_template_user_template_id"),
     )
-    name: str = Field(max_length=200, description="Human-readable name of the link template")
-    icon_name: str = Field(
-        max_length=100,
-        description="Lucide or custom icon identifier (e.g., 'Link2', 'VirusTotalIcon')",
-    )
-    tooltip_template: str = Field(description="Tooltip text with {{variable}} placeholders")
-    url_template: str = Field(description="URL template with {{variable}} placeholders")
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: UUID = Field(foreign_key="user_accounts.id", index=True)
     field_names: Optional[List[str]] = Field(
         default=None,
         sa_column=Column(JSONB),
@@ -2407,45 +2893,6 @@ class PersonalLinkTemplateBase(SQLModel):
         sa_column=Column(JSONB),
         description="Entity types this template applies to; empty means all entity types",
     )
-    enabled: bool = Field(default=True, description="Whether this template is currently active")
-    display_order: int = Field(default=0, description="Sort order for display")
-
-    @field_validator("template_id", "name", "tooltip_template")
-    @classmethod
-    def validate_required_text(cls, value: str) -> str:
-        return _validate_link_template_required_string(value)
-
-    @field_validator("icon_name")
-    @classmethod
-    def validate_icon_name(cls, value: str) -> str:
-        return _validate_link_template_icon_name(value)
-
-    @field_validator("url_template")
-    @classmethod
-    def validate_url_template(cls, value: str) -> str:
-        return _validate_link_template_url_template(value)
-
-    @field_validator("surface_scopes", mode="before")
-    @classmethod
-    def validate_surface_scopes(cls, value: Any) -> List[LinkTemplateSurface]:
-        return _normalize_link_template_surfaces(value)
-
-    @field_validator("entity_types", mode="before")
-    @classmethod
-    def validate_entity_types(cls, value: Any) -> Optional[List[LinkTemplateEntityType]]:
-        return _normalize_link_template_entity_types(value)
-
-
-class PersonalLinkTemplate(PersonalLinkTemplateBase, table=True):
-    """User-owned private link template configuration."""
-
-    __tablename__ = "personal_link_templates"  # type: ignore
-    __table_args__ = (
-        UniqueConstraint("user_id", "template_id", name="uq_personal_link_template_user_template_id"),
-    )
-
-    id: Optional[int] = Field(default=None, primary_key=True)
-    user_id: UUID = Field(foreign_key="user_accounts.id", index=True)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column=Column(UTCDateTime)
@@ -2463,52 +2910,8 @@ class PersonalLinkTemplateCreate(PersonalLinkTemplateBase):
     pass
 
 
-class PersonalLinkTemplateUpdate(SQLModel):
+class PersonalLinkTemplateUpdate(LinkTemplateUpdate):
     """Schema for updating a personal link template."""
-
-    name: Optional[str] = Field(default=None, max_length=200)
-    icon_name: Optional[str] = Field(default=None, max_length=100)
-    tooltip_template: Optional[str] = None
-    url_template: Optional[str] = None
-    field_names: Optional[List[str]] = None
-    conditions: Optional[Dict[str, Any]] = None
-    surface_scopes: Optional[List[LinkTemplateSurface]] = Field(default=None, min_length=1, max_length=1)
-    entity_types: Optional[List[LinkTemplateEntityType]] = None
-    enabled: Optional[bool] = None
-    display_order: Optional[int] = None
-
-    @field_validator("name", "tooltip_template")
-    @classmethod
-    def validate_required_text(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return value
-        return _validate_link_template_required_string(value)
-
-    @field_validator("icon_name")
-    @classmethod
-    def validate_icon_name(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return value
-        return _validate_link_template_icon_name(value)
-
-    @field_validator("url_template")
-    @classmethod
-    def validate_url_template(cls, value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return value
-        return _validate_link_template_url_template(value)
-
-    @field_validator("surface_scopes", mode="before")
-    @classmethod
-    def validate_surface_scopes(cls, value: Any) -> Optional[List[LinkTemplateSurface]]:
-        if value is None:
-            return None
-        return _normalize_link_template_surfaces(value)
-
-    @field_validator("entity_types", mode="before")
-    @classmethod
-    def validate_entity_types(cls, value: Any) -> Optional[List[LinkTemplateEntityType]]:
-        return _normalize_link_template_entity_types(value)
 
 
 class PersonalLinkTemplateRead(PersonalLinkTemplateBase):
@@ -2520,53 +2923,8 @@ class PersonalLinkTemplateRead(PersonalLinkTemplateBase):
     updated_at: datetime
 
 
-class PortableLinkTemplate(SQLModel):
+class PortableLinkTemplate(LinkTemplateDefinition):
     """Portable JSON representation shared by public and personal templates."""
-
-    template_id: str = Field(max_length=100)
-    name: str = Field(max_length=200)
-    icon_name: str = Field(
-        max_length=100,
-        description="Lucide or custom icon identifier (e.g., 'Link2', 'VirusTotalIcon')",
-    )
-    tooltip_template: str
-    url_template: str
-    field_names: Optional[List[str]] = None
-    conditions: Optional[Dict[str, Any]] = None
-    surface_scopes: List[LinkTemplateSurface] = Field(
-        default_factory=_default_link_template_surfaces,
-        min_length=1,
-        max_length=1,
-        description="Single surface where this template can render",
-    )
-    entity_types: Optional[List[LinkTemplateEntityType]] = None
-    enabled: bool = True
-    display_order: int = 0
-
-    @field_validator("template_id", "name", "tooltip_template")
-    @classmethod
-    def validate_required_text(cls, value: str) -> str:
-        return _validate_link_template_required_string(value)
-
-    @field_validator("icon_name")
-    @classmethod
-    def validate_icon_name(cls, value: str) -> str:
-        return _validate_link_template_icon_name(value)
-
-    @field_validator("url_template")
-    @classmethod
-    def validate_url_template(cls, value: str) -> str:
-        return _validate_link_template_url_template(value)
-
-    @field_validator("surface_scopes", mode="before")
-    @classmethod
-    def validate_surface_scopes(cls, value: Any) -> List[LinkTemplateSurface]:
-        return _normalize_link_template_surfaces(value)
-
-    @field_validator("entity_types", mode="before")
-    @classmethod
-    def validate_entity_types(cls, value: Any) -> Optional[List[LinkTemplateEntityType]]:
-        return _normalize_link_template_entity_types(value)
 
 
 class LinkTemplateExportBundle(SQLModel):
@@ -2950,12 +3308,6 @@ class LangFlowMessage(LangFlowMessageBase, table=True):
     
     # Relationships
     session: LangFlowSession = Relationship(back_populates="messages")
-
-
-class LangFlowMessageCreate(LangFlowMessageBase):
-    """Schema for creating a message."""
-    
-    session_id: UUID
 
 
 class LangFlowMessageRead(LangFlowMessageBase):
@@ -3354,26 +3706,6 @@ class ChatFeedbackDrillDownResponse(SQLModel):
 
 
 # ---------------------------------------------------------------------------
-# Real-time WebSocket schemas
-# ---------------------------------------------------------------------------
-
-
-class RealtimeEventPayload(SQLModel):
-    """Payload for real-time WebSocket notifications via LISTEN/NOTIFY."""
-    entity_type: str = Field(description="Entity type: alert, case, or task")
-    entity_id: int = Field(description="Numeric ID of the entity")
-    event_type: RealtimeEventType = Field(description="Type of event that occurred")
-    item_id: Optional[str] = Field(default=None, description="Timeline item ID if applicable")
-    performed_by: str = Field(description="Username who performed the action")
-
-
-class WebSocketMessage(SQLModel):
-    """Message format for WebSocket communication."""
-    type: str = Field(description="Message type: event, subscribed, unsubscribed, ping, pong")
-    payload: Optional[Dict[str, Any]] = Field(default=None, description="Message payload")
-
-
-# ---------------------------------------------------------------------------
 # Queue status (read-only schemas for pgqueuer tables)
 # ---------------------------------------------------------------------------
 
@@ -3404,8 +3736,48 @@ class QueueStatsRead(SQLModel):
 class QueueJobsPage(SQLModel):
     """Paginated response for queue jobs."""
 
-    items: List[QueueJobRead] = []
+    items: List[QueueJobRead] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     size: int = 25
     pages: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Saved queue filters
+# ---------------------------------------------------------------------------
+
+class SavedQueueFilter(SQLModel, table=True):
+    """A named queue filter shared across the deployment or owned by one user."""
+
+    __tablename__ = "saved_queue_filters"  # type: ignore
+    __table_args__ = (
+        CheckConstraint(
+            "queue IN ('alerts', 'cases', 'tasks')",
+            name="ck_saved_queue_filters_queue",
+        ),
+        CheckConstraint(
+            "(scope = 'personal' AND owner_id IS NOT NULL) OR "
+            "(scope = 'organization' AND owner_id IS NULL)",
+            name="ck_saved_queue_filters_scope_owner",
+        ),
+        CheckConstraint(
+            "navigation_icon IS NULL OR (scope = 'organization' AND queue = 'alerts')",
+            name="ck_saved_queue_filters_navigation",
+        ),
+        CheckConstraint(
+            "(navigation_icon IS NULL) = (navigation_position IS NULL) "
+            "AND (navigation_position IS NULL OR navigation_position >= 0)",
+            name="ck_saved_queue_filters_navigation_position",
+        ),
+        Index("ix_saved_queue_filters_queue_owner", "queue", "owner_id"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    queue: str = Field(max_length=6)
+    name: str = Field(max_length=100)
+    scope: str = Field(max_length=12)
+    owner_id: UUID | None = Field(default=None, foreign_key="user_accounts.id", ondelete="CASCADE")
+    filters: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
+    navigation_icon: str | None = Field(default=None, max_length=100)
+    navigation_position: int | None = Field(default=None)

@@ -7,22 +7,32 @@ authentication session helpers, and attachment upload/download helpers.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 import secrets
-import uuid
 from datetime import datetime, timedelta, timezone
 from functools import wraps
+from math import ceil
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from fastapi import HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.settings_registry import get_local
+from app.services.timeline_attachment_service import (
+    expected_attachment_storage_prefix,
+    find_attachment_item,
+    normalize_upload_status,
+    prepare_attachment_upload,
+    sign_attachment_upload,
+    validate_attachment_upload,
+)
 
 if TYPE_CHECKING:
     from app.models.models import (
-        AttachmentStatusUpdate,
         PresignedDownloadResponse,
         PresignedUploadRequest,
         PresignedUploadResponse,
@@ -30,29 +40,6 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(__name__)
-
-
-def normalize_upload_status(status: Any, default: str = "COMPLETE") -> str:
-    """Normalize stored attachment upload status values for route checks."""
-    if status is None:
-        return default
-
-    if hasattr(status, "value"):
-        status = status.value
-
-    normalized = str(status).strip()
-    if not normalized:
-        return default
-
-    return normalized.upper()
-
-
-def expected_attachment_storage_prefix(entity_type: str, parent_id: int, item_id: str) -> str:
-    return f"{entity_type}s/{parent_id}/attachments/{item_id}/"
-
-
-def expected_attachment_upload_storage_prefix(entity_type: str, parent_id: int, item_id: str) -> str:
-    return f"_uploads/{entity_type}s/{parent_id}/attachments/{item_id}/"
 
 
 def get_timeline_item_types(union_type):
@@ -102,9 +89,7 @@ def create_timeline_converter(timeline_item_types: Dict[str, Any]):
     CLIENT_WRITABLE_ATTACHMENT_FIELDS = {
         "id",
         "type",
-        "file_name",
-        "mime_type",
-        "file_size",
+        "description",
         "created_at",
         "timestamp",
         "created_by",
@@ -171,7 +156,14 @@ def create_timeline_converter(timeline_item_types: Dict[str, Any]):
             }
         
         item_class = timeline_item_types[item_type]
-        return item_class(**timeline_item)
+        try:
+            return item_class(**timeline_item)
+        except ValidationError as error:
+            if item_type != "process_tree":
+                raise
+            issue = error.errors(include_url=False, include_context=False, include_input=False)[0]
+            field = ".".join(str(part) for part in issue["loc"])
+            raise HTTPException(status_code=422, detail=f"{field}: {issue['msg']}") from error
     
     return convert_timeline_item
 
@@ -181,12 +173,15 @@ def create_human_id_decorator(id_prefix: str, default_param_name: str = "id"):
     Create a human ID decorator for the specified prefix and default parameter name.
     
     Args:
-        id_prefix: The human ID prefix (e.g., "ALT-", "CAS-")
+        id_prefix: The canonical human ID prefix (e.g., "ALT", "CAS"). A
+            trailing hyphen is also accepted for compatibility.
         default_param_name: Default parameter name to check for IDs
         
     Returns:
         Decorator function configured for the specified prefix
     """
+    prefix_marker = f"{id_prefix.rstrip('-')}-"
+
     def handle_human_id(param_name: str = default_param_name):
         """
         Decorator to handle human ID redirects for endpoints.
@@ -195,35 +190,41 @@ def create_human_id_decorator(id_prefix: str, default_param_name: str = "id"):
             param_name: The parameter name that contains the ID
         """
         def decorator(func: Callable) -> Callable:
+            endpoint_signature = inspect.signature(func, eval_str=True)
+
             @wraps(func)
             async def wrapper(*args, **kwargs):
                 # Get the ID value from kwargs
                 id_value = kwargs.get(param_name)
                 
                 # Check if it's a human ID and redirect if so
-                if isinstance(id_value, str) and id_value.startswith(id_prefix):
+                if isinstance(id_value, str) and id_value.startswith(prefix_marker):
                     try:
-                        numeric_id = int(id_value[len(id_prefix):])
+                        numeric_id = int(id_value[len(prefix_marker):])
                         
-                        # Get the request object to build the redirect URL
-                        request = kwargs.get('request')
-                        if not request:
-                            # Look for Request in args
-                            for arg in args:
-                                if isinstance(arg, Request):
-                                    request = arg
-                                    break
-                        
-                        if request:
+                        # Get the HTTP request object to build the redirect URL.
+                        request = next(
+                            (
+                                argument
+                                for argument in (*args, *kwargs.values())
+                                if isinstance(argument, Request)
+                            ),
+                            None,
+                        )
+
+                        if request is not None:
                             # Replace the human ID in the URL path with numeric ID
                             original_path = str(request.url.path)
                             redirect_path = original_path.replace(id_value, str(numeric_id))
-                            return RedirectResponse(url=redirect_path, status_code=308)
+                            redirect_url = redirect_path
+                            if request.url.query:
+                                redirect_url = f"{redirect_path}?{request.url.query}"
+                            return RedirectResponse(url=redirect_url, status_code=308)
                         else:
                             raise HTTPException(status_code=500, detail="Request object not found for redirect")
                             
                     except ValueError:
-                        raise HTTPException(status_code=400, detail=f"Invalid {id_prefix} ID format")
+                        raise HTTPException(status_code=400, detail=f"Invalid {prefix_marker} ID format")
                 
                 # If we reach here, it means the ID is already numeric (redirect already happened)
                 # Just ensure it's an integer if it's a string representation
@@ -232,7 +233,15 @@ def create_human_id_decorator(id_prefix: str, default_param_name: str = "id"):
                 
                 # Call the original function
                 return await func(*args, **kwargs)
-            
+
+            wrapper.__signature__ = endpoint_signature.replace(  # type: ignore[attr-defined]
+                parameters=[
+                    parameter.replace(annotation=int | str)
+                    if parameter.name == param_name
+                    else parameter
+                    for parameter in endpoint_signature.parameters.values()
+                ]
+            )
             return wrapper
         return decorator
     
@@ -244,17 +253,6 @@ def create_human_id_decorator(id_prefix: str, default_param_name: str = "id"):
 # ---------------------------------------------------------------------------
 
 
-def find_attachment_item(
-    timeline_items: Optional[List[Dict[str, Any]] | Dict[str, Dict[str, Any]]], item_id: str
-) -> Optional[Dict[str, Any]]:
-    """Find an attachment timeline item by ID."""
-    items = timeline_items.values() if isinstance(timeline_items, dict) else (timeline_items or [])
-    for item in items:
-        if item.get("id") == item_id and item.get("type") == "attachment":
-            return item
-    return None
-
-
 async def handle_generate_upload_url(
     *,
     entity_type: str,
@@ -264,337 +262,32 @@ async def handle_generate_upload_url(
     db: AsyncSession,
     service: Any,
 ) -> "PresignedUploadResponse":
-    """Shared logic for generating a presigned upload URL and creating the attachment timeline item.
-
-    ``service`` must expose ``add_timeline_item(db, parent_id, item, username)``.
-    """
-    from app.core.storage_config import storage_config
-    from app.models.enums import UploadStatus
-    from app.models.models import (
-        AttachmentItem,
-        PresignedUploadResponse,
-    )
-    from app.services.attachment_settings_service import get_attachment_limits
-    from app.services.storage_service import storage_service
-
-    parent_type = f"{entity_type}s"  # alert -> alerts
-
+    """Create an attachment timeline item and return a staging PUT URL."""
     try:
-        attachment_limits = await get_attachment_limits(db)
-
-        if request_data.file_size > attachment_limits.max_upload_size_bytes:
-            max_size_mb = attachment_limits.max_upload_size_mb
-            raise HTTPException(
-                status_code=413,
-                detail=f"File size {request_data.file_size} exceeds limit {max_size_mb}MB",
-            )
-
-        if not storage_service.validate_file_type(
-            request_data.mime_type,
-            attachment_limits.allowed_file_types,
-            attachment_limits.denied_file_types,
-        ):
-            raise HTTPException(
-                status_code=415,
-                detail=f"File type {request_data.mime_type} not allowed",
-            )
-
-        sanitized_filename = storage_service.sanitize_filename(request_data.filename)
-
-        item_id = str(uuid.uuid4())
-        storage_key = storage_service.generate_storage_key(
-            parent_id, item_id, sanitized_filename, parent_type=parent_type,
+        max_file_size = await validate_attachment_upload(request_data, db)
+        attachment_item = prepare_attachment_upload(
+            entity_type=entity_type,
+            parent_id=parent_id,
+            request_data=request_data,
+            current_user=current_user,
         )
-        upload_storage_key = storage_service.generate_upload_storage_key(
-            parent_id, item_id, parent_type=parent_type,
+        response = await sign_attachment_upload(
+            attachment_item.id, attachment_item.upload_storage_key, max_file_size,
         )
-
-        attachment_item = AttachmentItem(
-            id=item_id,
-            type="attachment",
-            file_name=sanitized_filename,
-            mime_type=request_data.mime_type,
-            file_size=request_data.file_size,
-            storage_key=storage_key,
-            upload_storage_key=upload_storage_key,
-            upload_status=UploadStatus.UPLOADING,
-            uploaded_by=current_user.username,
-            uploaded_by_user_id=str(current_user.id),
-            created_by=current_user.username,
-            timestamp=datetime.now(timezone.utc),
-        )
-
-        await service.add_timeline_item(
-            db, parent_id, attachment_item, current_user.username,
-        )
-
-        upload_url = await storage_service.generate_presigned_upload_url(
-            upload_storage_key, expires_minutes=storage_config.upload_timeout_minutes,
-        )
-
-        expires_at = datetime.now(timezone.utc) + timedelta(
-            minutes=storage_config.upload_timeout_minutes,
-        )
+        await service.add_timeline_item(db, parent_id, attachment_item, current_user.username)
 
         logger.info(
             "Generated presigned upload URL for %s %s, item %s, file %s, "
             "size %s bytes, user %s, expires %s",
-            entity_type, parent_id, item_id, sanitized_filename,
-            request_data.file_size, current_user.username, expires_at,
+            entity_type, parent_id, attachment_item.id, attachment_item.file_name,
+            request_data.file_size, current_user.username, response.expires_at,
         )
-
-        return PresignedUploadResponse(
-            item_id=item_id,
-            upload_url=upload_url,
-            storage_key=upload_storage_key,
-            expires_at=expires_at,
-            max_file_size=attachment_limits.max_upload_size_bytes,
-        )
-
+        return response
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error("Error generating upload URL for %s %s: %s", entity_type, parent_id, e)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to generate upload URL: {str(e)}",
-        )
-
-
-async def handle_update_attachment_status(
-    *,
-    entity: Any,
-    entity_type: str,
-    parent_id: int,
-    item_id: str,
-    update_data: "AttachmentStatusUpdate",
-    current_user: "UserAccount",
-    db: AsyncSession,
-    service: Any,
-) -> Any:
-    """Shared logic for updating an attachment's upload status.
-
-    ``entity`` must have a ``timeline_items`` attribute (list of dicts).
-    ``service`` must expose ``update_timeline_item(db, parent_id, item_id, item, username)``.
-    Returns the updated entity.
-    """
-    from app.models.enums import UploadStatus
-    from app.models.models import AttachmentItem
-    from app.services.attachment_settings_service import get_attachment_limits
-    from app.services.email_evidence_service import (
-        EmailEvidenceParseError,
-        build_email_timeline_item,
-        is_email_evidence_file,
-        parse_email_evidence,
-    )
-    from app.services.storage_service import storage_service
-
-    try:
-        timeline_item = find_attachment_item(entity.timeline_items, item_id)
-        if not timeline_item:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Attachment item {item_id} not found",
-            )
-
-        if timeline_item.get("uploaded_by_user_id"):
-            owner_matches = timeline_item.get("uploaded_by_user_id") == str(current_user.id)
-        else:
-            owner_matches = timeline_item.get("uploaded_by") == current_user.username
-        if not owner_matches:
-            raise HTTPException(
-                status_code=403,
-                detail="Only upload owner can update status",
-            )
-
-        current_status = normalize_upload_status(timeline_item.get("upload_status"))
-        if current_status in [UploadStatus.COMPLETE.value, UploadStatus.FAILED.value]:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot transition from {current_status} to {update_data.status}",
-            )
-
-        email_timeline_item = None
-
-        if update_data.status == UploadStatus.COMPLETE:
-            storage_key = timeline_item.get("storage_key")
-            if not storage_key:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Attachment has no storage key",
-                )
-            if not str(storage_key).startswith(expected_attachment_storage_prefix(entity_type, parent_id, item_id)):
-                raise HTTPException(
-                    status_code=403,
-                    detail="Attachment storage key does not belong to this entity",
-                )
-            upload_storage_key = timeline_item.get("upload_storage_key")
-            if not upload_storage_key:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Attachment upload must be restarted before it can be finalized",
-                )
-            if not str(upload_storage_key).startswith(
-                expected_attachment_upload_storage_prefix(entity_type, parent_id, item_id)
-            ):
-                raise HTTPException(
-                    status_code=403,
-                    detail="Attachment upload storage key does not belong to this entity",
-                )
-
-            file_exists = await storage_service.verify_file_exists(upload_storage_key)
-            if not file_exists:
-                raise HTTPException(
-                    status_code=409,
-                    detail="File not found in storage",
-                )
-
-            raw_expected_size = timeline_item.get("file_size")
-            try:
-                expected_size = int(raw_expected_size)
-            except (TypeError, ValueError):
-                raise HTTPException(
-                    status_code=409,
-                    detail="Attachment has invalid expected file size",
-                )
-            if expected_size <= 0:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Attachment has invalid expected file size",
-                )
-
-            attachment_limits = await get_attachment_limits(db)
-            if expected_size > attachment_limits.max_upload_size_bytes:
-                raise HTTPException(
-                    status_code=413,
-                    detail=(
-                        f"File size {expected_size} exceeds limit "
-                        f"{attachment_limits.max_upload_size_mb}MB"
-                    ),
-                )
-
-            upload_metadata = await storage_service.get_object_metadata(upload_storage_key)
-            if upload_metadata.size > attachment_limits.max_upload_size_bytes:
-                raise HTTPException(
-                    status_code=413,
-                    detail=(
-                        f"Uploaded file size {upload_metadata.size} exceeds limit "
-                        f"{attachment_limits.max_upload_size_mb}MB"
-                    ),
-                )
-            if upload_metadata.size != expected_size:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Uploaded file size does not match the expected size",
-                )
-
-            await storage_service.copy_object(upload_storage_key, storage_key)
-            try:
-                final_metadata = await storage_service.get_object_metadata(
-                    storage_key,
-                    require_checksum=True,
-                )
-                if final_metadata.size != expected_size:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Finalized file size does not match the expected size",
-                    )
-                if not final_metadata.sha256:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Storage did not return a SHA256 checksum for the finalized file",
-                    )
-
-                detected_mime_type = await storage_service.detect_mime_type(storage_key)
-                if not storage_service.validate_file_type(
-                    detected_mime_type,
-                    attachment_limits.allowed_file_types,
-                    attachment_limits.denied_file_types,
-                ):
-                    raise HTTPException(
-                        status_code=415,
-                        detail=f"Detected file type {detected_mime_type} not allowed",
-                    )
-                declared_mime_type = storage_service.normalize_mime_type(timeline_item.get("mime_type"))
-                if storage_service.normalize_mime_type(detected_mime_type) != declared_mime_type:
-                    raise HTTPException(
-                        status_code=415,
-                        detail="Uploaded file content type does not match the declared MIME type",
-                    )
-                if update_data.file_hash and update_data.file_hash.lower() != final_metadata.sha256:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="Uploaded file hash does not match the stored object",
-                    )
-                if entity_type == "case" and is_email_evidence_file(
-                    timeline_item.get("file_name"),
-                    detected_mime_type,
-                ):
-                    try:
-                        email_bytes = await storage_service.get_object_bytes(
-                            storage_key,
-                            max_bytes=expected_size,
-                        )
-                        parsed_email = parse_email_evidence(
-                            email_bytes,
-                            timeline_item.get("file_name"),
-                            detected_mime_type,
-                        )
-                        email_timeline_item = build_email_timeline_item(
-                            parsed_email,
-                            created_by=current_user.username,
-                        )
-                    except EmailEvidenceParseError as exc:
-                        raise HTTPException(
-                            status_code=422,
-                            detail=str(exc),
-                        ) from exc
-            except HTTPException:
-                try:
-                    await storage_service.delete_file(storage_key)
-                except Exception:  # pragma: no cover - best-effort cleanup
-                    logger.warning("Failed to clean up rejected finalized attachment %s", storage_key)
-                raise
-
-            server_hash = final_metadata.sha256
-            timeline_item["file_hash"] = server_hash
-            timeline_item.pop("upload_storage_key", None)
-            try:
-                await storage_service.delete_file(upload_storage_key)
-            except Exception:  # pragma: no cover - best-effort cleanup
-                logger.warning("Failed to clean up staged attachment upload %s", upload_storage_key)
-
-        timeline_item["upload_status"] = update_data.status.value
-
-        attachment_item = AttachmentItem(**timeline_item)
-
-        updated = await service.update_timeline_item(
-            db, parent_id, item_id, attachment_item, current_user.username,
-        )
-
-        if email_timeline_item is not None:
-            updated = await service.add_timeline_item(
-                db, parent_id, email_timeline_item, current_user.username,
-            )
-
-        logger.info(
-            "Updated attachment status for %s %s, item %s, status %s, user %s",
-            entity_type, parent_id, item_id, update_data.status, current_user.username,
-        )
-
-        return updated
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(
-            "Error updating attachment status for %s %s, item %s: %s",
-            entity_type, parent_id, item_id, e,
-        )
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to update attachment status: {str(e)}",
-        )
+    except Exception:
+        logger.exception("Error generating upload URL for %s %s", entity_type, parent_id)
+        raise HTTPException(status_code=500, detail="Failed to generate upload URL")
 
 
 async def handle_generate_download_url(
@@ -653,7 +346,7 @@ async def handle_generate_download_url(
             storage_key,
             expires_minutes=storage_config.download_timeout_minutes,
             filename=timeline_item.get("file_name"),
-            as_attachment=True,
+            as_attachment=as_download,
         )
 
         expires_at = datetime.now(timezone.utc) + timedelta(
@@ -677,14 +370,16 @@ async def handle_generate_download_url(
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(
-            "Error generating download URL for %s %s, item %s: %s",
-            entity_type, parent_id, item_id, e,
+    except Exception:
+        logger.exception(
+            "Error generating download URL for %s %s, item %s",
+            entity_type,
+            parent_id,
+            item_id,
         )
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to generate download URL: {str(e)}",
+            detail="Failed to generate download URL",
         )
 
 
@@ -709,19 +404,22 @@ def _cookie_kwargs(
     max_age: Optional[int] = None,
     httponly: Optional[bool] = None,
     samesite: Optional[str] = None,
+    secure: Optional[bool] = None,
+    include_configured_domain: bool = True,
 ) -> dict:
-    """Build keyword arguments for ``Response.set_cookie`` from the settings registry."""
+    """Build cookie attributes, aligning ``Max-Age`` with an absolute expiry."""
     kwargs: dict[str, object] = {
         "key": key,
         "httponly": get_local("auth.session.cookie_http_only") if httponly is None else httponly,
-        "secure": get_local("auth.session.cookie_secure"),
+        "secure": get_local("auth.session.cookie_secure") if secure is None else secure,
         "samesite": get_local("auth.session.cookie_same_site") if samesite is None else samesite,
         "path": path,
     }
 
-    domain = get_local("auth.session.cookie_domain")
-    if domain:
-        kwargs["domain"] = domain
+    if include_configured_domain:
+        domain = get_local("auth.session.cookie_domain")
+        if domain:
+            kwargs["domain"] = domain
 
     expiry = _normalize_cookie_expiry(expires_at)
     if isinstance(expiry, datetime):
@@ -730,20 +428,42 @@ def _cookie_kwargs(
         kwargs["expires"] = expiry
 
     if max_age is None:
-        idle_hours = get_local("auth.session.idle_timeout_hours")
-        max_age = int(idle_hours * 3600)
+        if isinstance(expiry, datetime):
+            max_age = max(
+                0,
+                ceil((expiry - datetime.now(timezone.utc)).total_seconds()),
+            )
+        else:
+            idle_hours = get_local("auth.session.idle_timeout_hours")
+            max_age = int(idle_hours * 3600)
     kwargs["max_age"] = max_age
 
     return kwargs
 
 
-def _delete_cookie(response: Response, *, key: str, path: str) -> None:
-    cookie_domain = get_local("auth.session.cookie_domain")
+def _delete_cookie(
+    response: Response,
+    *,
+    key: str,
+    path: str,
+    secure: bool = False,
+    include_configured_domain: bool = True,
+) -> None:
+    cookie_domain = (
+        get_local("auth.session.cookie_domain")
+        if include_configured_domain
+        else None
+    )
 
     if cookie_domain:
-        response.delete_cookie(key=key, path=path, domain=cookie_domain)
+        response.delete_cookie(
+            key=key,
+            path=path,
+            domain=cookie_domain,
+            secure=secure,
+        )
     else:
-        response.delete_cookie(key=key, path=path)
+        response.delete_cookie(key=key, path=path, secure=secure)
 
 
 def issue_session_cookie(response: Response, session_token: str, expires_at: datetime) -> None:
@@ -834,10 +554,21 @@ def read_session_cookie(request: Request) -> Optional[str]:
     return request.cookies.get(get_local("auth.session.cookie_name"))
 
 
-def read_csrf_cookie(request: Request) -> Optional[str]:
-    """Return the CSRF token from the incoming request, if present."""
+def _oidc_browser_binding_cookie_secure() -> bool:
+    return urlsplit(str(get_local("oidc.redirect_uri"))).scheme.lower() == "https"
 
-    return request.cookies.get(get_local("auth.csrf.cookie_name"))
+
+def _oidc_browser_binding_cookie_name() -> str:
+    """Return a cookie-tossing-resistant name for secure deployments."""
+
+    configured_name = str(get_local("oidc.browser_binding.cookie_name"))
+    if _oidc_browser_binding_cookie_secure():
+        if configured_name.startswith("__Host-"):
+            return configured_name
+        return f"__Host-{configured_name}"
+    # __Host- cookies require Secure. Preserve loopback HTTP development flows
+    # when an operator carries a production-prefixed name into local settings.
+    return configured_name.removeprefix("__Host-")
 
 
 def issue_oidc_browser_binding_cookie(response: Response, browser_binding_token: str, expires_at: datetime) -> None:
@@ -847,14 +578,20 @@ def issue_oidc_browser_binding_cookie(response: Response, browser_binding_token:
         raise ValueError("browser_binding_token must be a non-empty string")
 
     expiry = _normalize_cookie_expiry(expires_at)
-    now = datetime.now(timezone.utc)
-    max_age = max(1, int((expiry - now).total_seconds())) if isinstance(expiry, datetime) else 300
     kwargs = _cookie_kwargs(
-        key=get_local("oidc.browser_binding.cookie_name"),
-        path="/api/v1/auth/oidc",
+        key=_oidc_browser_binding_cookie_name(),
+        # __Host- cookies require Path=/ and prohibit Domain. The broader path
+        # does not expose the HttpOnly value to script and the five-minute
+        # lifetime bounds its use.
+        path="/",
         expires_at=expiry,
-        max_age=max_age,
         httponly=True,
+        # The authorization response is a top-level cross-site navigation
+        # from the IdP. A Strict transaction cookie would suppress the PKCE
+        # verifier and make every otherwise-valid callback fail.
+        samesite="lax",
+        secure=_oidc_browser_binding_cookie_secure(),
+        include_configured_domain=False,
     )
     response.set_cookie(value=browser_binding_token, **kwargs)
 
@@ -864,12 +601,14 @@ def revoke_oidc_browser_binding_cookie(response: Response) -> None:
 
     _delete_cookie(
         response,
-        key=get_local("oidc.browser_binding.cookie_name"),
-        path="/api/v1/auth/oidc",
+        key=_oidc_browser_binding_cookie_name(),
+        path="/",
+        secure=_oidc_browser_binding_cookie_secure(),
+        include_configured_domain=False,
     )
 
 
 def read_oidc_browser_binding_cookie(request: Request) -> Optional[str]:
     """Return the OIDC browser-binding token from the incoming request, if present."""
 
-    return request.cookies.get(get_local("oidc.browser_binding.cookie_name"))
+    return request.cookies.get(_oidc_browser_binding_cookie_name())

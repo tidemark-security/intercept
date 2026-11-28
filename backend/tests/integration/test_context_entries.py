@@ -1,17 +1,23 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any, Callable
+from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
 
 import pytest
+from fastapi import HTTPException
 from httpx import AsyncClient
 from sqlalchemy import select
 
-from app.models.enums import ContextCriterionType, Priority, RecommendationStatus, SettingType, TriageDisposition
-from app.models.models import Alert, AppSetting, AuditLog, ContextEntry, TriageRecommendation
+from app.mcp import tools as mcp_tools
+from app.models.enums import ContextCriterionType, Priority, RealtimeEventType, RecommendationStatus, SettingType
+from app.models.models import Alert, AlertTriageRun, AppSetting, AuditLog, ContextEntry
 from app.services.context_service import ContextService
-from app.services.tasks import handle_triage_alert
+from app.services.realtime_service import emit_event
+from app.services.tasks import _mark_triage_failed, handle_triage_alert
+from app.services.triage_recommendation_service import TRIAGE_RUN_HEADER
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
@@ -44,7 +50,10 @@ async def test_analyst_can_create_edit_and_expire_context_entry_with_audit(
     client: AsyncClient,
     session_maker: Any,
     analyst_user_factory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    publish = AsyncMock(wraps=emit_event)
+    monkeypatch.setattr("app.services.context_service.emit_event", publish)
     session_cookie, username = await _login_and_get_session_cookie(
         client, session_maker, analyst_user_factory
     )
@@ -106,6 +115,14 @@ async def test_analyst_can_create_edit_and_expire_context_entry_with_audit(
         "context_entry.updated",
         "context_entry.expired",
     }
+    assert publish.await_count == 3
+    for event in publish.await_args_list:
+        assert event.kwargs == {
+            "entity_type": "context_entry",
+            "entity_id": created["id"],
+            "event_type": RealtimeEventType.ENTITY_UPDATED,
+            "performed_by": username,
+        }
 
 
 @pytest.mark.asyncio
@@ -251,11 +268,52 @@ async def test_matching_context_uses_optional_and_wildcard_criteria(session_make
 
 
 @pytest.mark.asyncio
-async def test_triage_task_injects_matching_context_and_records_snapshot(
+@pytest.mark.parametrize("initial_context", [True, False], ids=["edited-entry", "initially-empty"])
+async def test_triage_freezes_context_delivered_to_langflow(
+    client: AsyncClient,
     session_maker: Any,
+    analyst_user_factory,
     monkeypatch: pytest.MonkeyPatch,
+    initial_context: bool,
 ) -> None:
-    captured_context: dict[str, Any] = {}
+    cookie, username = await _login_and_get_session_cookie(client, session_maker, analyst_user_factory)
+    cookies = {"intercept_session": cookie}
+    enqueue = AsyncMock()
+    monkeypatch.setattr(
+        "app.services.task_queue_service.get_task_queue_service",
+        lambda: SimpleNamespace(enqueue=enqueue),
+    )
+    monkeypatch.setattr("app.services.tasks.async_session_factory", session_maker)
+    monkeypatch.setattr(mcp_tools, "async_session_factory", session_maker)
+    principal = SimpleNamespace(username="triage-agent", id=uuid4())
+    monkeypatch.setattr(mcp_tools, "_get_authenticated_user", lambda: principal)
+    request_headers: dict[str, str] = {}
+    monkeypatch.setattr(mcp_tools, "get_http_request", lambda: SimpleNamespace(headers=request_headers))
+    snapshots: list[dict[str, Any]] = []
+
+    expires_at = datetime.now(timezone.utc) + timedelta(days=1)
+    async with session_maker() as session:
+        session.add(AppSetting(
+            key="langflow.alert_triage_flow_id",
+            value="flow-123",
+            value_type=SettingType.STRING,
+            is_secret=False,
+            category="langflow",
+        ))
+        alert = Alert(title="Test context revisions", source="SIEM", priority=Priority.MEDIUM)
+        session.add(alert)
+        session.add(ContextEntry(
+            criteria=[_criterion(ContextCriterionType.ALERT_SOURCE, "EDR")],
+            body="Unmatched entry",
+            author=username,
+            expires_at=expires_at,
+        ))
+        entry = ContextEntry(criteria=[], body="Original entry", author=username, expires_at=expires_at)
+        if initial_context:
+            session.add(entry)
+        await session.commit()
+        alert_id, entry_id = alert.id, entry.id
+    assert alert_id is not None
 
     class FakeLangFlowService:
         @classmethod
@@ -263,81 +321,90 @@ async def test_triage_task_injects_matching_context_and_records_snapshot(
             return cls()
 
         async def run_flow_streaming(self, **kwargs: Any) -> dict[str, Any]:
-            captured_context.update(kwargs["context"])
+            summary_headers = kwargs["context"]["triage_summary_mcp"]["headers"]
+            decision_headers = kwargs["context"]["triage_agent_mcp"]["headers"]
+            assert summary_headers == decision_headers
+            request_headers.update(summary_headers)
+            summary = await mcp_tools.get_summary_tool("alert", str(alert_id))
+            snapshot = summary["context"]
+            snapshots.append(snapshot)
+            if len(snapshots) == 1:
+                assert [item["body"] for item in snapshot["items"]] == (["Original entry"] if initial_context else [])
+                if entry_id is not None:
+                    edited = await client.put(
+                        f"/api/v1/context-entries/{entry_id}",
+                        json={"body": "Edited entry"},
+                        cookies=cookies,
+                    )
+                    assert edited.status_code == 200, edited.text
+                else:
+                    created = await client.post(
+                        "/api/v1/context-entries",
+                        json={"body": "Edited entry", "expires_at": expires_at.isoformat()},
+                        cookies=cookies,
+                    )
+                    assert created.status_code == 201, created.text
+                assert (await mcp_tools.get_summary_tool("alert", str(alert_id)))["context"] == snapshot
+            await mcp_tools.record_triage_decision_tool(str(alert_id), "BENIGN", 0.8, commit=True)
             return {"ok": True}
 
         async def close(self) -> None:
             return None
 
-    monkeypatch.setattr("app.services.tasks.async_session_factory", session_maker)
     monkeypatch.setattr("app.services.tasks.LangFlowService", FakeLangFlowService)
+    enqueue_url = f"/api/v1/alerts/{alert_id}/triage-recommendation/enqueue"
+    alert_url = f"/api/v1/alerts/{alert_id}"
+    queued = await client.post(enqueue_url, cookies=cookies)
+    assert queued.status_code == 200, queued.text
+    first_payload = enqueue.await_args.kwargs["payload"]
+    await handle_triage_alert(first_payload)
 
+    detail = (await client.get(alert_url, cookies=cookies)).json()
+    first_recommendation = detail["triage_recommendation"]
+    assert first_recommendation["context_snapshot_verified"] is True
+    assert first_recommendation["applied_context_entries"] == snapshots[0]["items"]
+    assert detail["triage_context_changed"] is True
+    assert detail["context"]["items"][0]["body"] == "Edited entry"
+
+    rerun = await client.post(
+        enqueue_url,
+        json={"expected_recommendation_created_at": first_recommendation["created_at"]},
+        cookies=cookies,
+    )
+    assert rerun.status_code == 200, rerun.text
+    second_payload = enqueue.await_args.kwargs["payload"]
+    assert second_payload["run_id"] != first_payload["run_id"]
+
+    # The old Langflow callback and old worker failure can only address the old run.
+    request_headers[TRIAGE_RUN_HEADER] = first_payload["run_id"]
+    with pytest.raises(HTTPException, match="no longer queued"):
+        await mcp_tools.record_triage_decision_tool(str(alert_id), "BENIGN", 0.8, commit=True)
+    request_headers.clear()
+    with pytest.raises(HTTPException, match="requires its run ID"):
+        await mcp_tools.record_triage_decision_tool(str(alert_id), "BENIGN", 0.8, commit=True)
+    await _mark_triage_failed(alert_id, "Old worker failure", UUID(first_payload["run_id"]))
+    await handle_triage_alert(second_payload)
+
+    detail = (await client.get(alert_url, cookies=cookies)).json()
+    second_recommendation = detail["triage_recommendation"]
+    assert second_recommendation["status"] == RecommendationStatus.PENDING
+    assert second_recommendation["applied_context_entries"] == snapshots[1]["items"]
+    assert snapshots[1]["items"][0]["body"] == "Edited entry"
+    assert detail["triage_context_changed"] is False
     async with session_maker() as session:
-        session.add(
-            AppSetting(
-                key="langflow.alert_triage_flow_id",
-                value="flow-123",
-                value_type=SettingType.STRING,
-                is_secret=False,
-                category="langflow",
-            )
-        )
-        alert = Alert(
-            title="Suspicious process",
-            priority=Priority.MEDIUM,
-            source="SIEM",
-            timeline_items={
-                "obs": {
-                    "id": "obs",
-                    "type": "observable",
-                    "observable_value": "bad.example",
-                }
-            },
-        )
-        session.add(alert)
-        await session.flush()
-        assert alert.id is not None
-        recommendation = TriageRecommendation(
-            alert_id=alert.id,
-            disposition=TriageDisposition.UNKNOWN,
-            confidence=0.0,
-            reasoning_bullets=[],
-            recommended_actions=[],
-            created_by="analyst",
-            status=RecommendationStatus.QUEUED,
-        )
-        session.add(recommendation)
-        session.add(
-            ContextEntry(
-                criteria=[_criterion(ContextCriterionType.OBSERVABLE, "bad.*")],
-                body="Known test observable; validate source before escalation.",
-                author="lead",
-                expires_at=datetime.now(timezone.utc) + timedelta(days=1),
-            )
-        )
-        session.add(
-            ContextEntry(
-                criteria=[_criterion(ContextCriterionType.ALERT_SOURCE, "EDR")],
-                body="Should not match this SIEM alert.",
-                author="lead",
-                expires_at=datetime.now(timezone.utc) + timedelta(days=1),
-            )
-        )
-        await session.commit()
-        alert_id = alert.id
+        first_run = await session.get(AlertTriageRun, UUID(first_payload["run_id"]))
+        assert first_run.context_snapshot == snapshots[0]
 
-    await handle_triage_alert({"alert_id": alert_id})
-
-    applied_context = json.loads(captured_context["triage_context_entries"]["input_value"])
-    assert [entry["body"] for entry in applied_context] == [
-        "Known test observable; validate source before escalation."
-    ]
-
-    async with session_maker() as session:
-        result = await session.execute(
-            select(TriageRecommendation).where(TriageRecommendation.alert_id == alert_id)
-        )
-        refreshed = result.scalar_one()
-        assert [entry["body"] for entry in refreshed.applied_context_entries] == [
-            "Known test observable; validate source before escalation."
-        ]
+    rejected = await client.post(
+        f"/api/v1/alerts/{alert_id}/triage-recommendation/reject",
+        json={"category": "PREFER_MANUAL_REVIEW"},
+        cookies=cookies,
+    )
+    assert rejected.status_code == 200, rejected.text
+    stale_rerun = await client.post(
+        enqueue_url,
+        json={"expected_recommendation_created_at": second_recommendation["created_at"]},
+        cookies=cookies,
+    )
+    assert stale_rerun.status_code == 409, stale_rerun.text
+    assert enqueue.await_count == 2

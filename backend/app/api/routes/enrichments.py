@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import httpx
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.request_metadata import build_audit_context
 from app.api.routes.admin_auth import require_admin_user, require_authenticated_user, require_non_auditor_user
 from app.core.database import get_db
 from app.models.enums import SettingType
 from app.models.models import (
     AppSettingCreate,
-    AppSettingUpdate,
     EnrichmentAliasCreate,
     EnrichmentAliasRead,
     EnrichmentAliasUpdate,
@@ -28,11 +28,17 @@ from app.models.models import (
     UserAccount,
 )
 from app.services.audit_service import AuditContext
+from app.services.enrichment.base import EnrichmentProviderError
+from app.services.enrichment.bulk_sync_schedule_sync import enqueue_bulk_sync_schedule_refresh
 from app.services.enrichment.providers.servicenow import servicenow_provider
 from app.services.enrichment.registry import enrichment_registry
-from app.services.enrichment.service import enrichment_service
-from app.services.maxmind_service import maxmind_service
-from app.services.settings_service import SettingsService
+from app.services.enrichment.service import (
+    EnrichmentNotFoundError,
+    EnrichmentValidationError,
+    enrichment_service,
+)
+from app.services.maxmind_service import MaxMindConfigurationError, maxmind_service
+from app.services.settings_service import SettingWriteError, SettingsService
 
 
 router = APIRouter(
@@ -81,7 +87,10 @@ async def enqueue_item_enrichment(
             item_id=item_id,
         )
         return {"enqueued": True, "task_id": task_id}
-    except ValueError as exc:
+    except EnrichmentNotFoundError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    except EnrichmentValidationError as exc:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
@@ -102,17 +111,14 @@ async def enqueue_directory_sync(
     if not provider.supports_bulk_sync:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Provider does not support bulk sync")
 
-    try:
-        from app.services.task_queue_service import get_task_queue_service
-        from app.services.tasks import TASK_DIRECTORY_SYNC
+    from app.services.task_queue_service import get_task_queue_service
+    from app.services.tasks import TASK_DIRECTORY_SYNC
 
-        task_id = await get_task_queue_service().enqueue(
-            task_name=TASK_DIRECTORY_SYNC,
-            payload={"provider_id": provider_id},
-        )
-        return {"enqueued": True, "task_id": task_id}
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    task_id = await get_task_queue_service().enqueue(
+        task_name=TASK_DIRECTORY_SYNC,
+        payload={"provider_id": provider_id},
+    )
+    return {"enqueued": True, "task_id": task_id}
 
 
 @admin_router.post("/aliases", response_model=EnrichmentAliasRead, status_code=status.HTTP_201_CREATED)
@@ -165,17 +171,7 @@ async def _upsert_setting(
     performed_by: Optional[str] = None,
     audit_context: Optional[AuditContext] = None,
 ) -> None:
-    existing = await settings_service.get_setting(key, include_secret=True)
-    if existing is not None and existing.id > 0:
-        await settings_service.update_setting(
-            key,
-            AppSettingUpdate(value=value),
-            performed_by=performed_by,
-            audit_context=audit_context,
-        )
-        return
-
-    await settings_service.create_setting(
+    await settings_service.upsert_setting_in_transaction(
         AppSettingCreate(
             key=key,
             value=value,
@@ -189,6 +185,21 @@ async def _upsert_setting(
     )
 
 
+async def _fill_missing_servicenow_secrets(
+    settings_service: SettingsService,
+    request_data: dict[str, Any],
+) -> None:
+    for key_suffix in ("password", "oauth_client_secret"):
+        if request_data.get(key_suffix):
+            continue
+        existing = await settings_service.get_setting(
+            f"enrichment.servicenow.{key_suffix}",
+            include_secret=True,
+        )
+        if existing and existing.value:
+            request_data[key_suffix] = existing.value
+
+
 @admin_router.post("/maxmind/configure", response_model=MaxMindConfigureResponse)
 async def configure_maxmind(
     http_request: Request,
@@ -199,11 +210,7 @@ async def configure_maxmind(
     try:
         parsed = maxmind_service.parse_geoip_conf(request.conf_text)
         settings_service = SettingsService(db)  # type: ignore[arg-type]
-        audit_context = AuditContext(
-            ip_address=http_request.client.host if http_request.client else None,
-            user_agent=http_request.headers.get("user-agent"),
-            correlation_id=http_request.headers.get("x-correlation-id"),
-        )
+        audit_context = build_audit_context(http_request)
 
         await _upsert_setting(
             settings_service,
@@ -237,15 +244,23 @@ async def configure_maxmind(
             audit_context=audit_context,
         )
 
-        task_id = await maxmind_service.enqueue_update(db, reschedule=True)
+        await db.commit()
+        task_id = await maxmind_service.enqueue_update_after_commit(
+            db,
+            reschedule=True,
+        )
         return MaxMindConfigureResponse(
             account_id=parsed["account_id"],
             edition_ids=parsed["edition_ids"],
             settings_saved=4,
             task_id=task_id,
         )
-    except ValueError as exc:
+    except (MaxMindConfigurationError, SettingWriteError) as exc:
+        await db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception:
+        await db.rollback()
+        raise
 
 
 @admin_router.get("/maxmind/databases", response_model=List[MaxMindDatabaseStatus])
@@ -259,7 +274,7 @@ async def trigger_maxmind_update(db: AsyncSession = Depends(get_db)):
     try:
         task_id = await maxmind_service.enqueue_update(db, reschedule=False)
         return {"enqueued": True, "task_id": task_id}
-    except ValueError as exc:
+    except MaxMindConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
@@ -273,22 +288,10 @@ async def configure_service_now(
     try:
         settings_service = SettingsService(db)  # type: ignore[arg-type]
         request_data = request.model_dump()
-        for key_suffix in ("password", "oauth_client_secret"):
-            if request_data.get(key_suffix):
-                continue
-            existing = await settings_service.get_setting(
-                f"enrichment.servicenow.{key_suffix}",
-                include_secret=True,
-            )
-            if existing and existing.value:
-                request_data[key_suffix] = existing.value
+        await _fill_missing_servicenow_secrets(settings_service, request_data)
 
         normalized = servicenow_provider.normalize_config(request_data)
-        audit_context = AuditContext(
-            ip_address=http_request.client.host if http_request.client else None,
-            user_agent=http_request.headers.get("user-agent"),
-            correlation_id=http_request.headers.get("x-correlation-id"),
-        )
+        audit_context = build_audit_context(http_request)
 
         setting_values = {
             "instance_url": normalized["instance_url"],
@@ -338,13 +341,20 @@ async def configure_service_now(
                 audit_context=audit_context,
             )
 
+        await db.commit()
+
+        await enqueue_bulk_sync_schedule_refresh("servicenow")
         return ServiceNowConfigureResponse(
             instance_url=normalized["instance_url"],
             settings_saved=len(setting_values),
             enabled=request.enabled,
         )
-    except ValueError as exc:
+    except (EnrichmentProviderError, SettingWriteError) as exc:
+        await db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    except Exception:
+        await db.rollback()
+        raise
 
 
 @admin_router.post("/service-now/preview", response_model=ServiceNowPreviewResponse)
@@ -355,15 +365,7 @@ async def preview_service_now(
     try:
         settings_service = SettingsService(db)  # type: ignore[arg-type]
         request_data = request.model_dump(exclude={"item"})
-        for key_suffix in ("password", "oauth_client_secret"):
-            if request_data.get(key_suffix):
-                continue
-            existing = await settings_service.get_setting(
-                f"enrichment.servicenow.{key_suffix}",
-                include_secret=True,
-            )
-            if existing and existing.value:
-                request_data[key_suffix] = existing.value
+        await _fill_missing_servicenow_secrets(settings_service, request_data)
 
         result = await servicenow_provider.preview(
             config=request_data,
@@ -387,5 +389,5 @@ async def preview_service_now(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"ServiceNow request failed with status {status_code}",
         )
-    except ValueError as exc:
+    except EnrichmentProviderError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))

@@ -163,6 +163,7 @@ def _parse_msg(data: bytes) -> ParsedEmailEvidence:
             "MSG email parsing requires the optional extract_msg package"
         ) from exc
 
+    message: Any | None = None
     try:
         with NamedTemporaryFile(suffix=".msg") as tmp:
             tmp.write(data)
@@ -185,12 +186,17 @@ def _parse_msg(data: bytes) -> ParsedEmailEvidence:
                 body=_clean_body(body),
                 timestamp=_parse_date(getattr(message, "date", None)),
             )
-            close = getattr(message, "close", None)
-            if close:
-                close()
             return parsed
     except Exception as exc:  # pragma: no cover - optional parser exception type is broad
         raise EmailEvidenceParseError("Unable to parse MSG email file") from exc
+    finally:
+        close = getattr(message, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                # Parsing has already completed or raised a more useful error.
+                pass
 
 
 def _addresses_to_text(headers: list[str]) -> str | None:

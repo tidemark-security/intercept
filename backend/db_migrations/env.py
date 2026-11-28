@@ -1,9 +1,11 @@
+from importlib import import_module
 from logging.config import fileConfig
 import sys
 import os
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
+from sqlalchemy.engine import make_url
 
 from alembic import context
 
@@ -12,19 +14,20 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 # Import SQLModel and our models
 from sqlmodel import SQLModel
-from app.models import models  # This imports all our SQLModel classes
+
+# Register all application tables before Alembic inspects SQLModel.metadata.
+import_module("app.models.models")
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
 
-# Override sqlalchemy.url from DATABASE_URL environment variable if set
-# The env var uses asyncpg but alembic needs sync psycopg2, so we convert
-database_url = os.environ.get("DATABASE_URL")
-if database_url:
-    # Convert asyncpg URL to psycopg2 for Alembic (sync operations)
-    sync_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
-    config.set_main_option("sqlalchemy.url", sync_url)
+# Alembic uses the synchronous PostgreSQL driver installed by the backend.
+migration_url = make_url(
+    os.environ.get("DATABASE_URL") or config.get_main_option("sqlalchemy.url")
+)
+if migration_url.drivername in {"postgresql", "postgresql+asyncpg"}:
+    migration_url = migration_url.set(drivername="postgresql+psycopg2")
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -53,6 +56,11 @@ def include_object(object, name, type_, reflected, compare_to):
     # Exclude pgqueuer tables
     if type_ == "table" and name.startswith("pgqueuer"):
         return False
+
+    # Managed by the explicit FastMCP storage migration. Its native schema is
+    # intentionally not represented by an application SQLModel.
+    if type_ == "table" and name == "fastmcp_oauth_kv":
+        return False
     
     # Exclude search_vector columns (managed via raw SQL triggers)
     if type_ == "column" and name == "search_vector":
@@ -67,6 +75,12 @@ def include_object(object, name, type_, reflected, compare_to):
             "idx_alerts_timeline_gin",
             "idx_cases_timeline_gin",
             "idx_tasks_timeline_gin",
+            "idx_alerts_ioc_keys",
+            "idx_cases_ioc_keys",
+            "idx_tasks_ioc_keys",
+            "idx_alerts_timeline_text_trgm",
+            "idx_cases_timeline_text_trgm",
+            "idx_tasks_timeline_text_trgm",
             "idx_alerts_title_trgm",
             "idx_alerts_description_trgm",
             "idx_cases_title_trgm",
@@ -93,9 +107,8 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url,
+        url=migration_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -116,6 +129,7 @@ def run_migrations_online() -> None:
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
+        url=migration_url,
         poolclass=pool.NullPool,
     )
 

@@ -148,7 +148,11 @@ describe('useFileUpload', () => {
     });
 
     await act(async () => {
-      await result.current.uploadFile(file);
+      await result.current.uploadFile(file, {
+        description: 'Collected from the affected endpoint',
+        timestamp: '2026-07-12T14:30:00Z',
+        tags: ['evidence', 'endpoint'],
+      });
     });
 
     expect(generateTaskUploadUrl).toHaveBeenCalledWith({
@@ -157,6 +161,9 @@ describe('useFileUpload', () => {
         filename: 'report.txt',
         file_size: 3,
         mime_type: 'text/plain',
+        description: 'Collected from the affected endpoint',
+        timestamp: '2026-07-12T14:30:00Z',
+        tags: ['evidence', 'endpoint'],
       },
     });
     expect(updateTaskAttachmentStatus).toHaveBeenCalledWith({

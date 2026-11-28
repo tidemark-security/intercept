@@ -7,6 +7,7 @@ from enum import Enum
 from typing import List, Optional
 from datetime import datetime
 from sqlmodel import SQLModel, Field
+from app.models.enums import AlertStatus, CaseStatus, Priority, TaskStatus
 
 
 class EntityType(str, Enum):
@@ -47,8 +48,8 @@ class SearchResultItem(SQLModel):
 
 class DateRangeApplied(SQLModel):
     """Date range that was applied to the search."""
-    start: str = Field(description="Start of date range (ISO8601)")
-    end: str = Field(description="End of date range (ISO8601)")
+    start: str | None = Field(description="Start of date range (ISO8601), or null for all time")
+    end: str | None = Field(description="End of date range (ISO8601), or null for all time")
 
 
 class SearchErrorResponse(SQLModel):
@@ -67,3 +68,25 @@ class PaginatedSearchResponse(SQLModel):
     query: str = Field(description="The search query that was executed")
     entity_types: List[EntityType] = Field(description="The entity types that were searched")
     date_range: DateRangeApplied = Field(description="The date range that was applied")
+
+
+class QueueSearchRow(SQLModel):
+    """List-card and bulk-selection metadata without timeline or detail payloads."""
+
+    id: int
+    human_id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime | None = None
+    status: AlertStatus | CaseStatus | TaskStatus
+    priority: Priority | None = None
+    assignee: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    case_id: int | None = None
+
+
+class QueueSearchResponse(SQLModel):
+    results: list[QueueSearchRow]
+    total: int
+    skip: int
+    limit: int

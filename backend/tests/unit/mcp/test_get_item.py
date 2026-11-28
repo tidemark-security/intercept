@@ -1,15 +1,13 @@
 """Unit tests for MCP get_item timeline content retrieval."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
-from fastapi import HTTPException
-from mcp import McpError
-from pydantic import ValidationError
+from mcp.shared.exceptions import MCPError
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.mcp.schemas import GetItemInput
 from app.mcp.server import (
     _GET_ITEM_MISSING_SCOPE_MESSAGE,
     _GET_ITEM_MIXED_CONTRACT_MESSAGE,
@@ -18,6 +16,7 @@ from app.mcp.server import (
 )
 from app.models.models import Alert, Case, Task
 from app.services import mcp_service
+from app.services.mcp_errors import McpNotFoundError, McpValidationError
 
 
 def _timeline_note(*, item_id: str, content_field: str, content: str) -> dict[str, str]:
@@ -28,6 +27,7 @@ def _timeline_note(*, item_id: str, content_field: str, content: str) -> dict[st
         "id": item_id,
         "type": "note",
         "timestamp": timestamp,
+        "created_by": "timeline-author",
         content_field: content,
     }
 
@@ -72,6 +72,7 @@ async def test_get_item_returns_case_note_description_content(
     assert result.metadata.parent_kind == "case"
     assert result.metadata.parent_id == case.id
     assert result.metadata.parent_human_id == "CAS-0000001"
+    assert result.metadata.author == "timeline-author"
 
 
 @pytest.mark.asyncio
@@ -131,30 +132,9 @@ async def test_get_item_preserves_legacy_body_and_content_fallbacks(
     assert result.metadata.parent_human_id == expected_human_id
 
 
-def test_get_item_input_requires_parent_scope_and_item_id() -> None:
-    schema = GetItemInput.model_json_schema()
-
-    assert set(schema["required"]) == {
-        "parent_entity_type",
-        "parent_entity_id",
-        "item_id",
-    }
-
-
-def test_get_item_input_rejects_old_hint_fields() -> None:
-    with pytest.raises(ValidationError):
-        GetItemInput.model_validate(
-            {
-                "item_id": "note-1",
-                "hint_kind": "case",
-                "hint_parent_id": "CAS-000001",
-            }
-        )
-
-
 @pytest.mark.asyncio
 async def test_get_item_tool_explains_old_hint_contract() -> None:
-    with pytest.raises(McpError) as exc_info:
+    with pytest.raises(MCPError) as exc_info:
         await mcp.call_tool(
             "get_item",
             {
@@ -169,7 +149,7 @@ async def test_get_item_tool_explains_old_hint_contract() -> None:
 
 @pytest.mark.asyncio
 async def test_get_item_tool_explains_missing_parent_scope() -> None:
-    with pytest.raises(McpError) as exc_info:
+    with pytest.raises(MCPError) as exc_info:
         await mcp.call_tool("get_item", {"item_id": "note-1"})
 
     assert str(exc_info.value) == _GET_ITEM_MISSING_SCOPE_MESSAGE
@@ -177,7 +157,7 @@ async def test_get_item_tool_explains_missing_parent_scope() -> None:
 
 @pytest.mark.asyncio
 async def test_get_item_tool_explains_mixed_old_and_new_contracts() -> None:
-    with pytest.raises(McpError) as exc_info:
+    with pytest.raises(MCPError) as exc_info:
         await mcp.call_tool(
             "get_item",
             {
@@ -310,7 +290,7 @@ async def test_get_item_does_not_search_other_parent_entities(
 
         assert case.id is not None
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(McpNotFoundError) as exc_info:
             await mcp_service.get_item(
                 db=session,
                 parent_entity_type="case",
@@ -318,8 +298,7 @@ async def test_get_item_does_not_search_other_parent_entities(
                 item_id="cross-scope-item",
             )
 
-    assert exc_info.value.status_code == 404
-    assert "no longer searches other alerts, cases, or tasks" in exc_info.value.detail
+    assert "no longer searches other alerts, cases, or tasks" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -364,7 +343,7 @@ async def test_get_item_rejects_parent_type_prefix_mismatch(
     session_maker: async_sessionmaker[AsyncSession],
 ) -> None:
     async with session_maker() as session:
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(McpValidationError) as exc_info:
             await mcp_service.get_item(
                 db=session,
                 parent_entity_type="case",
@@ -372,5 +351,52 @@ async def test_get_item_rejects_parent_type_prefix_mismatch(
                 item_id="note-1",
             )
 
-    assert exc_info.value.status_code == 400
-    assert "has alert prefix but expected 'case'" in exc_info.value.detail
+    assert "has alert prefix but expected 'case'" in str(exc_info.value)
+
+@pytest.mark.asyncio
+async def test_get_item_resolves_dynamic_task_only_on_its_linked_case(
+    session_maker: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_maker() as session:
+        owner = Case(title="Owning case", created_by="analyst", timeline_items={})
+        other = Case(title="Other case", created_by="analyst", timeline_items={})
+        session.add_all([owner, other])
+        await session.flush()
+        task = Task(
+            title="Collect evidence",
+            description="Collect the gateway logs.",
+            created_by="analyst",
+            case_id=owner.id,
+            linked_at=datetime(2026, 3, 9, 11, 38, tzinfo=timezone.utc),
+        )
+        session.add(task)
+        await session.commit()
+        item_id = f"linked-task-{task.id}"
+
+        result = await mcp_service.get_item(
+            session, "case", str(owner.id), item_id, content_format="json",
+        )
+        payload = json.loads(result.content)
+        assert result.metadata.parent_id == owner.id
+        assert result.metadata.type == "task"
+        assert payload["task_id"] == task.id
+        assert payload["entity_description"] == task.description
+
+        plain = await mcp_service.get_item(session, "case", str(owner.id), item_id)
+        assert plain.content == task.description
+
+        for kind, parent_id, requested_id in (
+            ("case", other.id, item_id),
+            ("task", task.id, item_id),
+            ("case", owner.id, f"linked-task-0{task.id}"),
+            ("case", owner.id, "linked-task-9999999999"),
+        ):
+            with pytest.raises(McpNotFoundError):
+                await mcp_service.get_item(session, kind, str(parent_id), requested_id)
+
+        task.case_id = other.id
+        await session.commit()
+        with pytest.raises(McpNotFoundError):
+            await mcp_service.get_item(session, "case", str(owner.id), item_id)
+        moved = await mcp_service.get_item(session, "case", str(other.id), item_id)
+        assert moved.metadata.parent_id == other.id

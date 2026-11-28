@@ -5,6 +5,8 @@
 import type { AlertBulkActionResponse } from '../models/AlertBulkActionResponse';
 import type { AttachmentStatusUpdate } from '../models/AttachmentStatusUpdate';
 import type { Body_bulk_update_cases_api_v1_cases_bulk_update_post } from '../models/Body_bulk_update_cases_api_v1_cases_bulk_update_post';
+import type { BulkUpdateResult } from '../models/BulkUpdateResult';
+import type { CaseBulkUpdate } from '../models/CaseBulkUpdate';
 import type { CaseCreate } from '../models/CaseCreate';
 import type { CaseLinkedAlertResolutionRequest } from '../models/CaseLinkedAlertResolutionRequest';
 import type { CaseRead } from '../models/CaseRead';
@@ -62,8 +64,6 @@ export class CasesService {
      * @throws ApiError
      */
     public static getCasesApiV1CasesGet({
-        skip,
-        limit = 100,
         status,
         assignee,
         includeTags,
@@ -76,13 +76,14 @@ export class CasesService {
         page = 1,
         size = 50,
     }: {
-        skip?: number,
-        limit?: number,
         /**
          * Filter by multiple case statuses
          */
         status?: (Array<CaseStatus> | null),
-        assignee?: (string | null),
+        /**
+         * Match any selected username or __unassigned__
+         */
+        assignee?: (Array<string> | null),
         /**
          * Require cases to include all of these tags
          */
@@ -124,8 +125,6 @@ export class CasesService {
             method: 'GET',
             url: '/api/v1/cases',
             query: {
-                'skip': skip,
-                'limit': limit,
                 'status': status,
                 'assignee': assignee,
                 'include_tags': includeTags,
@@ -156,7 +155,7 @@ export class CasesService {
         caseId,
         includeLinkedTimelines = false,
     }: {
-        caseId: number,
+        caseId: (number | string),
         /**
          * Include timeline items from linked alerts and tasks as nested source_timeline_items
          */
@@ -187,7 +186,7 @@ export class CasesService {
         requestBody,
         migration = false,
     }: {
-        caseId: number,
+        caseId: (number | string),
         requestBody: CaseUpdate,
         /**
          * Allow authorized NHI migration clients to provide closed_at
@@ -219,7 +218,7 @@ export class CasesService {
     public static deleteCaseApiV1CasesCaseIdDelete({
         caseId,
     }: {
-        caseId: number,
+        caseId: (number | string),
     }): CancelablePromise<any> {
         return __request(OpenAPI, {
             method: 'DELETE',
@@ -241,7 +240,7 @@ export class CasesService {
     public static getTimelineGraphApiV1CasesCaseIdTimelineGraphGet({
         caseId,
     }: {
-        caseId: number,
+        caseId: (number | string),
     }): CancelablePromise<TimelineGraphRead> {
         return __request(OpenAPI, {
             method: 'GET',
@@ -264,7 +263,7 @@ export class CasesService {
         caseId,
         requestBody,
     }: {
-        caseId: number,
+        caseId: (number | string),
         requestBody: TimelineGraphPatch,
     }): CancelablePromise<TimelineGraphRead> {
         return __request(OpenAPI, {
@@ -290,7 +289,7 @@ export class CasesService {
         caseId,
         requestBody,
     }: {
-        caseId: number,
+        caseId: (number | string),
         requestBody: CaseLinkedAlertResolutionRequest,
     }): CancelablePromise<AlertBulkActionResponse> {
         return __request(OpenAPI, {
@@ -317,7 +316,7 @@ export class CasesService {
         requestBody,
         migration = false,
     }: {
-        caseId: number,
+        caseId: (number | string),
         requestBody: Record<string, any>,
         /**
          * Allow authorized NHI migration clients to provide created_at
@@ -351,7 +350,7 @@ export class CasesService {
         itemId,
         requestBody,
     }: {
-        caseId: number,
+        caseId: (number | string),
         itemId: string,
         requestBody: Record<string, any>,
     }): CancelablePromise<CaseRead> {
@@ -379,7 +378,7 @@ export class CasesService {
         caseId,
         itemId,
     }: {
-        caseId: number,
+        caseId: (number | string),
         itemId: string,
     }): CancelablePromise<CaseRead> {
         return __request(OpenAPI, {
@@ -404,7 +403,7 @@ export class CasesService {
         caseId,
         requestBody,
     }: {
-        caseId: number,
+        caseId: (number | string),
         requestBody: PresignedUploadRequest,
     }): CancelablePromise<PresignedUploadResponse> {
         return __request(OpenAPI, {
@@ -431,7 +430,7 @@ export class CasesService {
         itemId,
         requestBody,
     }: {
-        caseId: number,
+        caseId: (number | string),
         itemId: string,
         requestBody: AttachmentStatusUpdate,
     }): CancelablePromise<CaseRead> {
@@ -460,7 +459,7 @@ export class CasesService {
         itemId,
         download = false,
     }: {
-        caseId: number,
+        caseId: (number | string),
         itemId: string,
         /**
          * Generate a forced-download URL
@@ -477,6 +476,27 @@ export class CasesService {
             query: {
                 'download': download,
             },
+            errors: {
+                422: `Validation Error`,
+            },
+        });
+    }
+    /**
+     * Bulk Case Action
+     * Apply a batch update to selected cases.
+     * @returns BulkUpdateResult Successful Response
+     * @throws ApiError
+     */
+    public static bulkCaseActionApiV1CasesBulkActionsPost({
+        requestBody,
+    }: {
+        requestBody: CaseBulkUpdate,
+    }): CancelablePromise<BulkUpdateResult> {
+        return __request(OpenAPI, {
+            method: 'POST',
+            url: '/api/v1/cases/bulk-actions',
+            body: requestBody,
+            mediaType: 'application/json',
             errors: {
                 422: `Validation Error`,
             },

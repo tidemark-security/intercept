@@ -36,7 +36,7 @@ interface UseTimelineFormOptions<TFormState, TInitialData> {
   validate?: (state: TFormState) => ValidationResult;
   
   /** Custom error message (optional, defaults to type-based message) */
-  errorMessage?: string;
+  errorMessage?: string | ((error: Error) => string);
 }
 
 /**
@@ -84,7 +84,7 @@ interface UseTimelineFormOptions<TFormState, TInitialData> {
  * });
  * ```
  */
-export function useTimelineForm<TFormState extends Record<string, any>, TInitialData extends { id?: string; timestamp?: string; flagged?: boolean; highlighted?: boolean }>({
+export function useTimelineForm<TFormState extends Record<string, any>, TInitialData extends { id?: string | null; timestamp?: string; flagged?: boolean; highlighted?: boolean }>({
   initialData,
   defaultState,
   transformInitialData,
@@ -138,7 +138,8 @@ export function useTimelineForm<TFormState extends Record<string, any>, TInitial
       console.error(`Failed to create ${itemType}:`, error);
       showToast(
         "Error",
-        errorMessage || `Failed to create ${itemType}. Please try again.`,
+        (typeof errorMessage === 'function' ? errorMessage(error) : errorMessage) ||
+          `Failed to create ${itemType}. Please try again.`,
         "error"
       );
     },
@@ -147,13 +148,14 @@ export function useTimelineForm<TFormState extends Record<string, any>, TInitial
   // Update mutation
   const updateMutation = useUpdateTimelineItem(entityId, context, {
     onSuccess: () => {
-      onSuccess?.(initialData?.id || undefined);
+      onSuccess?.(initialData?.id ?? undefined);
     },
     onError: (error) => {
       console.error(`Failed to update ${itemType}:`, error);
       showToast(
         "Error",
-        errorMessage || `Failed to update ${itemType}. Please try again.`,
+        (typeof errorMessage === 'function' ? errorMessage(error) : errorMessage) ||
+          `Failed to update ${itemType}. Please try again.`,
         "error"
       );
     },

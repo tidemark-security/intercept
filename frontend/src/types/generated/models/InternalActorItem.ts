@@ -10,7 +10,7 @@ export type InternalActorItem = {
     /**
      * Unique identifier for timeline item
      */
-    id?: string;
+    id?: (string | null);
     type?: string;
     /**
      * Free text description of the timeline item
@@ -27,7 +27,7 @@ export type InternalActorItem = {
     /**
      * User who created this timeline item
      */
-    created_by?: string;
+    created_by?: (string | null);
     tags?: (Array<string> | null);
     /**
      * Whether this item is flagged as significant
@@ -63,13 +63,13 @@ export type InternalActorItem = {
     audit?: (TimelineItemAudit | null);
     actor_id?: (number | null);
     snapshot_hash?: (string | null);
-    user_id?: (string | null);
-    manager_id?: (number | null);
     name?: (string | null);
     title?: (string | null);
     org?: (string | null);
     contact_phone?: (string | null);
     contact_email?: (string | null);
+    user_id?: (string | null);
+    manager_id?: (number | null);
     /**
      * High-profile individual (executive, board member)
      */

@@ -1,21 +1,28 @@
-FROM node:24-slim
+FROM node:24.22.3-trixie-slim
 
 WORKDIR /app
 
-RUN apt-get update \
+RUN apt-get update && apt-get upgrade -y \
 	&& apt-get install -y --no-install-recommends git \
-	&& rm -rf /var/lib/apt/lists/*
+	&& rm -rf /var/lib/apt/lists/* \
+	&& npm install --global npm@11.21.3 --no-audit --no-fund
 
-# Copy UX library build context
-COPY --from=ux . /ux
-RUN npm ci --prefix /ux
+# Build the sibling UX checkout without copying its local dependencies or build output.
+COPY --from=ux package.json package-lock.json postcss.config.js tailwind.config.js \
+    tsconfig.json tsconfig.build.json vite.config.ts vitest.shims.d.ts /ux/
+COPY --from=ux src /ux/src
+COPY --from=ux .storybook /ux/.storybook
+COPY --from=ux stories /ux/stories
+RUN npm ci --prefix /ux --no-audit --no-fund
 
 # Copy package files first for better layer caching
 COPY package.json package-lock.json ./
+COPY public/ public/
 
-# Install dependencies
-RUN npm pkg set dependencies.@tidemark-security/ux="file:/ux" \
-	&& npm install
+# Install the locked frontend graph, then link the sibling checkout for Vite.
+RUN npm ci --no-audit --no-fund \
+    && rm -rf node_modules/@tidemark-security/ux \
+    && ln -s /ux node_modules/@tidemark-security/ux
 RUN useradd --create-home --uid 10001 intercept \
 	&& chown -R intercept:intercept /app /ux
 

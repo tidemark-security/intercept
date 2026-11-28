@@ -14,6 +14,10 @@ export type ApiKeyCreateResponse = {
      * Expiration date (required for all API keys)
      */
     expires_at: string;
+    /**
+     * Explicit permissions granted to this API key
+     */
+    scopes: Array<string>;
     id: string;
     user_id: string;
     prefix: string;

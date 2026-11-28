@@ -33,6 +33,10 @@ interface FullscreenViewerProps {
   contentClassName?: string;
   /** When true, viewport scrolls normally, zoom controls font-size, no pan/drag. */
   textMode?: boolean;
+  /** Interactive content owns its scrolling and keyboard controls. */
+  interactive?: boolean;
+  toolbar?: React.ReactNode;
+  returnFocus?: () => HTMLElement | null;
 }
 
 interface PanState {
@@ -74,15 +78,29 @@ export function FullscreenViewer({
   viewportClassName,
   contentClassName,
   textMode = false,
+  interactive = false,
+  toolbar,
+  returnFocus,
 }: FullscreenViewerProps) {
   const dragStateRef = React.useRef<DragState | null>(null);
   const viewportRef = React.useRef<HTMLDivElement | null>(null);
   const contentRef = React.useRef<HTMLDivElement | null>(null);
+  const dialogRef = React.useRef<HTMLDivElement | null>(null);
 
   const [zoom, setZoom] = React.useState(1);
   const [pan, setPan] = React.useState<PanState>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = React.useState(false);
   const [fitScale, setFitScale] = React.useState(1);
+
+  const handleDialogRef = React.useCallback((element: HTMLDivElement | null) => {
+    const wasMounted = dialogRef.current !== null;
+    dialogRef.current = element;
+    if (!element && wasMounted && returnFocus) {
+      window.requestAnimationFrame(() => {
+        if (!dialogRef.current) returnFocus()?.focus();
+      });
+    }
+  }, [returnFocus]);
 
   const resetViewport = React.useCallback(() => {
     setZoom(1);
@@ -106,7 +124,7 @@ export function FullscreenViewer({
   }, [contentDimensions?.height, contentDimensions?.width, open]);
 
   React.useEffect(() => {
-    if (!open) {
+    if (!open || interactive) {
       return;
     }
 
@@ -119,10 +137,10 @@ export function FullscreenViewer({
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [open, resetViewport, updateFitScale]);
+  }, [interactive, open, resetViewport, updateFitScale]);
 
   React.useEffect(() => {
-    if (!open || !viewportRef.current) {
+    if (!open || interactive || !viewportRef.current) {
       return;
     }
 
@@ -136,10 +154,10 @@ export function FullscreenViewer({
     return () => {
       resizeObserver.disconnect();
     };
-  }, [open, updateFitScale]);
+  }, [interactive, open, updateFitScale]);
 
   React.useEffect(() => {
-    if (!open) {
+    if (!open || interactive) {
       return;
     }
 
@@ -150,7 +168,7 @@ export function FullscreenViewer({
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [children, contentDimensions, open, updateFitScale]);
+  }, [children, contentDimensions, interactive, open, updateFitScale]);
 
   const effectiveZoom = textMode ? zoom : fitScale * zoom;
 
@@ -223,16 +241,19 @@ export function FullscreenViewer({
   }, []);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <Dialog.Content className="h-[calc(100vh-1.5rem)] w-[calc(100vw-1.5rem)] max-h-[calc(100vh-1.5rem)] max-w-[calc(100vw-1.5rem)] overflow-hidden p-0">
-        <Dialog.Title className="sr-only">{title}</Dialog.Title>
+    <Dialog open={open} onOpenChange={onOpenChange} ref={returnFocus ? handleDialogRef : undefined}>
+      <Dialog.Content className={cn(
+        'h-[calc(100vh-1.5rem)] w-[calc(100vw-1.5rem)] max-h-[calc(100vh-1.5rem)] max-w-[calc(100vw-1.5rem)] overflow-hidden p-0',
+        interactive && 'min-w-0',
+      )}>
         <Dialog.Description className="sr-only">
           {description || `Expanded viewer for ${title}.`}
         </Dialog.Description>
 
         <div className="flex h-full w-full flex-col">
-          <div className="flex w-full flex-wrap items-center justify-between gap-2 border-b border-neutral-border px-3 py-2">
-            <div className="flex items-center gap-1">
+          <div className="flex w-full shrink-0 flex-wrap items-center justify-between gap-2 border-b border-neutral-border px-3 py-2">
+            <Dialog.Title className={interactive ? 'min-w-0 break-words text-heading-3 font-heading-3' : 'sr-only'}>{title}</Dialog.Title>
+            {!interactive && <div className="flex items-center gap-1">
               <IconButton
                 size="small"
                 variant="neutral-tertiary"
@@ -258,9 +279,9 @@ export function FullscreenViewer({
                 onClick={resetViewport}
               />
               <span className="ml-2 text-xs text-subtext-color">{Math.round((textMode ? zoom : effectiveZoom) * 100)}%</span>
-            </div>
+            </div>}
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className={cn('flex flex-wrap items-center gap-2', interactive && 'ml-auto sm:order-last')}>
               {extraActions}
               {copyAction ? (
                 <Button
@@ -297,9 +318,14 @@ export function FullscreenViewer({
                 onClick={() => onOpenChange(false)}
               />
             </div>
+            {toolbar && <div className="flex min-w-0 basis-full sm:flex-1 sm:basis-64">{toolbar}</div>}
           </div>
 
-          {textMode ? (
+          {interactive ? (
+            <div className={cn('min-h-0 w-full flex-1 overflow-hidden', viewportClassName)}>
+              {children}
+            </div>
+          ) : textMode ? (
             <div
               ref={viewportRef}
               className={cn(

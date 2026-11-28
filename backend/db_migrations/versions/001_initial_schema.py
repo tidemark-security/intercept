@@ -595,7 +595,7 @@ def upgrade() -> None:
             NOW() AS refreshed_at
         FROM alert_metrics a
         FULL OUTER JOIN case_metrics c ON a.time_window = c.time_window AND a.priority::text = c.priority::text
-        FULL OUTER JOIN task_metrics t ON COALESCE(a.time_window, c.time_window) = t.time_window 
+        FULL OUTER JOIN task_metrics t ON COALESCE(a.time_window, c.time_window) = t.time_window
             AND COALESCE(a.priority::text, c.priority::text) = t.priority::text
         WHERE COALESCE(a.time_window, c.time_window, t.time_window) IS NOT NULL;
     """)
@@ -671,7 +671,7 @@ def upgrade() -> None:
             NOW() AS refreshed_at
         FROM alert_triage a
         FULL OUTER JOIN case_participation c ON a.time_window = c.time_window AND a.analyst = c.analyst
-        FULL OUTER JOIN task_completion t ON COALESCE(a.time_window, c.time_window) = t.time_window 
+        FULL OUTER JOIN task_completion t ON COALESCE(a.time_window, c.time_window) = t.time_window
             AND COALESCE(a.analyst, c.analyst) = t.analyst
         WHERE COALESCE(a.time_window, c.time_window, t.time_window) IS NOT NULL
           AND COALESCE(a.analyst, c.analyst, t.analyst) IS NOT NULL;

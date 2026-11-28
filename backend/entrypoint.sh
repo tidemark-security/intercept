@@ -6,22 +6,10 @@ python -c "
 import os
 import subprocess
 import psycopg2
+from sqlalchemy.engine import make_url
 
-# Convert asyncpg URL to psycopg2
-db_url = os.environ.get('DATABASE_URL', '')
-sync_url = db_url.replace('postgresql+asyncpg://', 'postgresql://')
-
-# Parse connection string
-from urllib.parse import urlparse
-parsed = urlparse(sync_url)
-
-conn = psycopg2.connect(
-    host=parsed.hostname,
-    port=parsed.port or 5432,
-    user=parsed.username,
-    password=parsed.password,
-    dbname=parsed.path[1:]  # Remove leading /
-)
+db_url = make_url(os.environ.get('DATABASE_URL') or 'postgresql://')
+conn = psycopg2.connect(**db_url.translate_connect_args(username='user', database='dbname'))
 conn.autocommit = True
 cursor = conn.cursor()
 

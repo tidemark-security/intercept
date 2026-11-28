@@ -1,6 +1,8 @@
+export { AuthSplitLayout } from './AuthSplitLayout';
 export { ChangePasswordForm } from './ChangePasswordForm';
 export { OAuthSocialButton } from './OAuthSocialButton';
 export { ProtectedRoute } from './ProtectedRoute';
+export { SessionCheckStatus } from './SessionCheckStatus';
 export {
 	ApiKeyCreatedContent,
 	ApiKeySecurityCard,

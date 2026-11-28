@@ -5,9 +5,8 @@ These tests verify the search API behavior including:
 - Query validation
 - Response structure
 
-Note: These tests require PostgreSQL due to the use of JSONB columns in the
-model definitions and full-text search functionality. They are skipped when
-running with SQLite (the default test configuration).
+These tests require PostgreSQL due to the use of JSONB columns and full-text
+search functionality. The backend test fixture provides PostgreSQL.
 
 To run these tests, configure a PostgreSQL test database:
     export TEST_DATABASE_URL=postgresql+asyncpg://user:pass@host:port/testdb
@@ -15,19 +14,57 @@ To run these tests, configure a PostgreSQL test database:
 """
 from __future__ import annotations
 
-import pytest
-from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from datetime import datetime, timedelta, timezone
 
+import pytest
+import pytest_asyncio
+from httpx import AsyncClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+
+from app.models.enums import AlertStatus, CaseStatus, TaskStatus
+from app.models.models import Alert, Case, Task
 from tests.fixtures.auth import DEFAULT_TEST_PASSWORD
 
 
-# Skip all tests in this module when using SQLite
-# The models use JSONB which is PostgreSQL-specific
-pytestmark = [
-    pytest.mark.asyncio,
-    pytest.mark.skip(reason="Requires PostgreSQL - models use JSONB columns incompatible with SQLite"),
-]
+pytestmark = pytest.mark.asyncio
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="session", autouse=True)
+async def search_columns(async_engine: AsyncEngine) -> None:
+    """Add migration-managed search objects omitted by SQLModel metadata."""
+    async with async_engine.begin() as connection:
+        await connection.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+        for table_name in ("alerts", "cases", "tasks"):
+            await connection.execute(
+                text(
+                    f"ALTER TABLE {table_name} "
+                    "ADD COLUMN IF NOT EXISTS search_vector tsvector"
+                )
+            )
+
+
+async def _create_search_alert(
+    session_maker: async_sessionmaker[AsyncSession],
+    *,
+    title: str,
+    description: str,
+    index_for_fulltext: bool,
+) -> None:
+    async with session_maker() as session:
+        alert = Alert(title=title, description=description, source="search-test")
+        session.add(alert)
+        await session.flush()
+        if index_for_fulltext:
+            await session.execute(
+                text(
+                    "UPDATE alerts "
+                    "SET search_vector = to_tsvector('english', title || ' ' || description) "
+                    "WHERE id = :alert_id"
+                ),
+                {"alert_id": alert.id},
+            )
+        await session.commit()
 
 
 async def _login_and_get_session(
@@ -51,6 +88,295 @@ async def _login_and_get_session(
     assert session_cookie is not None
     
     return session_cookie, str(user.id)
+
+
+@pytest.mark.parametrize(("entity_type", "model", "prefix", "allowed", "closed"), [
+    ("alert", Alert, "ALT", AlertStatus.NEW, AlertStatus.CLOSED_TP),
+    ("case", Case, "CAS", CaseStatus.NEW, CaseStatus.CLOSED),
+    ("task", Task, "TSK", TaskStatus.TODO, TaskStatus.DONE),
+])
+async def test_queue_search_filters_before_sorting_counting_and_paging(
+    client, session_maker, analyst_user_factory, entity_type, model, prefix, allowed, closed,
+):
+    session_cookie, _ = await _login_and_get_session(client, session_maker, analyst_user_factory)
+    cookies = {"intercept_session": session_cookie}
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    newer = datetime(2022, 1, 1, tzinfo=timezone.utc)
+    owner = {"source": "queue test"} if entity_type == "alert" else {"created_by": "test"}
+
+    async with session_maker() as session:
+        matched = [
+            model(title="QuartzMarker named", assignee="analyst", tags=["keep", "required"], created_at=newer, **owner),
+            model(title="QuartzMarker unassigned", tags=["keep", "required"], created_at=old, **owner),
+            model(
+                title="Timeline-only match", assignee="analyst", tags=["keep", "required"], created_at=old,
+                timeline_items={"note-1": {"type": "note", "description": "QuartzMarker"}}, **owner,
+            ),
+        ]
+        session.add_all([
+            *matched,
+            model(title="QuartzMarker other assignee", assignee="other", tags=["keep", "required"], **owner),
+            model(title="QuartzMarker excluded tag", tags=["keep", "required", "noise"], **owner),
+            model(title="QuartzMarker missing tag", tags=["keep"], **owner),
+            model(title="QuartzMarker wrong status", status=closed, tags=["keep", "required"], **owner),
+            # Also presents a content hit but belongs to another entity type.
+            (Task(title="QuartzMarker other type", created_by="test") if entity_type != "task"
+             else Alert(title="QuartzMarker other type", source="test")),
+        ])
+        await session.flush()
+        named, unassigned, timeline = [row.id for row in matched]
+        await session.execute(text("""
+            UPDATE alerts SET search_vector = to_tsvector('english', title);
+        """))
+        await session.execute(text("""
+            UPDATE cases SET search_vector = to_tsvector('english', title);
+        """))
+        await session.execute(text("""
+            UPDATE tasks SET search_vector = to_tsvector('english', title);
+        """))
+        await session.commit()
+
+    params = {
+        "q": "QuartzMarker", "entity_type": entity_type,
+        "status": [allowed.value, "IN_PROGRESS"], "assignee": ["analyst", "__unassigned__"],
+        "include_tags": ["keep", "required"], "exclude_tags": "noise", "sort_order": "asc",
+    }
+
+    async def search(**overrides):
+        response = await client.get("/api/v1/search/queue", params={**params, **overrides}, cookies=cookies)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    for offset, expected in enumerate([timeline, unassigned, named]):
+        page = await search(skip=offset, limit=1)
+        assert page["total"] == 3
+        assert [item["id"] for item in page["results"]] == [expected]
+    assert (await search(skip=3, limit=1))["total"] == 3
+    assert (await search(skip=3, limit=1))["results"] == []
+    assert [item["id"] for item in (await search(start_date="2021-01-01"))["results"]] == [named]
+    assert {item["id"] for item in (await search(end_date="2021-01-01"))["results"]} == {unassigned, timeline}
+    assert (await search(q=f"{prefix}-{named}"))["total"] == 1
+    assert (await search(q=f"{prefix}-{named}", assignee=["__unassigned__"]))["total"] == 0
+    assert (await search(q="TSK-1" if entity_type != "task" else "ALT-1"))["total"] == 0
+
+    global_response = await client.get(
+        "/api/v1/search", params={"q": "QuartzMarker", "entity_type": entity_type}, cookies=cookies,
+    )
+    assert global_response.status_code == 200
+    assert not {named, unassigned, timeline}.intersection(
+        item["entity_id"] for item in global_response.json()["results"]
+    )
+
+
+async def test_queue_search_fuzzy_fallback_respects_queue_filters(client, session_maker, analyst_user_factory):
+    session_cookie, _ = await _login_and_get_session(client, session_maker, analyst_user_factory)
+    await _create_search_alert(session_maker, title="Phishing", description="", index_for_fulltext=False)
+    for assignee, expected in [("__unassigned__", 1), ("other", 0)]:
+        response = await client.get(
+            "/api/v1/search/queue",
+            params={"q": "phising", "entity_type": "alert", "assignee": assignee},
+            cookies={"intercept_session": session_cookie},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["total"] == expected
+
+
+@pytest.mark.parametrize(("entity_type", "model", "prefix", "other_prefix"), [
+    ("alert", Alert, "ALT", "CAS"),
+    ("case", Case, "CAS", "TSK"),
+    ("task", Task, "TSK", "ALT"),
+])
+async def test_global_and_queue_search_match_parity(
+    client, session_maker, analyst_user_factory, entity_type, model, prefix, other_prefix,
+):
+    session_cookie, _ = await _login_and_get_session(client, session_maker, analyst_user_factory)
+    created_at = datetime(2025, 1, 15, tzinfo=timezone.utc)
+    owner = {"source": "parity test"} if entity_type == "alert" else {"created_by": "test"}
+    numeric_with_content = 613570
+    numeric_with_fallback = 734205
+    missing_id = f"{prefix}-9999998"
+
+    async with session_maker() as session:
+        content = model(
+            title=f"{numeric_with_content} observed", created_at=created_at, **owner,
+            timeline_items={"note-1": {"type": "note", "description": str(numeric_with_content)}},
+        )
+        timeline_only = model(
+            title="Timeline-only match", created_at=created_at, **owner,
+            timeline_items={"note-1": {"type": "note", "description": str(numeric_with_content)}},
+        )
+        fuzzy_only = model(title="734206", created_at=created_at, **owner)
+        indexed = [
+            content,
+            model(id=numeric_with_content, title=str(numeric_with_content), created_at=created_at, **owner),
+            model(id=numeric_with_fallback, title=str(numeric_with_fallback), created_at=created_at, **owner),
+            model(title=str(numeric_with_fallback), created_at=datetime(2024, 1, 1, tzinfo=timezone.utc), **owner),
+            model(title=missing_id, created_at=created_at, **owner),
+            model(title=f"{prefix}-{numeric_with_content:07d}", created_at=created_at, **owner),
+        ]
+        session.add_all([
+            *indexed, timeline_only, fuzzy_only,
+            model(title="613571", created_at=created_at, **owner),
+        ])
+        await session.flush()
+        content_id, timeline_id, fuzzy_id = content.id, timeline_only.id, fuzzy_only.id
+        await session.execute(
+            text(
+                f"UPDATE {model.__tablename__} SET search_vector = to_tsvector('english', title) "
+                "WHERE id = ANY(:ids)"
+            ),
+            {"ids": [row.id for row in indexed]},
+        )
+        await session.commit()
+
+    for query, expected_ids in [
+        (f"{prefix.lower()}-{numeric_with_content:07d}", {numeric_with_content}),
+        (f"{other_prefix}-{numeric_with_content}", set()),
+        (missing_id, set()),
+        (str(numeric_with_content), {numeric_with_content, content_id, timeline_id}),
+        (str(numeric_with_fallback), {numeric_with_fallback, fuzzy_id}),
+    ]:
+        # Same entity/date scope; ranking and the returned row shape are intentionally different.
+        params = {
+            "q": query, "entity_type": entity_type,
+            "start_date": "2025-01-01T00:00:00Z", "end_date": "2025-02-01T00:00:00Z",
+        }
+        for endpoint, id_key in [("/api/v1/search", "entity_id"), ("/api/v1/search/queue", "id")]:
+            response = await client.get(
+                endpoint, params=params, cookies={"intercept_session": session_cookie},
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["total"] == len(body["results"]) == len(expected_ids), (endpoint, query, body)
+            assert {row[id_key] for row in body["results"]} == expected_ids, (endpoint, query, body)
+
+
+@pytest.mark.parametrize(("entity_type", "model"), [
+    ("alert", Alert),
+    ("case", Case),
+    ("task", Task),
+])
+async def test_global_and_queue_search_substring_parity(
+    client, session_maker, analyst_user_factory, entity_type, model,
+):
+    session_cookie, _ = await _login_and_get_session(client, session_maker, analyst_user_factory)
+    owner = {"source": "substring test"} if entity_type == "alert" else {"created_by": "test"}
+
+    async with session_maker() as session:
+        full_text = model(
+            title="Credential rotation", assignee="analyst",
+            created_at=datetime(2025, 1, 10, tzinfo=timezone.utc), **owner,
+        )
+        title_only = model(
+            title="Review of noncredentialed principals", assignee="analyst",
+            created_at=datetime(2025, 1, 20, tzinfo=timezone.utc), **owner,
+        )
+        description_only = model(
+            title="Quarterly review", description="The xcredentialy field was present.",
+            created_at=datetime(2025, 1, 21, tzinfo=timezone.utc), **owner,
+        )
+        outside_scope = model(
+            title="Legacy noncredentialed principals",
+            created_at=datetime(2024, 1, 21, tzinfo=timezone.utc), **owner,
+        )
+        records = [full_text, title_only, description_only, outside_scope]
+        session.add_all(records)
+        await session.flush()
+        whole_id, title_id, description_id, _ = [row.id for row in records]
+        await session.execute(
+            text(
+                f"UPDATE {model.__tablename__} SET search_vector = "
+                "setweight(to_tsvector('english', title), 'A') || "
+                "setweight(to_tsvector('english', COALESCE(description, '')), 'B') "
+                "WHERE id = ANY(:ids)"
+            ),
+            {"ids": [row.id for row in records]},
+        )
+        await session.commit()
+
+    async def search(path, id_key, query, **overrides):
+        response = await client.get(
+            path,
+            params={
+                "q": query, "entity_type": entity_type,
+                "start_date": "2025-01-01T00:00:00Z", "end_date": "2025-02-01T00:00:00Z", **overrides,
+            },
+            cookies={"intercept_session": session_cookie},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        return [row[id_key] for row in body["results"]], body["total"]
+
+    global_path, queue_path = "/api/v1/search", "/api/v1/search/queue"
+    for path, id_key in [(global_path, "entity_id"), (queue_path, "id")]:
+        ids, total = await search(path, id_key, "dEnTi")
+        assert set(ids) == {whole_id, title_id, description_id}
+        assert total == len(ids) == 3
+        assert await search(path, id_key, "cre") == ([description_id, title_id, whole_id], 3)
+        assert await search(path, id_key, "de") == ([], 0)
+        assert await search(path, id_key, "denti%") == ([], 0)
+        assert await search(path, id_key, "denti_") == ([], 0)
+
+    # A full-text hit outranks newer substring hits globally, but the queue
+    # still orders by its selected sort and both endpoints count each row once.
+    assert await search(global_path, "entity_id", "credential", limit=1) == ([whole_id], 3)
+    assert await search(queue_path, "id", "credential", limit=1) == ([description_id], 3)
+    assert await search(queue_path, "id", "denti", assignee="__unassigned__") == ([description_id], 1)
+
+
+async def test_global_search_all_time_includes_older_records_without_changing_default(
+    client, session_maker, analyst_user_factory,
+):
+    session_cookie, _ = await _login_and_get_session(client, session_maker, analyst_user_factory)
+    now = datetime.now(timezone.utc)
+    async with session_maker() as session:
+        recent = Alert(title="Quartzmarker recent", source="test", created_at=now - timedelta(days=2))
+        historical = Alert(
+            title="Quartzmarker historical", source="test", created_at=now - timedelta(days=400),
+        )
+        fuzzy = Alert(title="Phishing", source="test", created_at=now - timedelta(days=400))
+        session.add_all([recent, historical, fuzzy])
+        await session.flush()
+        recent_id, historical_id, fuzzy_id = recent.id, historical.id, fuzzy.id
+        await session.execute(
+            text("UPDATE alerts SET search_vector = to_tsvector('english', title) WHERE id = ANY(:ids)"),
+            {"ids": [recent_id, historical_id, fuzzy_id]},
+        )
+        await session.commit()
+
+    async def search(query, **filters):
+        response = await client.get(
+            "/api/v1/search",
+            params={"entity_type": "alert", "q": query, **filters},
+            cookies={"intercept_session": session_cookie},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    default = await search("Quartzmarker")
+    assert [item["entity_id"] for item in default["results"]] == [recent_id]
+    applied = default["date_range"]
+    assert datetime.fromisoformat(applied["end"]) - datetime.fromisoformat(applied["start"]) == timedelta(days=30)
+
+    unbounded = await search("Quartzmarker", all_time="true")
+    assert unbounded["total"] == 2
+    assert {item["entity_id"] for item in unbounded["results"]} == {recent_id, historical_id}
+    assert unbounded["date_range"] == {"start": None, "end": None}
+
+    for query, expected in [
+        ("*", {recent_id, historical_id, fuzzy_id}),
+        (f"ALT-{historical_id:07d}", {historical_id}),
+        ("phising", {fuzzy_id}),
+    ]:
+        assert {item["entity_id"] for item in (await search(query, all_time="true"))["results"]} == expected
+
+    conflict = await client.get(
+        "/api/v1/search",
+        params={"q": "Quartzmarker", "all_time": "true", "start_date": "2025-01-01"},
+        cookies={"intercept_session": session_cookie},
+    )
+    assert conflict.status_code == 400
+    assert conflict.json()["detail"]["code"] == "INVALID_DATE_RANGE"
 
 
 class TestSearchAuthentication:
@@ -223,7 +549,7 @@ class TestSearchInvalidEntityTypes:
             "/api/v1/search",
             params={
                 "q": "test query",
-                "entity_types": "invalid_type",
+                "entity_type": "invalid_type",
             },
             cookies={"intercept_session": session_cookie},
         )
@@ -233,14 +559,6 @@ class TestSearchInvalidEntityTypes:
         assert response.status_code in [400, 422]
 
 
-# PostgreSQL-specific tests
-# These tests require the full-text search functionality which is PostgreSQL-only
-# Skip these when running with SQLite
-
-# To run these tests, configure a PostgreSQL test database and set:
-# TEST_DATABASE_URL=postgresql+asyncpg://user:pass@host:port/testdb
-
-@pytest.mark.skip(reason="Requires PostgreSQL for full-text search - run with 'pytest -m postgres'")
 class TestSearchResults:
     """Tests for search result functionality (requires PostgreSQL)."""
     
@@ -253,6 +571,12 @@ class TestSearchResults:
         """Search endpoint returns proper PaginatedSearchResponse structure."""
         session_cookie, _ = await _login_and_get_session(
             client, session_maker, analyst_user_factory
+        )
+        await _create_search_alert(
+            session_maker,
+            title="Test Query Alert",
+            description="A searchable integration-test record",
+            index_for_fulltext=True,
         )
         
         response = await client.get(
@@ -279,6 +603,7 @@ class TestSearchResults:
         
         # Verify results is a list
         assert isinstance(data["results"], list)
+        assert [result["title"] for result in data["results"]] == ["Test Query Alert"]
     
     async def test_search_no_results_returns_empty_array(
         self,
@@ -300,13 +625,10 @@ class TestSearchResults:
         
         assert response.status_code == 200
         data = response.json()
-        
-        assert data["results"] == []
-        assert data["total"]["alert"] == 0
-        assert data["total"]["case"] == 0
-        assert data["total"]["task"] == 0
 
-@pytest.mark.skip(reason="Requires PostgreSQL for full-text/fuzzy search - run with 'pytest -m postgres'")
+        assert data["results"] == []
+        assert data["total"] == 0
+
 class TestFuzzySearch:
     """Tests for fuzzy/typo-tolerant search functionality (requires PostgreSQL)."""
     
@@ -320,9 +642,13 @@ class TestFuzzySearch:
         session_cookie, _ = await _login_and_get_session(
             client, session_maker, analyst_user_factory
         )
+        await _create_search_alert(
+            session_maker,
+            title="Phishing Alert",
+            description="A suspicious credential-harvesting message",
+            index_for_fulltext=False,
+        )
         
-        # First, we'd need to create an alert with "Phishing" in the title
-        # For now, this test verifies the API accepts the typo query
         response = await client.get(
             "/api/v1/search",
             params={"q": "phising"},  # Common typo of "phishing"
@@ -338,6 +664,7 @@ class TestFuzzySearch:
         assert "total" in data
         assert "query" in data
         assert data["query"] == "phising"
+        assert [result["title"] for result in data["results"]] == ["Phishing Alert"]
     
     async def test_search_fuzzy_similarity_threshold(
         self,
@@ -349,6 +676,12 @@ class TestFuzzySearch:
         session_cookie, _ = await _login_and_get_session(
             client, session_maker, analyst_user_factory
         )
+        await _create_search_alert(
+            session_maker,
+            title="Malware Detection",
+            description="Endpoint malware was detected",
+            index_for_fulltext=False,
+        )
         
         # Query with slight variation
         response = await client.get(
@@ -359,8 +692,24 @@ class TestFuzzySearch:
         
         assert response.status_code == 200
         data = response.json()
-        
-        # If there are results, verify they have valid scores
+
+        assert [result["title"] for result in data["results"]] == ["Malware Detection"]
         for result in data["results"]:
             assert "score" in result
             assert 0 <= result["score"] <= 1
+
+
+async def test_queue_fuzzy_index_preserves_threshold_under_custom_database_setting(session_maker):
+    from app.models.search_schemas import EntityType
+    from app.services.search_service import search_service
+
+    async with session_maker() as db:
+        db.add(Alert(title="phishing", source="search-test"))
+        await db.flush()
+        await db.execute(text("SET LOCAL pg_trgm.similarity_threshold = 0.95"))
+        result = await search_service.search_queue(
+            db, query="phising", entity_type=EntityType.ALERT, status=None, assignee=None,
+            include_tags=None, exclude_tags=None, start_date=None, end_date=None,
+            sort_by="created_at", sort_order="desc", skip=0, limit=10,
+        )
+        assert result.total == 1 and [row.title for row in result.results] == ["phishing"]

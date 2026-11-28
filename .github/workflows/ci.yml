@@ -64,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:18
+        image: postgres:18.7-trixie
         env:
           POSTGRES_USER: intercept_user
           POSTGRES_PASSWORD: intercept_password
@@ -111,7 +111,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: frontend
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Type check
         working-directory: frontend

@@ -91,7 +91,7 @@ function dispatchStreamEvent(rawEvent: string, handlers: StreamMessageHandlers):
   }
 
   const rawData = dataLines.join('\n');
-  let parsedData: unknown = rawData;
+  let parsedData: unknown;
   try {
     parsedData = JSON.parse(rawData);
   } catch {

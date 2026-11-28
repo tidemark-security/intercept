@@ -8,19 +8,18 @@ from datetime import timedelta
 from types import MappingProxyType
 from typing import Any, Mapping
 
+import asyncpg
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DisconnectionError
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+
+from app.services.task_names import WORKER_TASK_NAMES
+
 logger = logging.getLogger(__name__)
 
 
-KNOWN_WORKER_TASK_NAMES = (
-    "langflow_chat",
-    "langflow_batch",
-    "triage_alert",
-    "autonomous_task",
-    "enrich_item",
-    "directory_sync",
-    "refresh_bulk_sync_schedules",
-    "maxmind_update",
-)
+KNOWN_WORKER_TASK_NAMES = WORKER_TASK_NAMES
 
 DEFAULT_EXECUTION_TIMEOUT_SECONDS = 600.0
 DEFAULT_DIRECTORY_SYNC_TIMEOUT_SECONDS = 3600.0
@@ -76,6 +75,27 @@ class WorkerTaskRuntimeSnapshot:
 DEFAULT_WORKER_TASK_RUNTIME_SNAPSHOT = WorkerTaskRuntimeSnapshot()
 
 
+_EXPECTED_RUNTIME_CONFIG_REFRESH_ERRORS = (
+    ValueError,
+    ConnectionError,
+    TimeoutError,
+    asyncpg.PostgresConnectionError,
+    asyncpg.InterfaceError,
+    asyncpg.OperatorInterventionError,
+    asyncpg.InsufficientResourcesError,
+    DisconnectionError,
+    OperationalError,
+    SQLAlchemyTimeoutError,
+)
+
+
+def is_expected_runtime_config_refresh_error(error: Exception) -> bool:
+    """Return whether a refresh failure can be resolved by a later DB/config read."""
+    if isinstance(error, _EXPECTED_RUNTIME_CONFIG_REFRESH_ERRORS):
+        return True
+    return isinstance(error, DBAPIError) and error.connection_invalidated
+
+
 class WorkerTaskRuntimeConfig:
     """Holds the last valid worker task runtime snapshot."""
 
@@ -96,11 +116,13 @@ class WorkerTaskRuntimeConfig:
         return self._last_error
 
     async def refresh(self, settings: Any) -> bool:
-        """Load a new snapshot, keeping the previous one if validation fails."""
+        """Load a snapshot, retaining the last good value for expected failures."""
         async with self._lock:
             try:
                 next_snapshot = await load_worker_task_runtime_snapshot(settings)
             except Exception as exc:
+                if not is_expected_runtime_config_refresh_error(exc):
+                    raise
                 self._last_error = str(exc) or exc.__class__.__name__
                 logger.warning(
                     "Keeping previous worker task runtime config after refresh failure: %s",

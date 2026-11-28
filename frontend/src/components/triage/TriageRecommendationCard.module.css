@@ -1,0 +1,120 @@
+.frame {
+  width: 100%;
+  min-width: 0;
+}
+
+.card {
+  container-type: inline-size;
+}
+
+.robot {
+  --burst-duration: 1.4s;
+  --robot-size: 2.5rem;
+  --sleep-rise: -16px;
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  inline-size: 6.5rem;
+  block-size: 2.25rem;
+}
+
+.robotIcon {
+  position: relative;
+  font-size: var(--robot-size);
+  line-height: 1;
+  transform: translateX(2px) rotate(6deg);
+}
+
+.robot[data-robot-state="failed"] .robotIcon,
+.sleep {
+  transform: rotate(-12deg);
+}
+
+.sleep {
+  position: absolute;
+  display: flex;
+  inset-inline-start: calc(50% + var(--robot-size) * 0.3);
+  inset-block-start: calc(50% - var(--robot-size) * 0.34);
+}
+
+.speedLines {
+  position: absolute;
+  inset-inline-start: calc(50% - var(--robot-size) * 0.5 - 1rem);
+  inset-block-start: 52%;
+  inline-size: 14px;
+  block-size: 2px;
+  background: currentColor;
+  opacity: 0.65;
+}
+
+.speedLines::after {
+  content: "";
+  position: absolute;
+  inset-inline-start: 4px;
+  inset-block-start: 5px;
+  inline-size: 8px;
+  block-size: 2px;
+  background: currentColor;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .speedLines {
+    animation: speed-burst var(--burst-duration) ease-out infinite;
+  }
+
+  .sleep > span {
+    position: absolute;
+    inset: 0 auto auto 0;
+    animation: sleep-drift 3.6s ease-out infinite both;
+  }
+
+  .sleep > span:nth-child(2) {
+    animation-delay: 1.2s;
+  }
+
+  .sleep > span:nth-child(3) {
+    animation-delay: 2.4s;
+  }
+}
+
+@keyframes speed-burst {
+  25% { opacity: 1; transform: translateX(-3px) scaleX(1.1); }
+  55% { opacity: 0.35; }
+}
+
+@keyframes sleep-drift {
+  0% { opacity: 0; transform: scale(0.75); }
+  18% { opacity: 0.95; }
+  90%, 100% { opacity: 0; transform: translate(14px, var(--sleep-rise)) scale(1.15); }
+}
+
+.disclosure {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.preview {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
+.toggle {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+@container (min-width: 36rem) {
+  .disclosure {
+    grid-template-columns: 10.5rem minmax(0, 1fr) auto;
+  }
+
+  .preview {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .toggle {
+    grid-column: 3;
+  }
+}
