@@ -78,7 +78,7 @@ export function ProcessSnapshotInspector({
               {copyState === 'copied' ? 'Copied' : 'Copy'}
             </Button>
           </div>
-          <pre className="whitespace-pre-wrap break-all border border-neutral-border bg-default-background p-2 text-monospace-body font-monospace-body">{process.command_line}</pre>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all border border-neutral-border bg-default-background p-2 text-monospace-body font-monospace-body">{process.command_line}</pre>
           <span role="status" className={copyState === 'error' ? 'text-caption font-caption text-default-font' : 'sr-only'}>
             {copyState === 'copied' ? 'Command line copied.' : copyState === 'error' ? 'Could not copy the command line.' : ''}
           </span>
