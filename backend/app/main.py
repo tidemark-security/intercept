@@ -29,6 +29,7 @@ from app.api.routes import (
     case_runbooks,
     cases,
     context_entries,
+    custom_dashboards,
     dashboard,
     dummy_data,
     enrichments,
@@ -301,6 +302,7 @@ api_app.include_router(link_templates.router, prefix="/api/v1")
 api_app.include_router(link_templates.personal_router, prefix="/api/v1")
 api_app.include_router(mitre.router, prefix="/api/v1")
 api_app.include_router(dashboard.router, prefix="/api/v1")
+api_app.include_router(custom_dashboards.router, prefix="/api/v1")
 api_app.include_router(settings_routes.authenticated_router, prefix="/api/v1")
 api_app.include_router(settings_routes.router, prefix="/api/v1")
 api_app.include_router(enrichments.router, prefix="/api/v1")

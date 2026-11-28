@@ -1,0 +1,213 @@
+[
+  {
+    "id": "triage-queue-health",
+    "title": "Triage Queue Health",
+    "definition": {
+      "schema_version": 1,
+      "date": {
+        "preset": "last_7_days"
+      },
+      "widgets": [
+        {
+          "id": "awaiting",
+          "title": "Awaiting triage",
+          "measure": "alerts.awaiting_triage",
+          "display": "number",
+          "layout": {
+            "width": "half",
+            "order": 0
+          }
+        },
+        {
+          "id": "ageing",
+          "title": "Awaiting triage over 24h",
+          "measure": "alerts.awaiting_triage",
+          "display": "number",
+          "layout": {
+            "width": "half",
+            "order": 1
+          },
+          "parameters": {
+            "min_age_minutes": 1440
+          }
+        },
+        {
+          "id": "oldest",
+          "title": "Oldest alerts awaiting triage",
+          "measure": "alerts.awaiting_triage",
+          "display": "table",
+          "layout": {
+            "width": "wide",
+            "order": 2
+          },
+          "table": {
+            "columns": [
+              "human_id",
+              "title",
+              "elapsed_seconds",
+              "priority",
+              "assignee",
+              "source"
+            ],
+            "sort": {
+              "field": "created_at",
+              "direction": "asc"
+            }
+          }
+        },
+        {
+          "id": "intake",
+          "title": "Alert intake",
+          "measure": "alerts.received",
+          "display": "trend",
+          "layout": {
+            "width": "half",
+            "order": 3
+          },
+          "group_by": "day"
+        },
+        {
+          "id": "titles",
+          "title": "Intake by alert title",
+          "measure": "alerts.received",
+          "display": "breakdown",
+          "layout": {
+            "width": "half",
+            "order": 4
+          },
+          "group_by": "title"
+        },
+        {
+          "id": "triage-time",
+          "title": "Median recorded triage time",
+          "measure": "alerts.recorded_triage_time",
+          "display": "trend",
+          "layout": {
+            "width": "wide",
+            "order": 5
+          },
+          "group_by": "day"
+        }
+      ]
+    }
+  },
+  {
+    "id": "case-response-performance",
+    "title": "Case Response Performance",
+    "definition": {
+      "schema_version": 1,
+      "date": {
+        "preset": "last_30_days"
+      },
+      "widgets": [
+        {
+          "id": "resolution",
+          "title": "Median recorded resolution time",
+          "measure": "cases.recorded_resolution_time",
+          "display": "number",
+          "layout": {
+            "width": "half",
+            "order": 0
+          }
+        },
+        {
+          "id": "misses",
+          "title": "Closed cases past target",
+          "measure": "cases.resolution_target_missed_count",
+          "display": "number",
+          "layout": {
+            "width": "half",
+            "order": 1
+          },
+          "parameters": {
+            "target_minutes": {
+              "dashboard_parameter": "resolution_target_minutes"
+            }
+          }
+        },
+        {
+          "id": "resolution-trend",
+          "title": "Recorded resolution time by day",
+          "measure": "cases.recorded_resolution_time",
+          "display": "trend",
+          "layout": {
+            "width": "half",
+            "order": 2
+          },
+          "group_by": "day"
+        },
+        {
+          "id": "miss-rate",
+          "title": "Resolution target misses by priority",
+          "measure": "cases.resolution_target_miss_rate",
+          "display": "breakdown",
+          "layout": {
+            "width": "half",
+            "order": 3
+          },
+          "group_by": "priority",
+          "parameters": {
+            "target_minutes": {
+              "dashboard_parameter": "resolution_target_minutes"
+            }
+          }
+        },
+        {
+          "id": "open-past-target",
+          "title": "Open cases past target",
+          "measure": "cases.open_past_target",
+          "display": "table",
+          "layout": {
+            "width": "wide",
+            "order": 4
+          },
+          "parameters": {
+            "target_minutes": {
+              "dashboard_parameter": "resolution_target_minutes"
+            }
+          },
+          "table": {
+            "columns": [
+              "human_id",
+              "title",
+              "elapsed_seconds",
+              "target_seconds",
+              "priority",
+              "assignee"
+            ],
+            "sort": {
+              "field": "created_at",
+              "direction": "asc"
+            }
+          }
+        },
+        {
+          "id": "overdue",
+          "title": "Overdue follow-up tasks",
+          "measure": "tasks.overdue",
+          "display": "table",
+          "layout": {
+            "width": "wide",
+            "order": 5
+          },
+          "table": {
+            "columns": [
+              "human_id",
+              "title",
+              "due_date",
+              "assignee",
+              "case"
+            ],
+            "sort": {
+              "field": "due_date",
+              "direction": "asc"
+            }
+          }
+        }
+      ],
+      "parameters": {
+        "resolution_target_minutes": 1440
+      }
+    }
+  }
+]

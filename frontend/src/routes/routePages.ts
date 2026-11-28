@@ -15,6 +15,7 @@ function lazyPage(load: () => Promise<{ default: ComponentType }>) {
   };
 }
 
+const dashboardsPage = lazyPage(() => import("../pages/CustomDashboards"));
 const alertsPage = lazyPage(() => import("../pages/Alerts"));
 
 export const signedInPages = {
@@ -26,6 +27,8 @@ export const signedInPages = {
   "/case-runbooks": lazyPage(() => import("../pages/CaseRunbooks")),
   "/tasks": lazyPage(() => import("../pages/TaskList")),
   "/tasks/:humanId": lazyPage(() => import("../pages/TaskDetail")),
+  "/dashboards": dashboardsPage,
+  "/dashboards/:dashboardId": dashboardsPage,
   "/reports": lazyPage(() => import("../pages/Reports")),
   "/search": lazyPage(() => import("../pages/SearchPage")),
   "/ai-chat": lazyPage(() => import("../pages/AIChat").then((module) => ({ default: module.AIChat }))),

@@ -3703,3 +3703,33 @@ class SavedQueueFilter(SQLModel, table=True):
     scope: str = Field(max_length=12)
     owner_id: UUID | None = Field(default=None, foreign_key="user_accounts.id", ondelete="CASCADE")
     filters: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
+
+
+class CustomDashboard(SQLModel, table=True):
+    """An owned or deployment-wide, revisioned dashboard definition."""
+
+    __tablename__ = "custom_dashboards"
+    __table_args__ = (
+        CheckConstraint(
+            "(scope = 'personal' AND owner_id IS NOT NULL) OR "
+            "(scope = 'organization' AND owner_id IS NULL)",
+            name="ck_custom_dashboards_scope_owner",
+        ),
+        CheckConstraint("revision >= 1", name="ck_custom_dashboards_revision"),
+        Index("ix_custom_dashboards_scope_owner", "scope", "owner_id"),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    title: str = Field(max_length=100)
+    owner_id: UUID | None = Field(default=None, foreign_key="user_accounts.id", ondelete="CASCADE")
+    scope: str = Field(max_length=12)
+    revision: int = 1
+    definition: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )

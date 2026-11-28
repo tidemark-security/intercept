@@ -19,6 +19,7 @@ import { IconWrapper, ToggleGroup, Tooltip } from "@tidemark-security/ux";
 
 import {
   BarChart2,
+  LayoutDashboard,
   Bell,
   BrainCircuit,
   CheckSquare,
@@ -87,6 +88,13 @@ const navigationItems: NavigationItem[] = [
     icon: MessageCircle,
     to: "/ai-chat",
     match: (path: string) => path.startsWith("/ai-chat"),
+  },
+  {
+    key: "dashboards",
+    label: "Dashboards",
+    icon: LayoutDashboard,
+    to: "/dashboards",
+    match: (path: string) => path === "/dashboards" || path.startsWith("/dashboards/"),
   },
   {
     key: "reports",
@@ -278,7 +286,10 @@ function SidebarQueueLinks({ mobile = false }: { mobile?: boolean }) {
   const { pathname } = useLocation();
   const { isAdmin } = useSession();
   const { data: sidebarBadgeCounts } = useSidebarBadgeCounts();
-  const items = navigationItems.filter((item) => item.key !== "admin" || (isAdmin && !mobile));
+  const items = navigationItems.filter((item) => {
+    if (item.key === "admin") return isAdmin && !mobile;
+    return item.key !== "dashboards" || !mobile;
+  });
 
   return items.map((item) => {
     const Icon = item.icon;
@@ -435,6 +446,7 @@ export function MobileSidebar() {
         </DropdownMenu.Trigger>
         <DropdownMenu.Content side="bottom" align="start" sideOffset={4}>
           <DropdownMenu.DropdownItem icon={<Search />} label="Search" to="/search" {...routeIntentProps("/search")} />
+          <DropdownMenu.DropdownItem icon={<LayoutDashboard />} label="Dashboards" to="/dashboards" {...routeIntentProps("/dashboards")} />
           {isAdmin ? (
             <>
               <DropdownMenu.DropdownItem
